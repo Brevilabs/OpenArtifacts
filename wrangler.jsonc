@@ -5,13 +5,31 @@
   "compatibility_date": "2026-07-24",
   "observability": {
     "enabled": true
-  }
+  },
 
-  // Bindings are added as the MVP lands. Planned shape (see docs/cost-at-scale.md §6):
-  //
-  // "r2_buckets":      [{ "binding": "DOCS", "bucket_name": "updoc-docs" }]
-  // "d1_databases":    [{ "binding": "DB", "database_name": "updoc", "database_id": "<id>" }]
-  // "durable_objects": { "bindings": [{ "name": "DOC", "class_name": "DocCoordinator" }] }
-  //
-  // Serving of user content goes on a sacrificial domain, never the brand domain.
+  // R2 is the system of record: every served byte lives here.
+  "r2_buckets": [{ "binding": "DOCS", "bucket_name": "updoc-docs" }],
+
+  // D1 holds pointer rows only (ids, sizes, timestamps) and is rebuildable
+  // from R2. `database_id` is a placeholder — the real id is created and
+  // filled in when the Cloudflare resources are provisioned at deploy time.
+  // Local work (`wrangler dev`, `wrangler d1 ... --local`) ignores it.
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "updoc",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+
+  // Empty in v0: one workers.dev subdomain hosts both surfaces and the router
+  // falls back to path prefixes (/api/v1 vs /d). Filling these in splits the
+  // API onto the brand domain and doc serving onto the sacrificial domain
+  // without a code change — serving of user content never goes on the brand
+  // domain (see docs/cost-at-scale.md §6).
+  "vars": {
+    "SERVING_HOST": "",
+    "API_HOST": ""
+  }
 }
