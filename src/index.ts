@@ -2,6 +2,7 @@ import { createDoc, updateDoc } from "./api/push.js";
 import { authenticateRequest, publisherErrorResponse } from "./auth.js";
 import type { Env } from "./config.js";
 import { errorResponse } from "./errors.js";
+import { handleServing, servingError, SERVING_PREFIX } from "./serve.js";
 
 /**
  * The two surfaces. They are separate because user HTML has to be served from a
@@ -18,7 +19,6 @@ export interface SurfaceConfig {
 }
 
 const API_PREFIX = "/api/v1";
-const SERVING_PREFIX = "/d";
 
 /**
  * Lowercase and drop the trailing root dot, so `A.Com` and `a.com.` both match
@@ -58,11 +58,6 @@ export function resolveSurface(hostname: string, pathname: string, config: Surfa
   return "unknown";
 }
 
-/** Nothing on the serving host is ever indexable, including its errors. */
-const SERVING_HEADERS: HeadersInit = {
-  "x-robots-tag": "noindex, nofollow",
-};
-
 /**
  * Every API request authenticates before any handler sees it, so a handler can
  * assume a publisher and never has to reason about the license key.
@@ -92,11 +87,6 @@ async function handleApi(request: Request, url: URL, env: Env): Promise<Response
   return errorResponse("not_found", `No API route for ${url.pathname}`);
 }
 
-// Phase 4 mounts the /d/{docId} and /d/{docId}/v{n} handlers here.
-function handleServing(_request: Request, url: URL, _env: Env): Response {
-  return errorResponse("not_found", `No doc at ${url.pathname}`, SERVING_HEADERS);
-}
-
 export default {
   async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
@@ -119,7 +109,7 @@ export default {
         case "api":
           return await handleApi(request, url, env);
         case "serving":
-          return handleServing(request, url, env);
+          return await handleServing(request, url, env);
         default:
           return errorResponse("not_found", `No route for ${url.pathname}`);
       }
@@ -129,7 +119,12 @@ export default {
       // and Copilot parses `{error:{code}}` on every failure. The cause is
       // logged rather than returned: it can quote a query or a key.
       console.error("unhandled error", { path: url.pathname, error });
-      return errorResponse("internal", "Something went wrong on our end. Please try again.");
+      const message = "Something went wrong on our end. Please try again.";
+      // The surface still decides the headers. A 500 on a doc url is a serving
+      // response like any other, and has to carry the robots tag that proves it.
+      return surface === "serving"
+        ? servingError("internal", message)
+        : errorResponse("internal", message);
     }
   },
 } satisfies ExportedHandler<Env>;

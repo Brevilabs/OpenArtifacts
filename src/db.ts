@@ -168,6 +168,53 @@ export async function insertVersion(db: D1Database, version: VersionRow): Promis
     .run();
 }
 
+/** What the serving path needs to know about a doc, in one read. */
+export interface ServableVersion {
+  /** Epoch ms when the doc was soft-deleted, else null. Deleted serves 410. */
+  deleted_at: number | null;
+  /** The version that has bytes, or null when the request names none. */
+  version: number | null;
+}
+
+/**
+ * Resolve a public url to the version whose bytes should be served, or null if
+ * no doc has that id at all.
+ *
+ * `pinned` is the version from `/d/{docId}/v{n}`, or null for `/d/{docId}`.
+ *
+ * The version comes from `versions`, never from `docs.latest_version`, because
+ * that counter is a *reservation*: a push that dies between minting the number
+ * and writing the object leaves it one above the newest version that actually
+ * has bytes, and serving that number would 404 a doc that is perfectly fine.
+ * Taking the highest row instead also steps over the gap such a push leaves
+ * behind. The same subquery answers the pinned case, where matching the exact
+ * `n` is what proves the version exists rather than merely being below the
+ * counter.
+ *
+ * Liveness is *not* a predicate here: a deleted doc must still be found, so the
+ * caller can tell 410 from 404. That distinction is the one thing this query
+ * exists to preserve, and it is safe to expose because a doc id is 128 random
+ * bits — knowing one already means having been given the link.
+ */
+export async function findServableVersion(
+  db: D1Database,
+  docId: string,
+  pinned: number | null,
+): Promise<ServableVersion | null> {
+  return db
+    .prepare(
+      `SELECT d.deleted_at AS deleted_at,
+              (SELECT MAX(v.n)
+                 FROM versions v
+                WHERE v.doc_id = d.id
+                  AND (? IS NULL OR v.n = ?)) AS version
+         FROM docs d
+        WHERE d.id = ?`,
+    )
+    .bind(pinned, pinned, docId)
+    .first<ServableVersion>();
+}
+
 /**
  * Whether this publisher owns a live doc with that id — the same conflation of
  * "missing", "someone else's" and "deleted" that `reserveNextVersion` makes,
