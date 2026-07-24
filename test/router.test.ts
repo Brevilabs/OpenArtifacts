@@ -110,8 +110,10 @@ describe("worker dispatch", () => {
   });
 
   it("hands /api/v1 to the API surface on workers.dev", async () => {
+    // The API surface authenticates before it routes (phase 2), so an
+    // unauthenticated request stops at 401 rather than reaching a handler.
     const res = await get(`https://${WORKERS_DEV}/api/v1/docs`);
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(401);
     // The serving surface stamps every response it produces; the API does not.
     expect(res.headers.get("x-robots-tag")).toBeNull();
   });

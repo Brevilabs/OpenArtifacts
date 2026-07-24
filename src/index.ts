@@ -1,3 +1,4 @@
+import { authenticateRequest, publisherErrorResponse } from "./auth.js";
 import type { Env } from "./config.js";
 import { errorResponse } from "./errors.js";
 
@@ -61,8 +62,16 @@ const SERVING_HEADERS: HeadersInit = {
   "x-robots-tag": "noindex, nofollow",
 };
 
-// Phase 3 (push) and phase 5 (manage) mount their handlers here.
-function handleApi(_request: Request, url: URL, _env: Env): Response {
+/**
+ * Every API request authenticates before any handler sees it, so a handler can
+ * assume a publisher and never has to reason about the license key.
+ */
+async function handleApi(request: Request, url: URL, env: Env): Promise<Response> {
+  const auth = await authenticateRequest(request, env);
+  if (!auth.ok) return publisherErrorResponse(auth);
+
+  // Phase 3 (push) and phase 5 (manage) mount their handlers here, keyed by
+  // `auth.publisher.id`.
   return errorResponse("not_found", `No API route for ${url.pathname}`);
 }
 

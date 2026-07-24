@@ -16,7 +16,27 @@ export interface Env {
   SERVING_HOST?: string;
   /** Host that exposes /api/v1. Empty in v0. */
   API_HOST?: string;
+
+  /**
+   * Base url of the Brevilabs license server, e.g. `https://api.brevilabs.com`.
+   * Optional at the type level because it is supplied per environment (.dev.vars
+   * locally, a var/secret once the worker is provisioned) rather than committed;
+   * auth treats it as an outage when unset rather than trusting an unvalidated key.
+   */
+  LICENSE_API_URL?: string;
+  /**
+   * Server-side credential for the license server. This is *ours*, never a
+   * publisher's license key, and the two must never be confused.
+   */
+  LICENSE_API_KEY?: string;
 }
+
+/**
+ * How long a successful license validation is trusted before the license server
+ * is asked again. One hour means steady-state load of one call per publisher per
+ * hour, and it bounds how long a revoked key keeps working.
+ */
+export const LICENSE_CACHE_TTL_MS = 60 * 60 * 1000;
 
 /** Largest HTML body a single push may carry, before injection. */
 export const MAX_DOC_BYTES = 10 * 1024 * 1024;

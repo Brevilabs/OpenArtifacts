@@ -42,3 +42,37 @@ export interface PushQuotaRow {
   day: string;
   pushes: number;
 }
+
+/**
+ * The publisher row as auth needs it: read the cached validation, write it back
+ * after a fresh one. It is an interface rather than two loose functions so the
+ * auth tests can run against an in-memory double instead of a database.
+ */
+export interface PublisherStore {
+  read(keyHash: string): Promise<PublisherRow | null>;
+  save(row: PublisherRow): Promise<void>;
+}
+
+export function d1PublisherStore(db: D1Database): PublisherStore {
+  return {
+    read(keyHash) {
+      return db
+        .prepare("SELECT key_hash, plan, validated_at FROM publishers WHERE key_hash = ?")
+        .bind(keyHash)
+        .first<PublisherRow>();
+    },
+
+    // `docs.publisher` is a foreign key onto this table, so this upsert is also
+    // what guarantees a row exists before the first push inserts a doc.
+    async save(row) {
+      await db
+        .prepare(
+          `INSERT INTO publishers (key_hash, plan, validated_at) VALUES (?, ?, ?)
+           ON CONFLICT(key_hash) DO UPDATE SET plan = excluded.plan,
+                                               validated_at = excluded.validated_at`,
+        )
+        .bind(row.key_hash, row.plan, row.validated_at)
+        .run();
+    },
+  };
+}
