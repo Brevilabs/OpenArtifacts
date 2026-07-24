@@ -15,6 +15,7 @@
     "test:watch": "vitest"
   },
   "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.12.21",
     "@cloudflare/workers-types": "^4.20250726.0",
     "@types/node": "^20",
     "typescript": "^5",

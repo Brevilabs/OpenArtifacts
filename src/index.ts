@@ -1,3 +1,4 @@
+import { createDoc, updateDoc } from "./api/push.js";
 import { authenticateRequest, publisherErrorResponse } from "./auth.js";
 import type { Env } from "./config.js";
 import { errorResponse } from "./errors.js";
@@ -70,8 +71,24 @@ async function handleApi(request: Request, url: URL, env: Env): Promise<Response
   const auth = await authenticateRequest(request, env);
   if (!auth.ok) return publisherErrorResponse(auth);
 
-  // Phase 3 (push) and phase 5 (manage) mount their handlers here, keyed by
-  // `auth.publisher.id`.
+  // `/api/v1/docs` and `/api/v1/docs/{docId}` are the whole surface. Anything
+  // the host matched into the API but that no route claims is a 404, never a
+  // fall-through to the serving surface.
+  const [collection, docId, ...extra] = url.pathname
+    .slice(API_PREFIX.length)
+    .split("/")
+    .filter(Boolean);
+
+  if (collection === "docs" && extra.length === 0) {
+    if (docId === undefined && request.method === "POST") {
+      return createDoc(request, url, env, auth.publisher);
+    }
+    if (docId !== undefined && request.method === "PUT") {
+      return updateDoc(request, url, env, auth.publisher, docId);
+    }
+  }
+
+  // Phase 5 (delete, list) mounts here.
   return errorResponse("not_found", `No API route for ${url.pathname}`);
 }
 
@@ -95,13 +112,24 @@ export default {
       apiHost: env.API_HOST,
     });
 
-    switch (surface) {
-      case "api":
-        return handleApi(request, url, env);
-      case "serving":
-        return handleServing(request, url, env);
-      default:
-        return errorResponse("not_found", `No route for ${url.pathname}`);
+    try {
+      // `return await`, not `return`: a bare return hands the promise back
+      // unawaited, so a binding that rejects would sail straight past this catch.
+      switch (surface) {
+        case "api":
+          return await handleApi(request, url, env);
+        case "serving":
+          return handleServing(request, url, env);
+        default:
+          return errorResponse("not_found", `No route for ${url.pathname}`);
+      }
+    } catch (error) {
+      // R2 and D1 can fail mid-request. Left uncaught they become workerd's
+      // plain-text 500 — the one response the frozen contract does not describe,
+      // and Copilot parses `{error:{code}}` on every failure. The cause is
+      // logged rather than returned: it can quote a query or a key.
+      console.error("unhandled error", { path: url.pathname, error });
+      return errorResponse("internal", "Something went wrong on our end. Please try again.");
     }
   },
 } satisfies ExportedHandler<Env>;

@@ -53,7 +53,11 @@ function licenseServer(reply: () => Response | Promise<Response>): LicenseStub {
   const calls: LicenseStub["calls"] = [];
   const stub = async (input: unknown, init?: RequestInit) => {
     calls.push({ url: String(input), init: init ?? {} });
-    return reply();
+    // `return await`, not `return`: a bare return hands the rejection back by
+    // promise adoption, which leaves it momentarily unhandled — and workerd,
+    // where these tests now run, reports that as an unhandled rejection even
+    // though `validateLicense` catches it a tick later.
+    return await reply();
   };
   return { fetch: stub as unknown as typeof fetch, calls };
 }
