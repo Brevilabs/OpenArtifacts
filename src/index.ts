@@ -1,3 +1,4 @@
+import { deleteDoc, listDocs } from "./api/manage.js";
 import { createDoc, updateDoc } from "./api/push.js";
 import { authenticateRequest, publisherErrorResponse } from "./auth.js";
 import type { Env } from "./config.js";
@@ -74,16 +75,23 @@ async function handleApi(request: Request, url: URL, env: Env): Promise<Response
     .split("/")
     .filter(Boolean);
 
+  // Every dispatch is `return await`, never a bare `return` of the handler's
+  // promise, for the reason spelled out on the catch below.
   if (collection === "docs" && extra.length === 0) {
     if (docId === undefined && request.method === "POST") {
-      return createDoc(request, url, env, auth.publisher);
+      return await createDoc(request, url, env, auth.publisher);
+    }
+    if (docId === undefined && request.method === "GET") {
+      return await listDocs(url, env, auth.publisher);
     }
     if (docId !== undefined && request.method === "PUT") {
-      return updateDoc(request, url, env, auth.publisher, docId);
+      return await updateDoc(request, url, env, auth.publisher, docId);
+    }
+    if (docId !== undefined && request.method === "DELETE") {
+      return await deleteDoc(env, auth.publisher, docId);
     }
   }
 
-  // Phase 5 (delete, list) mounts here.
   return errorResponse("not_found", `No API route for ${url.pathname}`);
 }
 
@@ -103,8 +111,11 @@ export default {
     });
 
     try {
-      // `return await`, not `return`: a bare return hands the promise back
-      // unawaited, so a binding that rejects would sail straight past this catch.
+      // `return await`, not `return` — here, and at every dispatch either
+      // surface makes. A bare return hands somebody else's promise back
+      // unawaited: the rejection sails straight past this catch, and workerd
+      // reports it as an unhandled rejection even when a caller further up did
+      // handle it, which fails the whole test run.
       switch (surface) {
         case "api":
           return await handleApi(request, url, env);

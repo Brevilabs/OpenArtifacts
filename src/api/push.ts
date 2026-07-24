@@ -22,7 +22,7 @@ import type { Publisher } from "../auth.js";
 import { MAX_DOCS_PER_PUBLISHER, MAX_DOC_BYTES, MAX_PUSHES_PER_DAY } from "../config.js";
 import type { Env } from "../config.js";
 import { FIRST_VERSION, insertDoc, insertVersion, ownsLiveDoc, reserveNextVersion } from "../db.js";
-import { errorResponse } from "../errors.js";
+import { docNotFound, errorResponse } from "../errors.js";
 import { isDocId, newDocId } from "../ids.js";
 import {
   liveDocCount,
@@ -50,25 +50,6 @@ interface PushBody {
 
 type ParsedPush = { ok: true; body: PushBody } | { ok: false; response: Response };
 
-/**
- * 404 for a doc that does not exist, is not this publisher's, or was deleted.
- *
- * One message for all three on purpose: a 403 on someone else's doc would
- * confirm that the id is real, which turns the id space into something worth
- * probing. The id is echoed only because the caller supplied it.
- */
-function noSuchDoc(docId: string): Response {
-  return errorResponse("not_found", `No doc with id ${docId}.`);
-}
-
-function tooLarge(message: string): Response {
-  return errorResponse("too_large", message);
-}
-
-function badRequest(message: string): Response {
-  return errorResponse("bad_request", message);
-}
-
 /** Trimmed and capped, or null when there is nothing worth storing. */
 function normalizeTitle(raw: string): string | null {
   const title = raw.trim().slice(0, MAX_TITLE_LENGTH);
@@ -85,18 +66,21 @@ function normalizeTitle(raw: string): string | null {
 async function parsePushBody(request: Request): Promise<ParsedPush> {
   const raw = await readBodyWithin(request, MAX_REQUEST_BYTES);
   if (raw === null) {
-    return { ok: false, response: tooLarge("That push is too large to accept.") };
+    return {
+      ok: false,
+      response: errorResponse("too_large", "That push is too large to accept."),
+    };
   }
 
   let parsed: unknown;
   try {
     parsed = JSON.parse(new TextDecoder().decode(raw));
   } catch {
-    return { ok: false, response: badRequest("Body must be JSON.") };
+    return { ok: false, response: errorResponse("bad_request", "Body must be JSON.") };
   }
 
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    return { ok: false, response: badRequest("Body must be a JSON object.") };
+    return { ok: false, response: errorResponse("bad_request", "Body must be a JSON object.") };
   }
 
   const { html, title } = parsed as Record<string, unknown>;
@@ -104,17 +88,20 @@ async function parsePushBody(request: Request): Promise<ParsedPush> {
   // HTML only, and only from the client (D5). There is no markdown branch to
   // fall back to, so an empty or absent field is a client bug worth surfacing.
   if (typeof html !== "string" || html.length === 0) {
-    return { ok: false, response: badRequest("`html` must be a non-empty string.") };
+    return {
+      ok: false,
+      response: errorResponse("bad_request", "`html` must be a non-empty string."),
+    };
   }
   if (utf8Length(html) > MAX_DOC_BYTES) {
     return {
       ok: false,
-      response: tooLarge(`A doc may be at most ${MAX_DOC_BYTES} bytes of HTML.`),
+      response: errorResponse("too_large", `A doc may be at most ${MAX_DOC_BYTES} bytes of HTML.`),
     };
   }
 
   if (title !== undefined && title !== null && typeof title !== "string") {
-    return { ok: false, response: badRequest("`title` must be a string.") };
+    return { ok: false, response: errorResponse("bad_request", "`title` must be a string.") };
   }
 
   return {
@@ -209,7 +196,7 @@ export async function updateDoc(
   docId: string,
 ): Promise<Response> {
   // An id that cannot exist is answered without touching D1.
-  if (!isDocId(docId)) return noSuchDoc(docId);
+  if (!isDocId(docId)) return docNotFound(docId);
 
   const parsed = await parsePushBody(request);
   if (!parsed.ok) return parsed.response;
@@ -219,7 +206,7 @@ export async function updateDoc(
   // atomically, which is what actually guarantees it — this read only fixes
   // which error a rejected push gets.
   if (!(await ownsLiveDoc(env.DB, docId, publisher.id))) {
-    return noSuchDoc(docId);
+    return docNotFound(docId);
   }
 
   const now = Date.now();
@@ -228,7 +215,7 @@ export async function updateDoc(
   }
 
   const version = await reserveNextVersion(env.DB, docId, publisher.id, parsed.body.title, now);
-  if (version === null) return noSuchDoc(docId);
+  if (version === null) return docNotFound(docId);
 
   await storeVersion(env, docId, version, parsed.body.html, now);
   return pushed(env, requestUrl, docId, version, 200);

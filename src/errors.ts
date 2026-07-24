@@ -31,3 +31,18 @@ export function errorResponse(code: ErrorCode, message: string, headers?: Header
   const body: ErrorBody = { error: { code, message } };
   return Response.json(body, { status: ERROR_STATUS[code], headers });
 }
+
+/**
+ * The one answer every publisher-facing endpoint gives for a doc that does not
+ * exist, is not the caller's, or was deleted.
+ *
+ * It lives here rather than in each handler because being *identical* across
+ * all three causes and all three endpoints is the point: a 403 on someone
+ * else's doc, or a differently worded 404, would confirm that the id is real
+ * and turn the id space into something worth probing. Two copies of this
+ * message would be two places for that property to drift. The id is echoed back
+ * only because the caller supplied it.
+ */
+export function docNotFound(docId: string): Response {
+  return errorResponse("not_found", `No doc with id ${docId}.`);
+}

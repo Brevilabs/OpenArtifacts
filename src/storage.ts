@@ -15,10 +15,12 @@
 const DOCS_PREFIX = "docs/";
 
 /**
- * Every object belonging to one doc. Not exported yet: delete (phase 5) is the
- * first caller that needs it from outside, and it can export it then.
+ * Every object belonging to one doc, and nothing else. Delete lists and drops
+ * this prefix rather than walking `versions` row by row, which is what makes
+ * "all the bytes are gone" a property of R2's own listing rather than of D1's
+ * pointer index being complete.
  */
-function docObjectPrefix(docId: string): string {
+export function docObjectPrefix(docId: string): string {
   return `${DOCS_PREFIX}${docId}/`;
 }
 

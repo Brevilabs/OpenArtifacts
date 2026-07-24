@@ -82,7 +82,8 @@ export async function authenticateRequest(
       message: "Expected an Authorization: Bearer <license key> header.",
     };
   }
-  return resolvePublisher(token, env, deps);
+  // `return await`: see the note on the router's catch in index.ts.
+  return await resolvePublisher(token, env, deps);
 }
 
 export async function resolvePublisher(

@@ -313,5 +313,9 @@ export async function handleServing(request: Request, url: URL, env: Env): Promi
   }
   if (found.version === null) return noDocAt(url.pathname);
 
-  return serveObject(request, env, route, found.version, url.pathname);
+  // `return await`, not `return`, for the reason spelled out in index.ts: an
+  // async function that hands back somebody else's promise unawaited drops
+  // itself out of the rejection's stack and, in workerd, gets the rejection
+  // reported as unhandled even though the router catches it.
+  return await serveObject(request, env, route, found.version, url.pathname);
 }

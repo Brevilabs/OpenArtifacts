@@ -428,6 +428,13 @@ function fakeD1(): D1Database & { rows: Map<string, PublisherRow> } {
         });
         return { success: true };
       },
+      // Reached only once a request is past the gate: `GET /api/v1/docs` is the
+      // first handler on the other side of it, and all it wants to know is that
+      // this publisher holds no docs. Auth is what these tests are about.
+      async all() {
+        if (!/^\s*SELECT/i.test(sql)) throw new Error(`all() on non-select: ${sql}`);
+        return { results: [] };
+      },
     };
     return statement;
   };
@@ -462,8 +469,8 @@ describe("/api/v1 is gated on a publisher", () => {
 
     const res = await call(`Bearer ${KEY}`);
 
-    // The unauthenticated path 404s here in phase 1, so a 401 proves the gate
-    // answered first.
+    // This path answers 200 with a doc list once a key gets through, so a 401
+    // proves the gate answered before the handler ran.
     expect(res.status).toBe(401);
     await expect(res.json()).resolves.toEqual({
       error: { code: "unauthorized", message: expect.any(String) },
@@ -476,12 +483,11 @@ describe("/api/v1 is gated on a publisher", () => {
 
     const res = await call(`Bearer ${KEY}`, db);
 
-    // Phase 1's placeholder answer: auth passed and dispatch continued.
-    expect(res.status).toBe(404);
-    await expect(res.json()).resolves.toEqual({
-      error: { code: "not_found", message: expect.stringContaining("/api/v1/docs") },
-    });
-    // The row a phase 3 doc insert will hang its foreign key off.
+    // Auth passed and dispatch continued: this is the list handler's own answer
+    // for a publisher holding nothing.
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({ docs: [] });
+    // The row every doc insert hangs its foreign key off.
     expect(db.rows.get(KEY_HASH)?.plan).toBe("plus");
   });
 
@@ -500,7 +506,7 @@ describe("/api/v1 is gated on a publisher", () => {
 
     const res = await call(`Bearer ${KEY}`, db);
 
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(200);
   });
 
   it("fails a cold key during an outage as a server problem, not a bad key", async () => {

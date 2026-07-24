@@ -201,7 +201,8 @@ export async function findServableVersion(
   docId: string,
   pinned: number | null,
 ): Promise<ServableVersion | null> {
-  return db
+  // `return await`: see the note on the router's catch in index.ts.
+  return await db
     .prepare(
       `SELECT d.deleted_at AS deleted_at,
               (SELECT MAX(v.n)
@@ -232,4 +233,120 @@ export async function ownsLiveDoc(
     .first();
 
   return row !== null;
+}
+
+/**
+ * Soft-delete a doc, returning false when this publisher has no live doc with
+ * that id — missing, someone else's, or already deleted, conflated for the same
+ * reason as everywhere else on the write path.
+ *
+ * Soft, not hard: the row is what lets the serving path answer 410 rather than
+ * 404, so a reader who bookmarked the link learns it was withdrawn instead of
+ * wondering whether they mistyped it. The bytes are a separate matter and the
+ * caller drops them; this row outlives them on purpose.
+ *
+ * Ownership and liveness are predicates on the write itself rather than an
+ * earlier read, so two concurrent deletes of the same doc produce exactly one
+ * true — which is what makes "delete the objects" safe to run only on that one.
+ */
+export async function softDeleteDoc(
+  db: D1Database,
+  docId: string,
+  publisher: string,
+  atMs: number,
+): Promise<boolean> {
+  const deleted = await db
+    .prepare(
+      `UPDATE docs
+          SET deleted_at = ?
+        WHERE id = ? AND publisher = ? AND deleted_at IS NULL
+        RETURNING id`,
+    )
+    .bind(atMs, docId, publisher)
+    .first<{ id: string }>();
+
+  return deleted !== null;
+}
+
+/** One row of the publisher's doc list, as the index scan yields it. */
+export interface DocListRow {
+  id: string;
+  title: string;
+  created_at: number;
+  updated_at: number;
+  /**
+   * Newest version that has bytes, from `versions` rather than the
+   * `latest_version` counter — the counter can sit one above it after a push
+   * that died mid-write, and a list that reported it would name a version the
+   * doc's url does not serve. Null for a doc whose first push never landed.
+   */
+  version: number | null;
+}
+
+/**
+ * Where a page of the list stopped, in the order the scan runs. Both columns
+ * are needed: `created_at` is milliseconds and two docs pushed in the same
+ * millisecond are entirely possible, so the id is what breaks the tie and keeps
+ * the order total.
+ */
+export interface DocListCursor {
+  created_at: number;
+  id: string;
+}
+
+/**
+ * A page of one publisher's live docs, newest first.
+ *
+ * Keyset, not OFFSET. The `docs_by_publisher_live` partial index is
+ * `(publisher, created_at DESC, id DESC)`, and it supplies both the filter and
+ * the ordering, so no page is ever sorted in a temp b-tree. It is also the only
+ * paging that stays correct while the publisher keeps pushing: OFFSET renumbers
+ * the moment a newer doc appears, so a doc would shift onto a page the caller
+ * has already read and be missed.
+ *
+ * Ordering by `created_at` rather than `updated_at` is what makes that hold — a
+ * doc's created_at never moves, so a doc cannot jump backwards past a cursor
+ * because it was re-pushed mid-walk.
+ *
+ * The resume predicate is a row-value comparison rather than the expanded
+ * `a < ? OR (a = ? AND b < ?)`. The two mean the same thing, but only the row
+ * value becomes an index range constraint — `EXPLAIN QUERY PLAN` shows
+ * `(publisher=? AND (created_at,id)<(?,?))` against the expanded form's
+ * `(publisher=?)`, which walks from the newest doc and discards rows until it
+ * passes the cursor. Both are correct; one seeks.
+ *
+ * The two statements differ only in that predicate. Written out rather than
+ * folded into one with `(? IS NULL OR ...)`, which SQLite cannot use the index
+ * for at all.
+ */
+export async function listPublisherDocs(
+  db: D1Database,
+  publisher: string,
+  after: DocListCursor | null,
+  limit: number,
+): Promise<DocListRow[]> {
+  const columns = `d.id AS id, d.title AS title, d.created_at AS created_at,
+                   d.updated_at AS updated_at,
+                   (SELECT MAX(v.n) FROM versions v WHERE v.doc_id = d.id) AS version`;
+  const order = "ORDER BY d.created_at DESC, d.id DESC LIMIT ?";
+
+  const statement =
+    after === null
+      ? db
+          .prepare(
+            `SELECT ${columns} FROM docs d
+              WHERE d.publisher = ? AND d.deleted_at IS NULL
+              ${order}`,
+          )
+          .bind(publisher, limit)
+      : db
+          .prepare(
+            `SELECT ${columns} FROM docs d
+              WHERE d.publisher = ? AND d.deleted_at IS NULL
+                AND (d.created_at, d.id) < (?, ?)
+              ${order}`,
+          )
+          .bind(publisher, after.created_at, after.id, limit);
+
+  return (await statement.all<DocListRow>()).results;
 }

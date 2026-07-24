@@ -13,6 +13,31 @@ npm test
 npm run deploy     # wrangler deploy
 ```
 
+`README.md` carries the details these commands need: running against a local
+worker with no license server, and the provisioning sequence a first deploy
+requires. `scripts/smoke.sh` checks a *deployed* worker end to end and is run by
+hand — it needs a real license key, so it is deliberately not in CI.
+
+Tests run inside workerd against real R2 and D1 (Miniflare), never against test
+doubles for them. A binding double asserts our idea of Cloudflare rather than
+Cloudflare, so the only ones in the suite are deliberately broken bindings used
+to test failure paths.
+
+## The HTTP contract is frozen
+
+`README.md` § HTTP API is the contract Obsidian Copilot is written against, and
+it is the source of truth — not this repo's source. Nothing in it changes
+without a client release: not a status code, not an error `code`, not a field
+name. Adding to it is fine; changing what is there is a cross-repo decision.
+
+Two conventions in it are security properties rather than style, and both are
+easy to undo by accident:
+
+- **404, never 403.** A doc belonging to another publisher must be
+  indistinguishable from one that never existed, on every endpoint.
+- **404 vs 410.** A deleted doc keeps its D1 row forever so its url answers 410.
+  Delete destroys the R2 objects; it must never delete the row.
+
 ## Product context
 
 `docs/positioning.md` and `docs/cost-at-scale.md` are the source of truth for what
