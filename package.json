@@ -1,0 +1,24 @@
+{
+  "name": "updoc",
+  "version": "0.0.0",
+  "description": "Push a local md/html file, get a public HTML page on the internet",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250726.0",
+    "@types/node": "^20",
+    "typescript": "^5",
+    "vitest": "^3",
+    "wrangler": "^4"
+  }
+}

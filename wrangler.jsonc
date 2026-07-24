@@ -1,0 +1,17 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "updoc",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-24",
+  "observability": {
+    "enabled": true
+  }
+
+  // Bindings are added as the MVP lands. Planned shape (see docs/cost-at-scale.md §6):
+  //
+  // "r2_buckets":      [{ "binding": "DOCS", "bucket_name": "updoc-docs" }]
+  // "d1_databases":    [{ "binding": "DB", "database_name": "updoc", "database_id": "<id>" }]
+  // "durable_objects": { "bindings": [{ "name": "DOC", "class_name": "DocCoordinator" }] }
+  //
+  // Serving of user content goes on a sacrificial domain, never the brand domain.
+}
