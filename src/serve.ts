@@ -34,7 +34,7 @@ const DOC_PATH_PREFIX = `${SERVING_PREFIX}/`;
 const VERSION_SEGMENT = /^v([1-9][0-9]{0,8})$/;
 
 /**
- * The Content Security Policy. This is the security boundary of updoc, so every
+ * The Content Security Policy. This is the security boundary of Symposium, so every
  * directive below is a deliberate choice rather than a copied default.
  *
  * The threat model is unusual and worth stating plainly: the page's own author

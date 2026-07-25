@@ -11,8 +11,8 @@ const ctx = {} as ExecutionContext;
 const get = (url: string, vars: Partial<Env> = {}) =>
   worker.fetch(new Request(url), env(vars), ctx);
 
-const WORKERS_DEV = "updoc.workers.dev";
-const TWO_DOMAIN = { servingHost: "updoc.page", apiHost: "api.updoc.md" };
+const WORKERS_DEV = "symposium.workers.dev";
+const TWO_DOMAIN = { servingHost: "symposium.page", apiHost: "api.symposium.md" };
 
 describe("resolveSurface — workers.dev, no hosts configured", () => {
   const unset = {};
@@ -43,25 +43,25 @@ describe("resolveSurface — workers.dev, no hosts configured", () => {
 
 describe("resolveSurface — two configured domains", () => {
   it("routes by host, not path", () => {
-    expect(resolveSurface("updoc.page", "/d/abc", TWO_DOMAIN)).toBe("serving");
-    expect(resolveSurface("api.updoc.md", "/api/v1/docs", TWO_DOMAIN)).toBe("api");
+    expect(resolveSurface("symposium.page", "/d/abc", TWO_DOMAIN)).toBe("serving");
+    expect(resolveSurface("api.symposium.md", "/api/v1/docs", TWO_DOMAIN)).toBe("api");
   });
 
   it("keeps /api/v1 off the serving host", () => {
-    expect(resolveSurface("updoc.page", "/api/v1/docs", TWO_DOMAIN)).toBe("serving");
-    expect(resolveSurface("updoc.page", "/api/v1/docs/abc", TWO_DOMAIN)).toBe("serving");
+    expect(resolveSurface("symposium.page", "/api/v1/docs", TWO_DOMAIN)).toBe("serving");
+    expect(resolveSurface("symposium.page", "/api/v1/docs/abc", TWO_DOMAIN)).toBe("serving");
   });
 
   it("keeps doc serving off the API host", () => {
-    expect(resolveSurface("api.updoc.md", "/d/abc", TWO_DOMAIN)).toBe("api");
+    expect(resolveSurface("api.symposium.md", "/d/abc", TWO_DOMAIN)).toBe("api");
   });
 
   it("matches the host case-insensitively and ignores the root dot", () => {
     // Both forms reach `/api/v1` if the match fails, so each asserts the
     // security property rather than just a normalisation detail.
-    expect(resolveSurface("UPDOC.PAGE", "/api/v1/docs", TWO_DOMAIN)).toBe("serving");
-    expect(resolveSurface("updoc.page.", "/api/v1/docs", TWO_DOMAIN)).toBe("serving");
-    expect(resolveSurface("updoc.page", "/api/v1/docs", { servingHost: "UPDOC.Page." })).toBe(
+    expect(resolveSurface("SYMPOSIUM.PAGE", "/api/v1/docs", TWO_DOMAIN)).toBe("serving");
+    expect(resolveSurface("symposium.page.", "/api/v1/docs", TWO_DOMAIN)).toBe("serving");
+    expect(resolveSurface("symposium.page", "/api/v1/docs", { servingHost: "SYMPOSIUM.Page." })).toBe(
       "serving",
     );
   });
@@ -69,11 +69,11 @@ describe("resolveSurface — two configured domains", () => {
   it("does not match a subdomain or suffix of a configured host", () => {
     // A path with no prefix to fall back on, so "unknown" can only mean the
     // host itself did not match.
-    expect(resolveSurface("evil.updoc.page", "/nope", TWO_DOMAIN)).toBe("unknown");
-    expect(resolveSurface("updoc.page.evil.com", "/nope", TWO_DOMAIN)).toBe("unknown");
-    expect(resolveSurface("notupdoc.page", "/nope", TWO_DOMAIN)).toBe("unknown");
+    expect(resolveSurface("evil.symposium.page", "/nope", TWO_DOMAIN)).toBe("unknown");
+    expect(resolveSurface("symposium.page.evil.com", "/nope", TWO_DOMAIN)).toBe("unknown");
+    expect(resolveSurface("notsymposium.page", "/nope", TWO_DOMAIN)).toBe("unknown");
     // And a lookalike host still gets no serving treatment for an API path.
-    expect(resolveSurface("evil.updoc.page", "/api/v1/docs", TWO_DOMAIN)).toBe("api");
+    expect(resolveSurface("evil.symposium.page", "/api/v1/docs", TWO_DOMAIN)).toBe("api");
   });
 
   it("falls back to path prefixes on an unrecognised host", () => {
@@ -82,7 +82,7 @@ describe("resolveSurface — two configured domains", () => {
   });
 
   it("routes by host when only the serving host is configured", () => {
-    expect(resolveSurface("updoc.page", "/api/v1/docs", { servingHost: "updoc.page" })).toBe(
+    expect(resolveSurface("symposium.page", "/api/v1/docs", { servingHost: "symposium.page" })).toBe(
       "serving",
     );
   });
@@ -90,10 +90,10 @@ describe("resolveSurface — two configured domains", () => {
 
 describe("worker dispatch", () => {
   it("serves the health check on any host", async () => {
-    for (const host of [WORKERS_DEV, "updoc.page", "api.updoc.md"]) {
+    for (const host of [WORKERS_DEV, "symposium.page", "api.symposium.md"]) {
       const res = await get(`https://${host}/health`, {
-        SERVING_HOST: "updoc.page",
-        API_HOST: "api.updoc.md",
+        SERVING_HOST: "symposium.page",
+        API_HOST: "api.symposium.md",
       });
       expect(res.status).toBe(200);
       await expect(res.json()).resolves.toEqual({ ok: true });
@@ -128,10 +128,10 @@ describe("worker dispatch", () => {
     // Including the trailing-root-dot form, which `new URL()` preserves in
     // `hostname` and which would otherwise miss the host match and fall
     // through to the /api/v1 path prefix.
-    for (const host of ["updoc.page", "updoc.page.", "UPDOC.PAGE"]) {
+    for (const host of ["symposium.page", "symposium.page.", "SYMPOSIUM.PAGE"]) {
       const res = await get(`https://${host}/api/v1/docs`, {
-        SERVING_HOST: "updoc.page",
-        API_HOST: "api.updoc.md",
+        SERVING_HOST: "symposium.page",
+        API_HOST: "api.symposium.md",
       });
       expect(res.status).toBe(404);
       // Two independent signals that the serving surface answered: only it
@@ -144,7 +144,7 @@ describe("worker dispatch", () => {
   });
 
   it("never sets a cookie on the serving surface", async () => {
-    const res = await get("https://updoc.page/d/abc", { SERVING_HOST: "updoc.page" });
+    const res = await get("https://symposium.page/d/abc", { SERVING_HOST: "symposium.page" });
     expect(res.headers.get("set-cookie")).toBeNull();
   });
 });

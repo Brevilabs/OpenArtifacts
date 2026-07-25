@@ -6,7 +6,7 @@ import { docObjectPrefix, versionObjectKey } from "../src/storage.js";
 import worker from "../src/index.js";
 
 /** v0 runs both surfaces on one workers.dev subdomain. */
-const API_ORIGIN = "https://updoc.workers.dev";
+const API_ORIGIN = "https://symposium.workers.dev";
 
 const KEY_A = "cplus_live_a1b2c3d4e5f60718";
 const KEY_B = "cplus_live_9988776655443322";
@@ -389,10 +389,10 @@ describe("GET /api/v1/docs", () => {
     const created = await publish(KEY_A, "A note");
 
     const response = await send("GET", "/api/v1/docs", KEY_A, undefined, {
-      SERVING_HOST: "updoc.page",
+      SERVING_HOST: "symposium.page",
     });
 
-    expect((await listed(response)).docs[0]?.url).toBe(`https://updoc.page/d/${created.docId}`);
+    expect((await listed(response)).docs[0]?.url).toBe(`https://symposium.page/d/${created.docId}`);
   });
 
   it("orders newest first", async () => {

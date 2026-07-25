@@ -1,6 +1,6 @@
 # Development
 
-Running updoc on your machine. No Cloudflare account needed.
+Running Symposium on your machine. No Cloudflare account needed.
 
 [← README](../README.md) · [HTTP API](http-api.md) · [Deploying](deploying.md)
 
@@ -28,12 +28,12 @@ the key:
 KEY=any-string-you-like
 HASH=$(printf '%s' "$KEY" | shasum -a 256 | cut -d' ' -f1)
 
-npx wrangler d1 migrations apply updoc --local
-npx wrangler d1 execute updoc --local --command \
+npx wrangler d1 migrations apply symposium --local
+npx wrangler d1 execute symposium --local --command \
   "INSERT OR REPLACE INTO publishers (key_hash, plan, validated_at)
    VALUES ('$HASH', 'plus', $(($(date +%s) * 1000)))"
 
-UPDOC_LICENSE_KEY=$KEY scripts/smoke.sh http://127.0.0.1:8787
+SYMPOSIUM_LICENSE_KEY=$KEY scripts/smoke.sh http://127.0.0.1:8787
 ```
 
 Alternatively, copy `.dev.vars.example` to `.dev.vars` and point

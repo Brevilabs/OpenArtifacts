@@ -1,6 +1,6 @@
 # Hosting
 
-What updoc runs on, assuming you know how web apps get deployed but have never
+What Symposium runs on, assuming you know how web apps get deployed but have never
 used Cloudflare. If your reference point is Vercel and Vercel Postgres, the
 [translation table](#coming-from-vercel) maps most of it in one screen.
 
@@ -26,21 +26,21 @@ why this repo has no Express, no `pg`, and no ORM. See
 where you would expect.
 
 **R2** — object storage. S3's API, with no charge for data leaving it. You `put`
-and `get` blobs by key. updoc keeps every published version as one immutable
+and `get` blobs by key. Symposium keeps every published version as one immutable
 object at `docs/{docId}/v{n}.html`; reading a document is one `get`, streamed
 straight back to the reader.
 
 **D1** — a SQL database. It is **SQLite**, not Postgres, and that difference does
-real work — see [D1 in practice](#d1-in-practice). updoc uses it purely as an
+real work — see [D1 in practice](#d1-in-practice). Symposium uses it purely as an
 index: who owns a doc, what it is called, which versions exist, whether it was
 deleted. No document content is ever stored in it.
 
 **workers.dev** — a free subdomain Cloudflare gives every account, so a Worker is
 reachable the moment you deploy without owning a domain or touching DNS. Ours
-will be `updoc.<account-subdomain>.workers.dev`. From the caller's side it
+will be `symposium.<account-subdomain>.workers.dev`. From the caller's side it
 behaves like any other URL; the catch is that it sits outside Cloudflare's CDN
 cache, so every request reaches your Worker. It is meant for development and
-early testing, which is exactly where updoc is.
+early testing, which is exactly where Symposium is.
 
 Two more names you will meet: **wrangler**, the CLI that does everything
 (`wrangler dev`, `wrangler deploy`, `wrangler d1 …`), and **workerd**, the
@@ -55,8 +55,8 @@ You never open a connection to R2 or D1. There is no connection string, no
 credentials in the environment, no pool. `wrangler.jsonc` declares **bindings**:
 
 ```jsonc
-"r2_buckets":   [{ "binding": "DOCS", "bucket_name": "updoc-docs" }],
-"d1_databases": [{ "binding": "DB",   "database_name": "updoc", … }]
+"r2_buckets":   [{ "binding": "DOCS", "bucket_name": "symposium-docs" }],
+"d1_databases": [{ "binding": "DB",   "database_name": "symposium", … }]
 ```
 
 and Cloudflare hands the code an already-connected client for each, as
@@ -77,7 +77,7 @@ databases its config names, and nothing else.
 
 | Vercel | Cloudflare | Worth knowing |
 | --- | --- | --- |
-| Project | Worker | One deployable unit. Ours is named `updoc`. |
+| Project | Worker | One deployable unit. Ours is named `symposium`. |
 | Serverless / Edge Function | Worker | Only one kind here. |
 | `vercel dev` | `wrangler dev` | Runs the production runtime locally, with local storage. |
 | `vercel deploy` | `wrangler deploy` | CLI, not git-triggered — see [Deploys](#deploys-are-explicit). |
@@ -128,7 +128,7 @@ Postgres reflexes to unlearn:
   `wrangler d1 migrations apply`. No Prisma, no Drizzle — queries are written by
   hand in `src/db.ts`.
 - **A database is single-threaded**, processing queries one at a time. Ideal for
-  the small indexed lookups updoc makes; not where an analytical query goes.
+  the small indexed lookups Symposium makes; not where an analytical query goes.
 - **Writes go to one region**, reads can be replicated. Barely matters here: a
   read touches D1 once for a pointer, and the document itself comes from R2.
 - **Backups are Time Travel** — restore to any point in the last 30 days by
@@ -136,7 +136,7 @@ Postgres reflexes to unlearn:
 
 Limits and price: 10 GB per database, 50,000 databases per account, 1,000
 queries per Worker invocation. Billing is per row read and written, with 25
-billion reads and 50 million writes included monthly, so at updoc's shape it is
+billion reads and 50 million writes included monthly, so at Symposium's shape it is
 effectively free.
 
 ## R2 in practice
@@ -210,7 +210,7 @@ including the license-server workaround a local push needs.
 
 ## Why this stack, and where it strains
 
-The decisive property is R2's lack of egress fees. updoc is, at bottom, a service
+The decisive property is R2's lack of egress fees. Symposium is, at bottom, a service
 that hands the same immutable bytes to many readers, and everywhere else that
 shape is dominated by bandwidth — S3 plus CloudFront is roughly $0.085/GB, which
 at scale *is* the business, and is zero here. The rest follows: immutable version
@@ -219,7 +219,7 @@ read is a lookup and a stream. No component in the serving path is priced per
 user or per seat, which is the other way this category usually gets expensive.
 
 The weak link is D1, and it is worth being clear-eyed. One database is capped at
-10 GB, is single-threaded, and takes writes in a single region. updoc's shape
+10 GB, is single-threaded, and takes writes in a single region. Symposium's shape
 keeps that comfortable — a push is a handful of small writes, a read is one
 indexed lookup — but a write-heavy future (agents pushing on every edit, then
 comment threads) would eventually reach it. Two escape hatches are already in the
@@ -246,7 +246,7 @@ Two caveats to hold onto:
 
 For a document-sharing service specifically, this is a strong fit, and more so
 the larger it gets. It would be the wrong stack for something transactional,
-relationally complex, or CPU-heavy per request — updoc is none of those.
+relationally complex, or CPU-heavy per request — Symposium is none of those.
 
 It also holds for where the product is going. Comments (see
 [comments.md](comments.md)) are the workload Durable Objects exist for: a

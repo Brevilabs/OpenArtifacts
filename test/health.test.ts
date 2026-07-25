@@ -6,7 +6,7 @@ const env = { SERVING_HOST: "", API_HOST: "" } as Env;
 const ctx = {} as ExecutionContext;
 
 const call = (path: string) =>
-  worker.fetch(new Request(`https://updoc.test${path}`), env, ctx);
+  worker.fetch(new Request(`https://symposium.test${path}`), env, ctx);
 
 describe("worker", () => {
   it("serves a health check", async () => {

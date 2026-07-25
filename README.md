@@ -1,11 +1,11 @@
-# updoc
+# Symposium
 
 **Where people and agents get on the same page.**
 
 Every version and every thread live at one address, so anyone who opens it can
 catch up without being briefed.
 
-That is what updoc is for, not what it does today. Only the first step exists:
+That is what Symposium is for, not what it does today. Only the first step exists:
 push a local md/html file and get a public HTML page on the internet. The upload
 API is private and programmatic, its only caller is Obsidian Copilot's share
 action, and there are no reader accounts, no permissions, and no comments.
@@ -52,7 +52,7 @@ Roughly in order. Nothing below is started.
   half of the fix — Cloudflare does not cache HTML by default, so it also needs
   a cache rule, and then deletes have to purge the cache. Real domains also let
   user content live somewhere separate from the brand, so a bad doc can't damage
-  `updoc.md`'s reputation.
+  `symposium.md`'s reputation.
 - **Backups that don't depend on the database.** Right now the database is the
   only record of who owns a doc and what it's called. The plan is for each doc to
   carry its own description alongside its files, so the database could be rebuilt
@@ -71,7 +71,7 @@ Roughly in order. Nothing below is started.
 
 ## Where this is going
 
-updoc is the first step of an agent-first docs product: a shared artifact where
+Symposium is the first step of an agent-first docs product: a shared artifact where
 humans and agents comment and iterate together to converge on consensus. The
 argument for it, and the constraints it has to respect, are in
 [`docs/positioning.md`](docs/positioning.md) and

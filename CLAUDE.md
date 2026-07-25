@@ -1,4 +1,4 @@
-# updoc
+# Symposium
 
 Push a local md/html file, get a public HTML page on the internet. v0 scope: HTML
 upload → public page, upload API private and programmatic (Obsidian Copilot only).
@@ -51,7 +51,7 @@ in the positioning doc.
 These are day-one decisions, not retrofits:
 
 - User content is served from a **sacrificial domain**, separate from the brand
-  domain. Reputation damage must not land on `updoc.md`.
+  domain. Reputation damage must not land on `symposium.md`.
 - Shared docs are **`noindex` + `nofollow` by default**.
 - **Publisher-gated, reader-open**: publishing requires a key; reading requires
   nothing.

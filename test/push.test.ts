@@ -6,12 +6,12 @@ import { commitVersionMetadata } from "../src/db.js";
 import type { DocRow, PushQuotaRow, VersionRow } from "../src/db.js";
 import { isDocId } from "../src/ids.js";
 import { MAX_REQUEST_BYTES, utcDay, utf8Length } from "../src/quota.js";
-import { NOINDEX_META, UPDOC_FOOTER } from "../src/render.js";
+import { NOINDEX_META, SYMPOSIUM_FOOTER } from "../src/render.js";
 import { versionObjectKey } from "../src/storage.js";
 import worker from "../src/index.js";
 
 /** v0 runs both surfaces on one workers.dev subdomain. */
-const API_ORIGIN = "https://updoc.workers.dev";
+const API_ORIGIN = "https://symposium.workers.dev";
 
 const KEY_A = "cplus_live_a1b2c3d4e5f60718";
 const KEY_B = "cplus_live_9988776655443322";
@@ -147,7 +147,7 @@ describe("POST /api/v1/docs", () => {
     const html = await object!.text();
 
     expect(html.slice(0, html.indexOf("</head>"))).toContain(NOINDEX_META);
-    expect(html).toContain(`${UPDOC_FOOTER}</body>`);
+    expect(html).toContain(`${SYMPOSIUM_FOOTER}</body>`);
     expect(html).toContain(article);
     expect(object!.httpMetadata?.contentType).toBe("text/html; charset=utf-8");
 
@@ -162,7 +162,7 @@ describe("POST /api/v1/docs", () => {
   });
 
   it("keeps uploaded scripts intact (D6)", async () => {
-    const interactive = '<script>window.__updoc = "runs";</script><canvas id="figure"></canvas>';
+    const interactive = '<script>window.__symposium = "runs";</script><canvas id="figure"></canvas>';
 
     const body = await pushedOk(
       await post(KEY_A, { title: "Figure", html: page(interactive) }),
@@ -198,11 +198,11 @@ describe("POST /api/v1/docs", () => {
 
   it("points the url at the serving host once one is configured (D3)", async () => {
     const body = await pushedOk(
-      await post(KEY_A, { title: "t", html: page("<p>x</p>") }, { SERVING_HOST: "updoc.page" }),
+      await post(KEY_A, { title: "t", html: page("<p>x</p>") }, { SERVING_HOST: "symposium.page" }),
       201,
     );
 
-    expect(body.url).toBe(`https://updoc.page/d/${body.docId}`);
+    expect(body.url).toBe(`https://symposium.page/d/${body.docId}`);
   });
 });
 

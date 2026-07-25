@@ -1,14 +1,14 @@
 ---
-title: updoc.md - Business Feasibility - Cost at Scale
+title: symposium.md - Business Feasibility - Cost at Scale
 date: 2026-07-21
 tags:
-  - updoc
+  - symposium
   - feasibility
   - business
 status: draft
 ---
 
-# updoc.md - Business Feasibility - Cost at Scale
+# symposium.md - Business Feasibility - Cost at Scale
 
 Companion to [[Agent-First Docs - Product Positioning]]. That doc argues *why* the product should exist. This one asks a colder question: **can we afford to give the wedge away for free, and does the cost curve stay sane from 1k to 100k to 1M users?**
 
@@ -24,7 +24,7 @@ Scope of the launch product being costed: **one-click sharing from Copilot for O
 Three properties of the product shape (from the positioning doc) drive the whole cost story:
 
 1. **The artifact is static.** Every push mints an immutable version. Immutable version URLs are perfectly cacheable, so a doc that goes viral costs approximately nothing extra: the CDN absorbs it, origin serves it once. We are closer to Pastebin than to Google Docs.
-2. **No live editor, no realtime sync.** Google Docs' real infrastructure cost is not storage, it is operational-transform sync fanout, presence, and cursors for concurrent editors. Notion carries a heavy block-database and realtime layer. updoc's model is push-based: the expensive collaborative-editing problem is deliberately not in the architecture. Even comments (phase 3) can be poll-based for a long time before anyone notices.
+2. **No live editor, no realtime sync.** Google Docs' real infrastructure cost is not storage, it is operational-transform sync fanout, presence, and cursors for concurrent editors. Notion carries a heavy block-database and realtime layer. Symposium's model is push-based: the expensive collaborative-editing problem is deliberately not in the architecture. Even comments (phase 3) can be poll-based for a long time before anyone notices.
 3. **Zero inference COGS.** The agents are the users' own (Claude Code, Copilot, whatever calls our MCP). Unlike Notion AI or any "AI docs" product, we pay for no tokens, ever. Our marginal cost for agent traffic is a JSON API call. This is the quiet structural advantage of the agent-first posture: the intelligence is BYO.
 
 The sanity checks from the market:
@@ -151,7 +151,7 @@ Free + public + no permission system + one-click publish = **the exact recipe fo
 
 Day-one mitigations, all cheap in dollars:
 
-1. **Serve user content from a separate domain** than the product/brand domain (the `notion.site` / `googleusercontent.com` pattern). Reputation damage lands on the sacrificial domain, not on `updoc.md` itself. This is the single highest-leverage decision and it costs $10/yr.
+1. **Serve user content from a separate domain** than the product/brand domain (the `notion.site` / `googleusercontent.com` pattern). Reputation damage lands on the sacrificial domain, not on `symposium.md` itself. This is the single highest-leverage decision and it costs $10/yr.
 2. **`noindex` + `nofollow` by default.** Shared docs are for invited readers, not search engines. This deletes the SEO-spam incentive entirely, which is most of the spam volume. (Publishers can opt into indexing later, as a feature, maybe a paid one.)
 3. **Publisher-gated, reader-open.** Publishing requires a Copilot install and an account; reading requires nothing. The abuse funnel is throttled at the account layer: new-account rate limits, velocity checks on pushes.
 4. **Automated scanning on push**: outbound links against Google Safe Browsing (free API); if/when image upload ships, CSAM hash-matching via Cloudflare's free tool (also a legal obligation, not a nice-to-have).
@@ -214,7 +214,7 @@ Phase 1 (public share only) could genuinely ship with zero D1: slug uniqueness v
 
 Outline is the nearest existing product ([[Agent-First Docs - Product Positioning#Why nobody serves this today]]), which makes "just build on it" tempting. Decision (2026-07-23): no. The downsides are structural, not cosmetic:
 
-- **License.** Outline is BUSL-1.1, which prohibits offering it as a commercial hosted service - exactly what updoc.md is. Building on it means a commercial agreement with the named incumbent-to-beat.
+- **License.** Outline is BUSL-1.1, which prohibits offering it as a commercial hosted service - exactly what symposium.md is. Building on it means a commercial agreement with the named incumbent-to-beat.
 - **Wrong data model.** Workspace-wiki (teams, collections, members) vs our per-doc unit with its own audience. Per-doc grantees and "my docs" would be surgery on the spine; single-team instances vs hosting a million individuals likewise.
 - **Editor-centric where we are push-centric.** Its heart is a realtime ProseMirror/Yjs editor; anchors are marks in editor state, which is the exact fragility we differentiate against (whole-doc replace destroys anchors). Our quote-based re-anchoring engine doesn't exist there and would be built against a hostile representation, while we inherit the sync tax section 1 designed out.
 - **Not HTML-native, not our stack.** Sanitized ProseMirror/markdown pipeline vs HTML-as-API (section 6); needs Node + Postgres + Redis + websockets, which forfeits the all-Cloudflare cost structure and makes a big Postgres the system of record.

@@ -66,7 +66,7 @@ Any other method or path under `/api/v1` is `404 not_found`.
 
 ```json
 {"docId": "9f2k4mvq7t0xbz3ncrhs5wda1p",
- "url": "https://updoc.example.workers.dev/d/9f2k4mvq7t0xbz3ncrhs5wda1p",
+ "url": "https://symposium.example.workers.dev/d/9f2k4mvq7t0xbz3ncrhs5wda1p",
  "version": 1}
 ```
 
@@ -87,7 +87,7 @@ it does on `POST`.
 
 ```json
 {"docId": "9f2k4mvq7t0xbz3ncrhs5wda1p",
- "url": "https://updoc.example.workers.dev/d/9f2k4mvq7t0xbz3ncrhs5wda1p",
+ "url": "https://symposium.example.workers.dev/d/9f2k4mvq7t0xbz3ncrhs5wda1p",
  "version": 2}
 ```
 
@@ -131,7 +131,7 @@ Only the calling publisher's live docs, newest first by creation time.
 {"docs": [
    {"docId": "9f2k4mvq7t0xbz3ncrhs5wda1p",
     "title": "Q3 architecture review",
-    "url": "https://updoc.example.workers.dev/d/9f2k4mvq7t0xbz3ncrhs5wda1p",
+    "url": "https://symposium.example.workers.dev/d/9f2k4mvq7t0xbz3ncrhs5wda1p",
     "version": 2,
     "updatedAt": 1785000000000}
  ],
@@ -176,7 +176,7 @@ retargeting. The origin is cookieless and holds nothing but already-public docs.
 
 Two things are injected into the document at push time, so the stored bytes and
 the served bytes are the same thing: a `<meta name="robots" content="noindex,nofollow">`
-in the head, and a small `Shared with updoc` footer before `</body>`. Nothing
+in the head, and a small `Shared with Symposium` footer before `</body>`. Nothing
 else is touched — the markup is never sanitized, rewritten or reformatted.
 
 `404` for an unknown id or version; `410` once the doc is deleted.
@@ -239,7 +239,7 @@ re-sharing a note update the page instead of minting a second link.
 
 ```yaml
 ---
-updoc: 9f2k4mvq7t0xbz3ncrhs5wda1p
+symposium: 9f2k4mvq7t0xbz3ncrhs5wda1p
 ---
 ```
 
@@ -250,7 +250,7 @@ note travelled to a vault signed in with a different license key. Fall back to
 ## A whole round trip
 
 ```bash
-BASE=https://updoc.example.workers.dev
+BASE=https://symposium.example.workers.dev
 KEY=<copilot plus license key>
 
 # publish
