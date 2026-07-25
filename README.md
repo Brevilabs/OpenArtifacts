@@ -1,10 +1,14 @@
 # updoc
 
-Push a local md/html file, get a public HTML page on the internet.
+**Where people and agents get on the same page.**
 
-v0 is the wedge, nothing more: **HTML upload → public webpage**. The upload API is
-private and programmatic — the only caller is Obsidian Copilot's share action. No
-reader accounts, no permissions, no comments.
+Every version and every thread live at one address, so anyone who opens it can
+catch up without being briefed.
+
+That is what updoc is for, not what it does today. Only the first step exists:
+push a local md/html file and get a public HTML page on the internet. The upload
+API is private and programmatic, its only caller is Obsidian Copilot's share
+action, and there are no reader accounts, no permissions, and no comments.
 
 ## What works today
 
