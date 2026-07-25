@@ -216,18 +216,28 @@ export async function reserveNextVersion(
  * this leaves a burned version number and the previous push's metadata — which
  * is the honest answer, because the previous push is still what is being served.
  *
+ * `version` is the one just stored, and the write only lands while it is still
+ * the newest. Two overlapping pushes reserve 2 and 3; if 3 stores first, 2 must
+ * not follow it and leave the row advertising 3 with 2's title. The loser writes
+ * nothing and loses nothing: its bytes are stored and its `/v{n}` url works, it
+ * simply is not what the shared link resolves to.
+ *
  * `title` is null on a push that does not carry one, which keeps the existing
  * title rather than blanking it.
  */
 export async function commitVersionMetadata(
   db: D1Database,
   docId: string,
+  version: number,
   title: string | null,
   atMs: number,
 ): Promise<void> {
   await db
-    .prepare("UPDATE docs SET title = COALESCE(?, title), updated_at = ? WHERE id = ?")
-    .bind(title, atMs, docId)
+    .prepare(
+      `UPDATE docs SET title = COALESCE(?, title), updated_at = ?
+        WHERE id = ? AND latest_version = ?`,
+    )
+    .bind(title, atMs, docId, version)
     .run();
 }
 

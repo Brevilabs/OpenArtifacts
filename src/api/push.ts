@@ -53,8 +53,16 @@ const MAX_TITLE_LENGTH = 512;
 const DEFAULT_TITLE = "Untitled";
 
 interface PushBody {
-  /** Null when the push carried no usable title. */
-  title: string | null;
+  /**
+   * The title the push asked for: a string, `null` when the field was present
+   * but blank, and `undefined` when it was absent.
+   *
+   * Those last two are kept apart on purpose. Absence is the only signal that
+   * means "keep the doc's current title"; a blank string is not a title, and
+   * becomes `Untitled` on create and update alike. Collapsing them would make
+   * `""` mean one thing to POST and another to PUT.
+   */
+  title: string | null | undefined;
   html: string;
 }
 
@@ -93,7 +101,10 @@ async function parsePushBody(request: Request): Promise<ParsedPush> {
     return { ok: false, response: errorResponse("bad_request", "Body must be a JSON object.") };
   }
 
-  const { html, title } = parsed as Record<string, unknown>;
+  const fields = parsed as Record<string, unknown>;
+  const { html } = fields;
+  const titleGiven = "title" in fields;
+  const title = fields.title;
 
   // HTML only, and only from the client (D5). There is no markdown branch to
   // fall back to, so an empty or absent field is a client bug worth surfacing.
@@ -116,7 +127,11 @@ async function parsePushBody(request: Request): Promise<ParsedPush> {
 
   return {
     ok: true,
-    body: { title: typeof title === "string" ? normalizeTitle(title) : null, html },
+    body: {
+      // `null` for a present-but-blank title, `undefined` for an absent one.
+      title: titleGiven ? (typeof title === "string" ? normalizeTitle(title) : null) : undefined,
+      html,
+    },
   };
 }
 
@@ -272,6 +287,8 @@ export async function updateDoc(
 
   // Only now: the title and timestamp in "my docs" describe what the public url
   // is serving, so they move after the bytes do, never before.
-  await commitVersionMetadata(env.DB, docId, parsed.body.title, now);
+  // Absent title keeps the current one; a blank one resets it, same as on create.
+  const title = parsed.body.title === undefined ? null : (parsed.body.title ?? DEFAULT_TITLE);
+  await commitVersionMetadata(env.DB, docId, version, title, now);
   return pushed(env, requestUrl, docId, version, 200);
 }

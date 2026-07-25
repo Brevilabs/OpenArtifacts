@@ -2,6 +2,7 @@ import { createExecutionContext, env, waitOnExecutionContext } from "cloudflare:
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Env } from "../src/config.js";
 import { MAX_DOCS_PER_PUBLISHER, MAX_DOC_BYTES, MAX_PUSHES_PER_DAY } from "../src/config.js";
+import { commitVersionMetadata } from "../src/db.js";
 import type { DocRow, PushQuotaRow, VersionRow } from "../src/db.js";
 import { isDocId } from "../src/ids.js";
 import { MAX_REQUEST_BYTES, utcDay, utf8Length } from "../src/quota.js";
@@ -631,6 +632,36 @@ describe("races the review found", () => {
     expect(racing.status).toBe(404);
     expect(await allObjects()).toHaveLength(0);
     expect((await versionRows(created.docId)).map((row) => row.n)).toEqual([1]);
+  });
+
+  it("ignores a metadata commit from a version that is no longer newest", async () => {
+    const created = await pushedOk(
+      await post(KEY_A, { title: "first", html: page("<p>v1</p>") }),
+      201,
+    );
+    await pushedOk(await put(KEY_A, created.docId, { title: "second", html: page("<p>v2</p>") }), 200);
+
+    // The slow half of two overlapping pushes: version 1 finishing its commit
+    // after version 2 already landed. It must not leave the row advertising
+    // version 2 with version 1's title.
+    await commitVersionMetadata(env.DB, created.docId, 1, "stale", Date.now() + 1000);
+
+    expect(await docRow(created.docId)).toMatchObject({ title: "second", latest_version: 2 });
+  });
+
+  it("resets a blank title on update, and keeps the current one when it is absent", async () => {
+    const created = await pushedOk(
+      await post(KEY_A, { title: "named", html: page("<p>v1</p>") }),
+      201,
+    );
+
+    await pushedOk(await put(KEY_A, created.docId, { html: page("<p>v2</p>") }), 200);
+    expect(await docRow(created.docId)).toMatchObject({ title: "named" });
+
+    // Present but blank is not omission: it is a title of nothing, and means the
+    // same thing here as it does on create.
+    await pushedOk(await put(KEY_A, created.docId, { title: "   ", html: page("<p>v3</p>") }), 200);
+    expect(await docRow(created.docId)).toMatchObject({ title: "Untitled" });
   });
 
   it("leaves listing metadata on the last version that actually landed", async () => {

@@ -114,7 +114,9 @@ markdown branch on the server.
 ### `PUT /api/v1/docs/{docId}` — publish a new version
 
 Same body as `POST`. Omitting `title` keeps the doc's current title rather than
-blanking it.
+blanking it — omission is the only thing that means "leave it alone". A `title`
+that is present but blank is not a title, and becomes `Untitled` here exactly as
+it does on `POST`.
 
 ```json
 {"docId": "9f2k4mvq7t0xbz3ncrhs5wda1p",
