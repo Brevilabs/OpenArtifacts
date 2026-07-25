@@ -62,7 +62,7 @@ These are day-one decisions, not retrofits:
 - **No per-MAU or per-seat priced dependency** anywhere in the serving path.
 - Quotas and per-key rate limits ship with the feature they protect, not later.
 
-## Owed before anything is deployed
+## Owed before there is much data
 
 **D1 is currently the only record of who owns a doc, what it is called, and
 whether it was deleted.** R2 holds `docs/{id}/v{n}.html` and nothing else, so the
@@ -78,10 +78,11 @@ after each push as a snapshot of the doc's D1 state, and left behind as a
 tombstone on delete rather than swept with the version objects. Snapshot it, do
 not read-modify-write it.
 
-**Do this before provisioning anything.** Manifests are only worth having from
-the first doc onward — backfilling them requires the D1 you are insuring
-against. Until it ships, treat D1 as a system of record with a 30-day Time
-Travel window, not as a cache.
+**Not a deploy blocker.** Backfilling manifests needs the D1 they insure
+against, which sounds urgent but isn't while a rebuild would be a handful of
+rows — and D1 has a 30-day Time Travel window underneath. Do it well before
+there is enough data that reconstructing it by hand would hurt. Until then,
+treat D1 as a system of record, not as a cache.
 
 ## Owed when the real serving domain lands
 

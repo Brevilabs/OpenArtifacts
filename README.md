@@ -6,6 +6,60 @@ v0 is the wedge, nothing more: **HTML upload → public webpage**. The upload AP
 private and programmatic — the only caller is Obsidian Copilot's share action. No
 reader accounts, no permissions, no comments.
 
+## What works today
+
+Everything here is built and tested. Nothing is deployed yet, so none of it is
+reachable on the internet until someone runs [Deploying](#deploying).
+
+- **Publish a note.** Send rendered HTML, get back a link. Obsidian Copilot
+  renders the note locally, so callouts, wikilinks and dataview output survive —
+  a server-side markdown pipeline would have flattened them.
+- **Re-publish and the link stays the same.** Every push saves a new version, and
+  the link you already shared shows the latest one. Old versions keep working
+  forever at their own `/v2`-style urls, so a link you sent last week still shows
+  what you sent.
+- **Anyone with the link can read it.** No account, no sign-in, nothing to
+  install. Publishing needs a key; reading needs nothing.
+- **Pages are not indexed.** Every page tells search engines to skip it, so a
+  shared doc doesn't turn up in Google.
+- **Interactive documents work.** Scripts, charts and embedded simulations run,
+  which is the reason to serve HTML rather than sanitized markdown. Pages are
+  blocked from submitting forms or being embedded in other sites, which is what
+  keeps that safe to allow.
+- **Unshare.** Delete a doc and its link starts saying it was withdrawn, and the
+  stored files are destroyed. Copies already sitting in someone's browser cache
+  can't be recalled — no design can do that.
+- **See your docs.** List everything you've published, newest first.
+- **Publishing is gated to Copilot Plus.** Keys are checked against the existing
+  license server, and the answer is cached for an hour so a license-server outage
+  doesn't stop someone who has published before.
+- **Limits that stop abuse, not people.** 10MB per doc, 100 pushes a day, 500
+  docs — generous enough that a real user never notices.
+
+## What's coming
+
+Roughly in order. Nothing below is started.
+
+- **The Obsidian side.** A right-click "share" in Copilot that calls this API and
+  remembers the doc's id in the note. Without it, the only way to publish is
+  `curl` — this is the next thing to build.
+- **A real domain.** Today's `workers.dev` url works but sits outside
+  Cloudflare's cache, so every read hits the server. Real domains also let user
+  content live somewhere separate from the brand, so a bad doc can't damage
+  `updoc.md`'s reputation.
+- **Backups that don't depend on the database.** Right now the database is the
+  only record of who owns a doc and what it's called. The plan is for each doc to
+  carry its own description alongside its files, so the database could be rebuilt
+  from scratch. Not urgent while there is little data; it should land well before
+  there is a lot.
+- **Keeping old versions from piling up.** Every push is kept forever today.
+  Fine for people, less fine once agents push on every edit.
+- **Publishing for free users.** Only Plus license holders can publish, which
+  suits a design-partner launch and contradicts the free-wedge thesis long-term.
+- **Then the actual product**: comments anchored to passages, agents drafting
+  them for a human to approve, and version-to-version diffs. That is the wedge in
+  `docs/positioning.md` — share, then comment, then converge.
+
 ## Where this is going
 
 updoc is the first step of an agent-first docs product: a shared artifact where
@@ -25,9 +79,8 @@ load-bearing and are not retrofittable:
 - **`noindex` + `nofollow` by default** — this deletes most of the spam incentive.
 - **Publisher-gated, reader-open** — publishing needs a key, reading needs nothing.
 - **R2 holds the truth as HTML**; D1 is a small rebuildable pointer index.
-  (Not yet: v0 stores only version objects, so ownership, titles and deletion
-  tombstones live solely in D1. Per-doc manifests are owed before deploy — see
-  `CLAUDE.md`.)
+  (Not yet — v0 stores only version objects, so ownership, titles and deletion
+  tombstones live solely in D1. See "What's coming" above and `CLAUDE.md`.)
 - **Flat-fee dependencies only** in the serving path — no per-MAU pricing, ever.
 
 ## Stack
@@ -345,12 +398,12 @@ Alternatively, copy `.dev.vars.example` to `.dev.vars` and point
 
 # Deploying
 
-> **Not ready to deploy yet.** D1 is currently the only record of doc ownership,
-> titles and deletion tombstones, so the per-doc manifests that make it
-> rebuildable from R2 have to land first — they are only useful if they exist
-> from the first doc onward. See "Owed before anything is deployed" in
-> `CLAUDE.md`. The sequence below is correct and complete; it just should not be
-> run until then.
+> **Nothing has been deployed yet.** The sequence below is complete and creates
+> real resources on a real account. One thing to know going in: D1 is currently
+> the only record of who owns a doc, what it is called, and whether it was
+> deleted, so until per-doc manifests ship, back-ups mean D1's own 30-day Time
+> Travel window rather than "rebuild it from R2". That is fine at low volume and
+> should be fixed well before it isn't — see `CLAUDE.md`.
 
 Run once, in order, from a checkout with `npx wrangler login` already done. This
 creates real Cloudflare resources on whichever account wrangler is logged into.
