@@ -10,7 +10,11 @@ import { NOINDEX_META, SYMPOSIUM_FOOTER } from "../src/render.js";
 import { versionObjectKey } from "../src/storage.js";
 import worker from "../src/index.js";
 
-/** v0 runs both surfaces on one workers.dev subdomain. */
+/**
+ * A host matching neither SERVING_HOST nor API_HOST, which is what makes the
+ * router fall back to path prefixes. Deliberately not a real deployment host:
+ * these tests are about the surfaces, not about which domain carries them.
+ */
 const API_ORIGIN = "https://symposium.workers.dev";
 
 const KEY_A = "cplus_live_a1b2c3d4e5f60718";
@@ -131,7 +135,13 @@ describe("POST /api/v1/docs", () => {
     const article = `<p>${"content ".repeat(26_000)}</p>`;
     expect(article.length).toBeGreaterThan(200 * 1024);
 
-    const body = await pushedOk(await post(KEY_A, { title: "A note", html: page(article) }), 201);
+    // `SERVING_HOST: ""` pins the request-host fallback instead of inheriting
+    // whatever wrangler.jsonc configures. This test is about the stored bytes;
+    // which host the url names is D3's job, below.
+    const body = await pushedOk(
+      await post(KEY_A, { title: "A note", html: page(article) }, { SERVING_HOST: "" }),
+      201,
+    );
 
     expect(isDocId(body.docId)).toBe(true);
     expect(body).toEqual({

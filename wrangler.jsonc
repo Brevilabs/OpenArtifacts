@@ -31,13 +31,23 @@
   // which is that the Worker has no hostname until a custom domain is attached.
   "workers_dev": false,
 
-  // Empty until the custom domains are attached, which is what makes the path
-  // prefixes (/api/v1 vs /d) the only routing until then. Filling these in
-  // splits the API onto the brand domain and doc serving onto the sacrificial
-  // domain without a code change — serving of user content never goes on the
-  // brand domain (see docs/cost-at-scale.md §6).
+  // The surface split. Documents serve from the sacrificial domain, the API
+  // from the brand one, and `resolveSurface` decides by host — so /api/v1 is
+  // unreachable on symposium.site rather than merely unadvertised (see
+  // docs/serving-domain.md, docs/cost-at-scale.md §6).
+  //
+  // Both together or neither. The router falls back to path prefixes while
+  // *either* is empty, which would leave /api/v1 answering on the sacrificial
+  // domain and defeat the split.
+  //
+  // These must be deployed BEFORE the custom domains are attached. Attaching
+  // first binds the real domains to a version that still has them empty, and
+  // for the length of that deploy the fallback serves /d/* on the API host and
+  // /api/v1/* on the serving host — the split inverted, on the first requests
+  // those domains ever take. With workers_dev false this deploy is reachable on
+  // nothing, so going first costs nothing.
   "vars": {
-    "SERVING_HOST": "",
-    "API_HOST": ""
+    "SERVING_HOST": "symposium.site",
+    "API_HOST": "api.symposium.md"
   }
 }
