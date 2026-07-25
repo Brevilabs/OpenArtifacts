@@ -18,9 +18,12 @@ It runs in a V8 isolate — the sandbox that isolates one browser tab from anoth
 — rather than a container or a VM. Isolates start in about a millisecond, so
 Cloudflare keeps them warm and cold starts are not something you design around.
 The trade is that it is **not Node**. You get web-standard APIs (`fetch`,
-`Request`, `Response`, `crypto`, streams, `URL`) and not `fs`, `net`, or `http`,
-so libraries expecting Node's networking will not run. That is why this repo has
-no Express, no `pg`, and no ORM.
+`Request`, `Response`, `crypto`, streams, `URL`); Node's own built-ins are
+available only behind an opt-in `nodejs_compat` flag that this project does not
+set, so libraries reaching for `fs`, `net` or `http` will not run here. That is
+why this repo has no Express, no `pg`, and no ORM. See
+[Gotchas](#gotchas) for how that failure actually presents, because it is not
+where you would expect.
 
 **R2** — object storage. S3's API, with no charge for data leaving it. You `put`
 and `get` blobs by key. updoc keeps every published version as one immutable
@@ -189,8 +192,16 @@ including the license-server workaround a local push needs.
 
 ## Gotchas
 
-- **Most server-side npm packages will not install.** No Node networking APIs.
-- **No filesystem.** R2, D1, or nothing.
+- **A Node-oriented package installs fine and then fails.** `npm install`
+  resolves it happily; the break comes at bundling or runtime when it reaches for
+  an API that is not there. A clean install proves nothing. Cloudflare does offer
+  a `nodejs_compat` compatibility flag that provides a large subset of Node's
+  built-ins — it is opt-in, needs a compatibility date of 2024-09-23 or later,
+  and **we do not set it**, so today none of those built-ins are available here.
+- **Nowhere to put a file.** `nodejs_compat` does provide `node:fs`, but the
+  filesystem behind it is virtual and in-memory: `/tmp` is writable and scoped to
+  a single request, and nothing written there is visible to any other request.
+  Persistent storage is R2 or D1, and there is no third option.
 - **No work after the response is sent.** Use `waitUntil`, a Queue, or a Cron
   Trigger.
 - **The dashboard is not the source of truth.** Change `wrangler.jsonc`.
@@ -225,10 +236,13 @@ Two caveats to hold onto:
   objects, so ownership and deletion state exist nowhere else. Until per-doc
   manifests ship (`CLAUDE.md`), D1 is a real system of record and deserves to be
   treated as one.
-- **This is a concentrated bet on one vendor.** The mitigation is that the
-  valuable half is portable: documents are files behind an S3-compatible API and
-  the index is small and reconstructible, so leaving would mean copying objects
-  and replaying a schema rather than extracting a database nobody else can read.
+- **This is a concentrated bet on one vendor**, and the usual reassurance does
+  not hold yet either. Documents are already portable — files behind an
+  S3-compatible API. The index is not: copy R2 and replay the schema today and
+  ownership is gone entirely, and every deleted document's url degrades from 410
+  to 404, because the tombstone exists only in D1. Manifests are what would make
+  "leaving means copying objects" true; until they ship it is the plan, not the
+  situation.
 
 For a document-sharing service specifically, this is a strong fit, and more so
 the larger it gets. It would be the wrong stack for something transactional,
