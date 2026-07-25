@@ -89,41 +89,25 @@ export function d1PublisherStore(db: D1Database): PublisherStore {
 }
 
 /**
- * Create the `docs` row for a first push, already carrying version 1.
+ * Create the `docs` row for a first push, already carrying version 1 — but only
+ * while this publisher is under `maxDocs` live docs. Returns false at the
+ * ceiling.
  *
  * A freshly minted id is private to this request, so nothing can race for its
  * first version and the insert *is* the reservation — the `UPDATE ... RETURNING`
  * dance below only earns its keep once a doc is reachable by id.
  *
+ * The capacity count is a predicate on that same insert rather than a read
+ * before it, for the reason `reserveNextVersion` exists: a publisher at the
+ * ceiling firing concurrent creates would otherwise have every one of them read
+ * the same count and every one of them insert. A quota documented as a hard
+ * number has to behave like one under the concurrency an agent produces.
+ * `docs_by_publisher_live` covers the subquery, so it is an index scan of only
+ * this publisher's live rows.
+ *
  * `publisher` is a foreign key onto `publishers`, so this fails unless auth has
  * already written that row. That is the intended coupling: no doc without a
  * publisher we validated.
- */
-export async function insertDoc(
-  db: D1Database,
-  doc: Omit<DocRow, "deleted_at" | "latest_version">,
-): Promise<void> {
-  await db
-    .prepare(
-      `INSERT INTO docs (id, publisher, title, latest_version, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-    )
-    .bind(doc.id, doc.publisher, doc.title, FIRST_VERSION, doc.created_at, doc.updated_at)
-    .run();
-}
-
-/**
- * The same insert, but only while this publisher is under `maxDocs` live docs.
- * Returns false when they are at the ceiling.
- *
- * The count is a predicate on the insert rather than a read before it, for the
- * reason `reserveNextVersion` exists: a publisher at 499 docs firing concurrent
- * creates would otherwise have every one of them read 499 and every one of them
- * insert. A quota documented as a hard number has to behave like one under the
- * concurrency an agent produces.
- *
- * `docs_by_publisher_live` covers the subquery, so the count is an index scan of
- * only this publisher's live rows.
  */
 export async function insertDocWithinQuota(
   db: D1Database,
