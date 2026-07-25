@@ -7,7 +7,11 @@ import type { DocRow } from "../src/db.js";
 import { docObjectPrefix, versionObjectKey } from "../src/storage.js";
 import worker from "../src/index.js";
 
-/** v0 runs both surfaces on one workers.dev subdomain. */
+/**
+ * A host matching neither SERVING_HOST nor API_HOST, which is what makes the
+ * router fall back to path prefixes. Deliberately not a real deployment host:
+ * these tests are about the surfaces, not about which domain carries them.
+ */
 const API_ORIGIN = "https://symposium.workers.dev";
 
 const KEY_A = "cplus_live_a1b2c3d4e5f60718";
