@@ -480,6 +480,47 @@ describe("HEAD and conditional requests", () => {
     expect(second.headers.get("x-robots-tag")).toBe("noindex, nofollow");
   });
 
+  it("answers HEAD the same way GET does when the validator matches", async () => {
+    const docId = await twoVersionDoc();
+
+    const etag = (await send("HEAD", `/d/${docId}`)).headers.get("etag");
+    expect(etag).not.toBeNull();
+
+    const revalidated = await send("HEAD", `/d/${docId}`, {
+      headers: { "if-none-match": etag! },
+    });
+
+    // A validator cannot mean one thing to GET and another to HEAD: a cache
+    // revalidating with HEAD would otherwise be told the doc changed when it
+    // did not, and re-fetch every time.
+    expect(revalidated.status).toBe(304);
+    expect(revalidated.headers.get("etag")).toBe(etag);
+    expect(revalidated.headers.get("x-robots-tag")).toBe("noindex, nofollow");
+
+    const viaGet = await get(`/d/${docId}`, { headers: { "if-none-match": etag! } });
+    expect(viaGet.status).toBe(304);
+  });
+
+  it("serves HEAD in full when the client holds another version's etag", async () => {
+    const docId = await twoVersionDoc();
+
+    const stale = (await send("HEAD", `/d/${docId}/v1`)).headers.get("etag");
+    const response = await send("HEAD", `/d/${docId}`, {
+      headers: { "if-none-match": stale! },
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("text/html; charset=utf-8");
+  });
+
+  it("treats If-None-Match: * on HEAD as a match", async () => {
+    const docId = await twoVersionDoc();
+
+    const response = await send("HEAD", `/d/${docId}`, { headers: { "if-none-match": "*" } });
+
+    expect(response.status).toBe(304);
+  });
+
   it("serves the body when the client holds a different version's etag", async () => {
     const docId = await twoVersionDoc();
 

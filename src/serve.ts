@@ -238,6 +238,40 @@ function notModifiedConditions(from: Headers): Headers {
 }
 
 /**
+ * The same question `onlyIf` answers, asked directly — because `R2.head()` has
+ * no `onlyIf`, and fetching a body on a HEAD just to have R2 evaluate it would
+ * pay for bytes the method promises not to send.
+ *
+ * Precedence follows RFC 9110: `If-None-Match` wins outright when present, and
+ * `If-Modified-Since` is consulted only in its absence.
+ */
+function matchesConditions(conditions: Headers, object: R2Object): boolean {
+  const ifNoneMatch = conditions.get("if-none-match");
+  if (ifNoneMatch !== null) {
+    if (ifNoneMatch.trim() === "*") return true;
+    // Weak comparison: `W/"x"` and `"x"` are the same entity for this purpose,
+    // which is the only comparison If-None-Match is allowed to use.
+    const wanted = ifNoneMatch
+      .split(",")
+      .map((tag) => tag.trim().replace(/^W\//, ""))
+      .filter((tag) => tag.length > 0);
+    return wanted.includes(object.httpEtag.replace(/^W\//, ""));
+  }
+
+  const ifModifiedSince = conditions.get("if-modified-since");
+  if (ifModifiedSince !== null) {
+    const since = Date.parse(ifModifiedSince);
+    // An unparseable date is not a condition, so it cannot make this a 304.
+    // Second precision, because that is all an HTTP-date carries.
+    if (!Number.isNaN(since)) {
+      return Math.floor(object.uploaded.getTime() / 1000) <= Math.floor(since / 1000);
+    }
+  }
+
+  return false;
+}
+
+/**
  * Stream one version's stored bytes back, unmodified.
  *
  * `version` is the one that resolved to bytes; `route.pinned` is only whether
@@ -261,6 +295,8 @@ async function serveObject(
     route.pinned === null ? LATEST_CACHE_CONTROL : PINNED_CACHE_CONTROL,
   );
 
+  const conditions = notModifiedConditions(request.headers);
+
   // A `versions` row without an object should not exist — the row is written
   // after the object it names — but R2 is the system of record, so its answer
   // wins over D1's rather than becoming a 500.
@@ -268,15 +304,22 @@ async function serveObject(
     const object = await env.DOCS.head(key);
     if (object === null) return noDocAt(pathname);
 
-    headers.set("content-type", STORED_CONTENT_TYPE);
     headers.set("etag", object.httpEtag);
+    // A validator has to mean the same thing whichever method asks. HEAD is
+    // defined as GET without the body, so a cache revalidating with HEAD must
+    // get the 304 that GET would give it, not a 200 that says the doc changed.
+    if (matchesConditions(conditions, object)) {
+      return new Response(null, { status: 304, headers });
+    }
+
+    headers.set("content-type", STORED_CONTENT_TYPE);
     // Set only here. On a GET the runtime frames the body itself, and a length
     // we computed would be a second opinion that content-encoding can falsify.
     headers.set("content-length", String(object.size));
     return new Response(null, { status: 200, headers });
   }
 
-  const object = await env.DOCS.get(key, { onlyIf: notModifiedConditions(request.headers) });
+  const object = await env.DOCS.get(key, { onlyIf: conditions });
   if (object === null) return noDocAt(pathname);
 
   headers.set("etag", object.httpEtag);

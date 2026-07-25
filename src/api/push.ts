@@ -21,11 +21,19 @@
 import type { Publisher } from "../auth.js";
 import { MAX_DOCS_PER_PUBLISHER, MAX_DOC_BYTES, MAX_PUSHES_PER_DAY } from "../config.js";
 import type { Env } from "../config.js";
-import { FIRST_VERSION, insertDoc, insertVersion, ownsLiveDoc, reserveNextVersion } from "../db.js";
+import {
+  deleteDocRow,
+  deleteVersionRow,
+  docIsDeleted,
+  FIRST_VERSION,
+  insertDocWithinQuota,
+  insertVersion,
+  ownsLiveDoc,
+  reserveNextVersion,
+} from "../db.js";
 import { docNotFound, errorResponse } from "../errors.js";
 import { isDocId, newDocId } from "../ids.js";
 import {
-  liveDocCount,
   MAX_REQUEST_BYTES,
   readBodyWithin,
   reserveDailyPush,
@@ -123,6 +131,9 @@ function dailyQuotaExceeded(): Response {
  * The version number is already reserved by the time this runs, so the key it
  * writes cannot collide with another push and the object it writes is never
  * read back or rewritten.
+ *
+ * Returns false when a concurrent delete won the race and this version was
+ * rolled back; see below.
  */
 async function storeVersion(
   env: Env,
@@ -130,10 +141,11 @@ async function storeVersion(
   version: number,
   html: string,
   atMs: number,
-): Promise<void> {
+): Promise<boolean> {
   const bytes = await bakeServedHtml(html);
+  const key = versionObjectKey(docId, version);
 
-  await env.DOCS.put(versionObjectKey(docId, version), bytes, {
+  await env.DOCS.put(key, bytes, {
     httpMetadata: { contentType: STORED_CONTENT_TYPE },
   });
 
@@ -143,6 +155,22 @@ async function storeVersion(
     size: bytes.byteLength,
     created_at: atMs,
   });
+
+  // A delete that lands between the version reservation and this write has
+  // already finished its prefix scan, so it never saw these bytes: unshare
+  // would report success while leaving content in the bucket. There is no lock
+  // to take — v0 has no per-doc coordinator on purpose (D7) — so the write
+  // compensates for itself. Losing the race means undoing it, not preventing it.
+  //
+  // The version row goes with the object it named. The doc row is untouched,
+  // which is what keeps the deleted url answering 410 rather than 404.
+  if (await docIsDeleted(env.DB, docId)) {
+    await env.DOCS.delete(key);
+    await deleteVersionRow(env.DB, docId, version);
+    return false;
+  }
+
+  return true;
 }
 
 function pushed(env: Env, requestUrl: URL, docId: string, version: number, status: number) {
@@ -163,26 +191,34 @@ export async function createDoc(
 
   const now = Date.now();
 
-  // Doc count before the daily counter, so a publisher who is out of room does
+  // Capacity before the daily counter, so a publisher who is out of room does
   // not also lose a push from today's allowance for a doc that was never made.
-  if ((await liveDocCount(env.DB, publisher.id)) >= MAX_DOCS_PER_PUBLISHER) {
+  // The check lives inside the insert: counting first and inserting after would
+  // let concurrent creates all read the same count and all proceed, so the
+  // documented ceiling would hold only for callers who push one at a time.
+  const docId = newDocId();
+  const inserted = await insertDocWithinQuota(
+    env.DB,
+    {
+      id: docId,
+      publisher: publisher.id,
+      title: parsed.body.title ?? DEFAULT_TITLE,
+      created_at: now,
+      updated_at: now,
+    },
+    MAX_DOCS_PER_PUBLISHER,
+  );
+  if (!inserted) {
     return errorResponse(
       "quota_exceeded",
       `You are holding ${MAX_DOCS_PER_PUBLISHER} docs. Delete one to publish another.`,
     );
   }
+
   if (!(await reserveDailyPush(env.DB, publisher.id, utcDay(now)))) {
+    await deleteDocRow(env.DB, docId);
     return dailyQuotaExceeded();
   }
-
-  const docId = newDocId();
-  await insertDoc(env.DB, {
-    id: docId,
-    publisher: publisher.id,
-    title: parsed.body.title ?? DEFAULT_TITLE,
-    created_at: now,
-    updated_at: now,
-  });
 
   await storeVersion(env, docId, FIRST_VERSION, parsed.body.html, now);
   return pushed(env, requestUrl, docId, FIRST_VERSION, 201);
@@ -217,6 +253,11 @@ export async function updateDoc(
   const version = await reserveNextVersion(env.DB, docId, publisher.id, parsed.body.title, now);
   if (version === null) return docNotFound(docId);
 
-  await storeVersion(env, docId, version, parsed.body.html, now);
+  // The doc can still be deleted while this version is being written. Answering
+  // 200 would hand back a url that serves 410, so a lost race reads as what it
+  // is from the caller's side: the doc is gone.
+  if (!(await storeVersion(env, docId, version, parsed.body.html, now))) {
+    return docNotFound(docId);
+  }
   return pushed(env, requestUrl, docId, version, 200);
 }

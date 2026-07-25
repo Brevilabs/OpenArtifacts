@@ -97,16 +97,7 @@ export async function reserveDailyPush(
   return claimed !== null;
 }
 
-/**
- * Live docs the publisher holds. Soft-deleted docs do not count — deleting is
- * how a publisher at the ceiling makes room — and `docs_by_publisher_live` is
- * the partial index that makes this a cheap count rather than a table scan.
- */
-export async function liveDocCount(db: D1Database, publisher: string): Promise<number> {
-  const row = await db
-    .prepare("SELECT COUNT(*) AS n FROM docs WHERE publisher = ? AND deleted_at IS NULL")
-    .bind(publisher)
-    .first<{ n: number }>();
-
-  return row?.n ?? 0;
-}
+// The doc ceiling is enforced by `insertDocWithinQuota` in db.ts, where the
+// count is a predicate on the insert. A standalone count belongs nowhere near
+// it: reading the number and acting on it separately is the race that fix
+// removed, and a spare helper is an invitation to reintroduce it.

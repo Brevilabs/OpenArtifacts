@@ -565,3 +565,113 @@ describe("the push routes themselves", () => {
     expect(await docRow(created.docId)).toMatchObject({ latest_version: 1 });
   });
 });
+
+describe("races the review found", () => {
+  /**
+   * A delete that lands between the version reservation and the R2 write has
+   * already scanned the prefix, so it cannot see the object the push is about
+   * to add. Unshare has to mean the bytes are gone, so the push cleans up after
+   * itself rather than leaving content behind a doc that reports 410.
+   */
+  it("removes the version it just wrote when a delete beat it to the doc", async () => {
+    const created = await pushedOk(await post(KEY_A, { title: "t", html: page("<p>v1</p>") }), 201);
+
+    // The race needs the delete to land *between* the version reservation and
+    // the R2 write, which is the one ordering the handler cannot see coming. A
+    // DB that soft-deletes the doc at the moment the version row is inserted
+    // puts it exactly there, deterministically.
+    let raced = false;
+    const racingDb = new Proxy(env.DB, {
+      get(target, prop, receiver) {
+        if (prop !== "prepare") return Reflect.get(target, prop, receiver);
+        return (sql: string) => {
+          const statement = target.prepare(sql);
+          if (!sql.includes("INSERT INTO versions")) return statement;
+          return new Proxy(statement, {
+            get(stmtTarget, stmtProp, stmtReceiver) {
+              if (stmtProp !== "bind") return Reflect.get(stmtTarget, stmtProp, stmtReceiver);
+              return (...args: unknown[]) => {
+                const bound = stmtTarget.bind(...args);
+                return new Proxy(bound, {
+                  get(boundTarget, boundProp, boundReceiver) {
+                    if (boundProp !== "run") {
+                      return Reflect.get(boundTarget, boundProp, boundReceiver);
+                    }
+                    return async () => {
+                      const result = await boundTarget.run();
+                      if (!raced) {
+                        raced = true;
+                        // The concurrent DELETE: mark it gone, then scan the
+                        // prefix — which cannot yet see the object just written.
+                        await env.DB.prepare("UPDATE docs SET deleted_at = ? WHERE id = ?")
+                          .bind(Date.now(), created.docId)
+                          .run();
+                        for (const object of (await env.DOCS.list()).objects) {
+                          await env.DOCS.delete(object.key);
+                        }
+                      }
+                      return result;
+                    };
+                  },
+                });
+              };
+            },
+          });
+        };
+      },
+    }) as D1Database;
+
+    const racing = await put(KEY_A, created.docId, { html: page("<p>v2</p>") }, { DB: racingDb });
+
+    expect(raced).toBe(true);
+    // The push loses: it reports the doc gone rather than handing back a url
+    // that serves 410, and the bucket is empty because it undid its own write.
+    // Version 1 keeps its row — the stand-in delete above only soft-deleted the
+    // doc and cleared the bucket, so a row for 2 could only come from the push.
+    expect(racing.status).toBe(404);
+    expect(await allObjects()).toHaveLength(0);
+    expect((await versionRows(created.docId)).map((row) => row.n)).toEqual([1]);
+  });
+
+  /**
+   * The ceiling is documented as a hard number, so it has to hold when a
+   * publisher at the edge pushes concurrently rather than one at a time.
+   */
+  it("holds the doc ceiling when creates arrive together", async () => {
+    await seedDocs(publisherA, MAX_DOCS_PER_PUBLISHER - 1);
+
+    const responses = await Promise.all(
+      Array.from({ length: 8 }, () => post(KEY_A, { title: "t", html: page("<p>x</p>") })),
+    );
+
+    const created = responses.filter((r) => r.status === 201);
+    const refused = responses.filter((r) => r.status === 429);
+
+    expect(created).toHaveLength(1);
+    expect(refused).toHaveLength(7);
+
+    const { n } = (await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM docs WHERE publisher = ? AND deleted_at IS NULL",
+    )
+      .bind(publisherA)
+      .first<{ n: number }>()) ?? { n: -1 };
+    expect(n).toBe(MAX_DOCS_PER_PUBLISHER);
+  });
+
+  it("does not spend a doc slot on a push refused by the daily quota", async () => {
+    await env.DB.prepare(
+      "INSERT INTO push_quota (publisher, day, pushes) VALUES (?, ?, ?)",
+    )
+      .bind(publisherA, utcDay(Date.now()), MAX_PUSHES_PER_DAY)
+      .run();
+
+    const response = await post(KEY_A, { title: "t", html: page("<p>x</p>") });
+
+    expect(response.status).toBe(429);
+    const { n } = (await env.DB.prepare("SELECT COUNT(*) AS n FROM docs WHERE publisher = ?")
+      .bind(publisherA)
+      .first<{ n: number }>()) ?? { n: -1 };
+    expect(n).toBe(0);
+    expect(await allObjects()).toHaveLength(0);
+  });
+});

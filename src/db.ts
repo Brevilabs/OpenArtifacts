@@ -113,6 +113,79 @@ export async function insertDoc(
 }
 
 /**
+ * The same insert, but only while this publisher is under `maxDocs` live docs.
+ * Returns false when they are at the ceiling.
+ *
+ * The count is a predicate on the insert rather than a read before it, for the
+ * reason `reserveNextVersion` exists: a publisher at 499 docs firing concurrent
+ * creates would otherwise have every one of them read 499 and every one of them
+ * insert. A quota documented as a hard number has to behave like one under the
+ * concurrency an agent produces.
+ *
+ * `docs_by_publisher_live` covers the subquery, so the count is an index scan of
+ * only this publisher's live rows.
+ */
+export async function insertDocWithinQuota(
+  db: D1Database,
+  doc: Omit<DocRow, "deleted_at" | "latest_version">,
+  maxDocs: number,
+): Promise<boolean> {
+  const result = await db
+    .prepare(
+      `INSERT INTO docs (id, publisher, title, latest_version, created_at, updated_at)
+       SELECT ?, ?, ?, ?, ?, ?
+        WHERE (SELECT COUNT(*) FROM docs WHERE publisher = ? AND deleted_at IS NULL) < ?`,
+    )
+    .bind(
+      doc.id,
+      doc.publisher,
+      doc.title,
+      FIRST_VERSION,
+      doc.created_at,
+      doc.updated_at,
+      doc.publisher,
+      maxDocs,
+    )
+    .run();
+
+  return (result.meta.changes ?? 0) > 0;
+}
+
+/**
+ * Hard-delete a `docs` row. Only for rolling back a create that failed after the
+ * row existed: the id was minted this request and nothing else can have seen it,
+ * so there are no versions, no objects, and no url to leave behind.
+ *
+ * Unsharing a *published* doc is a soft delete (`softDeleteDoc`) — that row has
+ * to survive so its url keeps answering 410 rather than pretending it never was.
+ */
+export async function deleteDocRow(db: D1Database, docId: string): Promise<void> {
+  await db.prepare("DELETE FROM docs WHERE id = ?").bind(docId).run();
+}
+
+/** Whether a doc has been soft-deleted since a push started writing to it. */
+export async function docIsDeleted(db: D1Database, docId: string): Promise<boolean> {
+  const row = await db
+    .prepare("SELECT 1 FROM docs WHERE id = ? AND deleted_at IS NOT NULL")
+    .bind(docId)
+    .first();
+
+  return row !== null;
+}
+
+/**
+ * Drop one version row, for a version whose object has just been removed again
+ * after losing a race with delete. The row only ever named those bytes.
+ */
+export async function deleteVersionRow(
+  db: D1Database,
+  docId: string,
+  version: number,
+): Promise<void> {
+  await db.prepare("DELETE FROM versions WHERE doc_id = ? AND n = ?").bind(docId, version).run();
+}
+
+/**
  * Mint the next version number for a doc, or null if this publisher has no such
  * doc to push to.
  *
