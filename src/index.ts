@@ -1,6 +1,11 @@
 import { deleteDoc, listDocs } from "./api/manage.js";
 import { createDoc, updateDoc } from "./api/push.js";
-import { authenticateRequest, publisherErrorResponse } from "./auth.js";
+import {
+  authenticateRequest,
+  INELIGIBLE_PLAN,
+  mayPublish,
+  publisherErrorResponse,
+} from "./auth.js";
 import type { Env } from "./config.js";
 import { errorResponse } from "./errors.js";
 import { handleServing, servingError, SERVING_PREFIX } from "./serve.js";
@@ -74,6 +79,23 @@ async function handleApi(request: Request, url: URL, env: Env): Promise<Response
     .slice(API_PREFIX.length)
     .split("/")
     .filter(Boolean);
+
+  // Entitlement is per operation. Authentication above says *who* this is;
+  // only publishing asks whether their plan may. Applying it to the whole
+  // surface instead would refuse `GET` and `DELETE`, stranding a downgraded
+  // publisher's already-public documents with no way to withdraw them — a
+  // worse outcome than the gate exists to prevent.
+  //
+  // Scoped to the two routes that actually publish, not to the method: a
+  // `POST` at a path no route claims stays `404`, as the contract says.
+  const publishing =
+    collection === "docs" &&
+    extra.length === 0 &&
+    ((docId === undefined && request.method === "POST") ||
+      (docId !== undefined && request.method === "PUT"));
+  if (publishing && !mayPublish(auth.publisher.plan)) {
+    return publisherErrorResponse(INELIGIBLE_PLAN);
+  }
 
   // Every dispatch is `return await`, never a bare `return` of the handler's
   // promise, for the reason spelled out on the catch below.

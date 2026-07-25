@@ -36,11 +36,19 @@ The key is validated against the Brevilabs license server and cached for an hour
 Only the key's SHA-256 is ever stored; the raw key is never persisted or logged.
 A publisher *is* that hash, so the same key always sees the same docs.
 
-**A valid key is not sufficient.** Publishing requires an entitled plan, and in
-phase 1 that is **the lifetime tier only** (`BELIEVER` on the license server,
-sold as Supporter): a current Plus key authenticates and is still refused. The refusal is `401 unauthorized` like every other auth failure, so no
-client change is needed — only the human-readable `message` distinguishes it.
-Widening the entitled set later is a server-side change with no client release.
+**A valid key is not sufficient to publish.** Publishing requires an entitled
+plan, and in phase 1 that is **the lifetime tier only** (`BELIEVER` on the
+license server, sold as Supporter): a current Plus key authenticates and is
+still refused. The refusal is `401 unauthorized` like every other auth failure,
+so no client change is needed — only the human-readable `message` distinguishes
+it. Widening the entitled set later is a server-side change with no client
+release.
+
+The entitlement is **per operation, not per key**, and only `POST /api/v1/docs`
+and `PUT /api/v1/docs/{docId}` are gated on it. A publisher whose plan no longer
+qualifies keeps `GET /api/v1/docs` and `DELETE /api/v1/docs/{docId}`, so they can
+always see what they have published and take it down. Losing the ability to
+publish must never mean losing the ability to unshare.
 
 Reading a doc requires nothing. Serving responses never set a cookie.
 
@@ -200,7 +208,7 @@ Match on `code`. `message` is human-facing and free to change.
 | `code` | HTTP | When |
 | --- | --- | --- |
 | `bad_request` | 400 | Malformed JSON, `html` missing, empty or not a string, non-string `title`, junk `limit` or `cursor`. |
-| `unauthorized` | 401 | No `Authorization: Bearer` header, the license server rejected the key, or the key's plan is not entitled to publish. Carries `WWW-Authenticate: Bearer`. |
+| `unauthorized` | 401 | No `Authorization: Bearer` header, the license server rejected the key, or — on `POST` and `PUT` only — the key's plan is not entitled to publish. Carries `WWW-Authenticate: Bearer`. |
 | `not_found` | 404 | No such doc, not yours, already deleted, or no route. |
 | `gone` | 410 | The doc was deleted by its author. |
 | `too_large` | 413 | `html` over 10MB. |

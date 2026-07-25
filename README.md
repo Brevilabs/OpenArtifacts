@@ -40,7 +40,9 @@ reachable on the internet until someone runs [Deploying](docs/deploying.md).
   audience for the first public-hosting surface we run. A current Plus key
   authenticates and is still refused, and is told why. Keys are checked against
   the existing license server and the answer is cached for an hour, so a
-  license-server outage doesn't stop someone who has published before.
+  license-server outage doesn't stop someone who has published before. Only
+  publishing is gated — anyone whose plan lapses keeps listing and unshare, so
+  no one is ever locked out of taking down what they already made public.
 - **Limits that stop abuse, not people.** 10MB per doc, 100 pushes a day, 500
   docs — generous enough that a real user never notices.
 

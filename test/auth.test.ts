@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   authenticateRequest,
+  INELIGIBLE_PLAN,
+  mayPublish,
   parseBearerToken,
   publisherErrorResponse,
   resolvePublisher,
@@ -289,10 +291,10 @@ describe("resolvePublisher — a key the license server rejects", () => {
   });
 });
 
-describe("resolvePublisher — a plan that may not publish", () => {
+describe("a plan that may not publish", () => {
   const validPlus = answers({ isValid: true, plan: "plus", backendAccess: true });
 
-  it("refuses a Plus key the license server vouches for", async () => {
+  it("still authenticates — entitlement is not authentication", async () => {
     const store = memoryStore();
 
     const result = await resolvePublisher(KEY, env(), {
@@ -301,125 +303,107 @@ describe("resolvePublisher — a plan that may not publish", () => {
       fetch: licenseServer(validPlus).fetch,
     });
 
-    expect(result).toMatchObject({ ok: false, reason: "ineligible_plan" });
-    // No row: a `publishers` row is what an entitled publisher *is*. A refusal
-    // for a key that never had one invents nothing. (A key that *does* have one
-    // is a different case — see the downgrade test below.)
-    expect(store.rows.size).toBe(0);
+    // The key is real, so it resolves to a publisher and gets a row like any
+    // other. What it cannot do is publish, and that is the router's call.
+    expect(result).toEqual({ ok: true, publisher: { id: KEY_HASH, plan: "plus" } });
+    expect(store.rows.get(KEY_HASH)?.plan).toBe("plus");
   });
 
-  it("says why, rather than calling a paying subscriber's key invalid", async () => {
+  it("carries a plan it cannot read as one that may not publish", async () => {
     const result = await resolvePublisher(KEY, env(), {
       store: memoryStore(),
       now,
-      fetch: licenseServer(validPlus).fetch,
-    });
-
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.message).toContain("lifetime");
-    expect(result.message).not.toContain("not valid");
-    // `BELIEVER` is the license server's DB enum and the plan is *sold* as
-    // Supporter, so neither word means anything to the person reading this.
-    expect(result.message).not.toMatch(/believer/i);
-  });
-
-  it("answers 401 with the frozen code, so only the message is new", async () => {
-    const result = await resolvePublisher(KEY, env(), {
-      store: memoryStore(),
-      now,
-      fetch: licenseServer(validPlus).fetch,
-    });
-
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    const response = publisherErrorResponse(result);
-
-    expect(response.status).toBe(401);
-    expect(response.headers.get("www-authenticate")).toBe("Bearer");
-    expect(await response.json()).toEqual({
-      error: { code: "unauthorized", message: result.message },
-    });
-  });
-
-  it("refuses a response whose plan it cannot read", async () => {
-    const result = await resolvePublisher(KEY, env(), {
-      store: memoryStore(),
-      now,
-      // `isValid` is readable, `plan` is not. Unreadable must not mean entitled.
+      // `isValid` is readable, `plan` is not.
       fetch: licenseServer(answers({ isValid: true, backendAccess: true })).fetch,
     });
 
-    expect(result).toMatchObject({ ok: false, reason: "ineligible_plan" });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(mayPublish(result.publisher.plan)).toBe(false);
   });
 
-  it("does not let a fresh cached Plus row short-circuit the check", async () => {
-    const store = memoryStore({ key_hash: KEY_HASH, plan: "plus", validated_at: NOW });
-    const license = licenseServer(validPlus);
-
-    const result = await resolvePublisher(KEY, env(), { store, now, fetch: license.fetch });
-
-    // The whole point: a row written before this gate existed, or before a
-    // downgrade, must not buy an hour of access off the cache.
-    expect(result).toMatchObject({ ok: false, reason: "ineligible_plan" });
-    expect(license.calls).toHaveLength(1);
-  });
-
-  it("promotes a Plus publisher the moment the server says Believer", async () => {
-    const store = memoryStore({ key_hash: KEY_HASH, plan: "plus", validated_at: NOW });
-
-    const result = await resolvePublisher(KEY, env(), {
-      store,
-      now,
-      fetch: licenseServer(validBeliever).fetch,
-    });
-
-    // Falling through to a live check rather than short-circuiting is what makes
-    // an upgrade land on the next push instead of up to an hour later.
-    expect(result).toEqual({ ok: true, publisher: { id: KEY_HASH, plan: "believer" } });
-    expect(store.rows.get(KEY_HASH)?.plan).toBe("believer");
-  });
-
-  it("writes the downgrade back, so an outage cannot reopen publishing", async () => {
-    // Stale, so the downgrade is actually seen: a *fresh* Believer row short-
-    // circuits by design, and that window is bounded by the TTL. This one is not.
+  it("writes a downgrade back through the ordinary valid path", async () => {
     const store = memoryStore(validatedAt(LICENSE_CACHE_TTL_MS));
-    const license = licenseServer(validPlus);
 
-    const refused = await resolvePublisher(KEY, env(), { store, now, fetch: license.fetch });
+    await resolvePublisher(KEY, env(), { store, now, fetch: licenseServer(validPlus).fetch });
 
-    expect(refused).toMatchObject({ ok: false, reason: "ineligible_plan" });
+    // No special case needed: a downgraded publisher authenticates, so the row
+    // is refreshed like anyone else's and the stale `believer` is gone.
     expect(store.rows.get(KEY_HASH)).toEqual({
       key_hash: KEY_HASH,
       plan: "plus",
       validated_at: NOW,
     });
-
-    // The reason the write matters: without it the row stays `believer` for
-    // good, and the outage fallback re-admits a publisher the server has since
-    // confirmed ineligible — permanently, not for one TTL.
-    const duringOutage = await resolvePublisher(KEY, env(), {
-      store,
-      now,
-      fetch: licenseServer(() => new Response("boom", { status: 500 })).fetch,
-    });
-
-    expect(duringOutage).toMatchObject({ ok: false, reason: "license_unavailable" });
   });
 
-  it("does not wave a cached Plus row through when the server is down", async () => {
-    const store = memoryStore({ key_hash: KEY_HASH, plan: "plus", validated_at: NOW - 1 });
+  it("refuses with the frozen code, and says why without naming the DB enum", async () => {
+    const response = publisherErrorResponse(INELIGIBLE_PLAN);
 
-    const result = await resolvePublisher(KEY, env(), {
-      store,
-      now,
-      fetch: licenseServer(() => new Response("boom", { status: 500 })).fetch,
+    expect(response.status).toBe(401);
+    expect(response.headers.get("www-authenticate")).toBe("Bearer");
+    expect(await response.json()).toEqual({
+      error: { code: "unauthorized", message: INELIGIBLE_PLAN.message },
     });
+    expect(INELIGIBLE_PLAN.message).toContain("lifetime");
+    expect(INELIGIBLE_PLAN.message).not.toContain("not valid");
+    // `BELIEVER` is the license server's DB enum and the plan is *sold* as
+    // Supporter, so neither word means anything to the person reading this.
+    expect(INELIGIBLE_PLAN.message).not.toMatch(/believer/i);
+  });
+});
 
-    // `license_unavailable`, not `ineligible_plan`: last-known-ineligible is not
-    // confirmed-ineligible, and an outage must not tell someone who may have
-    // just upgraded that their plan is wrong. It fails closed either way.
-    expect(result).toMatchObject({ ok: false, reason: "license_unavailable" });
+describe("the gate is on publishing, not on the publisher", () => {
+  const ctx = {} as ExecutionContext;
+
+  /** A warm row, so auth resolves off the cache and never touches the network. */
+  const seeded = (plan: string) => {
+    const db = fakeD1();
+    db.rows.set(KEY_HASH, { key_hash: KEY_HASH, plan, validated_at: Date.now() });
+    return db;
+  };
+
+  const call = (method: string, path: string, db: D1Database) =>
+    worker.fetch(
+      new Request(`https://symposium.workers.dev/api/v1${path}`, {
+        method,
+        headers: { authorization: `Bearer ${KEY}`, "content-type": "application/json" },
+        body: method === "POST" || method === "PUT" ? JSON.stringify({ html: "<p>x</p>" }) : null,
+      }),
+      env({ DB: db, SERVING_HOST: "", API_HOST: "" }),
+      ctx,
+    );
+
+  it("401s POST and PUT for a plan that may not publish", async () => {
+    for (const [method, path] of [
+      ["POST", "/docs"],
+      ["PUT", "/docs/9f2k4mvq7t0xbz3ncrhs5wda1p"],
+    ] as const) {
+      const res = await call(method, path, seeded("plus"));
+
+      expect(res.status).toBe(401);
+      await expect(res.json()).resolves.toEqual({
+        error: { code: "unauthorized", message: INELIGIBLE_PLAN.message },
+      });
+    }
+  });
+
+  // Unshare is the half of this that matters most, and it is covered in
+  // test/manage.test.ts against real D1 and R2: a doc published while entitled,
+  // deleted after the downgrade, its objects gone and its url answering 410.
+  // Asserting it here would mean teaching `fakeD1` what a soft delete returns,
+  // which is a claim about D1 rather than about the gate.
+
+  it("leaves the doc list working for a plan that may not publish", async () => {
+    const res = await call("GET", "/docs", seeded("plus"));
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({ docs: [] });
+  });
+
+  it("lets an entitled plan past the gate", async () => {
+    const res = await call("GET", "/docs", seeded("believer"));
+
+    expect(res.status).toBe(200);
   });
 });
 
