@@ -9,16 +9,23 @@ import { MAX_DOC_BYTES, MAX_PUSHES_PER_DAY } from "./config.js";
 
 /**
  * Byte ceiling on the whole request, as opposed to `MAX_DOC_BYTES`, which is
- * the ceiling on the `html` field inside it.
+ * the ceiling on the `html` field inside it and the only one the contract
+ * documents. This one exists so an oversized body is rejected while it is still
+ * arriving rather than after it has been buffered.
  *
- * The two differ by the JSON envelope: the field name, the title, and whatever
- * escaping the document's own bytes need. A megabyte of slack covers escaping
- * for any real document — reaching it would take a tenth of the file to be
- * quotes, backslashes or control characters — and it is what lets an oversized
- * body be rejected while it is still arriving rather than after it has been
- * buffered.
+ * It has to clear the worst case the JSON envelope can add, not the typical
+ * one. Every `"` and `\` in the document costs two bytes instead of one, and a
+ * control character costs six as `\uXXXX`; attribute-dense HTML passes 10%
+ * quote density without being remarkable. A ceiling that only covered typical
+ * escaping would turn into an undocumented second limit that refuses documents
+ * under the published one.
+ *
+ * Doubling is affordable: the worst case holds the raw bytes, the decoded
+ * string and the parsed field at once, and content escape-dense enough to reach
+ * this bound is ASCII by definition, which V8 stores one byte per character.
+ * That is roughly 60MB against the isolate's 128MB.
  */
-export const MAX_REQUEST_BYTES = MAX_DOC_BYTES + 1024 * 1024;
+export const MAX_REQUEST_BYTES = 2 * MAX_DOC_BYTES + 1024 * 1024;
 
 /**
  * Read the body, giving up the moment it passes `limit`.
@@ -101,3 +108,29 @@ export async function reserveDailyPush(
 // count is a predicate on the insert. A standalone count belongs nowhere near
 // it: reading the number and acting on it separately is the race that fix
 // removed, and a spare helper is an invitation to reintroduce it.
+
+/**
+ * Give back a push claimed for work that then did not happen.
+ *
+ * The claim has to come before the work — that is what stops two concurrent
+ * pushes both seeing 99 — so a push that loses a race to a concurrent delete
+ * has already been counted by the time it finds out. The contract is that a
+ * rejected push costs nothing, so the counter is repaid rather than the
+ * reservation moved later.
+ *
+ * `pushes > 0` keeps a double refund, or one crossing a UTC day boundary into
+ * a row it never incremented, from writing a negative count.
+ */
+export async function refundDailyPush(
+  db: D1Database,
+  publisher: string,
+  day: string,
+): Promise<void> {
+  await db
+    .prepare(
+      `UPDATE push_quota SET pushes = pushes - 1
+        WHERE publisher = ? AND day = ? AND pushes > 0`,
+    )
+    .bind(publisher, day)
+    .run();
+}

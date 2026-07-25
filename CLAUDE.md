@@ -61,6 +61,22 @@ These are day-one decisions, not retrofits:
 - **No per-MAU or per-seat priced dependency** anywhere in the serving path.
 - Quotas and per-key rate limits ship with the feature they protect, not later.
 
+## Owed when the real serving domain lands
+
+v0 runs on a `workers.dev` subdomain, which sits outside the CDN cache. Two
+things become true the moment user content moves to a real serving domain, and
+both are easy to miss because nothing fails loudly without them:
+
+- **Delete must purge the CDN cache.** Pinned `/v{n}` urls are served
+  `immutable` for a year. With no shared cache in front of the worker that is
+  harmless, but on a cached domain an unshared doc would keep being served from
+  the edge. Wire a purge into `deleteDoc`; the private-cache copies readers
+  already hold are unrecallable by any design, and the README says so.
+- **Set `SERVING_HOST` and `API_HOST`.** The router resolves surface by host
+  first and only falls back to path prefixes while both are empty. Leaving them
+  unset on a two-domain deployment means `/api/v1` stays reachable on the
+  sacrificial domain, which is the whole point of splitting them.
+
 ## Git hygiene
 
 Stage explicit paths (`git add src/foo.ts`), never `git add -A` / `git add .`.

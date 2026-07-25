@@ -36,6 +36,7 @@ import { isDocId, newDocId } from "../ids.js";
 import {
   MAX_REQUEST_BYTES,
   readBodyWithin,
+  refundDailyPush,
   reserveDailyPush,
   utcDay,
   utf8Length,
@@ -246,17 +247,25 @@ export async function updateDoc(
   }
 
   const now = Date.now();
-  if (!(await reserveDailyPush(env.DB, publisher.id, utcDay(now)))) {
+  const day = utcDay(now);
+  if (!(await reserveDailyPush(env.DB, publisher.id, day))) {
     return dailyQuotaExceeded();
   }
 
+  // Past this point the push is paid for, and a delete can still land at either
+  // of the two steps below. Both give the push back: a rejected push costs the
+  // caller nothing, which is the same promise the ownership check above makes.
   const version = await reserveNextVersion(env.DB, docId, publisher.id, parsed.body.title, now);
-  if (version === null) return docNotFound(docId);
+  if (version === null) {
+    await refundDailyPush(env.DB, publisher.id, day);
+    return docNotFound(docId);
+  }
 
   // The doc can still be deleted while this version is being written. Answering
   // 200 would hand back a url that serves 410, so a lost race reads as what it
   // is from the caller's side: the doc is gone.
   if (!(await storeVersion(env, docId, version, parsed.body.html, now))) {
+    await refundDailyPush(env.DB, publisher.id, day);
     return docNotFound(docId);
   }
   return pushed(env, requestUrl, docId, version, 200);

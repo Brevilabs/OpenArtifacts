@@ -4,7 +4,7 @@ import type { Env } from "../src/config.js";
 import { MAX_DOCS_PER_PUBLISHER, MAX_DOC_BYTES, MAX_PUSHES_PER_DAY } from "../src/config.js";
 import type { DocRow, PushQuotaRow, VersionRow } from "../src/db.js";
 import { isDocId } from "../src/ids.js";
-import { utcDay } from "../src/quota.js";
+import { MAX_REQUEST_BYTES, utcDay, utf8Length } from "../src/quota.js";
 import { NOINDEX_META, UPDOC_FOOTER } from "../src/render.js";
 import { versionObjectKey } from "../src/storage.js";
 import worker from "../src/index.js";
@@ -631,6 +631,49 @@ describe("races the review found", () => {
     expect(racing.status).toBe(404);
     expect(await allObjects()).toHaveLength(0);
     expect((await versionRows(created.docId)).map((row) => row.n)).toEqual([1]);
+  });
+
+  it("gives back the push when the version reservation loses to a delete", async () => {
+    const created = await pushedOk(await post(KEY_A, { title: "t", html: page("<p>v1</p>") }), 201);
+    const spentAfterCreate = (await quotaRows())[0]?.pushes;
+
+    // The delete lands after ownsLiveDoc has already passed, so the push is paid
+    // for by the time reserveNextVersion refuses it.
+    await env.DB.prepare("UPDATE docs SET deleted_at = ? WHERE id = ?")
+      .bind(Date.now(), created.docId)
+      .run();
+
+    const response = await put(KEY_A, created.docId, { html: page("<p>v2</p>") });
+
+    expect(response.status).toBe(404);
+    // A rejected push costs nothing — the same promise the ownership check makes.
+    expect((await quotaRows())[0]?.pushes).toBe(spentAfterCreate);
+  });
+
+  it("budgets the request cap for worst-case JSON escaping, not typical", async () => {
+    // The bug this pins: a cap of doc-ceiling + 1MiB is a second, stricter and
+    // undocumented limit, because every `"` and `\\` doubles inside a JSON
+    // string. A document at the published ceiling made entirely of quotes
+    // serializes to twice its size, and must still be accepted.
+    expect(MAX_REQUEST_BYTES).toBeGreaterThanOrEqual(2 * MAX_DOC_BYTES);
+
+    // Asserted on the constants rather than by pushing a 10MB body: the failure
+    // is a threshold relationship, and allocating tens of megabytes per run to
+    // rediscover it would buy nothing.
+  });
+
+  it("stores quote-dense HTML unaltered", async () => {
+    const attributes = Array.from(
+      { length: 20_000 },
+      (_, i) => `<span class="a${i}" data-k="v" title="q">x</span>`,
+    ).join("");
+    const html = page(attributes);
+
+    // Escaping inflates the envelope well past the document's own size.
+    expect(utf8Length(JSON.stringify({ html }))).toBeGreaterThan(utf8Length(html) * 1.1);
+
+    const created = await pushedOk(await post(KEY_A, { title: "quoted", html }), 201);
+    expect(await stored(created.docId, 1)).toContain('data-k="v"');
   });
 
   /**

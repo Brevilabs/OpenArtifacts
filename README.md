@@ -137,6 +137,13 @@ The doc's stored bytes are destroyed and its url starts answering `410 gone`
 deliberate: a reader holding the link learns it was withdrawn instead of
 concluding they mistyped it.
 
+What delete cannot do is recall a copy someone already has. Pinned `/v{n}` urls
+are served `immutable` with a one-year lifetime, because a version's bytes never
+change and that is what lets a widely-read doc cost one origin read; a cache
+holding one will go on serving it without asking us again. Unshare stops new
+readers, not readers who already fetched — the same way it cannot un-download a
+file. Treat it as withdrawing the link, not as revoking the content.
+
 `404 not_found` if the doc does not exist, belongs to another publisher, **or was
 already deleted**. A retry after a timeout therefore sees `404`, not `204`; what
 is idempotent is the outcome, which is the part a client cares about. Treat
