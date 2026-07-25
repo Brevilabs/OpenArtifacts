@@ -147,13 +147,15 @@ Note the per-user cost *falls* then flattens: fixed costs amortize, and variable
 
 ## 5. The real risk: abuse, not AWS bills
 
-Free + public + no permission system + one-click publish = **the exact recipe for phishing kits, scam pages, and SEO spam**. This is what actually kills or maims free hosting products, and it fails catastrophically, not gradually: if Google Safe Browsing flags the serving domain, every doc shows a red interstitial in every browser and the product is dead that afternoon. Notion, Google Docs, and telegra.ph have all been burned here at scale.
+Public + no permission system + one-click publish = **the exact recipe for phishing kits, scam pages, and SEO spam**. This is what actually kills or maims hosting products, and it fails catastrophically, not gradually: if Google Safe Browsing flags the serving domain, every doc shows a red interstitial in every browser and the product is dead that afternoon. Notion, Google Docs, and telegra.ph have all been burned here at scale.
+
+The paid publishing gate (§8) removes the *free* term from that equation, which genuinely helps: a card on file makes each bad actor traceable and gives us an account to terminate, so expect a lower incident rate than telegra.ph's. It changes nothing below. $2.99 is not a deterrent to anyone running a phishing campaign, and the domain is flagged by the first bad document rather than the hundredth.
 
 Day-one mitigations, all cheap in dollars:
 
 1. **Serve user content from a separate domain** than the product/brand domain (the `notion.site` / `googleusercontent.com` pattern). Reputation damage lands on the sacrificial domain, not on `symposium.md` itself. This is the single highest-leverage decision and it costs $10/yr.
 2. **`noindex` + `nofollow` by default.** Shared docs are for invited readers, not search engines. This deletes the SEO-spam incentive entirely, which is most of the spam volume. (Publishers can opt into indexing later, as a feature, maybe a paid one.)
-3. **Publisher-gated, reader-open.** Publishing requires a Copilot install and an account; reading requires nothing. The abuse funnel is throttled at the account layer: new-account rate limits, velocity checks on pushes.
+3. **Publisher-gated, reader-open.** Publishing requires a paid subscription (§8) or Copilot Plus; reading requires nothing. The abuse funnel is throttled at the account layer: new-account rate limits, velocity checks on pushes.
 4. **Automated scanning on push**: outbound links against Google Safe Browsing (free API); if/when image upload ships, CSAM hash-matching via Cloudflare's free tool (also a legal obligation, not a nice-to-have).
 5. **Report button + fast takedown path + registered DMCA agent** ($6). At small scale the takedown queue is minutes per week of founder time; budget real tooling for it around 100k users.
 
@@ -247,11 +249,30 @@ forever and gated access control at $5-8/mo. That is no longer the plan — see
   workflows from the positioning doc. This is where Notion-class ARPU lives if the
   thesis holds.
 
-Break-even arithmetic at 100k readers: ~$500/mo worst-case infra needs ~170
-publishers at $2.99. Note that this is a much easier number than it looks,
-because publishers are a small fraction of readers in any sharing product — 170
-paying publishers can carry a reader population two or three orders of magnitude
-larger.
+### Break-even, on net receipts
+
+**Payment processing is a first-class line item at this price, not a rounding
+error.** At Stripe's standard 2.9% + $0.30, a $2.99 monthly charge nets $2.60.
+The percentage is trivial; the fixed $0.30 is the whole story, and it makes the
+effective take rate **12.9%**. Fixed per-transaction fees punish cheap
+subscriptions specifically, which is a property of the price point and not
+something to be optimized away later.
+
+| | Monthly at $2.99 | Annual at $35.88 |
+|---|---|---|
+| Charges per year | 12 | 1 |
+| Processing fees per year | $4.64 | $1.34 |
+| Net per year | $31.24 | $34.54 |
+| Effective take rate | 12.9% | 3.7% |
+
+So the break-even at 100k readers is **~193 paying publishers**, from
+$500 / $2.60, not the ~170 that gross billings suggest. Annual billing takes it
+back to ~174 and is the obvious mitigation; it should be the default offer if the
+price stays this low.
+
+That number is easier to hit than it looks, because publishers are a small
+fraction of readers in any sharing product. Two hundred paying publishers can
+carry a reader population two or three orders of magnitude larger.
 
 ### What this costs us, stated plainly
 
@@ -277,7 +298,7 @@ strategy this doc was originally written to cost.
 ## 9. Failure modes and honest caveats
 
 - **A viral doc is not a risk** (CDN absorbs it), but **a hot *private* doc post-phase-2 is mildly interesting**: auth-checked serving can't be dumb-cached. Signed URLs with short TTLs keep the cache hit rate; solvable, just don't forget it.
-- **Version storage compounding**: the "40 versions/user" assumption goes wrong if agents push on every iteration loop (they will). Dedupe + retention policy on old versions of free docs (e.g. keep last N + weekly snapshots) caps it. Decide the policy before agents make it a bill.
+- **Version storage compounding**: the "40 versions/user" assumption goes wrong if agents push on every iteration loop (they will). Dedupe + a retention policy on old versions (e.g. keep last N + weekly snapshots) caps it. Decide the policy before agents make it a bill. Note that every publisher is now a paying publisher (§8), so retention is a quota question applied uniformly, not a free-tier restriction.
 - **Agent traffic post-phase-4** is the only line that could surprise: a misbehaving agent in a loop is a one-key DoS. Rate limits per key are the whole answer; ship them with the API.
 - **The estimates assume Cloudflare's economics persist.** They have for a decade and Bunny prices the fallback at <2x. Even the fallback numbers don't change any conclusion.
 - **What this doc does not de-risk:** demand. Cost feasibility at 1M users is only interesting if wedge step 1 gets its first thousand. That risk lives in [[Agent-First Docs - Product Positioning#Risks and falsifiers]], not here.
@@ -286,11 +307,11 @@ strategy this doc was originally written to cost.
 
 ## 10. Bottom line
 
-- **1k users: ~$25/mo.** Run it off pocket change indefinitely. Correct posture: treat it as free marketing for Copilot until it proves pull.
-- **100k users: ~$150-500/mo.** Still solo-operable; the constraint is the abuse queue and support, not servers. Turn on the first paid tier (access control) here and the product is cash-positive at trivial conversion.
+- **1k users: ~$25/mo.** Run it off pocket change indefinitely. Publishing is paid from launch (§8), but at this scale the subscription is not what keeps the lights on — founder time is the cost, and the price exists to gate abuse and prove willingness to pay, not to fund servers.
+- **100k users: ~$150-500/mo.** Still solo-operable; the constraint is the abuse queue and support, not servers. ~193 paying publishers covers the worst case on net receipts, which is where the product turns cash-positive. Access control is the next paid feature above the publishing line rather than the first paid tier.
 - **1M users: ~$1.5-5.5k/mo infra, but a $60-120k/mo team reality.** Infra never becomes the story; headcount and conversion do, which is the *normal* SaaS story with unusually good COGS.
 
-The structural gifts: static immutable artifacts (perfect caching), no realtime editor (no sync tax), BYO agents (no inference COGS), and the HTML-native all-Cloudflare stack (content is portable files, the database is a rebuildable pointer index). The structural debt: free public hosting attracts abuse, so the sacrificial serving domain, noindex defaults, publisher gating, and scanning must be day-one decisions, not retrofits.
+The structural gifts: static immutable artifacts (perfect caching), no realtime editor (no sync tax), BYO agents (no inference COGS), and the HTML-native all-Cloudflare stack (content is portable files, the database is a rebuildable pointer index). The structural debt: public hosting of user-uploaded HTML attracts abuse, so the sacrificial serving domain ([serving-domain.md](serving-domain.md)), noindex defaults, publisher gating, and scanning must be day-one decisions, not retrofits. The paid publishing gate lowers the incident rate but not the blast radius of any one incident, so it substitutes for none of them.
 
 **Feasible? Yes, unusually so. This can start as a $50/mo side surface of Copilot and grow to 1M users without a single scary infrastructure invoice. The scarce resources to guard are founder attention and domain reputation, not dollars.**
 
