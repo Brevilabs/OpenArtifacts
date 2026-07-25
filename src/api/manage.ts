@@ -35,6 +35,17 @@ const MAX_LIMIT = 100;
 /** R2 caps both a list page and a bulk delete at 1000 keys. */
 const OBJECT_BATCH = 1000;
 
+export interface DeleteDeps {
+  /**
+   * Keys per R2 listing page. Injected by tests so the loop below can be walked
+   * across pages with three objects rather than a thousand — what it has to
+   * prove is that delete keeps asking until the prefix is empty, and a thousand
+   * writes proved that no better while timing out on a slow machine. Production
+   * never sets it: R2's cap is the real number.
+   */
+  objectBatch?: number;
+}
+
 /**
  * Destroy every object under the doc's prefix.
  *
@@ -44,12 +55,12 @@ const OBJECT_BATCH = 1000;
  * can hold more than a page of versions — 100 pushes a day compounds — so this
  * pages rather than assuming one listing covers it.
  */
-async function deleteDocObjects(env: Env, docId: string): Promise<void> {
+async function deleteDocObjects(env: Env, docId: string, objectBatch: number): Promise<void> {
   const prefix = docObjectPrefix(docId);
   let cursor: string | undefined;
 
   do {
-    const listing = await env.DOCS.list({ prefix, limit: OBJECT_BATCH, cursor });
+    const listing = await env.DOCS.list({ prefix, limit: objectBatch, cursor });
     if (listing.objects.length > 0) {
       await env.DOCS.delete(listing.objects.map((object) => object.key));
     }
@@ -76,6 +87,7 @@ export async function deleteDoc(
   env: Env,
   publisher: Publisher,
   docId: string,
+  deps: DeleteDeps = {},
 ): Promise<Response> {
   // An id that cannot exist is answered without touching D1.
   if (!isDocId(docId)) return docNotFound(docId);
@@ -85,7 +97,7 @@ export async function deleteDoc(
   }
 
   try {
-    await deleteDocObjects(env, docId);
+    await deleteDocObjects(env, docId, deps.objectBatch ?? OBJECT_BATCH);
   } catch (error) {
     // Past this point the doc is withdrawn from every reader whatever R2 does,
     // so answering anything but 204 would be a lie in the direction that costs
