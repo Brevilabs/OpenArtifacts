@@ -41,6 +41,8 @@ export interface VersionRow {
   n: number;
   /** Byte length of the stored R2 object. */
   size: number;
+  /** The title this push asked for, or null when it asked for none. */
+  title: string | null;
   created_at: number;
 }
 
@@ -216,37 +218,51 @@ export async function reserveNextVersion(
  * this leaves a burned version number and the previous push's metadata — which
  * is the honest answer, because the previous push is still what is being served.
  *
- * `version` is the one just stored, and the write only lands while it is still
- * the newest *stored* version. Two overlapping pushes reserve 2 and 3; if 3
- * stores first, 2 must not follow it and leave the row advertising 3 with 2's
- * title. The loser writes nothing and loses nothing: its bytes are stored and
- * its `/v{n}` url works, it simply is not what the shared link resolves to.
+ * Two things move, on two different rules, because they answer two different
+ * questions.
  *
- * The comparison is against `MAX(versions.n)` rather than `docs.latest_version`,
- * because the counter can be ahead of what exists: a push that reserves a number
- * and then fails burns it. Testing against the counter would let that dead
- * reservation veto the commit of a version that really did land, leaving the
- * shared link serving content the listing does not describe. This row is already
- * inserted by the time this runs, so the check is "nothing newer stored".
+ * **Title** is whatever the highest-numbered stored version asked for. Deriving
+ * it from the version rows rather than writing it here makes it independent of
+ * the order commits happen to run in: overlapping pushes can reserve 2 and 3,
+ * store in either order, and an explicit title on 2 is not lost because 3 —
+ * which asked for no title — committed first. Versions that omitted a title are
+ * skipped rather than treated as blanking it, which is what makes omission mean
+ * "leave it alone" no matter how many pushes are in flight.
  *
- * `title` is null on a push that does not carry one, which keeps the existing
- * title rather than blanking it.
+ * **`updated_at`** moves only while this version is the newest stored one, since
+ * it describes what the shared link resolves to. The comparison is against
+ * `MAX(versions.n)` and not `docs.latest_version`, because the counter can be
+ * ahead of what exists: a push that reserves a number and then fails burns it,
+ * and a dead reservation must not veto a version that really landed.
+ *
+ * Batched, so a reader cannot catch the pair mid-update.
  */
 export async function commitVersionMetadata(
   db: D1Database,
   docId: string,
   version: number,
-  title: string | null,
   atMs: number,
 ): Promise<void> {
-  await db
-    .prepare(
-      `UPDATE docs SET title = COALESCE(?, title), updated_at = ?
-        WHERE id = ?
-          AND ? >= (SELECT COALESCE(MAX(n), 0) FROM versions WHERE doc_id = ?)`,
-    )
-    .bind(title, atMs, docId, version, docId)
-    .run();
+  await db.batch([
+    db
+      .prepare(
+        `UPDATE docs
+            SET title = COALESCE(
+              (SELECT v.title FROM versions v
+                WHERE v.doc_id = ? AND v.title IS NOT NULL
+                ORDER BY v.n DESC LIMIT 1),
+              title)
+          WHERE id = ?`,
+      )
+      .bind(docId, docId),
+    db
+      .prepare(
+        `UPDATE docs SET updated_at = ?
+          WHERE id = ?
+            AND ? >= (SELECT COALESCE(MAX(n), 0) FROM versions WHERE doc_id = ?)`,
+      )
+      .bind(atMs, docId, version, docId),
+  ]);
 }
 
 /**
@@ -259,8 +275,8 @@ export async function commitVersionMetadata(
  */
 export async function insertVersion(db: D1Database, version: VersionRow): Promise<void> {
   await db
-    .prepare("INSERT INTO versions (doc_id, n, size, created_at) VALUES (?, ?, ?, ?)")
-    .bind(version.doc_id, version.n, version.size, version.created_at)
+    .prepare("INSERT INTO versions (doc_id, n, size, title, created_at) VALUES (?, ?, ?, ?, ?)")
+    .bind(version.doc_id, version.n, version.size, version.title, version.created_at)
     .run();
 }
 

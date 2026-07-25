@@ -634,42 +634,79 @@ describe("races the review found", () => {
     expect((await versionRows(created.docId)).map((row) => row.n)).toEqual([1]);
   });
 
-  it("ignores a metadata commit from a version that is no longer newest", async () => {
+  /**
+   * Overlapping pushes to one doc reserve their version numbers in order but can
+   * store, and therefore commit, in any order. These three cover what that must
+   * never do to the doc's metadata. They seed the `versions` rows directly and
+   * call the commit in the adverse order, because the whole point is the
+   * interleaving a client cannot be made to produce on demand.
+   */
+  const seedVersion = (docId: string, n: number, title: string | null) =>
+    env.DB.prepare(
+      "INSERT INTO versions (doc_id, n, size, title, created_at) VALUES (?, ?, 1, ?, ?)",
+    )
+      .bind(docId, n, title, Date.now())
+      .run();
+
+  it("keeps the newest version's title when an older commit lands after it", async () => {
     const created = await pushedOk(
       await post(KEY_A, { title: "first", html: page("<p>v1</p>") }),
       201,
     );
-    await pushedOk(await put(KEY_A, created.docId, { title: "second", html: page("<p>v2</p>") }), 200);
+    await pushedOk(
+      await put(KEY_A, created.docId, { title: "second", html: page("<p>v2</p>") }),
+      200,
+    );
+    const settled = await docRow(created.docId);
 
-    // The slow half of two overlapping pushes: version 1 finishing its commit
-    // after version 2 already landed. It must not leave the row advertising
-    // version 2 with version 1's title.
-    await commitVersionMetadata(env.DB, created.docId, 1, "stale", Date.now() + 1000);
+    // Version 1's commit arriving late must not drag the doc back to its title.
+    await commitVersionMetadata(env.DB, created.docId, 1, Date.now() + 1000);
 
-    expect(await docRow(created.docId)).toMatchObject({ title: "second", latest_version: 2 });
+    const after = await docRow(created.docId);
+    expect(after).toMatchObject({ title: "second", latest_version: 2 });
+    // Nor move the timestamp, which describes what the shared link serves.
+    expect(after!.updated_at).toBe(settled!.updated_at);
   });
 
-  it("commits metadata for a version that landed even when a later one burned a number", async () => {
+  it("moves the timestamp for a version that landed even when a later one burned a number", async () => {
     const created = await pushedOk(
       await post(KEY_A, { title: "first", html: page("<p>v1</p>") }),
       201,
     );
-    // Version 2 lands: its object and row both exist.
-    await pushedOk(await put(KEY_A, created.docId, { title: "second", html: page("<p>v2</p>") }), 200);
+    await pushedOk(
+      await put(KEY_A, created.docId, { title: "second", html: page("<p>v2</p>") }),
+      200,
+    );
 
-    // Version 3 reserves a number and then dies before storing anything, which
-    // is all `reserveNextVersion` does on its own. The counter is now ahead of
-    // what exists.
+    // Version 3 reserves a number and dies before storing anything, which is all
+    // `reserveNextVersion` does on its own: the counter is now ahead of reality.
     await env.DB.prepare("UPDATE docs SET latest_version = 3 WHERE id = ?")
       .bind(created.docId)
       .run();
 
-    // Version 2's commit arrives. Comparing against the counter would reject it
-    // on account of a version that never stored anything, leaving the listing
-    // describing v1 while the shared link serves v2.
-    await commitVersionMetadata(env.DB, created.docId, 2, "landed", Date.now() + 1000);
+    const landed = Date.now() + 1000;
+    await commitVersionMetadata(env.DB, created.docId, 2, landed);
 
-    expect(await docRow(created.docId)).toMatchObject({ title: "landed", latest_version: 3 });
+    // Testing against the counter would let the dead reservation veto this.
+    expect(await docRow(created.docId)).toMatchObject({ updated_at: landed, title: "second" });
+  });
+
+  it("does not lose an explicit title to a later push that omitted one", async () => {
+    const created = await pushedOk(
+      await post(KEY_A, { title: "first", html: page("<p>v1</p>") }),
+      201,
+    );
+
+    // Two pushes in flight: 2 renames the doc, 3 only replaces the content.
+    await seedVersion(created.docId, 2, "renamed");
+    await seedVersion(created.docId, 3, null);
+
+    // 3 stores first and commits; its omitted title must not resurrect v1's.
+    await commitVersionMetadata(env.DB, created.docId, 3, Date.now() + 1000);
+    // 2 commits second, and its rename has to survive being late.
+    await commitVersionMetadata(env.DB, created.docId, 2, Date.now() + 2000);
+
+    expect(await docRow(created.docId)).toMatchObject({ title: "renamed" });
   });
 
   it("resets a blank title on update, and keeps the current one when it is absent", async () => {

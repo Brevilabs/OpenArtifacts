@@ -157,6 +157,7 @@ async function storeVersion(
   docId: string,
   version: number,
   html: string,
+  title: string | null,
   atMs: number,
 ): Promise<boolean> {
   const bytes = await bakeServedHtml(html);
@@ -170,6 +171,9 @@ async function storeVersion(
     doc_id: docId,
     n: version,
     size: bytes.byteLength,
+    // What this push asked the doc to be called. Null means it asked for
+    // nothing, which is how the doc's title survives a push that omits one.
+    title,
     created_at: atMs,
   });
 
@@ -207,6 +211,9 @@ export async function createDoc(
   if (!parsed.ok) return parsed.response;
 
   const now = Date.now();
+  // A create always names the doc something: absent and blank alike land on the
+  // default rather than leaving it nameless in the list.
+  const title = parsed.body.title ?? DEFAULT_TITLE;
 
   // Capacity before the daily counter, so a publisher who is out of room does
   // not also lose a push from today's allowance for a doc that was never made.
@@ -219,7 +226,7 @@ export async function createDoc(
     {
       id: docId,
       publisher: publisher.id,
-      title: parsed.body.title ?? DEFAULT_TITLE,
+      title,
       created_at: now,
       updated_at: now,
     },
@@ -237,7 +244,7 @@ export async function createDoc(
     return dailyQuotaExceeded();
   }
 
-  await storeVersion(env, docId, FIRST_VERSION, parsed.body.html, now);
+  await storeVersion(env, docId, FIRST_VERSION, parsed.body.html, title, now);
   return pushed(env, requestUrl, docId, FIRST_VERSION, 201);
 }
 
@@ -277,18 +284,21 @@ export async function updateDoc(
     return docNotFound(docId);
   }
 
+  // Absent title keeps the doc's current one; a blank one resets it, same as on
+  // create. The version row records which of those this push asked for, so the
+  // doc's title resolves by version number rather than by commit order.
+  const title = parsed.body.title === undefined ? null : (parsed.body.title ?? DEFAULT_TITLE);
+
   // The doc can still be deleted while this version is being written. Answering
   // 200 would hand back a url that serves 410, so a lost race reads as what it
   // is from the caller's side: the doc is gone.
-  if (!(await storeVersion(env, docId, version, parsed.body.html, now))) {
+  if (!(await storeVersion(env, docId, version, parsed.body.html, title, now))) {
     await refundDailyPush(env.DB, publisher.id, day);
     return docNotFound(docId);
   }
 
   // Only now: the title and timestamp in "my docs" describe what the public url
   // is serving, so they move after the bytes do, never before.
-  // Absent title keeps the current one; a blank one resets it, same as on create.
-  const title = parsed.body.title === undefined ? null : (parsed.body.title ?? DEFAULT_TITLE);
-  await commitVersionMetadata(env.DB, docId, version, title, now);
+  await commitVersionMetadata(env.DB, docId, version, now);
   return pushed(env, requestUrl, docId, version, 200);
 }
