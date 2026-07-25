@@ -13,12 +13,18 @@ import { MAX_DOC_BYTES, MAX_PUSHES_PER_DAY } from "./config.js";
  * documents. This one exists so an oversized body is rejected while it is still
  * arriving rather than after it has been buffered.
  *
- * It has to clear the worst case the JSON envelope can add, not the typical
- * one. Every `"` and `\` in the document costs two bytes instead of one, and a
- * control character costs six as `\uXXXX`; attribute-dense HTML passes 10%
- * quote density without being remarkable. A ceiling that only covered typical
- * escaping would turn into an undocumented second limit that refuses documents
+ * It has to clear the worst case *a real document* produces, which is 2x: every
+ * `"` and `\` costs two bytes instead of one, and attribute-dense HTML passes
+ * 10% quote density without being remarkable. A ceiling budgeted for typical
+ * escaping instead would be an undocumented second limit that refuses documents
  * under the published one.
+ *
+ * Not 6x. A control character escapes to `\uXXXX`, but control characters are
+ * not valid in HTML text, so reaching that bound takes ~1.7M of them — an
+ * adversarial payload, not a note. It gets a clean 413, and budgeting for it
+ * would mean holding ~60MB of raw bytes plus the decoded string plus the parsed
+ * field against a 128MB isolate: a real OOM risk on ordinary large docs, traded
+ * for a document that does not exist.
  *
  * Doubling is affordable: the worst case holds the raw bytes, the decoded
  * string and the parsed field at once, and content escape-dense enough to reach

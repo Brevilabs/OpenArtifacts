@@ -185,29 +185,50 @@ export async function deleteVersionRow(
  * answer all three with 404, because distinguishing them would confirm that
  * another publisher's doc exists.
  *
- * `title` is null on a push that does not carry one, which keeps the existing
- * title rather than blanking it.
+ * It mints the number and nothing else. Title and `updated_at` describe the
+ * content a reader gets, so they are committed by `commitVersionMetadata` only
+ * once the bytes are actually stored — writing them here would let a failed
+ * push leave "my docs" describing a version the public url is not serving.
  */
 export async function reserveNextVersion(
   db: D1Database,
   docId: string,
   publisher: string,
-  title: string | null,
-  atMs: number,
 ): Promise<number | null> {
   const reserved = await db
     .prepare(
       `UPDATE docs
-          SET latest_version = latest_version + 1,
-              title = COALESCE(?, title),
-              updated_at = ?
+          SET latest_version = latest_version + 1
         WHERE id = ? AND publisher = ? AND deleted_at IS NULL
         RETURNING latest_version`,
     )
-    .bind(title, atMs, docId, publisher)
+    .bind(docId, publisher)
     .first<{ latest_version: number }>();
 
   return reserved?.latest_version ?? null;
+}
+
+/**
+ * Point a doc's listing metadata at the version that just landed.
+ *
+ * Runs after the bytes are stored, so the pair a reader sees in "my docs" always
+ * describes content the public url will actually serve. A push that dies before
+ * this leaves a burned version number and the previous push's metadata — which
+ * is the honest answer, because the previous push is still what is being served.
+ *
+ * `title` is null on a push that does not carry one, which keeps the existing
+ * title rather than blanking it.
+ */
+export async function commitVersionMetadata(
+  db: D1Database,
+  docId: string,
+  title: string | null,
+  atMs: number,
+): Promise<void> {
+  await db
+    .prepare("UPDATE docs SET title = COALESCE(?, title), updated_at = ? WHERE id = ?")
+    .bind(title, atMs, docId)
+    .run();
 }
 
 /**

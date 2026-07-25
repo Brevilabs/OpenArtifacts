@@ -633,6 +633,38 @@ describe("races the review found", () => {
     expect((await versionRows(created.docId)).map((row) => row.n)).toEqual([1]);
   });
 
+  it("leaves listing metadata on the last version that actually landed", async () => {
+    const created = await pushedOk(
+      await post(KEY_A, { title: "first", html: page("<p>v1</p>") }),
+      201,
+    );
+    const before = await docRow(created.docId);
+
+    // An R2 that refuses the write: the version is already reserved, so this is
+    // the window where title and updated_at must not have moved yet.
+    const failingDocs = new Proxy(env.DOCS, {
+      get(target, prop, receiver) {
+        if (prop !== "put") return Reflect.get(target, prop, receiver);
+        return () => Promise.reject(new Error("R2 is down"));
+      },
+    }) as R2Bucket;
+
+    const response = await put(
+      KEY_A,
+      created.docId,
+      { title: "second", html: page("<p>v2</p>") },
+      { DOCS: failingDocs },
+    );
+    expect(response.status).toBe(500);
+
+    const after = await docRow(created.docId);
+    // The version number is burned — that trade is deliberate. The metadata is
+    // not: it still describes v1, which is what the public url is still serving.
+    expect(after).toMatchObject({ title: "first", updated_at: before!.updated_at });
+    expect(after!.latest_version).toBe(2);
+    expect(await stored(created.docId, 2)).toBeNull();
+  });
+
   it("gives back the push when the version reservation loses to a delete", async () => {
     const created = await pushedOk(await post(KEY_A, { title: "t", html: page("<p>v1</p>") }), 201);
     const spentAfterCreate = (await quotaRows())[0]?.pushes;
@@ -656,6 +688,9 @@ describe("races the review found", () => {
     // string. A document at the published ceiling made entirely of quotes
     // serializes to twice its size, and must still be accepted.
     expect(MAX_REQUEST_BYTES).toBeGreaterThanOrEqual(2 * MAX_DOC_BYTES);
+    // Deliberately not 6x for `\uXXXX` control-character escapes: those are not
+    // valid in HTML text, and budgeting for them would hold ~60MB against a
+    // 128MB isolate to accept a document nobody writes.
 
     // Asserted on the constants rather than by pushing a 10MB body: the failure
     // is a threshold relationship, and allocating tens of megabytes per run to

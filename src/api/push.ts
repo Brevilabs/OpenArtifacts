@@ -24,6 +24,7 @@ import type { Env } from "../config.js";
 import {
   deleteDocRow,
   deleteVersionRow,
+  commitVersionMetadata,
   docIsDeleted,
   FIRST_VERSION,
   insertDocWithinQuota,
@@ -255,7 +256,7 @@ export async function updateDoc(
   // Past this point the push is paid for, and a delete can still land at either
   // of the two steps below. Both give the push back: a rejected push costs the
   // caller nothing, which is the same promise the ownership check above makes.
-  const version = await reserveNextVersion(env.DB, docId, publisher.id, parsed.body.title, now);
+  const version = await reserveNextVersion(env.DB, docId, publisher.id);
   if (version === null) {
     await refundDailyPush(env.DB, publisher.id, day);
     return docNotFound(docId);
@@ -268,5 +269,9 @@ export async function updateDoc(
     await refundDailyPush(env.DB, publisher.id, day);
     return docNotFound(docId);
   }
+
+  // Only now: the title and timestamp in "my docs" describe what the public url
+  // is serving, so they move after the bytes do, never before.
+  await commitVersionMetadata(env.DB, docId, parsed.body.title, now);
   return pushed(env, requestUrl, docId, version, 200);
 }
