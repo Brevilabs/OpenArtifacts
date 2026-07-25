@@ -1,14 +1,15 @@
-# Symposium
-
-**Where people and agents get on the same page.**
+# Where people and agents get on the same page
 
 Every version and every thread live at one address, so anyone who opens it can
 catch up without being briefed.
 
-That is what Symposium is for, not what it does today. Only the first step exists:
-push a local md/html file and get a public HTML page on the internet. The upload
-API is private and programmatic, its only caller is Obsidian Copilot's share
-action, and there are no reader accounts, no permissions, and no comments.
+---
+
+That is what **Symposium** is for, not what it does today. Only the first step
+exists: push a local md/html file and get a public HTML page on the internet.
+The upload API is private and programmatic, its only caller is Obsidian
+Copilot's share action, and there are no reader accounts, no permissions, and no
+comments.
 
 ## What works today
 
@@ -96,7 +97,7 @@ lists the ones that bind day to day.
 | [Development](docs/development.md) | Running it locally, including the license-server workaround. |
 | [Comments](docs/comments.md) | Design sketch for the next step of the product. Not planned, not built. |
 | [Positioning](docs/positioning.md) | Why the product exists and what it becomes. |
-| [Cost at scale](docs/cost-at-scale.md) | Whether the free wedge is affordable, and the architecture that keeps it so. |
+| [Cost at scale](docs/cost-at-scale.md) | What it costs to serve, who pays, and the architecture that keeps both cheap. |
 
 ## Quick start
 
