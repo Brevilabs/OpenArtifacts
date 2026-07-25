@@ -50,6 +50,8 @@ Assumptions, deliberately on the generous side so the estimates are ceilings, no
 
 Key modeling point: because readers need no accounts, **cost scales with publishers and bytes, not with audience size**. A doc seen by 100k people costs a few dollars of egress at worst, and $0 on the right CDN.
 
+**Two cohorts, and only one of them appears anywhere in this document.** Every "user" counted below is a *publisher*, and since publishing is paid (§8), every one of them is also a paying customer. Readers are unbounded, unauthenticated, free to us and free to them, and they are deliberately absent from every table here — a reader population two or three orders of magnitude larger than the publisher count is the expected shape and changes none of these numbers. Anywhere this document says "users", read "publishers, all of whom pay".
+
 ---
 
 ## 3. Cost centers by phase
@@ -115,7 +117,7 @@ Effectively free. The entire cost of this stage is founder time. This matters st
 | Observability, backups, misc | $50-150 |
 | **Total** | **$150-500/mo** |
 
-That is **$0.0015-0.005 per registered user per month**. For contrast: one part-time contractor costs 10x the entire infra bill. If even 1% of 100k users later pay $8/mo (Obsidian Publish's price point), that is $8k MRR against <$1k of COGS. The margin structure is boringly good.
+That is **$0.0015-0.005 per registered user per month**. For contrast: one part-time contractor costs 10x the entire infra bill. Every one of those 100k publishers is already paying — $2.99 standalone or bundled into Copilot Plus (§8) — so the base is ~$260k/mo of net receipts against <$1k of COGS, before anyone upgrades to a higher tier. The margin structure is boringly good.
 
 ### ~1,000,000 users
 
@@ -131,7 +133,7 @@ That is **$0.0015-0.005 per registered user per month**. For contrast: one part-
 | Observability, backups | $200-800 |
 | **Total** | **$1.5k-5.5k/mo** |
 
-Still under a penny per user per month. And this is the point where the honest accounting flips: **at 1M users the infra line is 3-8% of the cost of the 3-6 person team you will need** (on-call, T&S response, support, product). The business question at 1M users is headcount and conversion, never servers.
+Still under a penny per user per month. And this is the point where the honest accounting flips: **at 1M users the infra line is 3-8% of the cost of the 3-6 person team you will need** (on-call, T&S response, support, product). The business question at 1M users is headcount and upgrade rate, never servers — note that "conversion" no longer means free-to-paid, since the base tier is paid. What is being converted is a paying publisher to a higher tier.
 
 ### The one-table summary
 
@@ -327,7 +329,7 @@ strategy this doc was originally written to cost.
 
 - **1k users: ~$25/mo.** Run it off pocket change indefinitely. Publishing is paid from launch (§8), but at this scale the subscription is not what keeps the lights on — founder time is the cost, and the price exists to gate abuse and prove willingness to pay, not to fund servers.
 - **100k users: ~$150-500/mo.** Still solo-operable; the constraint is the abuse queue and support, not servers. Infrastructure is under 0.2% of net receipts here (§8), so the product is long past cash-positive; what it has to earn its way past is founder time. Access control is the next paid feature above the publishing line rather than the first paid tier.
-- **1M users: ~$1.5-5.5k/mo infra, but a $60-120k/mo team reality.** Infra never becomes the story; headcount and conversion do, which is the *normal* SaaS story with unusually good COGS.
+- **1M users: ~$1.5-5.5k/mo infra, but a $60-120k/mo team reality.** Infra never becomes the story; headcount and upgrade rate do, which is the *normal* SaaS story with unusually good COGS.
 
 The structural gifts: static immutable artifacts (perfect caching), no realtime editor (no sync tax), BYO agents (no inference COGS), and the HTML-native all-Cloudflare stack (content is portable files, the database is a rebuildable pointer index). The structural debt: public hosting of user-uploaded HTML attracts abuse, so the sacrificial serving domain ([serving-domain.md](serving-domain.md)), noindex defaults, publisher gating, and scanning must be day-one decisions, not retrofits. The paid publishing gate lowers the incident rate but not the blast radius of any one incident, so it substitutes for none of them.
 
