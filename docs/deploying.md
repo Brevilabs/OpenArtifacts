@@ -6,15 +6,21 @@ commands are creating.
 
 [← README](../README.md) · [Hosting](hosting.md) · [HTTP API](http-api.md)
 
-> **Nothing has been deployed yet.** The sequence below is complete and creates
-> real resources on a real account. One thing to know going in: D1 is currently
-> the only record of who owns a doc, what it is called, and whether it was
-> deleted, so until per-doc manifests ship, back-ups mean D1's own 30-day Time
-> Travel window rather than "rebuild it from R2". That is fine at low volume and
-> should be fixed well before it isn't — see `CLAUDE.md`.
+> **The Worker has not been deployed yet.** Its storage has: on the Brevilabs
+> account, steps 1–3 below are done, and `wrangler.jsonc` already carries the
+> real `database_id`. What is left is steps 4–6. One thing to know going in: D1
+> is currently the only record of who owns a doc, what it is called, and whether
+> it was deleted, so until per-doc manifests ship, back-ups mean D1's own 30-day
+> Time Travel window rather than "rebuild it from R2". That is fine at low volume
+> and should be fixed well before it isn't — see `CLAUDE.md`.
 
-Run once, in order, from a checkout with `npx wrangler login` already done. This
-creates real Cloudflare resources on whichever account wrangler is logged into.
+Run in order, from a checkout with `npx wrangler login` already done, against
+whichever account wrangler is logged into.
+
+**Steps 1–3 provision storage, and are already done on the Brevilabs account.**
+Run them only when standing the service up on a fresh account — re-running them
+against Brevilabs' would fail on the existing names, or create duplicates under
+new ones.
 
 ```bash
 # 1. The R2 bucket. The name must match `bucket_name` in wrangler.jsonc.
@@ -24,14 +30,20 @@ npx wrangler r2 bucket create symposium-docs
 npx wrangler d1 create symposium
 ```
 
-**Now edit `wrangler.jsonc`** and replace the `database_id` placeholder
-(`00000000-0000-0000-0000-000000000000`) with the id step 2 printed, then commit
-it. It is not a secret; the binding will not resolve without it.
+On a fresh account, **now edit `wrangler.jsonc`** and replace the committed
+`database_id` with the id step 2 printed. It is not a secret; the binding will
+not resolve without it. On the Brevilabs account the committed id is already the
+right one — leave it alone.
 
 ```bash
 # 3. Create the schema on the real database (--remote, not --local).
+#    Already applied on Brevilabs'; re-running it is a no-op.
 npx wrangler d1 migrations apply symposium --remote
+```
 
+**Steps 4–6 ship the Worker, and are what is actually outstanding.**
+
+```bash
 # 4. Credentials for the license server. Both prompt for the value, so neither
 #    ends up in your shell history. LICENSE_API_KEY is *ours*, never a
 #    publisher's key. On a first deploy the Worker does not exist yet, so the

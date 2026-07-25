@@ -11,14 +11,14 @@
   "r2_buckets": [{ "binding": "DOCS", "bucket_name": "symposium-docs" }],
 
   // D1 holds pointer rows only (ids, sizes, timestamps) and is rebuildable
-  // from R2. `database_id` is a placeholder — the real id is created and
-  // filled in when the Cloudflare resources are provisioned at deploy time.
-  // Local work (`wrangler dev`, `wrangler d1 ... --local`) ignores it.
+  // from R2. `database_id` is the real database, created 2026-07-25 in region
+  // WNAM. It is not a secret — the binding does not resolve without it — and
+  // local work (`wrangler dev`, `wrangler d1 ... --local`) ignores it entirely.
   "d1_databases": [
     {
       "binding": "DB",
       "database_name": "symposium",
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_id": "59bdf562-6ffb-4e2e-a5b5-dc40f6f30bdc",
       "migrations_dir": "migrations"
     }
   ],
