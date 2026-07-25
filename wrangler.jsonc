@@ -7,6 +7,21 @@
     "enabled": true
   },
 
+  // The two hostnames the Worker answers on, and the only ones — `workers_dev`
+  // is false. Declared here rather than clicked in the dashboard so the repo
+  // describes production: a custom domain created by hand is state nothing in
+  // this file knows about.
+  //
+  // `custom_domain` makes Cloudflare create and own the DNS record, which is
+  // why neither zone should carry a hand-made record for these names. They must
+  // match `vars` below exactly; the router compares the request host against
+  // those strings, so a name attached here but missing there would fall through
+  // to path prefixes and serve both surfaces on one domain.
+  "routes": [
+    { "pattern": "symposium.site", "custom_domain": true },
+    { "pattern": "api.symposium.md", "custom_domain": true }
+  ],
+
   // R2 is the system of record: every served byte lives here.
   "r2_buckets": [{ "binding": "DOCS", "bucket_name": "symposium-docs" }],
 
