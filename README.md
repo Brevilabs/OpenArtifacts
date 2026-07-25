@@ -1,10 +1,14 @@
 # updoc
 
-Push a local md/html file, get a public HTML page on the internet.
+**Where people and agents get on the same page.**
 
-v0 is the wedge, nothing more: **HTML upload → public webpage**. The upload API is
-private and programmatic — the only caller is Obsidian Copilot's share action. No
-reader accounts, no permissions, no comments.
+Every version and every thread live at one address, so anyone who opens it can
+catch up without being briefed.
+
+That is what updoc is for, not what it does today. Only the first step exists:
+push a local md/html file and get a public HTML page on the internet. The upload
+API is private and programmatic, its only caller is Obsidian Copilot's share
+action, and there are no reader accounts, no permissions, and no comments.
 
 ## What works today
 
@@ -60,7 +64,10 @@ Roughly in order. Nothing below is started.
   suits a design-partner launch and contradicts the free-wedge thesis long-term.
 - **Then the actual product**: comments anchored to passages, agents drafting
   them for a human to approve, and version-to-version diffs. That is the wedge in
-  `docs/positioning.md` — share, then comment, then converge.
+  [`docs/positioning.md`](docs/positioning.md) — share, then comment, then
+  converge — and [`docs/comments.md`](docs/comments.md) sketches what the first
+  half of it would take. Note the ordering constraint hiding in there: comments
+  need to know who is commenting, so reader identity comes first.
 
 ## Where this is going
 
@@ -80,6 +87,7 @@ lists the ones that bind day to day.
 | [Hosting](docs/hosting.md) | How this runs on Cloudflare. **Start here if you know Vercel but not Workers.** |
 | [Deploying](docs/deploying.md) | Provisioning the resources and shipping. |
 | [Development](docs/development.md) | Running it locally, including the license-server workaround. |
+| [Comments](docs/comments.md) | Design sketch for the next step of the product. Not planned, not built. |
 | [Positioning](docs/positioning.md) | Why the product exists and what it becomes. |
 | [Cost at scale](docs/cost-at-scale.md) | Whether the free wedge is affordable, and the architecture that keeps it so. |
 
