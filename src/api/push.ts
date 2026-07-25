@@ -239,12 +239,21 @@ export async function createDoc(
     );
   }
 
-  if (!(await reserveDailyPush(env.DB, publisher.id, utcDay(now)))) {
+  const day = utcDay(now);
+  if (!(await reserveDailyPush(env.DB, publisher.id, day))) {
     await deleteDocRow(env.DB, docId);
     return dailyQuotaExceeded();
   }
 
-  await storeVersion(env, docId, FIRST_VERSION, parsed.body.html, title, now);
+  // A create is deletable before it answers: the row is visible to this
+  // publisher's own list the moment it is inserted, so they can delete the doc
+  // while its first version is still being written. Same answer as an update
+  // that loses that race — the doc is gone, and the push is given back rather
+  // than spent on a url that would serve 410.
+  if (!(await storeVersion(env, docId, FIRST_VERSION, parsed.body.html, title, now))) {
+    await refundDailyPush(env.DB, publisher.id, day);
+    return docNotFound(docId);
+  }
   return pushed(env, requestUrl, docId, FIRST_VERSION, 201);
 }
 

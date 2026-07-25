@@ -756,6 +756,59 @@ describe("races the review found", () => {
     expect(await stored(created.docId, 2)).toBeNull();
   });
 
+  it("does not report a create that was deleted before its first version landed", async () => {
+    const spentBefore = (await quotaRows())[0]?.pushes ?? 0;
+
+    // The row is visible to this publisher's own list as soon as it is inserted,
+    // so a delete can land while version 1 is still being written. Proxying D1
+    // puts the delete exactly there: at the version-row insert.
+    let raced = false;
+    const racingDb = new Proxy(env.DB, {
+      get(target, prop, receiver) {
+        if (prop !== "prepare") return Reflect.get(target, prop, receiver);
+        return (sql: string) => {
+          const statement = target.prepare(sql);
+          if (!sql.includes("INSERT INTO versions")) return statement;
+          return new Proxy(statement, {
+            get(st, stProp, stRec) {
+              if (stProp !== "bind") return Reflect.get(st, stProp, stRec);
+              return (...args: unknown[]) => {
+                const bound = st.bind(...args);
+                return new Proxy(bound, {
+                  get(bt, bProp, bRec) {
+                    if (bProp !== "run") return Reflect.get(bt, bProp, bRec);
+                    return async () => {
+                      const result = await bt.run();
+                      if (!raced) {
+                        raced = true;
+                        const docId = String(args[0]);
+                        await env.DB.prepare("UPDATE docs SET deleted_at = ? WHERE id = ?")
+                          .bind(Date.now(), docId)
+                          .run();
+                        for (const object of (await env.DOCS.list()).objects) {
+                          await env.DOCS.delete(object.key);
+                        }
+                      }
+                      return result;
+                    };
+                  },
+                });
+              };
+            },
+          });
+        };
+      },
+    }) as D1Database;
+
+    const response = await post(KEY_A, { title: "t", html: page("<p>x</p>") }, { DB: racingDb });
+
+    expect(raced).toBe(true);
+    // Not a 201 pointing at a url that serves 410, and not a spent push.
+    expect(response.status).toBe(404);
+    expect(await allObjects()).toHaveLength(0);
+    expect((await quotaRows())[0]?.pushes ?? 0).toBe(spentBefore);
+  });
+
   it("gives back the push when the version reservation loses to a delete", async () => {
     const created = await pushedOk(await post(KEY_A, { title: "t", html: page("<p>v1</p>") }), 201);
     const spentAfterCreate = (await quotaRows())[0]?.pushes;
