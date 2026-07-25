@@ -41,7 +41,9 @@ right one — leave it alone.
 npx wrangler d1 migrations apply symposium --remote
 ```
 
-**Steps 4–6 ship the Worker, and are what is actually outstanding.**
+**Steps 4–8 ship the Worker, and are what is actually outstanding.** Step 7 is
+the one that makes it reachable: `workers_dev` is `false`, so a Worker with no
+custom domain attached answers on nothing at all.
 
 ```bash
 # 4. Credentials for the license server. Both prompt for the value, so neither
