@@ -25,6 +25,9 @@ load-bearing and are not retrofittable:
 - **`noindex` + `nofollow` by default** — this deletes most of the spam incentive.
 - **Publisher-gated, reader-open** — publishing needs a key, reading needs nothing.
 - **R2 holds the truth as HTML**; D1 is a small rebuildable pointer index.
+  (Not yet: v0 stores only version objects, so ownership, titles and deletion
+  tombstones live solely in D1. Per-doc manifests are owed before deploy — see
+  `CLAUDE.md`.)
 - **Flat-fee dependencies only** in the serving path — no per-MAU pricing, ever.
 
 ## Stack
@@ -341,6 +344,13 @@ Alternatively, copy `.dev.vars.example` to `.dev.vars` and point
 `LICENSE_API_URL` / `LICENSE_API_KEY` at the real license server.
 
 # Deploying
+
+> **Not ready to deploy yet.** D1 is currently the only record of doc ownership,
+> titles and deletion tombstones, so the per-doc manifests that make it
+> rebuildable from R2 have to land first — they are only useful if they exist
+> from the first doc onward. See "Owed before anything is deployed" in
+> `CLAUDE.md`. The sequence below is correct and complete; it just should not be
+> run until then.
 
 Run once, in order, from a checkout with `npx wrangler login` already done. This
 creates real Cloudflare resources on whichever account wrangler is logged into.

@@ -649,6 +649,29 @@ describe("races the review found", () => {
     expect(await docRow(created.docId)).toMatchObject({ title: "second", latest_version: 2 });
   });
 
+  it("commits metadata for a version that landed even when a later one burned a number", async () => {
+    const created = await pushedOk(
+      await post(KEY_A, { title: "first", html: page("<p>v1</p>") }),
+      201,
+    );
+    // Version 2 lands: its object and row both exist.
+    await pushedOk(await put(KEY_A, created.docId, { title: "second", html: page("<p>v2</p>") }), 200);
+
+    // Version 3 reserves a number and then dies before storing anything, which
+    // is all `reserveNextVersion` does on its own. The counter is now ahead of
+    // what exists.
+    await env.DB.prepare("UPDATE docs SET latest_version = 3 WHERE id = ?")
+      .bind(created.docId)
+      .run();
+
+    // Version 2's commit arrives. Comparing against the counter would reject it
+    // on account of a version that never stored anything, leaving the listing
+    // describing v1 while the shared link serves v2.
+    await commitVersionMetadata(env.DB, created.docId, 2, "landed", Date.now() + 1000);
+
+    expect(await docRow(created.docId)).toMatchObject({ title: "landed", latest_version: 3 });
+  });
+
   it("resets a blank title on update, and keeps the current one when it is absent", async () => {
     const created = await pushedOk(
       await post(KEY_A, { title: "named", html: page("<p>v1</p>") }),

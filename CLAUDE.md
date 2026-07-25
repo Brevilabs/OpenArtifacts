@@ -56,10 +56,32 @@ These are day-one decisions, not retrofits:
   nothing.
 - **R2 is the system of record**, and the stored format is HTML. D1 holds pointer
   rows only — never content — and must be rebuildable by scanning R2 manifests.
+  **This does not hold yet — see below. Do not rely on it.**
 - Every push mints an **immutable version** served with `cache-control: immutable`.
   Render at push time, never at read time.
 - **No per-MAU or per-seat priced dependency** anywhere in the serving path.
 - Quotas and per-key rate limits ship with the feature they protect, not later.
+
+## Owed before anything is deployed
+
+**D1 is currently the only record of who owns a doc, what it is called, and
+whether it was deleted.** R2 holds `docs/{id}/v{n}.html` and nothing else, so the
+rebuildability the constraint above claims is not true today:
+
+- publisher, title and timestamps exist only in D1;
+- a deleted doc leaves an empty R2 prefix, so a rebuild could not tell a
+  withdrawn url from one that never existed, and it would answer 404 where it
+  promised 410.
+
+The fix is the per-doc `manifest.json` from `docs/cost-at-scale.md` §6: written
+after each push as a snapshot of the doc's D1 state, and left behind as a
+tombstone on delete rather than swept with the version objects. Snapshot it, do
+not read-modify-write it.
+
+**Do this before provisioning anything.** Manifests are only worth having from
+the first doc onward — backfilling them requires the D1 you are insuring
+against. Until it ships, treat D1 as a system of record with a 30-day Time
+Travel window, not as a cache.
 
 ## Owed when the real serving domain lands
 

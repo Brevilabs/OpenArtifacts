@@ -217,10 +217,17 @@ export async function reserveNextVersion(
  * is the honest answer, because the previous push is still what is being served.
  *
  * `version` is the one just stored, and the write only lands while it is still
- * the newest. Two overlapping pushes reserve 2 and 3; if 3 stores first, 2 must
- * not follow it and leave the row advertising 3 with 2's title. The loser writes
- * nothing and loses nothing: its bytes are stored and its `/v{n}` url works, it
- * simply is not what the shared link resolves to.
+ * the newest *stored* version. Two overlapping pushes reserve 2 and 3; if 3
+ * stores first, 2 must not follow it and leave the row advertising 3 with 2's
+ * title. The loser writes nothing and loses nothing: its bytes are stored and
+ * its `/v{n}` url works, it simply is not what the shared link resolves to.
+ *
+ * The comparison is against `MAX(versions.n)` rather than `docs.latest_version`,
+ * because the counter can be ahead of what exists: a push that reserves a number
+ * and then fails burns it. Testing against the counter would let that dead
+ * reservation veto the commit of a version that really did land, leaving the
+ * shared link serving content the listing does not describe. This row is already
+ * inserted by the time this runs, so the check is "nothing newer stored".
  *
  * `title` is null on a push that does not carry one, which keeps the existing
  * title rather than blanking it.
@@ -235,9 +242,10 @@ export async function commitVersionMetadata(
   await db
     .prepare(
       `UPDATE docs SET title = COALESCE(?, title), updated_at = ?
-        WHERE id = ? AND latest_version = ?`,
+        WHERE id = ?
+          AND ? >= (SELECT COALESCE(MAX(n), 0) FROM versions WHERE doc_id = ?)`,
     )
-    .bind(title, atMs, docId, version)
+    .bind(title, atMs, docId, version, docId)
     .run();
 }
 
