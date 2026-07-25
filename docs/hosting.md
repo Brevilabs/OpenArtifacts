@@ -233,3 +233,15 @@ Two caveats to hold onto:
 For a document-sharing service specifically, this is a strong fit, and more so
 the larger it gets. It would be the wrong stack for something transactional,
 relationally complex, or CPU-heavy per request — updoc is none of those.
+
+It also holds for where the product is going. Comments (see
+[comments.md](comments.md)) are the workload Durable Objects exist for: a
+document is a natural partition key, so per-document coordinators shard for free
+with no cross-document contention — where a single Postgres would have every
+document's threads contending on the same tables. Re-anchoring comments across a
+rewrite is CPU-bound string matching with no I/O, which is the cheapest thing
+there is to run here, and live updates later have a path through DO WebSockets
+without changing the model. The strain shows up in two places: a DO lives in one
+region, so a distant commenter pays a round trip on writes, and threads make the
+served page vary with state — which turns the caching decision above from
+theoretical into load-bearing.
