@@ -18,10 +18,10 @@ creates real Cloudflare resources on whichever account wrangler is logged into.
 
 ```bash
 # 1. The R2 bucket. The name must match `bucket_name` in wrangler.jsonc.
-npx wrangler r2 bucket create updoc-docs
+npx wrangler r2 bucket create symposium-docs
 
 # 2. The D1 database. This prints a `database_id`.
-npx wrangler d1 create updoc
+npx wrangler d1 create symposium
 ```
 
 **Now edit `wrangler.jsonc`** and replace the `database_id` placeholder
@@ -30,7 +30,7 @@ it. It is not a secret; the binding will not resolve without it.
 
 ```bash
 # 3. Create the schema on the real database (--remote, not --local).
-npx wrangler d1 migrations apply updoc --remote
+npx wrangler d1 migrations apply symposium --remote
 
 # 4. Credentials for the license server. Both prompt for the value, so neither
 #    ends up in your shell history. LICENSE_API_KEY is *ours*, never a
@@ -44,8 +44,8 @@ npx wrangler secret put LICENSE_API_KEY
 npx wrangler deploy
 
 # 6. Check what just shipped, end to end.
-UPDOC_LICENSE_KEY=<a real Copilot Plus key> \
-  scripts/smoke.sh https://updoc.<subdomain>.workers.dev
+SYMPOSIUM_LICENSE_KEY=<a real Copilot Plus key> \
+  scripts/smoke.sh https://symposium.<subdomain>.workers.dev
 ```
 
 The smoke script publishes a doc, reads it, lists it, deletes it and confirms the

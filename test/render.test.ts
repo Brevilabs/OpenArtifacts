@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bakeServedHtml, NOINDEX_META, UPDOC_FOOTER } from "../src/render.js";
+import { bakeServedHtml, NOINDEX_META, SYMPOSIUM_FOOTER } from "../src/render.js";
 
 const bake = async (html: string): Promise<string> =>
   new TextDecoder().decode(await bakeServedHtml(html));
@@ -22,10 +22,10 @@ describe("bakeServedHtml — what gets injected", () => {
     expect(NOINDEX_META).toBe('<meta name="robots" content="noindex,nofollow">');
   });
 
-  it("names updoc in text a reader can see", async () => {
+  it("names Symposium in text a reader can see", async () => {
     const baked = await bake(page("<p>hello</p>"));
 
-    expect(baked).toContain(">Shared with updoc<");
+    expect(baked).toContain(">Shared with Symposium<");
   });
 });
 
@@ -34,14 +34,14 @@ describe("bakeServedHtml — where the injections land", () => {
     const baked = await bake(page("<p>hello</p>"));
 
     expect(headOf(baked)).toContain(NOINDEX_META);
-    expect(baked).toContain(`${UPDOC_FOOTER}</body>`);
+    expect(baked).toContain(`${SYMPOSIUM_FOOTER}</body>`);
   });
 
   it("injects each exactly once, however many candidate tags the page has", async () => {
     const baked = await bake(page("<div><p>one</p></div><div><p>two</p></div>"));
 
     expect(occurrences(baked, NOINDEX_META)).toBe(1);
-    expect(occurrences(baked, UPDOC_FOOTER)).toBe(1);
+    expect(occurrences(baked, SYMPOSIUM_FOOTER)).toBe(1);
   });
 
   it("keeps the document's own head content, including its own meta tags", async () => {
@@ -61,7 +61,7 @@ describe("bakeServedHtml — documents missing the tags to hang them on", () => 
     );
 
     expect(headOf(baked)).toContain(NOINDEX_META);
-    expect(baked).toContain(UPDOC_FOOTER);
+    expect(baked).toContain(SYMPOSIUM_FOOTER);
     expect(baked).toContain("<p>hi</p>");
   });
 
@@ -69,7 +69,7 @@ describe("bakeServedHtml — documents missing the tags to hang them on", () => 
     const baked = await bake("<!doctype html>\n<html>\n<body>\n<p>hi</p>\n</body>\n</html>");
 
     expect(baked).toContain(NOINDEX_META);
-    expect(baked).toContain(`${UPDOC_FOOTER}</body>`);
+    expect(baked).toContain(`${SYMPOSIUM_FOOTER}</body>`);
     // The doctype has to stay first: a meta ahead of it would put the page into
     // quirks mode, which is a real change to how the document renders.
     expect(baked.startsWith("<!doctype html>")).toBe(true);
@@ -80,7 +80,7 @@ describe("bakeServedHtml — documents missing the tags to hang them on", () => 
 
     expect(baked).toContain("<p>just a fragment</p>");
     expect(baked).toContain(NOINDEX_META);
-    expect(baked).toContain(UPDOC_FOOTER);
+    expect(baked).toContain(SYMPOSIUM_FOOTER);
   });
 });
 
@@ -109,7 +109,7 @@ describe("bakeServedHtml — the document's own content", () => {
 
     expect(baked).toContain(decoys);
     expect(occurrences(baked, NOINDEX_META)).toBe(1);
-    expect(occurrences(baked, UPDOC_FOOTER)).toBe(1);
+    expect(occurrences(baked, SYMPOSIUM_FOOTER)).toBe(1);
   });
 
   it("preserves non-ASCII content byte for byte", async () => {

@@ -29,7 +29,7 @@
 export const NOINDEX_META = '<meta name="robots" content="noindex,nofollow">';
 
 /**
- * The "shared with updoc" byline (D9).
+ * The "Shared with Symposium" byline (D9).
  *
  * `all:initial` first, then only the properties we want back: the page's own
  * stylesheet has no way to guess this class, but it very often styles `div`,
@@ -37,12 +37,12 @@ export const NOINDEX_META = '<meta name="robots" content="noindex,nofollow">';
  * styles keep it self-contained — no stylesheet to fetch, nothing for the CSP
  * to allow.
  */
-export const UPDOC_FOOTER =
-  '<div class="updoc-footer" style="' +
+export const SYMPOSIUM_FOOTER =
+  '<div class="symposium-footer" style="' +
   "all:initial;display:block;box-sizing:border-box;width:100%;clear:both;" +
   "margin:4rem 0 0;padding:1rem 0;border-top:1px solid rgba(128,128,128,0.25);" +
   "font:400 13px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;" +
-  'color:#888;text-align:center">Shared with updoc</div>';
+  'color:#888;text-align:center">Shared with Symposium</div>';
 
 /** HTMLRewriter treats injected content as markup, not text, only when asked. */
 const AS_HTML = { html: true } as const;
@@ -83,14 +83,14 @@ export async function bakeServedHtml(html: string): Promise<Uint8Array> {
       element(body) {
         body.onEndTag((endTag) => {
           footerPlaced = true;
-          endTag.before(UPDOC_FOOTER, AS_HTML);
+          endTag.before(SYMPOSIUM_FOOTER, AS_HTML);
         });
       },
     })
     .onDocument({
       end(end) {
         if (!metaPlaced) end.append(NOINDEX_META, AS_HTML);
-        if (!footerPlaced) end.append(UPDOC_FOOTER, AS_HTML);
+        if (!footerPlaced) end.append(SYMPOSIUM_FOOTER, AS_HTML);
       },
     })
     .transform(new Response(html));

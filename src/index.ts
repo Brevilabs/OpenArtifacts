@@ -23,8 +23,8 @@ const API_PREFIX = "/api/v1";
 
 /**
  * Lowercase and drop the trailing root dot, so `A.Com` and `a.com.` both match
- * `a.com`. The root dot matters: `new URL("https://updoc.page./x").hostname` is
- * `"updoc.page."`, so without this a request with a dotted Host header would
+ * `a.com`. The root dot matters: `new URL("https://symposium.page./x").hostname` is
+ * `"symposium.page."`, so without this a request with a dotted Host header would
  * miss the serving-host match and fall through to the path prefix — which is
  * exactly how `/api/v1` would become reachable on the serving domain.
  */

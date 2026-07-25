@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "updoc",
+  "name": "symposium",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-24",
   "observability": {
@@ -8,7 +8,7 @@
   },
 
   // R2 is the system of record: every served byte lives here.
-  "r2_buckets": [{ "binding": "DOCS", "bucket_name": "updoc-docs" }],
+  "r2_buckets": [{ "binding": "DOCS", "bucket_name": "symposium-docs" }],
 
   // D1 holds pointer rows only (ids, sizes, timestamps) and is rebuildable
   // from R2. `database_id` is a placeholder — the real id is created and
@@ -17,7 +17,7 @@
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "updoc",
+      "database_name": "symposium",
       "database_id": "00000000-0000-0000-0000-000000000000",
       "migrations_dir": "migrations"
     }

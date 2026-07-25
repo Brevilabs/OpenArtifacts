@@ -1,4 +1,4 @@
--- updoc v0 pointer index.
+-- Symposium v0 pointer index.
 --
 -- R2 is the system of record; every row here is rebuildable by scanning R2.
 -- Timestamps are epoch milliseconds (INTEGER), so no date parsing at read time.

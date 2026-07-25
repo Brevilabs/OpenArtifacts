@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
-# End-to-end smoke check against a *deployed* updoc worker.
+# End-to-end smoke check against a *deployed* Symposium worker.
 #
-#   UPDOC_LICENSE_KEY=... scripts/smoke.sh https://updoc.<subdomain>.workers.dev
+#   SYMPOSIUM_LICENSE_KEY=... scripts/smoke.sh https://symposium.<subdomain>.workers.dev
 #
 # It publishes a doc, reads it back from its public url, finds it in the
 # publisher's list, deletes it, and confirms the url has become 410. Every step
@@ -19,22 +19,22 @@
 # machine via `ps`. Nothing here echoes it, and the API never returns it.
 set -euo pipefail
 
-BASE_URL=${1:-${UPDOC_BASE_URL:-}}
+BASE_URL=${1:-${SYMPOSIUM_BASE_URL:-}}
 
 usage() {
   cat >&2 <<'EOF'
-usage: UPDOC_LICENSE_KEY=<copilot plus license key> scripts/smoke.sh <base url>
+usage: SYMPOSIUM_LICENSE_KEY=<copilot plus license key> scripts/smoke.sh <base url>
 
-  <base url>          e.g. https://updoc.<subdomain>.workers.dev
-                      (or set UPDOC_BASE_URL instead of passing it)
-  UPDOC_LICENSE_KEY   a Copilot Plus license key with a push quota to spare.
+  <base url>          e.g. https://symposium.<subdomain>.workers.dev
+                      (or set SYMPOSIUM_BASE_URL instead of passing it)
+  SYMPOSIUM_LICENSE_KEY   a Copilot Plus license key with a push quota to spare.
                       Never passed as an argument, never printed.
 EOF
   exit 2
 }
 
 [ -n "$BASE_URL" ] || usage
-[ -n "${UPDOC_LICENSE_KEY:-}" ] || usage
+[ -n "${SYMPOSIUM_LICENSE_KEY:-}" ] || usage
 
 # Trailing slashes would double up in every url built below.
 BASE_URL=${BASE_URL%/}
@@ -55,7 +55,7 @@ BODY="$WORK/body"
 # builtin, so escaping the key for that quoting never puts it in a process's
 # arguments either.
 printf 'header = "Authorization: Bearer %s"\n' \
-  "$(printf '%s' "$UPDOC_LICENSE_KEY" | sed 's/[\\"]/\\&/g')" >"$AUTH"
+  "$(printf '%s' "$SYMPOSIUM_LICENSE_KEY" | sed 's/[\\"]/\\&/g')" >"$AUTH"
 
 HTTP_STATUS=""
 
@@ -116,10 +116,10 @@ json_string() {
 
 # Marks the doc this run published, so the read-back is checking our own bytes
 # rather than any doc happening to be there.
-MARKER="updoc-smoke-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+MARKER="symposium-smoke-$(date -u +%Y%m%dT%H%M%SZ)-$$"
 
 cat >"$WORK/push.json" <<EOF
-{"title":"updoc smoke check $MARKER",
+{"title":"Symposium smoke check $MARKER",
  "html":"<!doctype html><html lang=en><head><meta charset=utf-8><title>smoke</title></head><body><p>$MARKER</p></body></html>"}
 EOF
 
@@ -142,7 +142,7 @@ printf '      docId %s\n      url   %s\n' "$DOC_ID" "$DOC_URL"
 public_request "$DOC_URL"
 expect_status 200 "GET $DOC_URL"
 expect_body "$MARKER" "the page serves the bytes that were pushed"
-expect_body "Shared with updoc" "the page carries the updoc footer"
+expect_body "Shared with Symposium" "the page carries the Symposium footer"
 
 api_request GET "$BASE_URL/api/v1/docs?limit=100"
 expect_status 200 "GET /api/v1/docs"

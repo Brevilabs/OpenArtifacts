@@ -1,12 +1,12 @@
 import { createExecutionContext, env, waitOnExecutionContext } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Env } from "../src/config.js";
-import { NOINDEX_META, UPDOC_FOOTER } from "../src/render.js";
+import { NOINDEX_META, SYMPOSIUM_FOOTER } from "../src/render.js";
 import { versionObjectKey } from "../src/storage.js";
 import worker from "../src/index.js";
 
 /** v0 runs both surfaces on one workers.dev subdomain. */
-const ORIGIN = "https://updoc.workers.dev";
+const ORIGIN = "https://symposium.workers.dev";
 
 const KEY = "cplus_live_a1b2c3d4e5f60718";
 
@@ -122,7 +122,7 @@ describe("GET /d/{docId}", () => {
     expect(html).toContain("<p>second draft</p>");
     expect(html).not.toContain("<p>first draft</p>");
     expect(html).toContain(NOINDEX_META);
-    expect(html).toContain(UPDOC_FOOTER);
+    expect(html).toContain(SYMPOSIUM_FOOTER);
   });
 
   it("serves version 1 at the same url before there is a version 2", async () => {
@@ -413,7 +413,7 @@ describe("a doc that is not there", () => {
     // arrangement in which the prefix lookalikes below reach this handler at
     // all — on workers.dev the router answers them as unknown paths — and it is
     // the arrangement where mistaking `/dx{docId}` for a doc url would matter.
-    const servingHost = { SERVING_HOST: "updoc.workers.dev", DB: noDb };
+    const servingHost = { SERVING_HOST: "symposium.workers.dev", DB: noDb };
 
     for (const path of impossible) {
       const response = await get(path, undefined, servingHost);
