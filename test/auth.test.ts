@@ -302,8 +302,9 @@ describe("resolvePublisher — a plan that may not publish", () => {
     });
 
     expect(result).toMatchObject({ ok: false, reason: "ineligible_plan" });
-    // No row: a `publishers` row is what an entitled publisher *is*, and one
-    // written here would survive into the cache as a bypass.
+    // No row: a `publishers` row is what an entitled publisher *is*. A refusal
+    // for a key that never had one invents nothing. (A key that *does* have one
+    // is a different case — see the downgrade test below.)
     expect(store.rows.size).toBe(0);
   });
 
@@ -377,6 +378,33 @@ describe("resolvePublisher — a plan that may not publish", () => {
     // an upgrade land on the next push instead of up to an hour later.
     expect(result).toEqual({ ok: true, publisher: { id: KEY_HASH, plan: "believer" } });
     expect(store.rows.get(KEY_HASH)?.plan).toBe("believer");
+  });
+
+  it("writes the downgrade back, so an outage cannot reopen publishing", async () => {
+    // Stale, so the downgrade is actually seen: a *fresh* Believer row short-
+    // circuits by design, and that window is bounded by the TTL. This one is not.
+    const store = memoryStore(validatedAt(LICENSE_CACHE_TTL_MS));
+    const license = licenseServer(validPlus);
+
+    const refused = await resolvePublisher(KEY, env(), { store, now, fetch: license.fetch });
+
+    expect(refused).toMatchObject({ ok: false, reason: "ineligible_plan" });
+    expect(store.rows.get(KEY_HASH)).toEqual({
+      key_hash: KEY_HASH,
+      plan: "plus",
+      validated_at: NOW,
+    });
+
+    // The reason the write matters: without it the row stays `believer` for
+    // good, and the outage fallback re-admits a publisher the server has since
+    // confirmed ineligible — permanently, not for one TTL.
+    const duringOutage = await resolvePublisher(KEY, env(), {
+      store,
+      now,
+      fetch: licenseServer(() => new Response("boom", { status: 500 })).fetch,
+    });
+
+    expect(duringOutage).toMatchObject({ ok: false, reason: "license_unavailable" });
   });
 
   it("does not wave a cached Plus row through when the server is down", async () => {

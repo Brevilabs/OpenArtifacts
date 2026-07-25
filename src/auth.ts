@@ -148,7 +148,18 @@ export async function resolvePublisher(
       };
 
     case "ineligible":
-      // No row write: an entitled publisher is what a `publishers` row means.
+      // Correct an existing row, but never mint one. Both halves matter:
+      //
+      // Updating is what keeps a downgrade from being permanent. Leaving a
+      // lapsed Believer's row at `believer` means the outage fallback below
+      // still sees a plan `mayPublish` approves and re-admits them — on every
+      // outage, for good, because nothing ever rewrites the row.
+      //
+      // Not inserting is what keeps a `publishers` row meaning an entitled
+      // publisher. A row minted here would stand for someone who has not
+      // published and currently cannot, one per refused key that ever reaches
+      // the API.
+      if (cached) await store.save({ key_hash: id, plan: check.plan, validated_at: checkedAt });
       // The message names the real reason, because telling a paying Plus
       // subscriber their key "is not valid" is both false and a support ticket.
       //
