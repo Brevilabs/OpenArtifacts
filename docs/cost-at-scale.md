@@ -265,14 +265,32 @@ something to be optimized away later.
 | Net per year | $31.24 | $34.54 |
 | Effective take rate | 12.9% | 3.7% |
 
-So the break-even at 100k readers is **~193 paying publishers**, from
-$500 / $2.60, not the ~170 that gross billings suggest. Annual billing takes it
-back to ~174 and is the obvious mitigation; it should be the default offer if the
-price stays this low.
+Annual billing collapses twelve fixed fees into one and is the obvious
+mitigation. It should be the default offer while the price stays this low.
 
-That number is easier to hit than it looks, because publishers are a small
-fraction of readers in any sharing product. Two hundred paying publishers can
-carry a reader population two or three orders of magnitude larger.
+**Break-even stops being a milestone worth tracking.** A break-even publisher
+count is a concept from the model this section replaced, where a free majority
+was subsidised by a paying minority. Every publisher now pays, so revenue and
+infrastructure both scale with the publisher count — and revenue scales about two
+orders of magnitude faster, because §2 puts the marginal publisher at fractions
+of a cent per month against $2.60 of net receipts.
+
+| Scale (§4) | Infra | Net receipts | Publishers needed to cover infra |
+|---|---|---|---|
+| 1k publishers | ~$25/mo | ~$2.6k/mo | ~10 |
+| 100k publishers | ~$150-500/mo | ~$260k/mo | ~193 |
+| 1M publishers | ~$1.5-5.5k/mo | ~$2.6M/mo | ~2,100 |
+
+The last column is the honest version of the old break-even number: at every
+scale it is well under 1% of the publisher base, and the ratio improves as the
+product grows. Infrastructure is never what this product has to earn its way past
+— §10's point about headcount stands unchanged.
+
+**Readers do not appear in this arithmetic at all.** §2 is explicit that cost
+scales with publishers and bytes rather than audience size, and R2's lack of
+egress fees is what makes a document read by 100k people cost approximately
+nothing to serve. Treat the reader population as a distribution asset, not a
+cost centre. The two cohorts are modelled separately and only publishers pay.
 
 ### What this costs us, stated plainly
 
@@ -308,7 +326,7 @@ strategy this doc was originally written to cost.
 ## 10. Bottom line
 
 - **1k users: ~$25/mo.** Run it off pocket change indefinitely. Publishing is paid from launch (§8), but at this scale the subscription is not what keeps the lights on — founder time is the cost, and the price exists to gate abuse and prove willingness to pay, not to fund servers.
-- **100k users: ~$150-500/mo.** Still solo-operable; the constraint is the abuse queue and support, not servers. ~193 paying publishers covers the worst case on net receipts, which is where the product turns cash-positive. Access control is the next paid feature above the publishing line rather than the first paid tier.
+- **100k users: ~$150-500/mo.** Still solo-operable; the constraint is the abuse queue and support, not servers. Infrastructure is under 0.2% of net receipts here (§8), so the product is long past cash-positive; what it has to earn its way past is founder time. Access control is the next paid feature above the publishing line rather than the first paid tier.
 - **1M users: ~$1.5-5.5k/mo infra, but a $60-120k/mo team reality.** Infra never becomes the story; headcount and conversion do, which is the *normal* SaaS story with unusually good COGS.
 
 The structural gifts: static immutable artifacts (perfect caching), no realtime editor (no sync tax), BYO agents (no inference COGS), and the HTML-native all-Cloudflare stack (content is portable files, the database is a rebuildable pointer index). The structural debt: public hosting of user-uploaded HTML attracts abuse, so the sacrificial serving domain ([serving-domain.md](serving-domain.md)), noindex defaults, publisher gating, and scanning must be day-one decisions, not retrofits. The paid publishing gate lowers the incident rate but not the blast radius of any one incident, so it substitutes for none of them.

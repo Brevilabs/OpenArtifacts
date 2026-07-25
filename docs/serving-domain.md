@@ -79,9 +79,10 @@ insuring against is one occurrence.
 
 ## Status
 
-`symposium.site` was unregistered as of 2026-07-25 and is not yet ours. Until it
-is, v0 serves both surfaces from one `workers.dev` subdomain and the router falls
-back to path prefixes.
+**Both domains are registered as of 2026-07-25**: `symposium.md` for the brand,
+`symposium.site` for documents. Neither is wired up yet — v0 still serves both
+surfaces from one `workers.dev` subdomain, and the router falls back to path
+prefixes while `SERVING_HOST` and `API_HOST` are empty.
 
 Three things become true together when the real domains land, and
 [`CLAUDE.md`](../CLAUDE.md) carries the detail:
