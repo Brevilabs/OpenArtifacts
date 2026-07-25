@@ -23,18 +23,12 @@
     }
   ],
 
-  // No workers.dev route, ever. `resolveSurface` decides by host first and falls
-  // back to path prefixes when the host matches neither var, so a workers.dev
-  // hostname would go on serving /d/* — putting user HTML on a domain we do not
-  // control and cannot sacrifice. workers.dev is on the Public Suffix List, so
-  // the unit a Safe Browsing listing would hit is <subdomain>.workers.dev: one
-  // bad upload would take every Worker on the account's subdomain with it. The
-  // whole point of the serving domain is that the blast radius is a domain we
-  // chose to spend (see docs/serving-domain.md).
-  //
-  // The cost is that the Worker has no hostname until a custom domain is
-  // attached. That is the intended order: attach the domains, then smoke-test
-  // the surface that ships.
+  // No workers.dev route, ever. `resolveSurface` falls back to path prefixes on
+  // any host matching neither var below, so a workers.dev hostname would serve
+  // /d/* — user HTML on a domain we cannot sacrifice, and one whose Public
+  // Suffix List entry makes a listing hit every Worker on the account.
+  // docs/serving-domain.md is the argument; docs/deploying.md covers the cost,
+  // which is that the Worker has no hostname until a custom domain is attached.
   "workers_dev": false,
 
   // Empty until the custom domains are attached, which is what makes the path
