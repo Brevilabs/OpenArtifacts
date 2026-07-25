@@ -157,7 +157,7 @@ Day-one mitigations, all cheap in dollars:
 
 1. **Serve user content from a separate domain** than the product/brand domain (the `notion.site` / `googleusercontent.com` pattern). Reputation damage lands on the sacrificial domain, not on `symposium.md` itself. This is the single highest-leverage decision and it costs $10/yr.
 2. **`noindex` + `nofollow` by default.** Shared docs are for invited readers, not search engines. This deletes the SEO-spam incentive entirely, which is most of the spam volume. (Publishers can opt into indexing later, as a feature, maybe a paid one.)
-3. **Publisher-gated, reader-open.** Publishing requires a paid subscription (§8) or Copilot Plus; reading requires nothing. The abuse funnel is throttled at the account layer: new-account rate limits, velocity checks on pushes.
+3. **Publisher-gated, reader-open.** Publishing requires an entitled plan — the lifetime tier only in phase 1, see §8; reading requires nothing. The abuse funnel is throttled at the account layer: new-account rate limits, velocity checks on pushes.
 4. **Automated scanning on push**: outbound links against Google Safe Browsing (free API); if/when image upload ships, CSAM hash-matching via Cloudflare's free tool (also a legal obligation, not a nice-to-have).
 5. **Report button + fast takedown path + registered DMCA agent** ($6). At small scale the takedown queue is minutes per week of founder time; budget real tooling for it around 100k users.
 
@@ -244,12 +244,18 @@ forever and gated access control at $5-8/mo. That is no longer the plan — see
   where anyone deliberates. It is meant to read as trivially cheap rather than as
   a purchase decision, and to sit far under Obsidian Publish's $8 so it never
   invites the comparison.
-- **Copilot Plus** continues to include publishing. The cheap standalone tier is
-  how someone who does not use Copilot gets in, not a downgrade for someone who
-  does.
+- **Copilot Plus** includes publishing. The cheap standalone tier is how someone
+  who does not use Copilot gets in, not a downgrade for someone who does.
 - **Paid (team, later):** shared spaces, org identity, the agent-approval
   workflows from the positioning doc. This is where Notion-class ARPU lives if the
   thesis holds.
+
+**Phase 1 is narrower than any of that: lifetime license holders only.**
+Everything above is the steady state, not the launch. The lifetime tier is a small and known population,
+which is the right blast radius for the first public-hosting surface we operate —
+[serving-domain.md](serving-domain.md) is what one bad document costs. The gate is
+a single set in `src/auth.ts`, so it widens on operational confidence and support
+capacity rather than on engineering work.
 
 ### Break-even, on net receipts
 

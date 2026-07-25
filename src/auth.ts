@@ -8,6 +8,12 @@
  * Everything downstream depends on `Publisher.id`, so swapping in a free-tier
  * identity later means adding a branch here and touching nothing else.
  *
+ * This module answers *who*, never *may they*. The plan rides along on the
+ * resolved publisher and the router decides what it entitles them to, because
+ * entitlement differs per operation: publishing is gated, listing and unshare
+ * are not. Refusing here instead would take a lapsed publisher's already-public
+ * documents hostage — see `mayPublish`.
+ *
  * Validation is cached for an hour in the `publishers` row. The cache is also the
  * outage story: if the license server is unreachable but this key has validated
  * before, the push is allowed. A key that has never validated cannot publish
@@ -34,6 +40,42 @@ const LICENSE_TIMEOUT_MS = 5_000;
 /** Plan recorded when the license server validates a key but names no plan. */
 const UNKNOWN_PLAN = "unknown";
 
+/**
+ * The plans entitled to publish. Phase 1 is Believers only.
+ *
+ * This is a product decision rather than a technical one: a lifetime tier is a
+ * small and known population, which is the right blast radius for the first
+ * public-hosting surface we operate. Widening it is adding a string here.
+ *
+ * Lowercase because `validateLicense` folds the license server's uppercase enum
+ * before it gets here, and because `publishers.plan` stores the folded form.
+ */
+const PUBLISHING_PLANS: ReadonlySet<string> = new Set(["believer"]);
+
+/**
+ * Entitlement is per *operation*, not per identity, so this is deliberately not
+ * consulted here. A valid key identifies a publisher and that is all
+ * authentication decides; only `POST` and `PUT` ask whether the plan may
+ * publish, and the router applies it (see `handleApi`).
+ *
+ * Gating authentication on it instead would refuse `GET` and `DELETE` too,
+ * which strands a downgraded publisher's already-public documents with no way
+ * to withdraw them.
+ */
+export function mayPublish(plan: string): boolean {
+  return PUBLISHING_PLANS.has(plan);
+}
+
+/** The refusal a route gives a valid key whose plan may not publish. */
+export const INELIGIBLE_PLAN: { reason: PublisherFailure; message: string } = {
+  reason: "ineligible_plan",
+  // "lifetime", not "Believer": `BELIEVER` is the license server's database
+  // enum, and the plan customers actually bought is sold as *Supporter*.
+  // Naming the enum here would print a word the reader has never seen. This
+  // mismatch is deliberate — do not "fix" it to match PUBLISHING_PLANS.
+  message: "Publishing is currently limited to lifetime license holders.",
+};
+
 export interface Publisher {
   /** SHA-256 hex of the license key. The only publisher identity in the system. */
   id: string;
@@ -45,6 +87,12 @@ export type PublisherFailure =
   | "missing_credentials"
   /** The license server answered, and the answer was no. */
   | "invalid_license"
+  /**
+   * The key is real and current, but its plan may not publish. Raised by the
+   * router on `POST`/`PUT` only — never by authentication, which would take
+   * `GET` and `DELETE` with it.
+   */
+  | "ineligible_plan"
   /** The license server could not answer and this key has no cached validation. */
   | "license_unavailable";
 
@@ -122,7 +170,9 @@ export async function resolvePublisher(
     case "unreachable":
       if (cached) {
         // Stale but real. An outage must not lock out a publisher who has
-        // published before.
+        // published before. The plan rides along, so a publisher downgraded
+        // since their last successful validation loses publishing here too
+        // while keeping list and delete.
         return { ok: true, publisher: { id, plan: cached.plan } };
       }
       return {
@@ -136,6 +186,11 @@ export async function resolvePublisher(
 const FAILURE_STATUS: Record<PublisherFailure, ErrorCode> = {
   missing_credentials: "unauthorized",
   invalid_license: "unauthorized",
+  // `unauthorized`, not a new code: the contract in docs/http-api.md is frozen,
+  // and `message` is the part of it that is free to change. A client matching
+  // on `code` keeps working; a human reads why. Only `POST` and `PUT` can
+  // produce this.
+  ineligible_plan: "unauthorized",
   // Not the caller's fault and not a credential problem: telling Copilot 401
   // here would make it prompt for a key that is perfectly good.
   license_unavailable: "internal",
@@ -236,6 +291,9 @@ async function validateLicense(token: string, env: Env, deps: AuthDeps): Promise
   // The server plan is an uppercase enum (`PLUS`, `BELIEVER`); store it folded
   // so nothing downstream has to guess the casing, as the reference does too.
   const plan = typeof payload.plan === "string" ? payload.plan.toLowerCase() : UNKNOWN_PLAN;
+  // The plan is carried, never judged here. `UNKNOWN_PLAN` is not in
+  // PUBLISHING_PLANS, so a response whose plan we cannot read authenticates but
+  // cannot publish — the safe direction.
   return { status: "valid", plan };
 }
 

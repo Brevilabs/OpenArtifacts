@@ -1,6 +1,13 @@
 import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { authenticateRequest, parseBearerToken, resolvePublisher } from "../src/auth.js";
+import {
+  authenticateRequest,
+  INELIGIBLE_PLAN,
+  mayPublish,
+  parseBearerToken,
+  publisherErrorResponse,
+  resolvePublisher,
+} from "../src/auth.js";
 import { LICENSE_CACHE_TTL_MS, type Env } from "../src/config.js";
 import type { PublisherRow, PublisherStore } from "../src/db.js";
 import worker from "../src/index.js";
@@ -39,7 +46,7 @@ function memoryStore(...seed: PublisherRow[]): MemoryStore {
 
 const validatedAt = (msAgo: number): PublisherRow => ({
   key_hash: KEY_HASH,
-  plan: "plus",
+  plan: "believer",
   validated_at: NOW - msAgo,
 });
 
@@ -77,7 +84,7 @@ const trpcError = (code: string, httpStatus: number) => () =>
     { status: httpStatus },
   );
 
-const validPlus = answers({ isValid: true, plan: "plus", backendAccess: true });
+const validBeliever = answers({ isValid: true, plan: "believer", backendAccess: true });
 
 const headerOf = (init: RequestInit, name: string) =>
   new Headers(init.headers as HeadersInit).get(name);
@@ -108,21 +115,21 @@ describe("parseBearerToken", () => {
 describe("resolvePublisher — a valid key", () => {
   it("resolves to the key's SHA-256 and caches the validation", async () => {
     const store = memoryStore();
-    const license = licenseServer(validPlus);
+    const license = licenseServer(validBeliever);
 
     const result = await resolvePublisher(KEY, env(), { store, now, fetch: license.fetch });
 
-    expect(result).toEqual({ ok: true, publisher: { id: KEY_HASH, plan: "plus" } });
+    expect(result).toEqual({ ok: true, publisher: { id: KEY_HASH, plan: "believer" } });
     expect(license.calls).toHaveLength(1);
     expect(store.rows.get(KEY_HASH)).toEqual({
       key_hash: KEY_HASH,
-      plan: "plus",
+      plan: "believer",
       validated_at: NOW,
     });
   });
 
   it("asks the license server with our own credential, not the publisher's key", async () => {
-    const license = licenseServer(validPlus);
+    const license = licenseServer(validBeliever);
 
     await resolvePublisher(KEY, env(), { store: memoryStore(), now, fetch: license.fetch });
 
@@ -135,7 +142,7 @@ describe("resolvePublisher — a valid key", () => {
   });
 
   it("tolerates a trailing slash on LICENSE_API_URL", async () => {
-    const license = licenseServer(validPlus);
+    const license = licenseServer(validBeliever);
 
     await resolvePublisher(KEY, env({ LICENSE_API_URL: "https://license.test/" }), {
       store: memoryStore(),
@@ -151,7 +158,7 @@ describe("resolvePublisher — a valid key", () => {
     const result = await resolvePublisher(KEY, env(), {
       store,
       now,
-      fetch: licenseServer(validPlus).fetch,
+      fetch: licenseServer(validBeliever).fetch,
     });
 
     expect(JSON.stringify([...store.rows.values()])).not.toContain(KEY);
@@ -166,18 +173,18 @@ describe("resolvePublisher — a valid key", () => {
     const result = await resolvePublisher(KEY, env(), {
       store,
       now,
-      fetch: licenseServer(answers({ isValid: true, plan: "PLUS", backendAccess: true })).fetch,
+      fetch: licenseServer(answers({ isValid: true, plan: "BELIEVER", backendAccess: true })).fetch,
     });
 
-    expect(result).toEqual({ ok: true, publisher: { id: KEY_HASH, plan: "plus" } });
-    expect(store.rows.get(KEY_HASH)?.plan).toBe("plus");
+    expect(result).toEqual({ ok: true, publisher: { id: KEY_HASH, plan: "believer" } });
+    expect(store.rows.get(KEY_HASH)?.plan).toBe("believer");
   });
 
   it("treats a missing backendAccess as granted, so a valid key still resolves", async () => {
     const result = await resolvePublisher(KEY, env(), {
       store: memoryStore(),
       now,
-      fetch: licenseServer(answers({ isValid: true, plan: "plus" })).fetch,
+      fetch: licenseServer(answers({ isValid: true, plan: "believer" })).fetch,
     });
 
     expect(result.ok).toBe(true);
@@ -187,11 +194,11 @@ describe("resolvePublisher — a valid key", () => {
 describe("resolvePublisher — the one-hour cache", () => {
   it("makes no license-server call for a key validated within the hour", async () => {
     const store = memoryStore(validatedAt(59 * 60 * 1000));
-    const license = licenseServer(validPlus);
+    const license = licenseServer(validBeliever);
 
     const result = await resolvePublisher(KEY, env(), { store, now, fetch: license.fetch });
 
-    expect(result).toEqual({ ok: true, publisher: { id: KEY_HASH, plan: "plus" } });
+    expect(result).toEqual({ ok: true, publisher: { id: KEY_HASH, plan: "believer" } });
     expect(license.calls).toHaveLength(0);
   });
 
@@ -212,7 +219,7 @@ describe("resolvePublisher — the one-hour cache", () => {
 
   it("revalidates a key whose cached validation has long expired", async () => {
     const store = memoryStore(validatedAt(25 * 60 * 60 * 1000));
-    const license = licenseServer(validPlus);
+    const license = licenseServer(validBeliever);
 
     await resolvePublisher(KEY, env(), { store, now, fetch: license.fetch });
 
@@ -284,6 +291,122 @@ describe("resolvePublisher — a key the license server rejects", () => {
   });
 });
 
+describe("a plan that may not publish", () => {
+  const validPlus = answers({ isValid: true, plan: "plus", backendAccess: true });
+
+  it("still authenticates — entitlement is not authentication", async () => {
+    const store = memoryStore();
+
+    const result = await resolvePublisher(KEY, env(), {
+      store,
+      now,
+      fetch: licenseServer(validPlus).fetch,
+    });
+
+    // The key is real, so it resolves to a publisher and gets a row like any
+    // other. What it cannot do is publish, and that is the router's call.
+    expect(result).toEqual({ ok: true, publisher: { id: KEY_HASH, plan: "plus" } });
+    expect(store.rows.get(KEY_HASH)?.plan).toBe("plus");
+  });
+
+  it("carries a plan it cannot read as one that may not publish", async () => {
+    const result = await resolvePublisher(KEY, env(), {
+      store: memoryStore(),
+      now,
+      // `isValid` is readable, `plan` is not.
+      fetch: licenseServer(answers({ isValid: true, backendAccess: true })).fetch,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(mayPublish(result.publisher.plan)).toBe(false);
+  });
+
+  it("writes a downgrade back through the ordinary valid path", async () => {
+    const store = memoryStore(validatedAt(LICENSE_CACHE_TTL_MS));
+
+    await resolvePublisher(KEY, env(), { store, now, fetch: licenseServer(validPlus).fetch });
+
+    // No special case needed: a downgraded publisher authenticates, so the row
+    // is refreshed like anyone else's and the stale `believer` is gone.
+    expect(store.rows.get(KEY_HASH)).toEqual({
+      key_hash: KEY_HASH,
+      plan: "plus",
+      validated_at: NOW,
+    });
+  });
+
+  it("refuses with the frozen code, and says why without naming the DB enum", async () => {
+    const response = publisherErrorResponse(INELIGIBLE_PLAN);
+
+    expect(response.status).toBe(401);
+    expect(response.headers.get("www-authenticate")).toBe("Bearer");
+    expect(await response.json()).toEqual({
+      error: { code: "unauthorized", message: INELIGIBLE_PLAN.message },
+    });
+    expect(INELIGIBLE_PLAN.message).toContain("lifetime");
+    expect(INELIGIBLE_PLAN.message).not.toContain("not valid");
+    // `BELIEVER` is the license server's DB enum and the plan is *sold* as
+    // Supporter, so neither word means anything to the person reading this.
+    expect(INELIGIBLE_PLAN.message).not.toMatch(/believer/i);
+  });
+});
+
+describe("the gate is on publishing, not on the publisher", () => {
+  const ctx = {} as ExecutionContext;
+
+  /** A warm row, so auth resolves off the cache and never touches the network. */
+  const seeded = (plan: string) => {
+    const db = fakeD1();
+    db.rows.set(KEY_HASH, { key_hash: KEY_HASH, plan, validated_at: Date.now() });
+    return db;
+  };
+
+  const call = (method: string, path: string, db: D1Database) =>
+    worker.fetch(
+      new Request(`https://symposium.workers.dev/api/v1${path}`, {
+        method,
+        headers: { authorization: `Bearer ${KEY}`, "content-type": "application/json" },
+        body: method === "POST" || method === "PUT" ? JSON.stringify({ html: "<p>x</p>" }) : null,
+      }),
+      env({ DB: db, SERVING_HOST: "", API_HOST: "" }),
+      ctx,
+    );
+
+  it("401s POST and PUT for a plan that may not publish", async () => {
+    for (const [method, path] of [
+      ["POST", "/docs"],
+      ["PUT", "/docs/9f2k4mvq7t0xbz3ncrhs5wda1p"],
+    ] as const) {
+      const res = await call(method, path, seeded("plus"));
+
+      expect(res.status).toBe(401);
+      await expect(res.json()).resolves.toEqual({
+        error: { code: "unauthorized", message: INELIGIBLE_PLAN.message },
+      });
+    }
+  });
+
+  // Unshare is the half of this that matters most, and it is covered in
+  // test/manage.test.ts against real D1 and R2: a doc published while entitled,
+  // deleted after the downgrade, its objects gone and its url answering 410.
+  // Asserting it here would mean teaching `fakeD1` what a soft delete returns,
+  // which is a claim about D1 rather than about the gate.
+
+  it("leaves the doc list working for a plan that may not publish", async () => {
+    const res = await call("GET", "/docs", seeded("plus"));
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({ docs: [] });
+  });
+
+  it("lets an entitled plan past the gate", async () => {
+    const res = await call("GET", "/docs", seeded("believer"));
+
+    expect(res.status).toBe(200);
+  });
+});
+
 describe("resolvePublisher — the license server is down", () => {
   const unreachable = [
     ["the connection fails", () => Promise.reject(new Error("connect ECONNREFUSED"))],
@@ -308,7 +431,7 @@ describe("resolvePublisher — the license server is down", () => {
         fetch: licenseServer(reply as () => Response).fetch,
       });
 
-      expect(result).toEqual({ ok: true, publisher: { id: KEY_HASH, plan: "plus" } });
+      expect(result).toEqual({ ok: true, publisher: { id: KEY_HASH, plan: "believer" } });
     });
 
     it(`refuses an unknown key when ${label}`, async () => {
@@ -343,7 +466,7 @@ describe("resolvePublisher — the license server is down", () => {
 
 describe("resolvePublisher — license env not configured", () => {
   it("never calls out and refuses an unknown key", async () => {
-    const license = licenseServer(validPlus);
+    const license = licenseServer(validBeliever);
 
     const result = await resolvePublisher(KEY, env({ LICENSE_API_KEY: "" }), {
       store: memoryStore(),
@@ -359,7 +482,7 @@ describe("resolvePublisher — license env not configured", () => {
     const result = await resolvePublisher(KEY, env({ LICENSE_API_URL: "" }), {
       store: memoryStore(validatedAt(0)),
       now,
-      fetch: licenseServer(validPlus).fetch,
+      fetch: licenseServer(validBeliever).fetch,
     });
 
     expect(result.ok).toBe(true);
@@ -376,14 +499,14 @@ describe("authenticateRequest", () => {
     const result = await authenticateRequest(request(`Bearer ${KEY}`), env(), {
       store: memoryStore(),
       now,
-      fetch: licenseServer(validPlus).fetch,
+      fetch: licenseServer(validBeliever).fetch,
     });
 
-    expect(result).toEqual({ ok: true, publisher: { id: KEY_HASH, plan: "plus" } });
+    expect(result).toEqual({ ok: true, publisher: { id: KEY_HASH, plan: "believer" } });
   });
 
   it("fails on a missing or malformed header without consulting anything", async () => {
-    const license = licenseServer(validPlus);
+    const license = licenseServer(validBeliever);
     // A store that would throw if it were read: the header check must come first.
     const store = {
       read: () => Promise.reject(new Error("must not be read")),
@@ -478,7 +601,7 @@ describe("/api/v1 is gated on a publisher", () => {
   });
 
   it("lets a valid key through to the handlers and records the publisher", async () => {
-    vi.stubGlobal("fetch", licenseServer(validPlus).fetch);
+    vi.stubGlobal("fetch", licenseServer(validBeliever).fetch);
     const db = fakeD1();
 
     const res = await call(`Bearer ${KEY}`, db);
@@ -488,7 +611,7 @@ describe("/api/v1 is gated on a publisher", () => {
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toEqual({ docs: [] });
     // The row every doc insert hangs its foreign key off.
-    expect(db.rows.get(KEY_HASH)?.plan).toBe("plus");
+    expect(db.rows.get(KEY_HASH)?.plan).toBe("believer");
   });
 
   it("does not 401 a known publisher when the license server is down", async () => {
@@ -500,7 +623,7 @@ describe("/api/v1 is gated on a publisher", () => {
     // Real wall clock here: the worker path uses the real `Date.now`.
     db.rows.set(KEY_HASH, {
       key_hash: KEY_HASH,
-      plan: "plus",
+      plan: "believer",
       validated_at: Date.now() - 5 * 60 * 60 * 1000,
     });
 

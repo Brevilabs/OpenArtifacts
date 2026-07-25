@@ -28,7 +28,7 @@ async function sha256Hex(value: string): Promise<string> {
 async function seedPublisher(key: string): Promise<string> {
   const id = await sha256Hex(key);
   await env.DB.prepare(
-    "INSERT OR REPLACE INTO publishers (key_hash, plan, validated_at) VALUES (?, 'plus', ?)",
+    "INSERT OR REPLACE INTO publishers (key_hash, plan, validated_at) VALUES (?, 'believer', ?)",
   )
     .bind(id, Date.now())
     .run();
@@ -566,5 +566,69 @@ describe("paging through the list", () => {
     // resume step would walk straight into them.
     expect(await walk(KEY_A, 2)).toEqual([4, 3, 2, 1].map((i) => seededId(i)));
     expect(await walk(KEY_B, 3)).toEqual([8, 7, 6, 5].map((i) => seededId(i)));
+  });
+});
+
+/**
+ * The entitlement gate is per *operation*. A publisher who was entitled when
+ * they published and has since been downgraded keeps every power over what they
+ * already put on the internet — most of all the power to take it down.
+ */
+describe("a publisher whose plan may no longer publish", () => {
+  /** Downgrade in place, with the cache left warm so no license server is reached. */
+  const downgrade = (publisher: string) =>
+    env.DB.prepare("UPDATE publishers SET plan = 'plus', validated_at = ? WHERE key_hash = ?")
+      .bind(Date.now(), publisher)
+      .run();
+
+  it("can still unshare a doc it published while it was entitled", async () => {
+    const created = await publish(KEY_A, "Published while entitled");
+    await downgrade(publisherA);
+
+    expect((await del(KEY_A, created.docId)).status).toBe(204);
+
+    // The bytes are what had to disappear. Refusing the delete would have left
+    // this doc readable by anyone holding the link, with its author locked out
+    // of withdrawing it — worse than never letting them publish it.
+    expect(await objectKeys(created.docId)).toEqual([]);
+    expect((await read(`/d/${created.docId}`)).status).toBe(410);
+  });
+
+  it("can still list what it has published, which is how it finds what to unshare", async () => {
+    const created = await publish(KEY_A, "Still mine");
+    await downgrade(publisherA);
+
+    const { docs } = await listed(await list(KEY_A));
+
+    expect(docs.map((doc) => doc.docId)).toEqual([created.docId]);
+  });
+
+  it("cannot publish a new doc", async () => {
+    await downgrade(publisherA);
+
+    const response = await send("POST", "/api/v1/docs", KEY_A, { html: page("<p>new</p>") });
+
+    expect(response.status).toBe(401);
+    expect(response.headers.get("www-authenticate")).toBe("Bearer");
+    const body = (await response.json()) as { error: { code: string; message: string } };
+    // The frozen code, so a client matching on `code` is unaffected; only the
+    // message carries the distinction.
+    expect(body.error.code).toBe("unauthorized");
+    expect(body.error.message).toContain("lifetime");
+    expect(body.error.message).not.toMatch(/believer/i);
+  });
+
+  it("cannot push a new version over a doc it already owns", async () => {
+    const created = await publish(KEY_A, "Frozen at v1");
+    await downgrade(publisherA);
+
+    const response = await send("PUT", `/api/v1/docs/${created.docId}`, KEY_A, {
+      html: page("<p>v2</p>"),
+    });
+
+    expect(response.status).toBe(401);
+    // Unchanged: update is publishing, so the public page still serves v1.
+    expect(await objectKeys(created.docId)).toEqual([versionObjectKey(created.docId, 1)]);
+    expect((await docRow(created.docId))?.latest_version).toBe(1);
   });
 });
