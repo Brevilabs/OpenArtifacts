@@ -44,7 +44,7 @@ npx wrangler secret put LICENSE_API_KEY
 npx wrangler deploy
 
 # 6. Check what just shipped, end to end.
-SYMPOSIUM_LICENSE_KEY=<a real Believer key> \
+SYMPOSIUM_LICENSE_KEY=<a real lifetime-tier key> \
   scripts/smoke.sh https://symposium.<subdomain>.workers.dev
 ```
 

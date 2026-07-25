@@ -316,8 +316,11 @@ describe("resolvePublisher — a plan that may not publish", () => {
 
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.message).toContain("Believer");
+    expect(result.message).toContain("lifetime");
     expect(result.message).not.toContain("not valid");
+    // `BELIEVER` is the license server's DB enum and the plan is *sold* as
+    // Supporter, so neither word means anything to the person reading this.
+    expect(result.message).not.toMatch(/believer/i);
   });
 
   it("answers 401 with the frozen code, so only the message is new", async () => {

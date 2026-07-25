@@ -151,10 +151,15 @@ export async function resolvePublisher(
       // No row write: an entitled publisher is what a `publishers` row means.
       // The message names the real reason, because telling a paying Plus
       // subscriber their key "is not valid" is both false and a support ticket.
+      //
+      // "lifetime", not "Believer": `BELIEVER` is the license server's database
+      // enum, and the plan customers actually bought is sold as *Supporter*.
+      // Naming the enum here would print a word the reader has never seen. This
+      // mismatch is deliberate — do not "fix" it to match PUBLISHING_PLANS.
       return {
         ok: false,
         reason: "ineligible_plan",
-        message: "Publishing is currently limited to Believer license holders.",
+        message: "Publishing is currently limited to lifetime license holders.",
       };
 
     case "unreachable":

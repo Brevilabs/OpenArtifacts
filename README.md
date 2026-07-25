@@ -35,12 +35,12 @@ reachable on the internet until someone runs [Deploying](docs/deploying.md).
   stored files are destroyed. Copies already sitting in someone's browser cache
   can't be recalled — no design can do that.
 - **See your docs.** List everything you've published, newest first.
-- **Publishing is gated to Believers.** Phase 1 is deliberately narrow: the
-  lifetime tier is a small, known group, which is the right size of audience for
-  the first public-hosting surface we run. A current Plus key authenticates and
-  is still refused, and is told why. Keys are checked against the existing
-  license server and the answer is cached for an hour, so a license-server outage
-  doesn't stop someone who has published before.
+- **Publishing is gated to lifetime license holders.** Phase 1 is deliberately
+  narrow: the lifetime tier is a small, known group, which is the right size of
+  audience for the first public-hosting surface we run. A current Plus key
+  authenticates and is still refused, and is told why. Keys are checked against
+  the existing license server and the answer is cached for an hour, so a
+  license-server outage doesn't stop someone who has published before.
 - **Limits that stop abuse, not people.** 10MB per doc, 100 pushes a day, 500
   docs — generous enough that a real user never notices.
 
@@ -66,7 +66,7 @@ Roughly in order. Nothing below is started.
   there is a lot.
 - **Keeping old versions from piling up.** Every push is kept forever today.
   Fine for people, less fine once agents push on every edit.
-- **Opening publishing beyond Believers.** Plus first, then a standalone
+- **Opening publishing beyond lifetime holders.** Plus first, then a standalone
   subscription around $2.99/mo for people who don't use Copilot at all. Widening
   it is adding a string to one set in `src/auth.ts`, so the gate moves when the
   abuse tooling and the support load say it can, not when the code is ready.

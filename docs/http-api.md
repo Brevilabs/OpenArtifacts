@@ -37,8 +37,8 @@ Only the key's SHA-256 is ever stored; the raw key is never persisted or logged.
 A publisher *is* that hash, so the same key always sees the same docs.
 
 **A valid key is not sufficient.** Publishing requires an entitled plan, and in
-phase 1 that is **Believer only**: a current Plus key authenticates and is still
-refused. The refusal is `401 unauthorized` like every other auth failure, so no
+phase 1 that is **the lifetime tier only** (`BELIEVER` on the license server,
+sold as Supporter): a current Plus key authenticates and is still refused. The refusal is `401 unauthorized` like every other auth failure, so no
 client change is needed — only the human-readable `message` distinguishes it.
 Widening the entitled set later is a server-side change with no client release.
 
