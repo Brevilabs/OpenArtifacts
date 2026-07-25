@@ -10,12 +10,12 @@ status: draft
 
 # symposium.md - Business Feasibility - Cost at Scale
 
-Companion to [[Agent-First Docs - Product Positioning]]. That doc argues *why* the product should exist. This one asks a colder question: **can we afford to give the wedge away for free, and does the cost curve stay sane from 1k to 100k to 1M users?**
+Companion to [[Agent-First Docs - Product Positioning]]. That doc argues *why* the product should exist. This one asks a colder question: **what does it cost to serve, and does the cost curve stay sane from 1k to 100k to 1M users?** (Pricing was revised on 2026-07-25: publishing is paid, reading is free. See §8. Sections written against the earlier free-share plan are flagged where it matters.)
 
 Scope of the launch product being costed: **one-click sharing from Copilot for Obsidian. Push a local md/html file, get a public HTML page on the internet. No accounts for readers, no permissions, no comments.** Later phases (access control, comments, agent APIs) are costed as deltas.
 
 > [!abstract] Verdict up front
-> This is one of the cheapest product categories per user that exists. Serving versioned static HTML behind a CDN costs fractions of a cent per user per month. At 1k users the infra bill is under $50/mo; at 100k it is a few hundred; at 1M it is low thousands, which is a rounding error next to even one salary. **Dollars are not the feasibility risk. The two real cost centers are (1) abuse handling on a free public-hosting surface and (2) founder time.** Both are manageable if designed for on day one, and the category has multiple existence proofs of solo operators running it profitably.
+> This is one of the cheapest product categories per user that exists. Serving versioned static HTML behind a CDN costs fractions of a cent per user per month. At 1k users the infra bill is under $50/mo; at 100k it is a few hundred; at 1M it is low thousands, which is a rounding error next to even one salary. **Dollars are not the feasibility risk. The two real cost centers are (1) abuse handling on a public-hosting surface and (2) founder time.** Both are manageable if designed for on day one, and the category has multiple existence proofs of solo operators running it profitably.
 
 ---
 
@@ -54,7 +54,7 @@ Key modeling point: because readers need no accounts, **cost scales with publish
 
 ## 3. Cost centers by phase
 
-### Phase 1 - public share (the free Copilot wedge)
+### Phase 1 - public share (the Copilot wedge)
 
 | Cost center | What drives it | How big |
 |---|---|---|
@@ -63,7 +63,7 @@ Key modeling point: because readers need no accounts, **cost scales with publish
 | Compute (render + serve) | push-time md→HTML render, version diff | Negligible: rendering is milliseconds of CPU per push; serving is cache hits. Workers paid plan $5/mo baseline |
 | Metadata DB | pointer index (see section 6) | D1, effectively $0 at this scale; content lives in R2, not the DB |
 | Auth (publishers only) | Copilot users pushing | Stateless signed sessions + a D1 keys table, ~$0; do NOT use per-MAU pricing like Clerk ($0.02/MAU = $1.8k/mo at 100k, a self-inflicted wound) |
-| **Abuse / trust & safety** | free anonymous-ish public hosting | **The real one. See section 5** |
+| **Abuse / trust & safety** | public hosting of user-uploaded HTML | **The real one. See section 5.** The paid publishing gate (§8) lowers the rate; [serving-domain.md](serving-domain.md) is why it does not lower the blast radius |
 | Legal boilerplate | ToS, privacy, DMCA agent ($6 registration) | One-time, small |
 
 ### Phase 2 delta - access control
@@ -100,7 +100,7 @@ Infra estimates assume the cheap-by-construction stack (section 6). Ranges are h
 | Email, domains (product + sacrificial serving domain), misc | $10-20 |
 | **Total** | **$15-35/mo** |
 
-Effectively free. The entire cost of this stage is founder time. This matters strategically: **the wedge can run indefinitely without revenue pressure**, which is exactly what a "must stand alone as a good product" step needs.
+Effectively free. The entire cost of this stage is founder time. This matters strategically: **the wedge can run indefinitely without revenue pressure**, which is exactly what a "must stand alone as a good product" step needs. It also means the $2.99 publishing price in §8 is set by what feels trivial to a user, not by what the infrastructure costs.
 
 ### ~100,000 users
 
@@ -205,7 +205,7 @@ Phase 1 (public share only) could genuinely ship with zero D1: slug uniqueness v
 - **Every D1 row is derivable by scanning R2 manifests.** The backup of the database is R2, not a database dump. A DB that can be regenerated from the content store is not a system of record, it is a cache with a schema - if it corrupts or we outgrow it, re-scan and rebuild.
 - **Stateless sessions** (signed cookies / JWTs): no session table; D1 is touched at login and key creation, never per-request.
 - **Flat-fee dependencies only.** The killer at scale is per-MAU and per-seat pricing anywhere in the serving path (auth, analytics, feature flags). The Cloudflare bundle satisfies this by construction; hold the line on anything added later.
-- **Quotas from day one**: e.g. free tier ~100 docs / 1GB / a pushes-per-day ceiling, enforced in the DO. Not to monetize - to cap the hoarding and abuse tails. Generous enough that no legitimate Copilot user ever hits them.
+- **Quotas from day one**: e.g. ~100 docs / 1GB / a pushes-per-day ceiling, enforced in the DO. Not to monetize - to cap the hoarding and abuse tails. Generous enough that no legitimate publisher ever hits them. These apply to paying publishers too; a paid gate lowers the abuse rate, it does not remove the ceiling.
 - **Vendor concentration is the accepted trade.** All-Cloudflare is a single point of failure and a lock-in bet; the mitigation is that the entire product state is a set of portable HTML files and JSON manifests in R2-compatible (S3-API) storage, and the D1 layer is rebuildable. Migrating off is copying files, not migrating a database.
 
 ---
@@ -223,15 +223,54 @@ Outline is the nearest existing product ([[Agent-First Docs - Product Positionin
 
 Right use of Outline: reference implementation and the benchmark to beat on anchors, resolve, and sharing. Phase 1's scope (push, render, mint version, serve from CDN) is genuinely less work to build than bending Outline into this shape.
 
-## 8. When free stops being free, and what pays for it
+## 8. Who pays, and for what
 
-The free public-share tier is sustainable *forever* at these COGS, which is the point: it is distribution, funded by pocket change. The paid line appears exactly where the phase roadmap adds cost and value simultaneously:
+**Publishing is paid. Reading is free and always will be.** That split is the
+whole pricing model, and it follows the cost curve: readers are cheap to serve
+because R2 has no egress fees, while publishers are the ones who consume storage,
+create abuse risk, and get the value.
 
-- **Free forever:** public one-click share, generous quotas. (This is the top of funnel; charging for it would kill the wedge.)
-- **Paid (individual, ~$5-8/mo, anchored by Obsidian Publish's $8):** access control (private links, email-gated readers), custom domain, higher quotas, indexing opt-in. Access control as the first paid feature is the classic and correct gate: it is the first thing a *serious* user needs and the first phase that adds real serving complexity.
-- **Paid (team, later):** shared spaces, org identity, the agent-approval workflows from the positioning doc. This is where Notion-class ARPU lives if the thesis holds.
+*Revised 2026-07-25. An earlier version of this section made public sharing free
+forever and gated access control at $5-8/mo. That is no longer the plan — see
+"what this costs us" below, which is the honest bill for the change.*
 
-Break-even arithmetic at 100k users: ~$500/mo worst-case infra needs ~65 paying individuals at $8. That is a 0.065% conversion requirement. Any product with retention clears that by an order of magnitude; if this one can't, the problem was never cost.
+- **Free forever:** reading. No account, no sign-in, nothing to install. This is
+  not a tier, it is a property of the product.
+- **Paid to publish (~$2.99/mo):** the price is deliberately below the threshold
+  where anyone deliberates. It is meant to read as trivially cheap rather than as
+  a purchase decision, and to sit far under Obsidian Publish's $8 so it never
+  invites the comparison.
+- **Copilot Plus** continues to include publishing. The cheap standalone tier is
+  how someone who does not use Copilot gets in, not a downgrade for someone who
+  does.
+- **Paid (team, later):** shared spaces, org identity, the agent-approval
+  workflows from the positioning doc. This is where Notion-class ARPU lives if the
+  thesis holds.
+
+Break-even arithmetic at 100k readers: ~$500/mo worst-case infra needs ~170
+publishers at $2.99. Note that this is a much easier number than it looks,
+because publishers are a small fraction of readers in any sharing product — 170
+paying publishers can carry a reader population two or three orders of magnitude
+larger.
+
+### What this costs us, stated plainly
+
+A publishing gate is a distribution tax. The positioning doc's wedge runs
+*share, then comment, then converge*, and the first step is the one that spreads
+— every shared document is an advert seen by people who do not have the product.
+Charging for step one throttles exactly that. $2.99 is small in absolute terms and
+still infinitely more than free, because the friction is the card, not the
+amount.
+
+The compensating argument is that a paid gate is also the cheapest abuse control
+available. It puts a real identity behind every publisher and gives us an account
+to terminate, which matters for a service whose core risk is a bad document
+poisoning a domain ([serving-domain.md](serving-domain.md)). It does not remove
+the need for a separate serving domain — see that doc for why one incident is
+enough regardless of rate — but it makes incidents rarer.
+
+Worth revisiting if publisher growth stalls, since the free-share wedge is the
+strategy this doc was originally written to cost.
 
 ---
 
