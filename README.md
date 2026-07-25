@@ -47,12 +47,14 @@ Roughly in order. Nothing below is started.
 - **The Obsidian side.** A right-click "share" in Copilot that calls this API and
   remembers the doc's id in the note. Without it, the only way to publish is
   `curl` — this is the next thing to build.
-- **A real domain, and actual caching.** Today's `workers.dev` url works but
+- **Real domains, and actual caching.** Today's `workers.dev` url works but
   bypasses Cloudflare's cache, so every read hits the server. A domain is only
   half of the fix — Cloudflare does not cache HTML by default, so it also needs
-  a cache rule, and then deletes have to purge the cache. Real domains also let
-  user content live somewhere separate from the brand, so a bad doc can't damage
-  `symposium.md`'s reputation.
+  a cache rule, and then deletes have to purge the cache. This is also where
+  documents move off the brand domain onto `symposium.site`, so that one bad
+  upload can't get `symposium.md` flagged by Google Safe Browsing.
+  [`docs/serving-domain.md`](docs/serving-domain.md) explains why that split
+  can't be added later.
 - **Backups that don't depend on the database.** Right now the database is the
   only record of who owns a doc and what it's called. The plan is for each doc to
   carry its own description alongside its files, so the database could be rebuilt
@@ -60,8 +62,12 @@ Roughly in order. Nothing below is started.
   there is a lot.
 - **Keeping old versions from piling up.** Every push is kept forever today.
   Fine for people, less fine once agents push on every edit.
-- **Publishing for free users.** Only Plus license holders can publish, which
-  suits a design-partner launch and contradicts the free-wedge thesis long-term.
+- **A cheap way to publish without Copilot Plus.** Publishing stays paid —
+  reading is free and always will be, but putting a document up is not. The plan
+  is a standalone subscription around $2.99/mo, priced to be beneath deliberation
+  rather than to cover costs, which it exceeds many times over. Free publishing
+  is not on the roadmap. [`docs/cost-at-scale.md`](docs/cost-at-scale.md) §8 has
+  the reasoning, including what the gate costs us in distribution.
 - **Then the actual product**: comments anchored to passages, agents drafting
   them for a human to approve, and version-to-version diffs. That is the wedge in
   [`docs/positioning.md`](docs/positioning.md) — share, then comment, then
@@ -85,6 +91,7 @@ lists the ones that bind day to day.
 | --- | --- |
 | [HTTP API](docs/http-api.md) | Every endpoint, in full. The frozen contract Obsidian Copilot is built against. |
 | [Hosting](docs/hosting.md) | How this runs on Cloudflare. **Start here if you know Vercel but not Workers.** |
+| [Serving domain](docs/serving-domain.md) | Why user content lives on `symposium.site` and never on the brand domain. |
 | [Deploying](docs/deploying.md) | Provisioning the resources and shipping. |
 | [Development](docs/development.md) | Running it locally, including the license-server workaround. |
 | [Comments](docs/comments.md) | Design sketch for the next step of the product. Not planned, not built. |

@@ -50,8 +50,10 @@ in the positioning doc.
 
 These are day-one decisions, not retrofits:
 
-- User content is served from a **sacrificial domain**, separate from the brand
-  domain. Reputation damage must not land on `symposium.md`.
+- User content is served from a **sacrificial domain** (`symposium.site`),
+  separate from the brand domain. Reputation damage must not land on
+  `symposium.md`. `docs/serving-domain.md` is why, and why a subdomain does not
+  substitute. There is no migration path once links are in the wild.
 - Shared docs are **`noindex` + `nofollow` by default**.
 - **Publisher-gated, reader-open**: publishing requires a key; reading requires
   nothing.
