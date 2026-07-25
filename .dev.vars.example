@@ -1,0 +1,15 @@
+# Local secrets for `wrangler dev`. Copy to `.dev.vars` and fill in; `.dev.vars`
+# is gitignored and must stay that way.
+#
+# In a deployed environment these are set with `wrangler secret put <NAME>`, not
+# in wrangler.jsonc.
+
+# Base url of the Brevilabs license server. The worker POSTs
+# {LICENSE_API_URL}/api/trpc/license.validateLicenseKey to validate a publisher's
+# Copilot Plus license key.
+LICENSE_API_URL="https://api.brevilabs.com"
+
+# Our server-side credential for that endpoint — NOT a publisher's license key.
+# Publisher keys arrive per request in the Authorization header and are never
+# stored; only their SHA-256 is.
+LICENSE_API_KEY=""
