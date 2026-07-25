@@ -257,7 +257,7 @@ note travelled to a vault signed in with a different license key. Fall back to
 
 ```bash
 BASE=https://symposium.example.workers.dev
-KEY=<copilot plus license key>
+KEY=<lifetime license key>
 
 # publish
 curl -sS -X POST "$BASE/api/v1/docs" \

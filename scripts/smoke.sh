@@ -23,7 +23,7 @@ BASE_URL=${1:-${SYMPOSIUM_BASE_URL:-}}
 
 usage() {
   cat >&2 <<'EOF'
-usage: SYMPOSIUM_LICENSE_KEY=<copilot plus license key> scripts/smoke.sh <base url>
+usage: SYMPOSIUM_LICENSE_KEY=<lifetime license key> scripts/smoke.sh <base url>
 
   <base url>          e.g. https://symposium.<subdomain>.workers.dev
                       (or set SYMPOSIUM_BASE_URL instead of passing it)
