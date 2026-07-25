@@ -53,12 +53,14 @@ Roughly in order. Nothing below is started.
 - **The Obsidian side.** A right-click "share" in Copilot that calls this API and
   remembers the doc's id in the note. Without it, the only way to publish is
   `curl` — this is the next thing to build.
-- **Real domains, and actual caching.** Today's `workers.dev` url works but
-  bypasses Cloudflare's cache, so every read hits the server. A domain is only
-  half of the fix — Cloudflare does not cache HTML by default, so it also needs
-  a cache rule, and then deletes have to purge the cache. This is also where
-  documents move off the brand domain onto `symposium.site`, so that one bad
-  upload can't get `symposium.md` flagged by Google Safe Browsing.
+- **Real domains, and actual caching.** There is no `workers.dev` url — that
+  route is off, because the router would serve documents on it and a
+  `workers.dev` listing takes every Worker on the account's subdomain with it.
+  So the domains come first: `symposium.site` for documents, `api.symposium.md`
+  for the API, which is also what keeps one bad upload from getting
+  `symposium.md` flagged by Google Safe Browsing. Caching is a separate fix on
+  top — Cloudflare does not cache HTML by default, so it needs a cache rule, and
+  then deletes have to purge the cache.
   [`docs/serving-domain.md`](docs/serving-domain.md) explains why that split
   can't be added later.
 - **Backups that don't depend on the database.** Right now the database is the

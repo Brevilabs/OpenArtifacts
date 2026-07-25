@@ -36,11 +36,15 @@ index: who owns a doc, what it is called, which versions exist, whether it was
 deleted. No document content is ever stored in it.
 
 **workers.dev** — a free subdomain Cloudflare gives every account, so a Worker is
-reachable the moment you deploy without owning a domain or touching DNS. Ours
-will be `symposium.<account-subdomain>.workers.dev`. From the caller's side it
-behaves like any other URL; the catch is that it sits outside Cloudflare's CDN
-cache, so every request reaches your Worker. It is meant for development and
-early testing, which is exactly where Symposium is.
+normally reachable the moment you deploy without owning a domain or touching DNS.
+**Symposium does not use it.** `workers_dev` is `false` in `wrangler.jsonc`,
+because the router falls back to path prefixes on any unrecognized host and would
+therefore serve user documents at `/d/*` on a `workers.dev` url. That domain is
+on the Public Suffix List, so a Safe Browsing listing would apply to
+`<subdomain>.workers.dev` and take every Worker on the account with it — the
+opposite of what the serving domain is for. It also sits outside Cloudflare's CDN
+cache. The tradeoff is that a fresh deploy answers on nothing until a custom
+domain is attached.
 
 Two more names you will meet: **wrangler**, the CLI that does everything
 (`wrangler dev`, `wrangler deploy`, `wrangler d1 …`), and **workerd**, the
@@ -105,7 +109,8 @@ throwaway one, the API on the brand one — for reasons in
 **Nothing is cached today**, and attaching a domain would not by itself change
 that. Two independent reasons:
 
-1. `workers.dev` bypasses the CDN cache entirely.
+1. Nothing is reachable yet — `workers_dev` is off and no custom domain is
+   attached, so there is no hostname for a cache to sit in front of.
 2. Cloudflare does not cache HTML by default *on any domain*. Eligibility is
    decided by file extension — not MIME type, and not the `Cache-Control` the
    Worker sends — and `/d/{docId}` has no extension.

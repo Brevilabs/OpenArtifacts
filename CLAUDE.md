@@ -89,9 +89,12 @@ treat D1 as a system of record, not as a cache.
 
 ## Owed when the real serving domain lands
 
-v0 runs on a `workers.dev` subdomain, which sits outside the CDN cache. Two
-things become true the moment user content moves to a real serving domain, and
-both are easy to miss because nothing fails loudly without them:
+`workers_dev` is `false`, so the Worker is unreachable until a custom domain is
+attached — the router would otherwise serve `/d/*` on a `workers.dev` hostname,
+and that domain is on the Public Suffix List, so a listing against it would take
+every Worker on the account's subdomain. Two things become true the moment user
+content moves to a real serving domain, and both are easy to miss because
+nothing fails loudly without them:
 
 - **Caching needs a Cache Rule, not just a domain.** Cloudflare does not cache
   HTML by default — eligibility is decided by file extension, not MIME type and

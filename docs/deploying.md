@@ -52,12 +52,15 @@ npx wrangler d1 migrations apply symposium --remote
 npx wrangler secret put LICENSE_API_URL     # e.g. https://api.brevilabs.com
 npx wrangler secret put LICENSE_API_KEY
 
-# 5. Ship. This prints the workers.dev url.
+# 5. Ship. The Worker has no hostname yet — see below.
 npx wrangler deploy
 
-# 6. Check what just shipped, end to end.
+# 6. Attach the domains, which is what makes it reachable.
+npx wrangler deploy   # after setting SERVING_HOST and API_HOST
+
+# 7. Check what just shipped, end to end, against the surface that ships.
 SYMPOSIUM_LICENSE_KEY=<a real lifetime-tier key> \
-  scripts/smoke.sh https://symposium.<subdomain>.workers.dev
+  scripts/smoke.sh https://api.symposium.md
 ```
 
 The smoke script publishes a doc, reads it, lists it, deletes it and confirms the
@@ -66,10 +69,23 @@ and no stored bytes behind — only the deleted doc's row, which every delete ke
 so the url can go on answering `410`. It is not part of CI — CI has no key and no
 deployment.
 
-`SERVING_HOST` and `API_HOST` stay empty in `wrangler.jsonc` for v0: one
-workers.dev subdomain hosts both surfaces and the router falls back to path
-prefixes. Filling them in later moves doc serving onto the sacrificial domain
-without a code change — and the `url` the API returns follows automatically.
+## There is no workers.dev url
 
-Later deploys are steps 5 and 6 alone, plus step 3 whenever a migration is added.
+`workers_dev` is `false`, so step 5 uploads a Worker that answers on nothing at
+all. That is deliberate, not an unfinished state.
+
+The router resolves by host and falls back to path prefixes when the host matches
+neither `SERVING_HOST` nor `API_HOST` — so a `workers.dev` hostname would happily
+serve `/d/*`, putting user HTML on a domain we neither control nor can afford to
+sacrifice. `workers.dev` is on the Public Suffix List, which makes
+`<subdomain>.workers.dev` the unit a Safe Browsing listing applies to: one bad
+upload would take down every Worker on the account's subdomain. The serving
+domain exists precisely so the blast radius lands somewhere we chose.
+
+So the order is attach first, test second. Set `SERVING_HOST` and `API_HOST` in
+`wrangler.jsonc`, attach `symposium.site` and `api.symposium.md` as custom
+domains, redeploy, and only then smoke-test. The `url` the API returns follows
+the vars automatically.
+
+Later deploys are steps 5 and 7 alone, plus step 3 whenever a migration is added.
 All changes ship through a pull request; never push to `main`.

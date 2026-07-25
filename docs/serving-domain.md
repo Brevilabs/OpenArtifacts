@@ -79,10 +79,13 @@ insuring against is one occurrence.
 
 ## Status
 
-**Both domains are registered as of 2026-07-25**: `symposium.md` for the brand,
-`symposium.site` for documents. Neither is wired up yet — v0 still serves both
-surfaces from one `workers.dev` subdomain, and the router falls back to path
-prefixes while `SERVING_HOST` and `API_HOST` are empty.
+**Both domains are registered as of 2026-07-25** — `symposium.md` for the brand,
+`symposium.site` for documents — and both are delegated to Cloudflare. Neither is
+attached to the Worker yet, so nothing is reachable: `workers_dev` is `false`
+precisely because the path-prefix fallback would otherwise serve `/d/*` on a
+`workers.dev` url, which is the mistake this whole document argues against. The
+fallback stays in the router for the window where one host var is set and the
+other is not.
 
 Three things become true together when the real domains land, and
 [`CLAUDE.md`](../CLAUDE.md) carries the detail:
