@@ -63,8 +63,8 @@ This is where the Neon mental model will actively mislead you.
 - **One database is single-threaded** and processes queries one at a time. Fine
   for pointer lookups; it is not where you put a heavy analytical query.
 - **It has one primary region.** Reads can be replicated, writes go to one place.
-  For updoc that is irrelevant — reads are served from R2 through the cache and
-  barely touch D1.
+  Low stakes for updoc: a read touches D1 once, for a pointer lookup, and the
+  document itself comes from R2.
 - **Limits:** 10 GB per database, 50,000 databases per account, 1,000 queries per
   request. Pricing is per row read/written, with 25 billion reads and 50 million
   writes included monthly. At updoc's shape this is free indefinitely.
@@ -91,8 +91,8 @@ $0.36/million. A push is a couple of writes; a read is one.
 ## How a request actually flows
 
 ```
-reader → Cloudflare edge → [cache hit? serve, done]
-                         ↓ miss
+reader → Cloudflare edge → [no cache today — see below]
+                         ↓
                        Worker (src/index.ts)
                          ├─ D1: which version, is it deleted?
                          └─ R2: the stored HTML → streamed back
@@ -103,9 +103,25 @@ else — `/api/v1/*` is the publisher API and needs a key, `/d/*` is public
 reading. That split exists so the two can later live on different domains, which
 matters for reasons covered in [cost-at-scale.md](cost-at-scale.md) §5.
 
-One thing to know now: **`workers.dev` URLs are not cached.** Today every read
-reaches the Worker. Caching switches on when a real domain is attached, which is
-a DNS change, not a code change.
+**Nothing is cached today, and a domain alone will not change that.** Two
+separate reasons, and it is worth knowing both because the second one surprises
+people:
+
+1. `workers.dev` URLs bypass the CDN cache entirely.
+2. Cloudflare does not cache HTML by default *even on a real domain*. Default
+   cacheability is decided by file extension, not by MIME type and not by the
+   `Cache-Control` header the Worker sends — and doc urls like `/d/{docId}` have
+   no extension. The origin asking to be cached is not enough.
+
+So getting reads off the origin takes an explicit **Cache Rule** on the serving
+zone (the modern replacement for the "Cache Everything" page rule), or caching
+inside the Worker via the Cache API. Until one of those exists, every read
+invokes the Worker and touches D1 and R2 — which is fine at current volume and
+is why it has not been done yet.
+
+Turning it on brings a second obligation: once responses are cached at the edge,
+deleting a doc has to purge them, or an unshared doc keeps being served. That
+pairing is recorded in `CLAUDE.md`.
 
 ## Config, vars and secrets
 

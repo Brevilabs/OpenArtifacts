@@ -91,11 +91,18 @@ v0 runs on a `workers.dev` subdomain, which sits outside the CDN cache. Two
 things become true the moment user content moves to a real serving domain, and
 both are easy to miss because nothing fails loudly without them:
 
-- **Delete must purge the CDN cache.** Pinned `/v{n}` urls are served
-  `immutable` for a year. With no shared cache in front of the worker that is
-  harmless, but on a cached domain an unshared doc would keep being served from
-  the edge. Wire a purge into `deleteDoc`; the private-cache copies readers
-  already hold are unrecallable by any design, and the README says so.
+- **Caching needs a Cache Rule, not just a domain.** Cloudflare does not cache
+  HTML by default — eligibility is decided by file extension, not MIME type and
+  not the `Cache-Control` the worker sends, and `/d/{docId}` has no extension.
+  Without an explicit Cache Rule on the serving zone (or the Cache API inside the
+  worker), attaching a domain changes nothing and every read still hits D1 and R2.
+- **Then delete must purge that cache.** Pinned `/v{n}` urls are served
+  `immutable` for a year, so the moment there is an edge cache, an unshared doc
+  would keep being served from it. Wire a purge into `deleteDoc` in the same
+  change that turns caching on — the two belong together, and shipping the first
+  without the second is how a withdrawn doc stays readable. The private-cache
+  copies readers already hold are unrecallable by any design, and the README says
+  so.
 - **Set `SERVING_HOST` and `API_HOST`.** The router resolves surface by host
   first and only falls back to path prefixes while both are empty. Leaving them
   unset on a two-domain deployment means `/api/v1` stays reachable on the

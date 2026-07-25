@@ -43,9 +43,11 @@ Roughly in order. Nothing below is started.
 - **The Obsidian side.** A right-click "share" in Copilot that calls this API and
   remembers the doc's id in the note. Without it, the only way to publish is
   `curl` — this is the next thing to build.
-- **A real domain.** Today's `workers.dev` url works but sits outside
-  Cloudflare's cache, so every read hits the server. Real domains also let user
-  content live somewhere separate from the brand, so a bad doc can't damage
+- **A real domain, and actual caching.** Today's `workers.dev` url works but
+  bypasses Cloudflare's cache, so every read hits the server. A domain is only
+  half of the fix — Cloudflare does not cache HTML by default, so it also needs
+  a cache rule, and then deletes have to purge the cache. Real domains also let
+  user content live somewhere separate from the brand, so a bad doc can't damage
   `updoc.md`'s reputation.
 - **Backups that don't depend on the database.** Right now the database is the
   only record of who owns a doc and what it's called. The plan is for each doc to
