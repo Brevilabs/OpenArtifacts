@@ -34,6 +34,28 @@ const LICENSE_TIMEOUT_MS = 5_000;
 /** Plan recorded when the license server validates a key but names no plan. */
 const UNKNOWN_PLAN = "unknown";
 
+/**
+ * The plans entitled to publish. Phase 1 is Believers only.
+ *
+ * This is a product decision rather than a technical one: a lifetime tier is a
+ * small and known population, which is the right blast radius for the first
+ * public-hosting surface we operate. Widening it is adding a string here.
+ *
+ * Lowercase because `validateLicense` folds the license server's uppercase enum
+ * before it gets here, and because `publishers.plan` stores the folded form.
+ */
+const PUBLISHING_PLANS: ReadonlySet<string> = new Set(["believer"]);
+
+/**
+ * Checked everywhere a plan is *read*, not only where the license server hands
+ * one down. A cached `publishers` row is a plan the license server approved at
+ * some point in the past, so the cache would otherwise be an hour-long bypass
+ * for a row written before this gate existed or before a downgrade.
+ */
+function mayPublish(plan: string): boolean {
+  return PUBLISHING_PLANS.has(plan);
+}
+
 export interface Publisher {
   /** SHA-256 hex of the license key. The only publisher identity in the system. */
   id: string;
@@ -45,6 +67,8 @@ export type PublisherFailure =
   | "missing_credentials"
   /** The license server answered, and the answer was no. */
   | "invalid_license"
+  /** The key is real and current, but its plan is not entitled to publish. */
+  | "ineligible_plan"
   /** The license server could not answer and this key has no cached validation. */
   | "license_unavailable";
 
@@ -98,7 +122,11 @@ export async function resolvePublisher(
   const cached = await store.read(id);
   const checkedAt = now();
 
-  if (cached && checkedAt - cached.validated_at < LICENSE_CACHE_TTL_MS) {
+  // An ineligible cached plan deliberately falls through to a live check rather
+  // than short-circuiting: it costs a round trip on a request that is about to
+  // be refused anyway, and it means an upgrade takes effect on the next push
+  // instead of up to an hour later.
+  if (cached && checkedAt - cached.validated_at < LICENSE_CACHE_TTL_MS && mayPublish(cached.plan)) {
     return { ok: true, publisher: { id, plan: cached.plan } };
   }
 
@@ -119,12 +147,26 @@ export async function resolvePublisher(
         message: "That license key is not valid for publishing.",
       };
 
+    case "ineligible":
+      // No row write: an entitled publisher is what a `publishers` row means.
+      // The message names the real reason, because telling a paying Plus
+      // subscriber their key "is not valid" is both false and a support ticket.
+      return {
+        ok: false,
+        reason: "ineligible_plan",
+        message: "Publishing is currently limited to Believer license holders.",
+      };
+
     case "unreachable":
-      if (cached) {
+      if (cached && mayPublish(cached.plan)) {
         // Stale but real. An outage must not lock out a publisher who has
         // published before.
         return { ok: true, publisher: { id, plan: cached.plan } };
       }
+      // A cached *ineligible* plan lands here too, and answers "unavailable"
+      // rather than "not entitled" on purpose: last-known-ineligible is not the
+      // same as confirmed-ineligible, and an outage is not the moment to tell
+      // someone who may have just upgraded that their plan is wrong.
       return {
         ok: false,
         reason: "license_unavailable",
@@ -136,6 +178,10 @@ export async function resolvePublisher(
 const FAILURE_STATUS: Record<PublisherFailure, ErrorCode> = {
   missing_credentials: "unauthorized",
   invalid_license: "unauthorized",
+  // `unauthorized`, not a new code: the contract in docs/http-api.md is frozen,
+  // and `message` is the part of it that is free to change. A client matching
+  // on `code` keeps working; a human reads why.
+  ineligible_plan: "unauthorized",
   // Not the caller's fault and not a credential problem: telling Copilot 401
   // here would make it prompt for a key that is perfectly good.
   license_unavailable: "internal",
@@ -153,6 +199,8 @@ export function publisherErrorResponse(failure: {
 type LicenseCheck =
   | { status: "valid"; plan: string }
   | { status: "denied" }
+  /** Real, current, and not entitled — a different thing from a rejected key. */
+  | { status: "ineligible"; plan: string }
   | { status: "unreachable" };
 
 /** Only an explicit verdict from the license server can deny a key. */
@@ -236,6 +284,10 @@ async function validateLicense(token: string, env: Env, deps: AuthDeps): Promise
   // The server plan is an uppercase enum (`PLUS`, `BELIEVER`); store it folded
   // so nothing downstream has to guess the casing, as the reference does too.
   const plan = typeof payload.plan === "string" ? payload.plan.toLowerCase() : UNKNOWN_PLAN;
+  // A key the license server vouches for is still not necessarily one that may
+  // publish here. `UNKNOWN_PLAN` fails this too, which is the safe direction:
+  // a response we cannot read the plan out of is not an entitlement.
+  if (!mayPublish(plan)) return { status: "ineligible", plan };
   return { status: "valid", plan };
 }
 

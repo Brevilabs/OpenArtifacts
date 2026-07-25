@@ -35,8 +35,11 @@ reachable on the internet until someone runs [Deploying](docs/deploying.md).
   stored files are destroyed. Copies already sitting in someone's browser cache
   can't be recalled — no design can do that.
 - **See your docs.** List everything you've published, newest first.
-- **Publishing is gated to Copilot Plus.** Keys are checked against the existing
-  license server, and the answer is cached for an hour so a license-server outage
+- **Publishing is gated to Believers.** Phase 1 is deliberately narrow: the
+  lifetime tier is a small, known group, which is the right size of audience for
+  the first public-hosting surface we run. A current Plus key authenticates and
+  is still refused, and is told why. Keys are checked against the existing
+  license server and the answer is cached for an hour, so a license-server outage
   doesn't stop someone who has published before.
 - **Limits that stop abuse, not people.** 10MB per doc, 100 pushes a day, 500
   docs — generous enough that a real user never notices.
@@ -63,12 +66,14 @@ Roughly in order. Nothing below is started.
   there is a lot.
 - **Keeping old versions from piling up.** Every push is kept forever today.
   Fine for people, less fine once agents push on every edit.
-- **A cheap way to publish without Copilot Plus.** Publishing stays paid —
-  reading is free and always will be, but putting a document up is not. The plan
-  is a standalone subscription around $2.99/mo, priced to be beneath deliberation
-  rather than to cover costs, which it exceeds many times over. Free publishing
-  is not on the roadmap. [`docs/cost-at-scale.md`](docs/cost-at-scale.md) §8 has
-  the reasoning, including what the gate costs us in distribution.
+- **Opening publishing beyond Believers.** Plus first, then a standalone
+  subscription around $2.99/mo for people who don't use Copilot at all. Widening
+  it is adding a string to one set in `src/auth.ts`, so the gate moves when the
+  abuse tooling and the support load say it can, not when the code is ready.
+  Publishing stays paid either way — reading is free and always will be, and free
+  publishing is not on the roadmap.
+  [`docs/cost-at-scale.md`](docs/cost-at-scale.md) §8 has the reasoning,
+  including what the gate costs us in distribution.
 - **Then the actual product**: comments anchored to passages, agents drafting
   them for a human to approve, and version-to-version diffs. That is the wedge in
   [`docs/positioning.md`](docs/positioning.md) — share, then comment, then

@@ -27,7 +27,7 @@ usage: SYMPOSIUM_LICENSE_KEY=<copilot plus license key> scripts/smoke.sh <base u
 
   <base url>          e.g. https://symposium.<subdomain>.workers.dev
                       (or set SYMPOSIUM_BASE_URL instead of passing it)
-  SYMPOSIUM_LICENSE_KEY   a Copilot Plus license key with a push quota to spare.
+  SYMPOSIUM_LICENSE_KEY   a Believer license key with a push quota to spare.
                       Never passed as an argument, never printed.
 EOF
   exit 2

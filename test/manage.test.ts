@@ -28,7 +28,7 @@ async function sha256Hex(value: string): Promise<string> {
 async function seedPublisher(key: string): Promise<string> {
   const id = await sha256Hex(key);
   await env.DB.prepare(
-    "INSERT OR REPLACE INTO publishers (key_hash, plan, validated_at) VALUES (?, 'plus', ?)",
+    "INSERT OR REPLACE INTO publishers (key_hash, plan, validated_at) VALUES (?, 'believer', ?)",
   )
     .bind(id, Date.now())
     .run();

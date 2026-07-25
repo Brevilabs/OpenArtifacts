@@ -29,7 +29,7 @@ let publisher = "";
 beforeEach(async () => {
   publisher = await sha256Hex(KEY);
   await env.DB.prepare(
-    "INSERT OR REPLACE INTO publishers (key_hash, plan, validated_at) VALUES (?, 'plus', ?)",
+    "INSERT OR REPLACE INTO publishers (key_hash, plan, validated_at) VALUES (?, 'believer', ?)",
   )
     .bind(publisher, Date.now())
     .run();
