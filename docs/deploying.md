@@ -8,7 +8,7 @@ commands are creating.
 
 > **The Worker has not been deployed yet.** Its storage has: on the Brevilabs
 > account, steps 1–3 below are done, and `wrangler.jsonc` already carries the
-> real `database_id`. What is left is steps 4–6. One thing to know going in: D1
+> real `database_id`. What is left is steps 4–8. One thing to know going in: D1
 > is currently the only record of who owns a doc, what it is called, and whether
 > it was deleted, so until per-doc manifests ship, back-ups mean D1's own 30-day
 > Time Travel window rather than "rebuild it from R2". That is fine at low volume
@@ -41,7 +41,9 @@ right one — leave it alone.
 npx wrangler d1 migrations apply symposium --remote
 ```
 
-**Steps 4–6 ship the Worker, and are what is actually outstanding.**
+**Steps 4–8 ship the Worker, and are what is actually outstanding.** Step 7 is
+the one that makes it reachable: `workers_dev` is `false`, so a Worker with no
+custom domain attached answers on nothing at all.
 
 ```bash
 # 4. Credentials for the license server. Both prompt for the value, so neither
@@ -52,12 +54,19 @@ npx wrangler d1 migrations apply symposium --remote
 npx wrangler secret put LICENSE_API_URL     # e.g. https://api.brevilabs.com
 npx wrangler secret put LICENSE_API_KEY
 
-# 5. Ship. This prints the workers.dev url.
+# 5. Ship. The Worker has no hostname yet — see below.
 npx wrangler deploy
 
-# 6. Check what just shipped, end to end.
+# 6. Set SERVING_HOST and API_HOST in wrangler.jsonc, then redeploy. Still
+#    unreachable, which is the point: the hosts go live before any domain does.
+npx wrangler deploy
+
+# 7. Attach symposium.site and api.symposium.md as custom domains. This is what
+#    makes it reachable, and by now the running version already knows the hosts.
+
+# 8. Check what just shipped, end to end, against the surface that ships.
 SYMPOSIUM_LICENSE_KEY=<a real lifetime-tier key> \
-  scripts/smoke.sh https://symposium.<subdomain>.workers.dev
+  scripts/smoke.sh https://api.symposium.md
 ```
 
 The smoke script publishes a doc, reads it, lists it, deletes it and confirms the
@@ -66,10 +75,27 @@ and no stored bytes behind — only the deleted doc's row, which every delete ke
 so the url can go on answering `410`. It is not part of CI — CI has no key and no
 deployment.
 
-`SERVING_HOST` and `API_HOST` stay empty in `wrangler.jsonc` for v0: one
-workers.dev subdomain hosts both surfaces and the router falls back to path
-prefixes. Filling them in later moves doc serving onto the sacrificial domain
-without a code change — and the `url` the API returns follows automatically.
+## There is no workers.dev url
 
-Later deploys are steps 5 and 6 alone, plus step 3 whenever a migration is added.
+`workers_dev` is `false`, so step 5 uploads a Worker that answers on nothing at
+all. That is deliberate, not an unfinished state.
+
+The router resolves by host and falls back to path prefixes when the host matches
+neither `SERVING_HOST` nor `API_HOST` — so a `workers.dev` hostname would happily
+serve `/d/*`, putting user HTML on a domain we neither control nor can afford to
+sacrifice. `workers.dev` is on the Public Suffix List, which makes
+`<subdomain>.workers.dev` the unit a Safe Browsing listing applies to: one bad
+upload would take down every Worker on the account's subdomain. The serving
+domain exists precisely so the blast radius lands somewhere we chose.
+
+So the order is configure, then attach, then test — and the redeploy goes *before*
+the attach, not after. Set `SERVING_HOST` and `API_HOST` in `wrangler.jsonc` and
+redeploy while the Worker is still unreachable, then attach the domains, then
+smoke-test. Attaching first would leave the domains pointing at a version whose
+hosts are empty, and the path-prefix fallback would serve `/d/*` on
+`api.symposium.md` and `/api/v1/*` on `symposium.site` until the redeploy landed
+— the exact split this document argues for, undone for the length of a deploy.
+The `url` the API returns follows the vars automatically.
+
+Later deploys are steps 5 and 8 alone, plus step 3 whenever a migration is added.
 All changes ship through a pull request; never push to `main`.

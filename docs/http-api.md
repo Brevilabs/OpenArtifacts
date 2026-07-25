@@ -9,18 +9,17 @@ repo's source.
 
 ## Surfaces
 
-Two surfaces, which will eventually be two domains:
+Two surfaces on two domains:
 
 | Surface | Paths | Auth | Notes |
 | --- | --- | --- | --- |
 | API | `/api/v1/*` | required | Publisher-facing. JSON in, JSON out. |
 | Serving | `/d/*` | none | Reader-facing. Public HTML. Never sets a cookie. |
 
-In v0 both run on one `workers.dev` subdomain and the path prefix decides which
-is which. Later they split across a brand domain and a sacrificial serving
-domain; when that happens the `url` field returned by a push starts pointing at
-the serving domain, which is the only reason a client should never build a doc
-url itself. **Always use the `url` the API returns.**
+The API is served from `api.symposium.md` and documents from `symposium.site`.
+The `url` field a push returns therefore points at a different host than the one
+the client called, which is the reason a client must never build a doc url
+itself. **Always use the `url` the API returns.**
 
 `GET /health` → `200 {"ok": true}` is reachable on both, unauthenticated.
 
@@ -80,7 +79,7 @@ Any other method or path under `/api/v1` is `404 not_found`.
 
 ```json
 {"docId": "9f2k4mvq7t0xbz3ncrhs5wda1p",
- "url": "https://symposium.example.workers.dev/d/9f2k4mvq7t0xbz3ncrhs5wda1p",
+ "url": "https://symposium.site/d/9f2k4mvq7t0xbz3ncrhs5wda1p",
  "version": 1}
 ```
 
@@ -101,7 +100,7 @@ it does on `POST`.
 
 ```json
 {"docId": "9f2k4mvq7t0xbz3ncrhs5wda1p",
- "url": "https://symposium.example.workers.dev/d/9f2k4mvq7t0xbz3ncrhs5wda1p",
+ "url": "https://symposium.site/d/9f2k4mvq7t0xbz3ncrhs5wda1p",
  "version": 2}
 ```
 
@@ -145,7 +144,7 @@ Only the calling publisher's live docs, newest first by creation time.
 {"docs": [
    {"docId": "9f2k4mvq7t0xbz3ncrhs5wda1p",
     "title": "Q3 architecture review",
-    "url": "https://symposium.example.workers.dev/d/9f2k4mvq7t0xbz3ncrhs5wda1p",
+    "url": "https://symposium.site/d/9f2k4mvq7t0xbz3ncrhs5wda1p",
     "version": 2,
     "updatedAt": 1785000000000}
  ],
@@ -264,19 +263,24 @@ note travelled to a vault signed in with a different license key. Fall back to
 ## A whole round trip
 
 ```bash
-BASE=https://symposium.example.workers.dev
+BASE=https://api.symposium.md
 KEY=<lifetime license key>
 
 # publish
 curl -sS -X POST "$BASE/api/v1/docs" \
   -H "authorization: Bearer $KEY" -H 'content-type: application/json' \
   -d '{"title":"Notes","html":"<!doctype html><html><body><p>hello</p></body></html>"}'
-# → {"docId":"9f2k…","url":"https://…/d/9f2k…","version":1}
+# → {"docId":"9f2k…","url":"https://symposium.site/d/9f2k…","version":1}
 
-curl -sS "$BASE/d/9f2k…"                       # the public page, no auth
+# The document reads use the `url` that push returned, never "$BASE/d/…": the
+# page lives on the serving domain, and the API host resolves every path to the
+# API surface, which would answer these unauthenticated reads 401.
+DOC=https://symposium.site/d/9f2k…
+
+curl -sS "$DOC"                                # the public page, no auth
 curl -sS "$BASE/api/v1/docs?limit=10" -H "authorization: Bearer $KEY"
 curl -sS -X DELETE "$BASE/api/v1/docs/9f2k…" -H "authorization: Bearer $KEY" -i
-curl -sS "$BASE/d/9f2k…" -o /dev/null -w '%{http_code}\n'   # → 410
+curl -sS "$DOC" -o /dev/null -w '%{http_code}\n'            # → 410
 ```
 
 `scripts/smoke.sh` runs exactly this sequence against a deployment and checks

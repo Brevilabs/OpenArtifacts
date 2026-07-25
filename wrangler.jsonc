@@ -23,11 +23,19 @@
     }
   ],
 
-  // Empty in v0: one workers.dev subdomain hosts both surfaces and the router
-  // falls back to path prefixes (/api/v1 vs /d). Filling these in splits the
-  // API onto the brand domain and doc serving onto the sacrificial domain
-  // without a code change — serving of user content never goes on the brand
-  // domain (see docs/cost-at-scale.md §6).
+  // No workers.dev route, ever. `resolveSurface` falls back to path prefixes on
+  // any host matching neither var below, so a workers.dev hostname would serve
+  // /d/* — user HTML on a domain we cannot sacrifice, and one whose Public
+  // Suffix List entry makes a listing hit every Worker on the account.
+  // docs/serving-domain.md is the argument; docs/deploying.md covers the cost,
+  // which is that the Worker has no hostname until a custom domain is attached.
+  "workers_dev": false,
+
+  // Empty until the custom domains are attached, which is what makes the path
+  // prefixes (/api/v1 vs /d) the only routing until then. Filling these in
+  // splits the API onto the brand domain and doc serving onto the sacrificial
+  // domain without a code change — serving of user content never goes on the
+  // brand domain (see docs/cost-at-scale.md §6).
   "vars": {
     "SERVING_HOST": "",
     "API_HOST": ""
