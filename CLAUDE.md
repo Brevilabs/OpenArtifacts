@@ -13,9 +13,10 @@ npm test
 npm run deploy     # wrangler deploy
 ```
 
-`README.md` carries the details these commands need: running against a local
-worker with no license server, and the provisioning sequence a first deploy
-requires. `scripts/smoke.sh` checks a *deployed* worker end to end and is run by
+`docs/development.md` carries the details these commands need — including the
+license-server workaround a local push needs — and `docs/deploying.md` has the
+provisioning sequence a first deploy requires. `docs/hosting.md` explains the
+Cloudflare model itself. `scripts/smoke.sh` checks a *deployed* worker end to end and is run by
 hand — it needs a real license key, so it is deliberately not in CI.
 
 Tests run inside workerd against real R2 and D1 (Miniflare), never against test
@@ -25,8 +26,8 @@ to test failure paths.
 
 ## The HTTP contract is frozen
 
-`README.md` § HTTP API is the contract Obsidian Copilot is written against, and
-it is the source of truth — not this repo's source. Nothing in it changes
+`docs/http-api.md` is the contract Obsidian Copilot is written against, and it
+is the source of truth — not this repo's source. Nothing in it changes
 without a client release: not a status code, not an error `code`, not a field
 name. Adding to it is fine; changing what is there is a cross-repo decision.
 
