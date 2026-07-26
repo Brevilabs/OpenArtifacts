@@ -98,7 +98,7 @@ resource instead of parsing them out of the page.
 nothing at all, and an anonymous reader cannot be attributed. Access control is a
 hard prerequisite, not a parallel track, and it is the larger piece of work.
 [private-sharing.md](private-sharing.md) is the design for it — comments are
-Phase 4 there, blocked on the OAuth reader identity in Phase 3.
+Phase 3 there, blocked on the OAuth reader identity in Phase 2.
 
 ## Open questions
 

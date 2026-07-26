@@ -133,28 +133,28 @@ assume "unshare" means.
 ## Phases
 
 Each phase ships something usable on its own. The ordering is forced by
-dependencies, not preference.
+dependencies, not preference. These numbers are the ones
+[cost-at-scale.md](cost-at-scale.md) costs against, so they are worth keeping in
+step.
+
+> **An earlier plan had a phase between 1 and 2**: expiring links and
+> per-document passwords, on the argument that they are days of work and cover
+> most of what people mean by "private". It is dropped. **Private sharing
+> requires an account** with symposium.md or Obsidian Copilot, so there is no
+> password path and no unauthenticated grant, and nothing private exists until
+> Phase 2 ships. Recorded here because the case for it was reasonable and will
+> be made again; what defeats it is that it buys weeks of convenience at the
+> cost of putting grant-bearing urls in circulation before identity exists.
 
 ### Phase 1 — public links *(shipped)*
 
 The url is the capability. 80 bits of entropy, `noindex`, no reader identity.
 Publishing gated to lifetime license holders.
 
-### Phase 2 — privacy without accounts *(dropped)*
+### Phase 2 — reader identity
 
-An earlier plan put expiring links and per-document passwords first, on the
-argument that they are days of work and cover most of what people mean by
-"private". That is no longer the plan. **Private sharing requires an account**
-with symposium.md or Obsidian Copilot, so there is no password path and no
-unauthenticated grant. Nothing private exists until Phase 3 ships.
-
-The reasoning it contributed survives, and moved into Phase 3: origin isolation
-was never a consequence of the grant being anonymous.
-
-### Phase 3 — reader identity
-
-The large one, the prerequisite for everything after, and now the only route to
-a private document.
+The large one, the prerequisite for everything after, and the only route to a
+private document.
 
 - OAuth sign-in on `symposium.md` — Google and GitHub cover nearly everyone
   without our storing a password. The session lives on the brand domain only.
@@ -172,16 +172,17 @@ breaks them.
 This is where "who read it" becomes answerable, and where the product stops
 being a link and starts being a place.
 
-### Phase 4 — comments
+### Phase 3 — comments
 
-[comments.md](comments.md) is the design; it is blocked on Phase 3 and says so.
-Every utterance needs attribution, and an anonymous reader cannot be attributed.
+[comments.md](comments.md) is the design; it is blocked on reader identity and
+says so. Every utterance needs attribution, and an anonymous reader cannot be
+attributed.
 
 Threads anchor to quotes rather than offsets, so they survive the next push.
 Where threads render is the open question that decides whether the cheap-serving
 story survives — see that document.
 
-### Phase 5 — agents as first-class participants
+### Phase 4 — agents as first-class participants
 
 The end state, and the reason the product exists: humans and agents converge on
 one artifact instead of pasting it between tools.
