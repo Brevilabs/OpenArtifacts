@@ -10,7 +10,11 @@ import {
 } from "../src/auth.js";
 import { LICENSE_CACHE_TTL_MS, type Env } from "../src/config.js";
 import type { PublisherRow, PublisherStore } from "../src/db.js";
+import { DOC_ID_LENGTH } from "../src/ids.js";
 import worker from "../src/index.js";
+
+/** Shape-valid, never in the database. Derived so a length change cannot strand it. */
+const VALID_DOC_ID = "0123456789abcdefghjkmnpqrstvwxyz".repeat(2).slice(0, DOC_ID_LENGTH);
 
 /** A plausible Copilot Plus key. Distinctive so leak assertions mean something. */
 const KEY = "cplus_live_9f4c1a77e0b24d3e";
@@ -376,7 +380,7 @@ describe("the gate is on publishing, not on the publisher", () => {
   it("401s POST and PUT for a plan that may not publish", async () => {
     for (const [method, path] of [
       ["POST", "/docs"],
-      ["PUT", "/docs/9f2k4mvq7t0xbz3ncrhs5wda1p"],
+      ["PUT", `/docs/${VALID_DOC_ID}`],
     ] as const) {
       const res = await call(method, path, seeded("plus"));
 

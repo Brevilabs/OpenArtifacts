@@ -152,7 +152,7 @@ Only the calling publisher's live docs, newest first by creation time.
     "version": 2,
     "updatedAt": 1785000000000}
  ],
- "cursor": "MTc4NTAwMDAwMDAwMC45ZjJrNG12cTd0MHhiejNuY3JoczV3ZGExcA"}
+ "cursor": "MTc4NTAwMDAwMDAwMC45ZjJrNG12cTd0MHhiejNu"}
 ```
 
 - `updatedAt` is epoch milliseconds — the last push, not the creation.
