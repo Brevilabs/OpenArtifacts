@@ -43,26 +43,50 @@ reader → symposium.site/d/{id}      private, no grant → 302
        → symposium.site/d/{id}?…     signature verified, bytes served
 ```
 
-The property that saves the CSP: **a document's scripts can read their own
-grant, but cannot forge one for a document they were not given.** Same-origin
-stops being a skeleton key, because there is no ambient authority to borrow.
+Grants remove *ambient* authority: a document's scripts cannot forge a grant for
+a document they were not given. That is necessary and it is not sufficient.
 
-Two questions this leaves, both worth deciding before code:
+### Grants alone do not fix a shared origin
 
-**Grant transport.** A query signature is simplest and leaks into referrers,
-logs and shared screenshots — though `Referrer-Policy: no-referrer` is already
-set. A path-scoped `HttpOnly` cookie (`Path=/d/{docId}`) is not sent to another
-document's path, which restores most of the isolation, but cookie scoping is a
-weaker fence than a signature and puts state back on the origin we promised to
-keep clean. Prefer the signature.
+A hostile public document can steal a grant somebody else legitimately obtained:
 
-**Per-document origins.** Serving each doc from `{docId}.symposium.site` on a
-wildcard certificate makes the browser's own origin boundary do the isolating,
-which is how `googleusercontent.com` works. It is strictly stronger than
-signatures and strictly more moving parts. **This is the retrofit hazard**: it
-changes every url the product has ever issued, so it is nearly free to adopt
-before there are readers and effectively impossible after. Decide it at Phase 2,
-not later.
+1. It calls `window.open('/d/{targetId}')` and keeps the opener reference.
+2. The popup bounces to `symposium.md`, where the reader signs in — or types the
+   document's password — and comes back with a grant.
+3. Back on `symposium.site`, opener and popup are same-origin **again**, because
+   the same-origin check is evaluated per access rather than pinned at open
+   time. The opener reads `popup.location.href`, which contains the signature,
+   and `popup.document`, which contains the document.
+
+Nothing already in place stops this. `frame-ancestors 'none'` governs framing,
+not popups. `Referrer-Policy: no-referrer` is irrelevant. `noopener` is the
+*opener's* choice and a hostile opener will not make it.
+`Cross-Origin-Opener-Policy: same-origin` severs cross-origin openers and leaves
+same-origin ones intact, which is exactly the case here.
+
+**So origin isolation is a prerequisite for private documents, not an
+enhancement.** Serve each document from its own origin — `{docId}.symposium.site`
+on a wildcard certificate, the way `googleusercontent.com` works — or from an
+equivalently isolated browsing context. Then `window.open` on another document's
+id crosses an origin boundary and the opener can read nothing.
+
+Two things follow, and both are ordering constraints rather than preferences:
+
+**It must ship with the first grant, not after it.** An expiring link and a
+password-protected document are both grants, so the theft above works against
+Phase 2 exactly as it works against Phase 3. Shipping privacy on a shared origin
+first would put grant-bearing urls in circulation before the fence exists.
+
+**It changes every url the product has ever issued.** Nearly free while every
+document is public and links are disposable; effectively impossible once readers
+hold private ones. This is the retrofit hazard, the same shape as the serving
+domain split itself.
+
+**Grant transport**, once origins are isolated, is the smaller question. A query
+signature is simplest and leaks into logs and shared screenshots — though
+`Referrer-Policy: no-referrer` is already set. A `HttpOnly` cookie scoped to the
+document's own origin is cleaner but puts state back on a serving origin we
+promised to keep clean. Prefer the signature.
 
 ## What it costs elsewhere
 
@@ -104,8 +128,9 @@ The cheapest thing that answers "can I share this with only some people".
 Both are days of work and cover most of what people mean by "private". Neither
 tells you *who* read it, which is exactly why they do not unblock comments.
 
-**Decide per-document origins here.** After this phase there are private urls in
-circulation and changing their shape breaks them.
+**Origin isolation ships with this phase, not after it.** An expiring link is a
+grant, so the `window.open` theft above applies from the first private document
+onwards. Once private urls are in circulation, changing their shape breaks them.
 
 ### Phase 3 — reader identity
 
@@ -155,9 +180,11 @@ the fence.
 
 ## What is not decided
 
-- Grant transport: signature versus path-scoped cookie. Leaning signature.
-- Per-document origins. Nearly free before Phase 2 ships, effectively impossible
-  after.
+- Grant transport: signature versus a cookie scoped to the document's own
+  origin. Leaning signature.
+- The exact isolation mechanism — per-document subdomains on a wildcard
+  certificate, or a sandboxed opaque origin. *Whether* to isolate is settled;
+  the mechanism is not.
 - Whether Phase 2 ships at all, or whether privacy waits for real identity.
   Shipping it first buys time; it also puts urls in circulation whose shape
   Phase 3 may want to change.
