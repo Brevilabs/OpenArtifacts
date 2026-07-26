@@ -175,11 +175,13 @@ Locally, secrets come from `.dev.vars` (gitignored; copy `.dev.vars.example`).
 The `database_id` in `wrangler.jsonc` looks like a credential and is not. It is
 an identifier, the binding will not resolve without it, and it is committed.
 
-## Deploys are explicit
+## Deploys come from CI
 
-Pushing to `main` deploys nothing. `wrangler deploy` uploads the current working
-tree, from whoever runs it. Cloudflare does offer a git integration; we have not
-set one up, so shipping is a deliberate act.
+Merging to `main` runs `.github/workflows/deploy.yml`, which holds the only
+credential allowed to deploy. `wrangler deploy` still uploads whoever's working
+tree when run by hand, which is how the first deploy happened; it is the
+fallback now, not the practice. Cloudflare's own git integration is a third
+option we have not set up. `docs/deploying.md` has the mechanics.
 
 Every deploy is retained as a version, and `wrangler rollback` returns to an
 earlier one. There are no per-PR preview URLs unless we configure them.

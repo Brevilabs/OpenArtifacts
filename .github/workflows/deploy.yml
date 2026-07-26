@@ -41,8 +41,11 @@ jobs:
       name: production
       url: https://symposium.site
 
+    # The token is deliberately NOT here. A job-level `env` hands the
+    # production credential to every step, including ones that only need to
+    # parse untrusted input, so it lives on the two steps that call Cloudflare
+    # and nowhere else. The account id is not a credential.
     env:
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: "960579f222ad237394703bd52f28114c"
 
     steps:
@@ -51,10 +54,17 @@ jobs:
       # so a wrong-branch dispatch never reaches the code. A job-level `if:`
       # would skip instead of fail, and a silent skip reads as a deploy that
       # worked.
+      #
+      # The ref goes through `env:` rather than `${{ }}` inside the script. A
+      # `${{ }}` expression is pasted into the script text before bash parses
+      # it, and git refs allow `$`, `(` and `)`, so a branch named
+      # `x$(...)` would execute rather than print. `"$REF"` is data.
       - name: Refuse to deploy anything but main
         if: github.ref != 'refs/heads/main'
+        env:
+          REF: ${{ github.ref }}
         run: |
-          echo "::error::Refusing to deploy ${{ github.ref }}. Production ships from main."
+          echo "::error::Refusing to deploy $REF. Production ships from main."
           exit 1
 
       - name: Check out repository
@@ -87,6 +97,8 @@ jobs:
       # matching wrangler's console wording, which would break silently the
       # next time that string changes.
       - name: Check migrations are applied
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
           set -euo pipefail
           npx wrangler d1 execute symposium --remote --json \
@@ -111,6 +123,8 @@ jobs:
       # against the *previous* deployment, and the job would record a green
       # deploy for a commit that never shipped.
       - name: Deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
           npx wrangler deploy \
             --message "$(git log -1 --format='%h %s' | cut -c1-100)"
