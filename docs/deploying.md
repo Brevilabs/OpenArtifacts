@@ -143,6 +143,14 @@ Two things the workflow deliberately does not do:
   would let a merged PR silently alter the production database; failing cannot
   corrupt anything and turns a code/schema mismatch into a red build. Apply them
   by hand, then merge.
+
+  It also fails if an already-applied migration was **changed or deleted**,
+  which the name comparison alone cannot see: `d1_migrations` stores names and
+  timestamps, no checksums, so an edited file looks applied while the database
+  never ran the new SQL. The evidence comes from git, against the last
+  successful production deployment rather than the previous commit — a failed
+  deploy leaves the bad file on `main`, where a commit-to-commit check would
+  stop noticing it. Once applied, a migration is append-only: add a new file.
 - **It does not smoke-test.** That needs a real lifetime key, spends a push from
   its daily quota, and writes to production R2 and D1 on every merge. `/health`
   on both hosts is the liveness check instead. Run `scripts/smoke.sh` by hand

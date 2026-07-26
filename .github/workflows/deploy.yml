@@ -114,7 +114,7 @@ jobs:
       - name: Check migrations are applied
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          BEFORE: ${{ github.event.before }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           npx wrangler d1 execute symposium --remote --json \
@@ -130,23 +130,40 @@ jobs:
           echo "all $(wc -l < /tmp/on-disk.txt | tr -d ' ') migration(s) applied"
 
           # An applied migration is immutable. `d1_migrations` stores a name and
-          # a timestamp, no checksum, so editing a file already listed there
+          # a timestamp, no checksum, so changing a file already listed there
           # passes the comparison above while the database never ran the new
           # SQL, and code expecting the new schema ships against the old one.
-          # Names are all D1 can offer, so the evidence comes from git instead.
-          # A first push or a force push leaves no usable base: skip rather than
-          # fail, since a missing base is not evidence of an edit.
-          if [ -n "${BEFORE:-}" ] && git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
-            git diff --name-only --diff-filter=M "$BEFORE" HEAD -- migrations/ \
-              | xargs -r -n1 basename | sort > /tmp/edited.txt
-            clash="$(comm -12 /tmp/edited.txt /tmp/applied.txt)"
+          # Deleting one passes too, and leaves a history that cannot rebuild
+          # the schema on the fresh-account path in docs/deploying.md.
+          #
+          # Names are all D1 can offer, so the evidence comes from git. The
+          # baseline is the last SUCCESSFUL production deployment, not the
+          # push's parent: a failed deploy leaves the bad file on `main`, where
+          # the next push no longer sees it as changed, so a parent-based check
+          # would fail once and then wave the same broken state through
+          # forever. A failed deploy does not move this baseline. It also works
+          # under `workflow_dispatch`, which has no push range at all.
+          gh api "repos/$GITHUB_REPOSITORY/deployments?environment=production&per_page=50" \
+            --jq '.[] | "\(.id) \(.sha)"' > /tmp/deployments.txt
+          base=""
+          while read -r id sha; do
+            ok="$(gh api "repos/$GITHUB_REPOSITORY/deployments/$id/statuses?per_page=100" \
+              --jq '[.[] | select(.state=="success")] | length')"
+            if [ "$ok" -gt 0 ]; then base="$sha"; break; fi
+          done < /tmp/deployments.txt
+
+          if [ -n "$base" ] && git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            echo "comparing migrations against last successful deploy ${base:0:8}"
+            git diff --name-only --diff-filter=MD "$base" HEAD -- migrations/ \
+              | xargs -r -n1 basename | sort > /tmp/changed.txt
+            clash="$(comm -12 /tmp/changed.txt /tmp/applied.txt)"
             if [ -n "$clash" ]; then
-              echo "::error::Edited a migration D1 has already applied. Add a new migration instead."
+              echo "::error::Changed or deleted a migration D1 has already applied. Add a new migration instead."
               echo "$clash" | sed 's/^/  /'
               exit 1
             fi
           else
-            echo "no base commit to diff against; skipping the edited-migration check"
+            echo "no successful production deployment to compare against; skipping the immutability check"
           fi
 
       # `--message` fills the Message column in the dashboard's Deployments
