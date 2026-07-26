@@ -43,6 +43,11 @@ describe("bakeServedHtml — what gets injected", () => {
     expect(SYMPOSIUM_HEADER).not.toContain("<img");
     // Decorative: the link text already names the product.
     expect(SYMPOSIUM_HEADER).toContain('aria-hidden="true"');
+    // In the style, not only the attributes: `width`/`height` on an <svg> are
+    // presentation attributes, so a document's `svg { width: 100% }` — which is
+    // in plenty of ordinary resets — would otherwise stretch the mark.
+    expect(SYMPOSIUM_HEADER).toContain("width:17px");
+    expect(SYMPOSIUM_HEADER).toContain("height:14px");
   });
 
   it("names Symposium and what it is for, in text a reader can see", async () => {

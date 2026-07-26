@@ -78,7 +78,12 @@ const BYLINE_LINK =
  */
 const COPILOT_MARK =
   '<svg viewBox="4 4 152 127" width="17" height="14" aria-hidden="true" focusable="false" ' +
-  'style="display:inline-block;vertical-align:-0.15em;flex:none;fill:currentColor">' +
+  // The attributes above carry the intrinsic size before CSS applies, but they
+  // are presentation attributes and lose to any author rule — and
+  // `svg { width: 100%; height: auto }` is in a lot of ordinary resets. The
+  // inline style is what actually holds the size.
+  'style="display:inline-block;width:17px;height:14px;' +
+  'vertical-align:-0.15em;flex:none;fill:currentColor">' +
   '<path d="M75.9 6.9c-6.8 1.4-12.5 6-35.5 29.3-33.5 33.8-33.5 33.9-34.2 62.2-0.3 12.4 0 20.2 0.7 22.7 ' +
   "2.4 7.8 10.8 11.2 17.6 7.1 1.7-1.1 14.9-14.1 29.5-29.1 14.5-14.9 26.7-27 27-26.9 0.3 0.2 12.4 12.4 " +
   "27 27.3 14.6 14.8 27.6 27.8 29 28.7 5.1 3.6 13.6 1.4 16.5-4.2 1.2-2.3 1.5-6.9 1.5-22.3 0-22.9-1.2-28.6-8.3-37.9-7.6-10.2-50-52.3-54.9-54.6-5.1-2.4-10.9-3.2-15.9-2.3z" +
