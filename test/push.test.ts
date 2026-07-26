@@ -4,7 +4,7 @@ import type { Env } from "../src/config.js";
 import { MAX_DOCS_PER_PUBLISHER, MAX_DOC_BYTES, MAX_PUSHES_PER_DAY } from "../src/config.js";
 import { commitVersionMetadata } from "../src/db.js";
 import type { DocRow, PushQuotaRow, VersionRow } from "../src/db.js";
-import { isDocId } from "../src/ids.js";
+import { DOC_ID_LENGTH, isDocId } from "../src/ids.js";
 import { MAX_REQUEST_BYTES, utcDay, utf8Length } from "../src/quota.js";
 import { NOINDEX_META, SYMPOSIUM_FOOTER } from "../src/render.js";
 import { versionObjectKey } from "../src/storage.js";
@@ -123,10 +123,10 @@ async function seedDocs(publisher: string, live: number, deleted = 0): Promise<v
   await env.DB.prepare(
     `WITH RECURSIVE seq(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM seq WHERE i < ?)
      INSERT INTO docs (id, publisher, title, latest_version, created_at, updated_at, deleted_at)
-     SELECT printf('%026d', i), ?, 'seeded', 1, ?, ?, CASE WHEN i > ? THEN ? END
+     SELECT printf('%0' || ? || 'd', i), ?, 'seeded', 1, ?, ?, CASE WHEN i > ? THEN ? END
        FROM seq`,
   )
-    .bind(live + deleted, publisher, now, now, live, now)
+    .bind(live + deleted, DOC_ID_LENGTH, publisher, now, now, live, now)
     .run();
 }
 

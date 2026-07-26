@@ -2,6 +2,7 @@ import { createExecutionContext, env, waitOnExecutionContext } from "cloudflare:
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Env } from "../src/config.js";
 import type { DocRow } from "../src/db.js";
+import { DOC_ID_LENGTH } from "../src/ids.js";
 import { docObjectPrefix, versionObjectKey } from "../src/storage.js";
 import worker from "../src/index.js";
 
@@ -168,7 +169,7 @@ async function seedDoc(
 }
 
 /** Valid doc ids that sort predictably, so a paging test can name what it expects. */
-const seededId = (i: number) => String(i).padStart(26, "0");
+const seededId = (i: number) => String(i).padStart(DOC_ID_LENGTH, "0");
 
 /** Every docId the list yields when walked to the end, in order. */
 async function walk(key: string, limit: number): Promise<string[]> {

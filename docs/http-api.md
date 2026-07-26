@@ -78,14 +78,18 @@ Any other method or path under `/api/v1` is `404 not_found`.
 ```
 
 ```json
-{"docId": "9f2k4mvq7t0xbz3ncrhs5wda1p",
- "url": "https://symposium.site/d/9f2k4mvq7t0xbz3ncrhs5wda1p",
+{"docId": "9f2k4mvq7t0xbz3n",
+ "url": "https://symposium.site/d/9f2k4mvq7t0xbz3n",
  "version": 1}
 ```
 
-A `docId` is 26 characters of lowercase Crockford base32 (`0-9`, `a-z` without
-`i`, `l`, `o`, `u`) — 128 bits of randomness. It is the only access control a doc
-has: whoever holds the url holds the doc.
+A `docId` is 16 characters of lowercase Crockford base32 (`0-9`, `a-z` without
+`i`, `l`, `o`, `u`) — 80 bits of randomness. It is the only access control a doc
+has: whoever holds the url holds the doc, so treat the id as a secret and do not
+log it anywhere a reader would not already be allowed.
+
+The alphabet is case-insensitive to read but not to send: ids are lowercase, and
+an uppercase one is rejected rather than folded.
 
 The API accepts **HTML only**. Copilot renders markdown locally, because that is
 the only way callouts, wikilinks and dataview output survive. There is no
@@ -99,8 +103,8 @@ that is present but blank is not a title, and becomes `Untitled` here exactly as
 it does on `POST`.
 
 ```json
-{"docId": "9f2k4mvq7t0xbz3ncrhs5wda1p",
- "url": "https://symposium.site/d/9f2k4mvq7t0xbz3ncrhs5wda1p",
+{"docId": "9f2k4mvq7t0xbz3n",
+ "url": "https://symposium.site/d/9f2k4mvq7t0xbz3n",
  "version": 2}
 ```
 
@@ -142,9 +146,9 @@ Only the calling publisher's live docs, newest first by creation time.
 
 ```json
 {"docs": [
-   {"docId": "9f2k4mvq7t0xbz3ncrhs5wda1p",
+   {"docId": "9f2k4mvq7t0xbz3n",
     "title": "Q3 architecture review",
-    "url": "https://symposium.site/d/9f2k4mvq7t0xbz3ncrhs5wda1p",
+    "url": "https://symposium.site/d/9f2k4mvq7t0xbz3n",
     "version": 2,
     "updatedAt": 1785000000000}
  ],
@@ -252,7 +256,7 @@ re-sharing a note update the page instead of minting a second link.
 
 ```yaml
 ---
-symposium: 9f2k4mvq7t0xbz3ncrhs5wda1p
+symposium: 9f2k4mvq7t0xbz3n
 ---
 ```
 
