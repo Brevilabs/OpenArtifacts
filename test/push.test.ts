@@ -17,6 +17,14 @@ import worker from "../src/index.js";
  */
 const API_ORIGIN = "https://symposium.workers.dev";
 
+/**
+ * A well-formed id that is not in the database. Derived from DOC_ID_LENGTH, not
+ * written out: a literal of the wrong length is rejected by `isDocId` on shape
+ * before D1 is consulted, which silently turns every "not found" test into a
+ * test of the shape check.
+ */
+const UNKNOWN_DOC_ID = "0123456789abcdefghjkmnpqrstvwxyz".repeat(2).slice(0, DOC_ID_LENGTH);
+
 const KEY_A = "cplus_live_a1b2c3d4e5f60718";
 const KEY_B = "cplus_live_9988776655443322";
 
@@ -276,7 +284,7 @@ describe("PUT /api/v1/docs/{docId}", () => {
   });
 
   it("404s a doc that does not exist", async () => {
-    const response = await put(KEY_A, "0123456789abcdefghjkmnpqrs", { html: page("<p>x</p>") });
+    const response = await put(KEY_A, UNKNOWN_DOC_ID, { html: page("<p>x</p>") });
 
     expect(response.status).toBe(404);
     expect(await allObjects()).toHaveLength(0);

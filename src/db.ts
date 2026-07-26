@@ -305,7 +305,7 @@ export interface ServableVersion {
  *
  * Liveness is *not* a predicate here: a deleted doc must still be found, so the
  * caller can tell 410 from 404. That distinction is the one thing this query
- * exists to preserve, and it is safe to expose because a doc id is 128 random
+ * exists to preserve, and it is safe to expose because a doc id is 80 random
  * bits — knowing one already means having been given the link.
  */
 export async function findServableVersion(

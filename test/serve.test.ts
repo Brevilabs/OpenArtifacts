@@ -1,6 +1,7 @@
 import { createExecutionContext, env, waitOnExecutionContext } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Env } from "../src/config.js";
+import { DOC_ID_LENGTH } from "../src/ids.js";
 import { NOINDEX_META, SYMPOSIUM_FOOTER } from "../src/render.js";
 import { versionObjectKey } from "../src/storage.js";
 import worker from "../src/index.js";
@@ -15,7 +16,13 @@ const ORIGIN = "https://symposium.workers.dev";
 const KEY = "cplus_live_a1b2c3d4e5f60718";
 
 /** A doc id of the right shape that no push ever minted. */
-const UNKNOWN_DOC_ID = "0123456789abcdefghjkmnpqrs";
+/**
+ * A well-formed id that is not in the database. Derived from DOC_ID_LENGTH, not
+ * written out: a literal of the wrong length is rejected by `isDocId` on shape
+ * before D1 is consulted, which silently turns every "not found" test into a
+ * test of the shape check.
+ */
+const UNKNOWN_DOC_ID = "0123456789abcdefghjkmnpqrstvwxyz".repeat(2).slice(0, DOC_ID_LENGTH);
 
 async function sha256Hex(value: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
