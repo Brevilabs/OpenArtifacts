@@ -13,8 +13,8 @@ comments.
 
 ## What works today
 
-Everything here is built and tested. Nothing is deployed yet, so none of it is
-reachable on the internet until someone runs [Deploying](docs/deploying.md).
+Everything here is built, tested, and live. See [Production](#production) for
+where it runs.
 
 - **Publish a note.** Send rendered HTML, get back a link. Obsidian Copilot
   renders the note locally, so callouts, wikilinks and dataview output survive —
@@ -94,6 +94,18 @@ argument for it, and the constraints it has to respect, are in
 [`docs/cost-at-scale.md`](docs/cost-at-scale.md). Read both before proposing
 architecture — several decisions in them are not retrofittable, and `CLAUDE.md`
 lists the ones that bind day to day.
+
+## Production
+
+| | |
+| --- | --- |
+| [symposium.site](https://symposium.site) | Serves published documents. User HTML lives here and never on the brand domain. |
+| [api.symposium.md](https://api.symposium.md) | The publisher API. Key-authenticated, no browser surface. |
+| [Cloudflare dashboard](https://dash.cloudflare.com/960579f222ad237394703bd52f28114c/workers/services/view/symposium/production) | The Worker itself: deployments, versions, logs, and the rollback button. |
+
+Deploys run from [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml)
+on merge to `main`. [Deploying](docs/deploying.md) covers how, and how to roll
+back.
 
 ## Docs
 
