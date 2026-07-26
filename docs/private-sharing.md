@@ -51,8 +51,8 @@ a document they were not given. That is necessary and it is not sufficient.
 A hostile public document can steal a grant somebody else legitimately obtained:
 
 1. It calls `window.open('/d/{targetId}')` and keeps the opener reference.
-2. The popup bounces to `symposium.md`, where the reader signs in — or types the
-   document's password — and comes back with a grant.
+2. The popup bounces to `symposium.md`, where the reader signs in and comes back
+   with a grant.
 3. Back on `symposium.site`, opener and popup are same-origin **again**, because
    the same-origin check is evaluated per access rather than pinned at open
    time. The opener reads `popup.location.href`, which contains the signature,
