@@ -118,6 +118,21 @@ describe("bakeServedHtml — where the injections land", () => {
     expect(baked).toContain("<p>two</p>");
   });
 
+  // Nesting, which the sequential fixture above cannot reach: the inner end tag
+  // arrives first, so a guard that lets the first `</body>` win puts the footer
+  // above the outer body's remaining content. Registering the callback on the
+  // single body that got the header is what pairs the right end tag.
+  it("footers the outer body when a second body is nested inside it", async () => {
+    const baked = await bake(
+      "<!doctype html><html><head></head><body><p>before</p>" +
+        "<body><p>inner</p></body><p>after</p></body></html>",
+    );
+
+    expect(occurrences(baked, SYMPOSIUM_HEADER)).toBe(1);
+    expect(occurrences(baked, SYMPOSIUM_FOOTER)).toBe(1);
+    expect(baked.indexOf(SYMPOSIUM_FOOTER)).toBeGreaterThan(baked.indexOf("<p>after</p>"));
+  });
+
   it("keeps the document's own head content, including its own meta tags", async () => {
     const baked = await bake(page("<p>hello</p>"));
 

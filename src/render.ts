@@ -126,17 +126,19 @@ export async function bakeServedHtml(html: string): Promise<Uint8Array> {
     .on("body", {
       element(body) {
         // Uploaded HTML can carry more than one `<body>` start tag, and this
-        // handler fires for each — as `head`'s does above. Every guard sits on
-        // the mutation rather than beside it, and the footer's sits *inside*
-        // `onEndTag`, so all three hold however start and end tags interleave
-        // across several bodies. A flag that only disables the document-end
-        // fallback is not enough: the fallback was never the path that fired.
-        if (!headerPlaced) {
-          headerPlaced = true;
-          body.prepend(SYMPOSIUM_HEADER, AS_HTML);
-        }
+        // handler fires for each — as `head`'s does above. Both injections go
+        // to the first one and the handler returns, so the end-tag callback is
+        // registered on a single element rather than on every match.
+        //
+        // Guarding *inside* the callback instead is not equivalent, and the
+        // difference only shows with nesting: for
+        // `<body>a<body>b</body>c</body>` the inner end tag arrives first, so a
+        // first-one-wins guard puts the footer before `c`. Registering on one
+        // element makes lol-html pair that element's own end tag.
+        if (headerPlaced) return;
+        headerPlaced = true;
+        body.prepend(SYMPOSIUM_HEADER, AS_HTML);
         body.onEndTag((endTag) => {
-          if (footerPlaced) return;
           footerPlaced = true;
           endTag.before(SYMPOSIUM_FOOTER, AS_HTML);
         });
