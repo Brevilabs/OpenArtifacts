@@ -253,6 +253,14 @@ function notModifiedConditions(from: Headers): Headers {
             .filter((tag) => tag !== null)
             .join(", ");
     if (stored.length > 0) conditions.set("if-none-match", stored);
+
+    // RFC 9110: a recipient ignores `If-Modified-Since` when `If-None-Match` is
+    // present, and that holds when *none* of the tags survived translation —
+    // which is the case that matters here. Those tags name an older rendering,
+    // so the reader must be sent the current one; forwarding the date instead
+    // would let a document older than it answer 304 and hand back exactly the
+    // stale bylines the revision suffix exists to refuse.
+    return conditions;
   }
 
   const ifModifiedSince = from.get("if-modified-since");

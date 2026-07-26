@@ -633,4 +633,39 @@ describe("HEAD and conditional requests", () => {
     expect(head.status).toBe(304);
     expect(head.headers.get("etag")).toBe(etag);
   });
+
+  // A real revalidation sends both validators, and RFC 9110 says the date is
+  // ignored whenever an entity tag is present. That has to hold when *no* tag
+  // survives translation, which is exactly when it matters: those tags name an
+  // older rendering, and a document older than the date would otherwise answer
+  // 304 and hand back the stale bylines the revision suffix exists to refuse.
+  it("ignores If-Modified-Since when the client's etag names an older rendering", async () => {
+    const docId = await twoVersionDoc();
+    const current = (await get(`/d/${docId}`)).headers.get("etag")!;
+    const older = current.replace(/\.r(\d+)"$/, (_, n) => `.r${Number(n) - 1}"`);
+
+    for (const method of ["GET", "HEAD"]) {
+      const response = await send(method, `/d/${docId}`, {
+        headers: {
+          "if-none-match": older,
+          // Comfortably after the push, so on its own this date is a 304.
+          "if-modified-since": new Date(Date.now() + 60_000).toUTCString(),
+        },
+      });
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get("etag")).toBe(current);
+    }
+  });
+
+  // The other half of the same rule: a date alone is still honoured.
+  it("still 304s on If-Modified-Since when no etag was sent", async () => {
+    const docId = await twoVersionDoc();
+
+    const response = await get(`/d/${docId}`, {
+      headers: { "if-modified-since": new Date(Date.now() + 60_000).toUTCString() },
+    });
+
+    expect(response.status).toBe(304);
+  });
 });
