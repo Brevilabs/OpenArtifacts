@@ -46,8 +46,15 @@ const BYLINE_BASE =
  * `all:initial` resets the container, not its descendants, so the anchor would
  * otherwise inherit the document's own link colour — often on a background this
  * byline does not control.
+ *
+ * `_blank` because the reader is mid-document: a byline that navigates the page
+ * away costs them their place, and the footer sits at the end of something they
+ * were reading. `noopener` denies the opened page a handle back to this one;
+ * `no-referrer` on the serving surface already covers the referrer, but the
+ * `rel` travels with the bytes if the document is mirrored elsewhere.
  */
-const BYLINE_LINK = 'style="color:#888;text-decoration:underline"';
+const BYLINE_LINK =
+  'target="_blank" rel="noopener noreferrer" style="color:#888;text-decoration:underline"';
 
 /** Where the document came from. Injected at the top of the body. */
 export const SYMPOSIUM_HEADER =

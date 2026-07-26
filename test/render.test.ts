@@ -56,6 +56,15 @@ describe("bakeServedHtml — what gets injected", () => {
       expect(byline).toContain('style="color:#888;text-decoration:underline"');
     }
   });
+
+  // The reader is mid-document; a byline that navigates the page away costs
+  // them their place. `noopener` is what makes `_blank` safe to hand out.
+  it("opens both links in a new tab, without handing over a window handle", () => {
+    for (const byline of [SYMPOSIUM_HEADER, SYMPOSIUM_FOOTER]) {
+      expect(byline).toContain('target="_blank"');
+      expect(byline).toContain('rel="noopener noreferrer"');
+    }
+  });
 });
 
 describe("bakeServedHtml — where the injections land", () => {
