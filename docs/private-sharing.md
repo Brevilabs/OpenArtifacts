@@ -65,10 +65,34 @@ not popups. `Referrer-Policy: no-referrer` is irrelevant. `noopener` is the
 same-origin ones intact, which is exactly the case here.
 
 **So origin isolation is a prerequisite for private documents, not an
-enhancement.** Serve each document from its own origin — `{docId}.symposium.site`
-on a wildcard certificate, the way `googleusercontent.com` works — or from an
-equivalently isolated browsing context. Then `window.open` on another document's
-id crosses an origin boundary and the opener can read nothing.
+enhancement.** Each document needs its own origin — a wildcard certificate over
+per-document subdomains, the way `googleusercontent.com` works, or an
+equivalently isolated browsing context. Then `window.open` on another document
+crosses an origin boundary and the opener can read nothing.
+
+### The origin label must not be the capability
+
+The obvious form of that — `{docId}.symposium.site` — trades one leak for
+another. A hostname is not confidential: it appears in the DNS query, and absent
+Encrypted Client Hello it appears in the TLS SNI, both before any encryption. A
+recursive resolver, a corporate DNS server, or anything on the network path
+would learn the id — and the id is the only access control a doc has. The
+observer could just fetch it.
+
+Today's scheme does not have this problem, because the id lives in the request
+path, which is encrypted, and every document shares one hostname.
+
+So the two jobs need two identifiers:
+
+| | secret? | job |
+| --- | --- | --- |
+| origin label | no | isolates browsing contexts |
+| doc id, and any grant | yes | authorises the read, stays in the encrypted path |
+
+`{originLabel}.symposium.site/d/{docId}` gives isolation without exposure. The
+label being enumerable is harmless: reaching the origin without the path id and
+the grant gets you nothing. ECH would close the SNI half of the leak but not the
+DNS half, so it is not a substitute for separating the two.
 
 Two things follow, and both are ordering constraints rather than preferences:
 
@@ -184,7 +208,12 @@ the fence.
   origin. Leaning signature.
 - The exact isolation mechanism — per-document subdomains on a wildcard
   certificate, or a sandboxed opaque origin. *Whether* to isolate is settled;
-  the mechanism is not.
+  the mechanism is not. Whichever is chosen, the origin label is not the
+  capability.
+- Where the origin label comes from: a second stored identifier, or something
+  derived from the doc id by a one-way function so it need not be stored. The
+  second is tempting and has to survive the observation that anyone can compute
+  the label from an id they already hold — which is fine — but not the reverse.
 - Whether Phase 2 ships at all, or whether privacy waits for real identity.
   Shipping it first buys time; it also puts urls in circulation whose shape
   Phase 3 may want to change.
