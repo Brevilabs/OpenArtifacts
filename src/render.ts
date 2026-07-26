@@ -10,6 +10,14 @@
  * reads never authenticate — so a re-bake job would have no trigger and an
  * upgraded publisher would keep their watermark forever.
  *
+ * It also moves where a parse failure surfaces. Baking at push time made this
+ * pass a validation gate: a document lol-html could not get through failed in
+ * front of the publisher, who could fix it. Here the headers are already sent
+ * when the transform runs, so the same document would break a reader's page
+ * instead. lol-html accepts anything the HTML spec calls a document and has no
+ * error state to reach for well-formed-ish markup, which is why this is
+ * recorded rather than defended against.
+ *
  * It is emphatically *not* a sanitizer. Uploaded scripts run (D6): the document
  * arrives already rendered by Obsidian, complete with callouts, dataview output
  * and embedded interactive figures, and stripping or escaping any of it would
@@ -147,19 +155,14 @@ const AS_HTML = { html: true } as const;
  *   covers every case where it did not.
  *
  * **Placement is best-effort, and deliberately not hardened further.**
- * HTMLRewriter is a token rewriter; the browser's tree builder is not. A second
- * `<body>` start tag is ignored by the HTML parsing spec, a nested one is
- * ignored, and one inside `<template>` lands in a fragment — so wherever those
- * two disagree, markup exists that puts a byline somewhere useless. The guards
- * above cover the shapes that turned up in review; `<noscript>`, foreign
- * content in `<svg>`, and `srcdoc` are further examples nobody has chased.
- *
- * That is acceptable because a byline is not a security boundary. `BYLINE_LINK`
- * already concedes that a document rule marked `!important` removes it outright,
- * and every one of these shapes has to be written deliberately by the publisher
- * the header names. Hardening placement against a hostile author is unwinnable
- * and not worth attempting; correctness for documents a client actually renders
- * is what these guards are for.
+ * HTMLRewriter is a token rewriter; the browser's tree builder is not, so
+ * wherever the two disagree — a `<body>` inside `<template>`, in `<noscript>`,
+ * in foreign content, in `srcdoc` — markup exists that puts a byline somewhere
+ * useless. None of it is chased. A byline is not a security boundary:
+ * `BYLINE_LINK` already concedes that a document rule marked `!important`
+ * removes it outright, and every one of those shapes has to be written
+ * deliberately by the publisher the header names. What the guards below are for
+ * is documents a client actually renders.
  *
  * Takes and returns a `Response` so the body stays a stream: a 10MB document
  * passes through the worker without ever being a 10MB string in it, exactly as
@@ -174,24 +177,11 @@ export function renderServedHtml(response: Response, branding = true): Response 
   let metaPlaced = false;
   let headerPlaced = false;
   let footerPlaced = false;
-  let templateDepth = 0;
 
   return new HTMLRewriter()
-    // `<template>` content is inert: the browser parses it into a fragment, so
-    // a `head` or `body` token inside one is not the document's. lol-html sees
-    // the tokens anyway, and without this the first such token consumes the
-    // injections and the real body gets nothing.
-    .on("template", {
-      element(template) {
-        templateDepth += 1;
-        template.onEndTag(() => {
-          templateDepth -= 1;
-        });
-      },
-    })
     .on("head", {
       element(head) {
-        if (metaPlaced || templateDepth > 0) return;
+        if (metaPlaced) return;
         metaPlaced = true;
         head.prepend(NOINDEX_META, AS_HTML);
       },
@@ -200,15 +190,12 @@ export function renderServedHtml(response: Response, branding = true): Response 
       element(body) {
         // Uploaded HTML can carry more than one `<body>` start tag, and this
         // handler fires for each — as `head`'s does above. Both injections go
-        // to the first one and the handler returns, so the end-tag callback is
-        // registered on a single element rather than on every match.
-        //
-        // Guarding *inside* the callback instead is not equivalent, and the
-        // difference only shows with nesting: for
-        // `<body>a<body>b</body>c</body>` the inner end tag arrives first, so a
-        // first-one-wins guard puts the footer before `c`. Registering on one
-        // element makes lol-html pair that element's own end tag.
-        if (headerPlaced || templateDepth > 0) return;
+        // to the first one, so the end-tag callback is registered on a single
+        // element rather than on every match. Guarding *inside* that callback
+        // is not equivalent: for `<body>a<body>b</body>c</body>` the inner end
+        // tag arrives first, so a first-one-wins guard would put the footer
+        // before `c`.
+        if (headerPlaced) return;
         headerPlaced = true;
         if (branding) body.prepend(SYMPOSIUM_HEADER, AS_HTML);
         body.onEndTag((endTag) => {

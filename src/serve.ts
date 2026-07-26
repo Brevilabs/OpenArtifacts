@@ -334,7 +334,12 @@ async function serveObject(
   // function of it, so it still identifies the response — while there is one
   // rendering. The moment a plan can remove the bylines there are two, and this
   // etag must carry which one, or a cache will hand one publisher's rendering to
-  // another's reader. See the tier work before adding that flag.
+  // another's reader. That work owes a second thing to the cache lifetimes
+  // below: an upgrade reaches `/d/{docId}` within its 60 seconds, but a `/v{n}`
+  // already held by a cache is `immutable` for a year, so a publisher who pays
+  // to drop the bylines keeps them on pinned urls until it expires. Serving at
+  // read time is what makes the change possible at all; it does not make it
+  // instant everywhere.
   headers.set("etag", object.httpEtag);
   if (!("body" in object)) return new Response(null, { status: 304, headers });
 
