@@ -103,11 +103,24 @@ Merging to `main` runs `.github/workflows/deploy.yml`, which typechecks, tests,
 refuses to deploy over an unapplied migration, ships, checks both hosts answer,
 and records what shipped on the repo page. Nobody deploys from a laptop.
 
-It needs one repository secret, `CLOUDFLARE_API_TOKEN`, scoped to **Workers
-Scripts: Edit** on the Brevilabs account — not a Global API Key, which would
-also reach DNS, R2 and D1. **Until that secret exists the workflow cannot run**,
-and deploys stay manual: steps 5 and 8 above, plus step 3 whenever a migration
-is added.
+It needs one repository secret, `CLOUDFLARE_API_TOKEN`, holding two account
+permissions on the Brevilabs account: **Workers Scripts: Edit** to deploy, and
+**D1: Edit** to read the `d1_migrations` table. Not a Global API Key, which
+would also reach DNS and every other zone setting. Create it under My Profile →
+API Tokens → Create Token; the *Edit Cloudflare Workers* template is a fine
+starting point, but confirm D1 is in its permission list and add it if not.
+
+D1: Edit is broader than the guard needs — it only runs a `SELECT` — but the
+query endpoint takes arbitrary SQL, so a read-only permission may not authorize
+it and an under-scoped token fails every deploy rather than degrading. The cost
+is real and worth naming: this token can write the production database, which is
+the price of checking the schema from CI at all.
+
+Set it with `gh secret set CLOUDFLARE_API_TOKEN --repo Brevilabs/symposium`,
+which reads the value from stdin and never puts it in shell history.
+
+**Until that secret exists the workflow cannot run**, and deploys stay manual:
+steps 5 and 8 above, plus step 3 whenever a migration is added.
 
 Two things the workflow deliberately does not do:
 
