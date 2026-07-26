@@ -1,10 +1,13 @@
 /**
  * The public serving surface: `GET /d/{docId}` and `GET /d/{docId}/v{n}`.
  *
- * Injection already happened at push time (D11), so this file reads an R2
- * object and streams it back untouched. It never parses, rewrites or even
- * decodes the bytes — a served page is byte-identical to the stored version,
- * which is what makes `immutable` an honest thing to say about `/v{n}`.
+ * R2 holds the publisher's own bytes; Symposium's additions — the robots meta
+ * and the two bylines — are injected here, on the way out, by
+ * `renderServedHtml`. That is what lets a byline change, or a plan that removes
+ * one, reach documents already published, and it is why the stored object and
+ * the served page are no longer byte-identical. `immutable` on `/v{n}` stays
+ * honest: the version's content never changes, and the additions are a pure
+ * function of it.
  *
  * What it does add is the header policy below. Since the bytes are somebody
  * else's HTML with somebody else's scripts in it (D6), those headers are the
@@ -18,6 +21,7 @@ import type { Env } from "./config.js";
 import { findServableVersion } from "./db.js";
 import { errorResponse } from "./errors.js";
 import { isDocId } from "./ids.js";
+import { RENDER_REVISION, renderServedHtml } from "./render.js";
 import { STORED_CONTENT_TYPE, versionObjectKey } from "./storage.js";
 
 /** Path prefix of the serving surface, used by the router's path fallback. */
@@ -232,11 +236,67 @@ function parseDocPath(pathname: string): DocRoute | null {
  */
 function notModifiedConditions(from: Headers): Headers {
   const conditions = new Headers();
-  for (const name of ["if-none-match", "if-modified-since"]) {
-    const value = from.get(name);
-    if (value !== null) conditions.set(name, value);
+
+  // `If-None-Match` arrives naming a *rendering*; R2 only knows about objects,
+  // so the suffix comes off before the tag is handed on. A tag carrying some
+  // other revision names a rendering this deploy no longer produces, and is
+  // dropped rather than translated — which is exactly what makes that reader
+  // get a 200 with the current bylines instead of a 304 with the old ones.
+  const ifNoneMatch = from.get("if-none-match");
+  if (ifNoneMatch !== null) {
+    const stored =
+      ifNoneMatch.trim() === "*"
+        ? "*"
+        : ifNoneMatch
+            .split(",")
+            .map((tag) => storedEtagOf(tag.trim()))
+            .filter((tag) => tag !== null)
+            .join(", ");
+    if (stored.length > 0) conditions.set("if-none-match", stored);
+
+    // RFC 9110: a recipient ignores `If-Modified-Since` when `If-None-Match` is
+    // present, and that holds when *none* of the tags survived translation —
+    // which is the case that matters here. Those tags name an older rendering,
+    // so the reader must be sent the current one; forwarding the date instead
+    // would let a document older than it answer 304 and hand back exactly the
+    // stale bylines the revision suffix exists to refuse.
+    return conditions;
   }
+
+  const ifModifiedSince = from.get("if-modified-since");
+  if (ifModifiedSince !== null) conditions.set("if-modified-since", ifModifiedSince);
+
   return conditions;
+}
+
+/** The revision suffix that turns an object's validator into a rendering's. */
+const RENDERING_SUFFIX = `.r${RENDER_REVISION}`;
+
+/**
+ * The validator for what a reader actually receives: the stored object's etag
+ * plus the revision of the rendering applied to it.
+ *
+ * Weak, because the bytes are no longer the object's own and this service does
+ * not promise them octet-for-octet across deploys — which is all a strong
+ * validator would be claiming.
+ */
+function servedEtag(objectEtag: string): string {
+  return `W/"${unquoteEtag(objectEtag)}${RENDERING_SUFFIX}"`;
+}
+
+/**
+ * The reverse: the object etag a served validator was built from, or null when
+ * it names a rendering this deploy does not produce.
+ */
+function storedEtagOf(servedTag: string): string | null {
+  const inner = unquoteEtag(servedTag);
+  if (!inner.endsWith(RENDERING_SUFFIX)) return null;
+  return `"${inner.slice(0, -RENDERING_SUFFIX.length)}"`;
+}
+
+/** `W/"x"` and `"x"` alike down to `x` — the only comparison etags allow here. */
+function unquoteEtag(tag: string): string {
+  return tag.replace(/^W\//, "").replace(/^"/, "").replace(/"$/, "");
 }
 
 /**
@@ -251,13 +311,14 @@ function matchesConditions(conditions: Headers, object: R2Object): boolean {
   const ifNoneMatch = conditions.get("if-none-match");
   if (ifNoneMatch !== null) {
     if (ifNoneMatch.trim() === "*") return true;
-    // Weak comparison: `W/"x"` and `"x"` are the same entity for this purpose,
-    // which is the only comparison If-None-Match is allowed to use.
+    // These tags have already been reduced to object etags by
+    // `notModifiedConditions`, so this is the same comparison R2 makes on the
+    // GET path: weak, because `W/"x"` and `"x"` are the same entity here.
     const wanted = ifNoneMatch
       .split(",")
-      .map((tag) => tag.trim().replace(/^W\//, ""))
+      .map((tag) => unquoteEtag(tag.trim()))
       .filter((tag) => tag.length > 0);
-    return wanted.includes(object.httpEtag.replace(/^W\//, ""));
+    return wanted.includes(unquoteEtag(object.httpEtag));
   }
 
   const ifModifiedSince = conditions.get("if-modified-since");
@@ -306,7 +367,7 @@ async function serveObject(
     const object = await env.DOCS.head(key);
     if (object === null) return noDocAt(pathname);
 
-    headers.set("etag", object.httpEtag);
+    headers.set("etag", servedEtag(object.httpEtag));
     // A validator has to mean the same thing whichever method asks. HEAD is
     // defined as GET without the body, so a cache revalidating with HEAD must
     // get the 304 that GET would give it, not a 200 that says the doc changed.
@@ -315,22 +376,35 @@ async function serveObject(
     }
 
     headers.set("content-type", STORED_CONTENT_TYPE);
-    // Set only here. On a GET the runtime frames the body itself, and a length
-    // we computed would be a second opinion that content-encoding can falsify.
-    headers.set("content-length", String(object.size));
+    // No `content-length`. `object.size` is the stored document's length, and
+    // what a reader receives is that plus whatever `renderServedHtml` injects —
+    // a number only the transform knows, and running it here would fetch the
+    // body this method promises not to send. HTTP permits omitting it; stating
+    // the stored length would be stating a wrong one.
     return new Response(null, { status: 200, headers });
   }
 
   const object = await env.DOCS.get(key, { onlyIf: conditions });
   if (object === null) return noDocAt(pathname);
 
-  headers.set("etag", object.httpEtag);
+  // The response is the object *and* the rendering applied to it, so the
+  // validator names both. What it does not fix is a copy that never revalidates:
+  // a `/v{n}` a cache is already holding is `immutable` for a year and will not
+  // ask again, so a publisher who pays to drop the bylines keeps them on pinned
+  // urls until it expires, while `/d/{docId}` refreshes within its 60 seconds.
+  // Serving at read time makes the change possible; it does not make it instant.
+  //
+  // When a plan can remove the bylines there will be two renderings of the same
+  // object at the same instant, which a revision alone cannot separate: the
+  // variant has to enter this validator too, or a shared cache will hand one
+  // publisher's branding to another's reader.
+  headers.set("etag", servedEtag(object.httpEtag));
   if (!("body" in object)) return new Response(null, { status: 304, headers });
 
   headers.set("content-type", STORED_CONTENT_TYPE);
-  // The stream, never the bytes: a 10MB doc passes through the worker without
-  // ever being a 10MB string in it.
-  return new Response(object.body, { status: 200, headers });
+  // Still the stream, never the bytes: HTMLRewriter transforms as it passes, so
+  // a 10MB doc is never a 10MB string in the worker.
+  return renderServedHtml(new Response(object.body, { status: 200, headers }));
 }
 
 /**

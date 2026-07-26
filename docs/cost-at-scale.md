@@ -62,7 +62,7 @@ Key modeling point: because readers need no accounts, **cost scales with publish
 |---|---|---|
 | Blob storage (versions) | pushes x size x retention | Tiny. R2 at $0.015/GB-mo; even 1TB is $15/mo |
 | Egress / CDN | views x doc size | ~$0 on Cloudflare (R2 has no egress fees); $0.005-0.01/GB on Bunny as fallback; only S3+CloudFront ($0.085/GB) makes this a real line item, so don't use it |
-| Compute (render + serve) | push-time md→HTML render, version diff | Negligible: rendering is milliseconds of CPU per push; serving is cache hits. Workers paid plan $5/mo baseline |
+| Compute (render + serve) | a streaming rewrite per uncached read | Negligible: HTMLRewriter is a single tokenizing pass over bytes already in flight, and the CDN absorbs the repeat reads. Workers paid plan $5/mo baseline |
 | Metadata DB | pointer index (see section 6) | D1, effectively $0 at this scale; content lives in R2, not the DB |
 | Auth (publishers only) | Copilot users pushing | Stateless signed sessions + a D1 keys table, ~$0; do NOT use per-MAU pricing like Clerk ($0.02/MAU = $1.8k/mo at 100k, a self-inflicted wound) |
 | **Abuse / trust & safety** | public hosting of user-uploaded HTML | **The real one. See section 5.** The paid publishing gate (§8) lowers the rate; [serving-domain.md](serving-domain.md) is why it does not lower the blast radius |
@@ -177,7 +177,7 @@ Decision (2026-07-21): the whole stack runs on the Cloudflare bundle - DNS, CDN,
 
 - `docs/{id}/v{n}.html` - immutable versions, content-addressed, `cache-control: immutable`. Dedupe identical chunks across versions so "every push mints a version" doesn't compound into a storage tax. Immutability means the CDN does the serving business for us; a viral doc costs origin one read.
 - `docs/{id}/threads/{tid}.html` - each comment thread is a self-contained HTML fragment with semantic markup: `<article class="thread" data-anchor-quote="...">` containing nested comments carrying `data-author`, `data-state="pending|posted|resolved"`, `data-resolved-by-version`. Agents parse the exact markup humans render. This settles the open design question in [[Agent-First Docs - Product Positioning]] (structured endpoint vs parsing served HTML): the served HTML *is* the API, because the markup is designed to be machine-legible.
-- `docs/{id}/manifest.json` - one small file per doc: version list, thread list, grant list. Each doc is a fully self-describing R2 prefix: delete the prefix and the doc is gone; export it and the doc is portable. Render happens at push time, not read time - pay compute once per version, serve cached bytes forever.
+- `docs/{id}/manifest.json` - one small file per doc: version list, thread list, grant list. Each doc is a fully self-describing R2 prefix: delete the prefix and the doc is gone; export it and the doc is portable. R2 holds the publisher's own bytes; Symposium's additions go in at read time, so a byline change - or a paid plan that removes one - reaches documents already published without rewriting a single stored object. The cost is a streaming pass per uncached read, which the CDN makes rare.
 
 **Durable Objects - one coordinator per doc.** A DO per doc serializes all writes to that doc: append comment, re-anchor threads on push, update manifest, invalidate cache. DOs carry embedded SQLite, so each doc's working index (anchors, thread states) lives inside the doc's own object - ten million tiny databases, one per doc, instead of one big one. Each is rebuildable from its doc's R2 prefix, and per-doc state dies with the doc.
 

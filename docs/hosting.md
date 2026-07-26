@@ -149,8 +149,10 @@ model in [cost-at-scale.md](cost-at-scale.md) works at all: a document read by
 Storage is $0.015/GB-month; writes (Class A) $4.50 per million, reads (Class B)
 $0.36 per million. A push is a couple of writes, a read is one.
 
-Because objects are immutable and HTML is finished at publish time, serving is a
-straight read-and-stream — the Worker never re-renders anything.
+Objects are immutable, and serving is a read plus one streaming rewrite: R2
+holds the publisher's document and Symposium's additions go in on the way out.
+The pass never buffers, so it costs CPU proportional to bytes already in flight,
+and the CDN keeps repeat readers off the Worker entirely.
 
 ## Config, vars and secrets
 
@@ -217,9 +219,10 @@ The decisive property is R2's lack of egress fees. Symposium is, at bottom, a se
 that hands the same immutable bytes to many readers, and everywhere else that
 shape is dominated by bandwidth — S3 plus CloudFront is roughly $0.085/GB, which
 at scale *is* the business, and is zero here. The rest follows: immutable version
-URLs cache perfectly, HTML is rendered once at publish time, and the compute per
-read is a lookup and a stream. No component in the serving path is priced per
-user or per seat, which is the other way this category usually gets expensive.
+URLs cache perfectly, and the compute per read is a lookup, a stream, and one
+tokenizing pass over bytes already in flight. No component in the serving path is
+priced per user or per seat, which is the other way this category usually gets
+expensive.
 
 The weak link is D1, and it is worth being clear-eyed. One database is capped at
 10 GB, is single-threaded, and takes writes in a single region. Symposium's shape

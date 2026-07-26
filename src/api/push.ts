@@ -42,7 +42,7 @@ import {
   utcDay,
   utf8Length,
 } from "../quota.js";
-import { bakeServedHtml } from "../render.js";
+
 import { STORED_CONTENT_TYPE, versionObjectKey } from "../storage.js";
 import { publicDocUrl } from "../urls.js";
 
@@ -143,7 +143,7 @@ function dailyQuotaExceeded(): Response {
 }
 
 /**
- * Render, store, record — in that order, for the reasons at the top of the file.
+ * Store, record — in that order, for the reasons at the top of the file.
  *
  * The version number is already reserved by the time this runs, so the key it
  * writes cannot collide with another push and the object it writes is never
@@ -160,7 +160,11 @@ async function storeVersion(
   title: string | null,
   atMs: number,
 ): Promise<boolean> {
-  const bytes = await bakeServedHtml(html);
+  // The publisher's own bytes, unmodified. Symposium's additions go in when the
+  // document is served, so a byline change — or a plan that removes one —
+  // reaches documents already published. `size` is therefore the size of what
+  // the publisher sent, not of what a reader receives.
+  const bytes = new TextEncoder().encode(html);
   const key = versionObjectKey(docId, version);
 
   await env.DOCS.put(key, bytes, {

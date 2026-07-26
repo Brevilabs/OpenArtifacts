@@ -2,9 +2,28 @@ import { createExecutionContext, env, waitOnExecutionContext } from "cloudflare:
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Env } from "../src/config.js";
 import { DOC_ID_LENGTH } from "../src/ids.js";
-import { NOINDEX_META, SYMPOSIUM_FOOTER } from "../src/render.js";
+import { NOINDEX_META, SYMPOSIUM_FOOTER, SYMPOSIUM_HEADER } from "../src/render.js";
 import { versionObjectKey } from "../src/storage.js";
 import worker from "../src/index.js";
+
+/**
+ * The served page is no longer the stored object: `renderServedHtml` adds the
+ * robots meta and the bylines on the way out. What survives is that the
+ * publisher's document is carried through untouched, which is what these
+ * assertions are actually about.
+ */
+async function expectServes(response: Response, docId: string, version: number) {
+  const html = await response.text();
+  const document = await stored(docId, version);
+  expect(document).not.toContain(NOINDEX_META);
+  expect(html).toContain(NOINDEX_META);
+  expect(html).toContain(SYMPOSIUM_FOOTER);
+  // Everything inside the body the publisher sent, in order, still there.
+  const inner = document.slice(document.indexOf("<body>") + 6, document.indexOf("</body>"));
+  expect(html).toContain(inner.trim());
+  return html;
+}
+
 
 /**
  * A host matching neither SERVING_HOST nor API_HOST, which is what makes the
@@ -126,14 +145,37 @@ describe("GET /d/{docId}", () => {
     expect(response.headers.get("set-cookie")).toBeNull();
     expect(response.headers.get("content-type")).toBe("text/html; charset=utf-8");
 
-    // Byte-for-byte: serving is a passthrough (D11), so the reader's page and
-    // the stored object are the same thing, footer and robots meta included.
+    // Not byte-for-byte any more: the stored object is the publisher's document,
+    // and the additions go in on the way out. The reader gets both, the bucket
+    // holds neither, which is what lets a byline change reach this document
+    // without a re-push.
     const html = await response.text();
-    expect(html).toBe(await stored(docId, 2));
+    const object = await stored(docId, 2);
     expect(html).toContain("<p>second draft</p>");
     expect(html).not.toContain("<p>first draft</p>");
     expect(html).toContain(NOINDEX_META);
     expect(html).toContain(SYMPOSIUM_FOOTER);
+    expect(object).not.toContain(NOINDEX_META);
+    expect(object).not.toContain(SYMPOSIUM_FOOTER);
+  });
+
+  // End to end, because "injected once" is asserted against the renderer in
+  // isolation elsewhere, and the question a publisher actually asks is about a
+  // document they pushed. Documents stored before injection moved carry their
+  // own baked copy and would show two footers until re-pushed; nothing pushed
+  // through this path can, because nothing is ever baked into the bytes.
+  it("adds exactly one of each to a freshly pushed document", async () => {
+    const docId = await push({ title: "A note", html: page("<p>hello</p>") });
+
+    const html = await (await get(`/d/${docId}`)).text();
+
+    for (const addition of [NOINDEX_META, SYMPOSIUM_HEADER, SYMPOSIUM_FOOTER]) {
+      expect(html.split(addition).length - 1).toBe(1);
+    }
+    // The bylines' own markers, so a future restyle that changes the constants
+    // cannot make the count above pass by matching nothing.
+    expect(html.split("symposium-header").length - 1).toBe(1);
+    expect(html.split("symposium-footer").length - 1).toBe(1);
   });
 
   it("serves version 1 at the same url before there is a version 2", async () => {
@@ -145,7 +187,7 @@ describe("GET /d/{docId}", () => {
     // The TTL follows the url, not the version number: this url will change
     // what it serves the moment the author pushes again.
     expect(response.headers.get("cache-control")).toBe("public, max-age=60");
-    expect(await response.text()).toBe(await stored(docId, 1));
+    await expectServes(response, docId, 1);
   });
 
   it("serves the newest version that has bytes, not the burned reservation", async () => {
@@ -158,7 +200,7 @@ describe("GET /d/{docId}", () => {
     const response = await get(`/d/${docId}`);
 
     expect(response.status).toBe(200);
-    expect(await response.text()).toBe(await stored(docId, 2));
+    await expectServes(response, docId, 2);
   });
 
   it("serves the same page with a trailing slash", async () => {
@@ -167,7 +209,7 @@ describe("GET /d/{docId}", () => {
     const response = await get(`/d/${docId}/`);
 
     expect(response.status).toBe(200);
-    expect(await response.text()).toBe(await stored(docId, 2));
+    await expectServes(response, docId, 2);
   });
 });
 
@@ -182,7 +224,7 @@ describe("GET /d/{docId}/v{n}", () => {
     expect(response.headers.get("set-cookie")).toBeNull();
 
     const html = await response.text();
-    expect(html).toBe(await stored(docId, 1));
+    expect(html).toContain(NOINDEX_META);
     expect(html).toContain("<p>first draft</p>");
     expect(html).not.toContain("<p>second draft</p>");
   });
@@ -196,7 +238,7 @@ describe("GET /d/{docId}/v{n}", () => {
     // Immutable because the url names a version, not because the version is
     // old: /v2 will never mean anything else, even once /v3 exists.
     expect(response.headers.get("cache-control")).toBe("public, max-age=31536000, immutable");
-    expect(await response.text()).toBe(await stored(docId, 2));
+    await expectServes(response, docId, 2);
   });
 
   it("404s a version above the ones that exist", async () => {
@@ -448,7 +490,6 @@ describe("a doc that is not there", () => {
 describe("HEAD and conditional requests", () => {
   it("answers HEAD with the page's headers and no body", async () => {
     const docId = await twoVersionDoc();
-    const html = await stored(docId, 2);
 
     const response = await send("HEAD", `/d/${docId}`);
 
@@ -456,10 +497,24 @@ describe("HEAD and conditional requests", () => {
     expect(await response.text()).toBe("");
     expect(response.headers.get("content-type")).toBe("text/html; charset=utf-8");
     expect(response.headers.get("cache-control")).toBe("public, max-age=60");
-    expect(response.headers.get("content-length")).toBe(
-      String(new TextEncoder().encode(html).byteLength),
-    );
     expect(response.headers.get("content-security-policy")).toContain("form-action 'none'");
+  });
+
+  // The stored length stopped being the served length when the additions moved
+  // to serve time, and the served one cannot be known without running the
+  // transform — which would fetch the body HEAD promises not to send. Omitting
+  // it is legal; stating the stored number would be stating a wrong one.
+  it("omits content-length on HEAD rather than reporting the stored size", async () => {
+    const docId = await twoVersionDoc();
+    const stale = new TextEncoder().encode(await stored(docId, 2)).byteLength;
+
+    const response = await send("HEAD", `/d/${docId}`);
+
+    expect(response.headers.get("content-length")).toBeNull();
+
+    // And the number it would have reported really is wrong now.
+    const served = new TextEncoder().encode(await (await get(`/d/${docId}`)).text()).byteLength;
+    expect(served).toBeGreaterThan(stale);
   });
 
   it("404s HEAD for a doc that is not there", async () => {
@@ -539,7 +594,7 @@ describe("HEAD and conditional requests", () => {
     const response = await get(`/d/${docId}`, { headers: { "if-none-match": stale! } });
 
     expect(response.status).toBe(200);
-    expect(await response.text()).toBe(await stored(docId, 2));
+    await expectServes(response, docId, 2);
   });
 
   it("gives each version its own etag", async () => {
@@ -553,5 +608,83 @@ describe("HEAD and conditional requests", () => {
     // The shared link's etag has to move with the version, or a 60s-stale
     // reader would revalidate into the old page forever.
     expect(latest).toBe(v2);
+  });
+
+  // The bytes a reader gets are the object plus a rendering, and only one of
+  // those two is what R2's etag identifies.
+  it("names the rendering in the etag, not only the stored object", async () => {
+    const docId = await twoVersionDoc();
+
+    const etag = (await get(`/d/${docId}`)).headers.get("etag");
+
+    expect(etag).toMatch(/^W\/".+\.r\d+"$/);
+    // Not R2's own validator, which a byline edit cannot move: it identifies
+    // the stored object, and a byline edit leaves that alone.
+    const object = await env.DOCS.head(versionObjectKey(docId, 2));
+    expect(etag).not.toBe(object!.httpEtag);
+    expect(etag).toContain(object!.etag);
+  });
+
+  // The failure this exists to stop: without the revision in the validator, a
+  // reader holding a page rendered by an older deploy revalidates, is told 304,
+  // and keeps it — and each revalidation renews its freshness, so it keeps it
+  // for good. A tag naming a rendering we no longer produce has to miss.
+  it("re-serves in full when the client holds an older rendering", async () => {
+    const docId = await twoVersionDoc();
+    const current = (await get(`/d/${docId}`)).headers.get("etag")!;
+    const older = current.replace(/\.r(\d+)"$/, (_, n) => `.r${Number(n) - 1}"`);
+
+    expect(older).not.toBe(current);
+
+    const response = await get(`/d/${docId}`, { headers: { "if-none-match": older } });
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain(SYMPOSIUM_FOOTER);
+    expect(response.headers.get("etag")).toBe(current);
+  });
+
+  it("still 304s the same rendering on HEAD as on GET", async () => {
+    const docId = await twoVersionDoc();
+    const etag = (await get(`/d/${docId}`)).headers.get("etag")!;
+
+    const head = await send("HEAD", `/d/${docId}`, { headers: { "if-none-match": etag } });
+
+    expect(head.status).toBe(304);
+    expect(head.headers.get("etag")).toBe(etag);
+  });
+
+  // A real revalidation sends both validators, and RFC 9110 says the date is
+  // ignored whenever an entity tag is present. That has to hold when *no* tag
+  // survives translation, which is exactly when it matters: those tags name an
+  // older rendering, and a document older than the date would otherwise answer
+  // 304 and hand back the stale bylines the revision suffix exists to refuse.
+  it("ignores If-Modified-Since when the client's etag names an older rendering", async () => {
+    const docId = await twoVersionDoc();
+    const current = (await get(`/d/${docId}`)).headers.get("etag")!;
+    const older = current.replace(/\.r(\d+)"$/, (_, n) => `.r${Number(n) - 1}"`);
+
+    for (const method of ["GET", "HEAD"]) {
+      const response = await send(method, `/d/${docId}`, {
+        headers: {
+          "if-none-match": older,
+          // Comfortably after the push, so on its own this date is a 304.
+          "if-modified-since": new Date(Date.now() + 60_000).toUTCString(),
+        },
+      });
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get("etag")).toBe(current);
+    }
+  });
+
+  // The other half of the same rule: a date alone is still honoured.
+  it("still 304s on If-Modified-Since when no etag was sent", async () => {
+    const docId = await twoVersionDoc();
+
+    const response = await get(`/d/${docId}`, {
+      headers: { "if-modified-since": new Date(Date.now() + 60_000).toUTCString() },
+    });
+
+    expect(response.status).toBe(304);
   });
 });

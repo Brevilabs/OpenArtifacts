@@ -191,10 +191,27 @@ why the client uploads HTML at all. What the policy forbids is a doc using the
 origin against its readers: no form submission, no framing, no `<base>`
 retargeting. The origin is cookieless and holds nothing but already-public docs.
 
-Two things are injected into the document at push time, so the stored bytes and
-the served bytes are the same thing: a `<meta name="robots" content="noindex,nofollow">`
-in the head, and a small `Shared with Symposium` footer before `</body>`. Nothing
-else is touched — the markup is never sanitized, rewritten or reformatted.
+Three things are injected as the document is served: a
+`<meta name="robots" content="noindex,nofollow">` in the head, a
+`Shared from Copilot for Obsidian` byline at the top of the body, and a
+`Powered by symposium.md` byline before `</body>`. Nothing else is touched — the
+markup is never sanitized, rewritten or reformatted, and what R2 stores is the
+publisher's document exactly as it was pushed.
+
+Serving therefore adds to the stored bytes rather than reproducing them. That is
+what lets a byline change reach documents already published. Two consequences
+worth knowing:
+
+- `Content-Length` is absent on `HEAD`. The served length is not knowable without
+  running the transform, and reporting the stored one would be reporting a wrong
+  number.
+- The `ETag` identifies **the stored version and the rendering applied to it**,
+  not the stored version alone — a byline change moves it even though the stored
+  bytes are untouched, which is what stops a revalidating cache serving an old
+  rendering forever. Treat it as opaque, as always: its shape is not a contract
+  and it will change again. What is stable is the behaviour — the same document
+  and the same rendering always produce the same tag, and `If-None-Match` with
+  it returns `304`.
 
 `404` for an unknown id or version; `410` once the doc is deleted.
 
