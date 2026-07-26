@@ -154,7 +154,12 @@ jobs:
 
           if [ -n "$base" ] && git cat-file -e "${base}^{commit}" 2>/dev/null; then
             echo "comparing migrations against last successful deploy ${base:0:8}"
-            git diff --name-only --diff-filter=MD "$base" HEAD -- migrations/ \
+            # --no-renames: rename detection is on by default, and a
+            # same-content move reports as a single `R` that this filter drops
+            # entirely. Decomposed into D + A, the old name shows up as the
+            # deletion it is — and the old name is the one `d1_migrations`
+            # knows.
+            git diff --no-renames --name-only --diff-filter=MD "$base" HEAD -- migrations/ \
               | xargs -r -n1 basename | sort > /tmp/changed.txt
             clash="$(comm -12 /tmp/changed.txt /tmp/applied.txt)"
             if [ -n "$clash" ]; then

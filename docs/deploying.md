@@ -103,8 +103,10 @@ Merging to `main` runs `.github/workflows/deploy.yml`, which typechecks, tests,
 refuses to deploy over an unapplied migration, ships, checks both hosts answer,
 and records what shipped on the repo page. Nobody deploys from a laptop.
 
-It needs one repository secret, `CLOUDFLARE_API_TOKEN`, holding two account
-permissions on the Brevilabs account: **Workers Scripts: Edit** to deploy, and
+It needs one secret, `CLOUDFLARE_API_TOKEN` — an *environment* secret on
+`production`, never a repository one, for the reasons below. The token holds two
+account permissions on the Brevilabs account: **Workers Scripts: Edit** to
+deploy, and
 **D1: Edit** to read the `d1_migrations` table. Not a Global API Key, which
 would also reach DNS and every other zone setting. Create it under My Profile →
 API Tokens → Create Token; the *Edit Cloudflare Workers* template is a fine
@@ -119,15 +121,27 @@ it and an under-scoped token fails every deploy rather than degrading. The cost
 is real and worth naming: this token can write the production database, which is
 the price of checking the schema from CI at all.
 
-Add it as an **environment** secret on `production` (Settings → Environments →
-production), not a repository secret, and set that environment's **deployment
-branch policy to `main`**. Both halves are load-bearing, and the reason is that
-`workflow_dispatch` runs the workflow definition from whatever ref it is given:
-a branch carrying an edited copy of `deploy.yml` with the guard removed would
-otherwise deploy itself. The branch policy refuses the job, and a branch that
-strips the `environment:` block to escape the policy loses the only path to the
-secret. A repository secret has neither property — every workflow in the repo
-can read it.
+Add it under Settings → Environments → production → **Environment secrets**, and
+set that environment's **deployment branch policy** to `main`. Both halves are
+load-bearing, and the reason is that `workflow_dispatch` runs the workflow
+definition from whatever ref it is given: a branch carrying an edited copy of
+`deploy.yml` with the guard removed would otherwise deploy itself. The branch
+policy refuses the job, and a branch that strips the `environment:` block to
+escape the policy loses the only path to the secret. A repository secret has
+neither property — every workflow in the repo can read it, so the guard in
+`deploy.yml` would be the only thing standing between a feature branch and
+production, and that guard lives in the file such a branch is editing.
+
+The `main` rule must be **branch**-typed. GitHub's rules carry a ref type, and
+the API reports this one as `{"name":"main","type":"branch"}`. A tag-typed rule
+named `main` — or any `*` tag rule — would let someone push a tag called `main`
+and dispatch from it, which no branch rule matches and no in-file guard survives.
+Check with:
+
+```bash
+gh api repos/Brevilabs/symposium/environments/production/deployment-branch-policies \
+  --jq '.branch_policies[] | {name, type}'
+```
 
 Required reviewers would gate this further, but GitHub rejects that protection
 rule on this billing plan for a private repo, so the branch policy is the whole
