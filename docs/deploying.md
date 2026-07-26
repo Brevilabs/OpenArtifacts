@@ -6,13 +6,15 @@ commands are creating.
 
 [← README](../README.md) · [Hosting](hosting.md) · [HTTP API](http-api.md)
 
-> **The Worker has not been deployed yet.** Its storage has: on the Brevilabs
-> account, steps 1–3 below are done, and `wrangler.jsonc` already carries the
-> real `database_id`. What is left is steps 4–8. One thing to know going in: D1
-> is currently the only record of who owns a doc, what it is called, and whether
-> it was deleted, so until per-doc manifests ship, back-ups mean D1's own 30-day
-> Time Travel window rather than "rebuild it from R2". That is fine at low volume
-> and should be fixed well before it isn't — see `CLAUDE.md`.
+> **The Worker is deployed.** All eight steps below have run on the Brevilabs
+> account, and `wrangler.jsonc` carries the real `database_id`. They are kept as
+> the record of how production was built and as the procedure for a fresh
+> account — do not re-run them against Brevilabs'. Routine deploys now happen in
+> CI; see [Later deploys happen in CI](#later-deploys-happen-in-ci). One thing to
+> know going in: D1 is still the only record of who owns a doc, what it is called,
+> and whether it was deleted, so until per-doc manifests ship, back-ups mean D1's
+> own 30-day Time Travel window rather than "rebuild it from R2". That is fine at
+> low volume and should be fixed well before it isn't — see `CLAUDE.md`.
 
 Run in order, from a checkout with `npx wrangler login` already done, against
 whichever account wrangler is logged into.
@@ -73,8 +75,8 @@ SYMPOSIUM_LICENSE_KEY=<a real lifetime-tier key> \
 The smoke script publishes a doc, reads it, lists it, deletes it and confirms the
 `410`. It spends one push against that key's daily quota and leaves no live doc
 and no stored bytes behind — only the deleted doc's row, which every delete keeps
-so the url can go on answering `410`. It is not part of CI — CI has no key and no
-deployment.
+so the url can go on answering `410`. It is not part of CI, which has no lifetime
+key to spend.
 
 ## There is no workers.dev url
 
@@ -105,9 +107,9 @@ refuses to deploy over an unapplied migration, ships, checks both hosts answer,
 and records what shipped on the repo page. Nobody deploys from a laptop.
 
 It needs one secret, `CLOUDFLARE_API_TOKEN` — an *environment* secret on
-`production`, never a repository one, for the reasons below. The token holds two
-account permissions on the Brevilabs account: **Workers Scripts: Edit** to
-deploy, and
+`production`, never a repository one, for the reasons below. It is configured on
+the Brevilabs repo; what follows is how it was built and how to rebuild it. The
+token holds two account permissions: **Workers Scripts: Edit** to deploy, and
 **D1: Edit** to read the `d1_migrations` table. Not a Global API Key, which
 would also reach DNS and every other zone setting. Create it under My Profile →
 API Tokens → Create Token; the *Edit Cloudflare Workers* template is a fine
@@ -148,8 +150,12 @@ Required reviewers would gate this further, but GitHub rejects that protection
 rule on this billing plan for a private repo, so the branch policy is the whole
 of the platform-level control.
 
-**Until that secret exists the workflow cannot run**, and deploys stay manual:
-steps 5 and 8 above, plus step 3 whenever a migration is added.
+Without the secret the workflow cannot run at all, and deploys fall back to being
+manual: steps 5 and 8 above, plus step 3 whenever a migration is added. That is
+also the recovery path if the token is ever revoked.
+
+Migrations remain manual in every case. Step 3, then merge — the workflow fails
+rather than applying one.
 
 Two things the workflow deliberately does not do:
 
