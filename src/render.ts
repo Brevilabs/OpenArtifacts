@@ -106,6 +106,21 @@ const AS_HTML = { html: true } as const;
  *   us whether the injection actually landed, and the document-end fallback
  *   covers every case where it did not.
  *
+ * **Placement is best-effort, and deliberately not hardened further.**
+ * HTMLRewriter is a token rewriter; the browser's tree builder is not. A second
+ * `<body>` start tag is ignored by the HTML parsing spec, a nested one is
+ * ignored, and one inside `<template>` lands in a fragment — so wherever those
+ * two disagree, markup exists that puts a byline somewhere useless. The guards
+ * above cover the shapes that turned up in review; `<noscript>`, foreign
+ * content in `<svg>`, and `srcdoc` are further examples nobody has chased.
+ *
+ * That is acceptable because a byline is not a security boundary. `BYLINE_LINK`
+ * already concedes that a document rule marked `!important` removes it outright,
+ * and every one of these shapes has to be written deliberately by the publisher
+ * the header names. Hardening placement against a hostile author is unwinnable
+ * and not worth attempting; correctness for documents a client actually renders
+ * is what these guards are for.
+ *
  * Returns the bytes to store: the caller needs their length for the version row
  * and hands the same buffer to R2, so a string round-trip would copy 10MB for
  * nothing.
@@ -114,11 +129,24 @@ export async function bakeServedHtml(html: string): Promise<Uint8Array> {
   let metaPlaced = false;
   let headerPlaced = false;
   let footerPlaced = false;
+  let templateDepth = 0;
 
   const baked = new HTMLRewriter()
+    // `<template>` content is inert: the browser parses it into a fragment, so
+    // a `head` or `body` token inside one is not the document's. lol-html sees
+    // the tokens anyway, and without this the first such token consumes the
+    // injections and the real body gets nothing.
+    .on("template", {
+      element(template) {
+        templateDepth += 1;
+        template.onEndTag(() => {
+          templateDepth -= 1;
+        });
+      },
+    })
     .on("head", {
       element(head) {
-        if (metaPlaced) return;
+        if (metaPlaced || templateDepth > 0) return;
         metaPlaced = true;
         head.prepend(NOINDEX_META, AS_HTML);
       },
@@ -135,7 +163,7 @@ export async function bakeServedHtml(html: string): Promise<Uint8Array> {
         // `<body>a<body>b</body>c</body>` the inner end tag arrives first, so a
         // first-one-wins guard puts the footer before `c`. Registering on one
         // element makes lol-html pair that element's own end tag.
-        if (headerPlaced) return;
+        if (headerPlaced || templateDepth > 0) return;
         headerPlaced = true;
         body.prepend(SYMPOSIUM_HEADER, AS_HTML);
         body.onEndTag((endTag) => {

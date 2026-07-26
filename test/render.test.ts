@@ -133,6 +133,24 @@ describe("bakeServedHtml — where the injections land", () => {
     expect(baked.indexOf(SYMPOSIUM_FOOTER)).toBeGreaterThan(baked.indexOf("<p>after</p>"));
   });
 
+  // `<template>` content is inert — the browser parses it into a fragment — but
+  // lol-html emits its tokens like any others, so an inert `body` would consume
+  // both injections and leave the real one bare.
+  it("ignores head and body tokens inside template content", async () => {
+    const baked = await bake(
+      "<!doctype html><html><head></head>" +
+        "<template><head></head><body><p>inert</p></body></template>" +
+        "<body><p>real</p></body></html>",
+    );
+
+    expect(occurrences(baked, NOINDEX_META)).toBe(1);
+    expect(occurrences(baked, SYMPOSIUM_HEADER)).toBe(1);
+    expect(occurrences(baked, SYMPOSIUM_FOOTER)).toBe(1);
+    // The bylines belong to the real body, so they sit after the template.
+    expect(baked.indexOf(SYMPOSIUM_HEADER)).toBeGreaterThan(baked.indexOf("</template>"));
+    expect(baked).toContain("<p>inert</p>");
+  });
+
   it("keeps the document's own head content, including its own meta tags", async () => {
     const baked = await bake(page("<p>hello</p>"));
 
