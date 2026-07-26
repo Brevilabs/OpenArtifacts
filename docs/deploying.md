@@ -97,5 +97,51 @@ hosts are empty, and the path-prefix fallback would serve `/d/*` on
 — the exact split this document argues for, undone for the length of a deploy.
 The `url` the API returns follows the vars automatically.
 
-Later deploys are steps 5 and 8 alone, plus step 3 whenever a migration is added.
+## Later deploys happen in CI
+
+Merging to `main` runs `.github/workflows/deploy.yml`, which typechecks, tests,
+refuses to deploy over an unapplied migration, ships, checks both hosts answer,
+and records what shipped on the repo page. Nobody deploys from a laptop.
+
+It needs one repository secret, `CLOUDFLARE_API_TOKEN`, scoped to **Workers
+Scripts: Edit** on the Brevilabs account — not a Global API Key, which would
+also reach DNS, R2 and D1. **Until that secret exists the workflow cannot run**,
+and deploys stay manual: steps 5 and 8 above, plus step 3 whenever a migration
+is added.
+
+Two things the workflow deliberately does not do:
+
+- **It does not apply migrations.** It compares `migrations/` against the
+  `d1_migrations` table and fails when they disagree. Applying them from CI
+  would let a merged PR silently alter the production database; failing cannot
+  corrupt anything and turns a code/schema mismatch into a red build. Apply them
+  by hand, then merge.
+- **It does not smoke-test.** That needs a real lifetime key, spends a push from
+  its daily quota, and writes to production R2 and D1 on every merge. `/health`
+  on both hosts is the liveness check instead. Run `scripts/smoke.sh` by hand
+  when the change warrants it.
+
+Gate it further by adding a required reviewer to the `production` environment in
+Settings → Environments, which turns a merge into "merged, and someone approved
+the deploy".
+
+## Rolling back
+
+Every deploy creates an immutable version and Cloudflare keeps them all.
+
+```bash
+npx wrangler versions list          # ids, timestamps, and the commit in Message
+npx wrangler rollback <version-id>
+```
+
+Or the dashboard: **Compute (Workers) → symposium → Deployments**, then
+**⋯ → Rollback** on a version. The workflow passes `--message` so that list
+reads as commits rather than uuids.
+
+**Rollback reverts code and nothing else.** D1 rows and R2 objects written by
+the bad version stay written, which is the other half of why migrations are not
+applied from CI. Nothing records a rollback either, so the deployment records on
+the repo page will name the commit that was deployed forward until the next
+merge corrects them.
+
 All changes ship through a pull request; never push to `main`.

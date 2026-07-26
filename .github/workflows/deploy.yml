@@ -1,0 +1,130 @@
+# This workflow cannot run until CLOUDFLARE_API_TOKEN exists as a repository
+# secret. Until then every deploy is still a manual `npx wrangler deploy`, and
+# the deployment records on the repo page go on describing whatever commit they
+# last described. See docs/deploying.md.
+
+name: Deploy
+
+# Only what changes the deployed Worker. A docs-only merge would otherwise
+# redeploy identical bytes and overwrite the recorded SHA with a commit that
+# changed nothing about production.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "migrations/**"
+      - "wrangler.jsonc"
+      - "package-lock.json"
+      - ".github/workflows/deploy.yml"
+  workflow_dispatch:
+
+# A deploy must never be cancelled part-way, and two must never overlap: the
+# second would race the first's `wrangler deploy` and the recorded SHA would be
+# whichever finished last rather than whichever is serving.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  deployments: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    # Naming an environment is what creates the deployment record on the repo
+    # page and what lets a required reviewer gate the job. Configure the
+    # reviewer in Settings → Environments; without one this deploys on merge.
+    environment:
+      name: production
+      url: https://symposium.site
+
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: "960579f222ad237394703bd52f28114c"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # CI runs these too, on the same push. Repeated here on purpose: the two
+      # workflows run in parallel, so a deploy that trusted CI could finish
+      # before CI went red and ship the build that failed.
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      # Fail on an unapplied migration rather than applying it. Running
+      # `migrations apply` here would let a merged PR silently alter the
+      # production database; failing cannot corrupt anything, and it turns a
+      # code/schema mismatch into a red build instead of a 500 at runtime.
+      #
+      # Compares filenames against the `d1_migrations` table rather than
+      # matching wrangler's console wording, which would break silently the
+      # next time that string changes.
+      - name: Check migrations are applied
+        run: |
+          set -euo pipefail
+          npx wrangler d1 execute symposium --remote --json \
+            --command "SELECT name FROM d1_migrations" \
+            | jq -r '.[0].results[].name' | sort > /tmp/applied.txt
+          ls migrations/*.sql | xargs -n1 basename | sort > /tmp/on-disk.txt
+          missing="$(comm -23 /tmp/on-disk.txt /tmp/applied.txt)"
+          if [ -n "$missing" ]; then
+            echo "::error::Unapplied migrations. Run: npx wrangler d1 migrations apply symposium --remote"
+            echo "$missing" | sed 's/^/  /'
+            exit 1
+          fi
+          echo "all $(wc -l < /tmp/on-disk.txt | tr -d ' ') migration(s) applied"
+
+      # `--message` fills the Message column in the dashboard's Deployments
+      # tab, which is otherwise a list of uuids and timestamps. It is what makes
+      # a rollback decision possible without cross-referencing GitHub.
+      - name: Deploy
+        id: deploy
+        run: |
+          npx wrangler deploy \
+            --message "$(git log -1 --format='%h %s' | cut -c1-100)" | tee /tmp/deploy.log
+
+      # A deploy that reports success and serves nothing is the failure this
+      # catches. Both hosts, because they are separate custom domains and one
+      # can be attached while the other is not.
+      - name: Check both hosts answer
+        run: |
+          set -euo pipefail
+          for host in api.symposium.md symposium.site; do
+            code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "https://$host/health")"
+            echo "$host → $code"
+            [ "$code" = "200" ] || { echo "::error::$host answered $code"; exit 1; }
+          done
+
+      # The `production` record is created by the `environment:` block above.
+      # This is its pair for the API host, which has no environment of its own.
+      - name: Record the API deployment
+        run: |
+          set -euo pipefail
+          # jq builds the body: required_contexts must be a real empty array,
+          # and gh's -f/-F flags send the string "[]", which the API 422s.
+          # A herestring rather than a heredoc — heredoc terminators inside a
+          # YAML block scalar depend on dedenting and break quietly.
+          body="$(jq -nc --arg sha "$GITHUB_SHA" \
+            '{ref:$sha,environment:"production-api",description:"Publisher API",auto_merge:false,required_contexts:[]}')"
+          id="$(gh api -X POST "repos/$GITHUB_REPOSITORY/deployments" --input - --jq '.id' <<<"$body")"
+          status="$(jq -nc --arg sha "$GITHUB_SHA" \
+            '{state:"success",environment:"production-api",environment_url:"https://api.symposium.md",description:("Deployed from "+$sha)}')"
+          gh api -X POST "repos/$GITHUB_REPOSITORY/deployments/$id/statuses" --input - --silent <<<"$status"
+        env:
+          GH_TOKEN: ${{ github.token }}
