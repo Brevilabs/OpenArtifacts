@@ -37,17 +37,28 @@ describe("renderServedHtml — what gets injected", () => {
   // Inlined rather than linked: a byline that fetches its logo from another host
   // is a broken-image icon whenever that host is unreachable, and these bytes
   // outlive the deploy that produced them.
-  it("carries the Copilot mark inline, tinted by the byline's own colour", () => {
-    expect(SYMPOSIUM_HEADER).toContain("<svg ");
-    expect(SYMPOSIUM_HEADER).toContain("fill:currentColor");
-    expect(SYMPOSIUM_HEADER).not.toContain("<img");
+  it("carries the Copilot mark inline, in the byline's own grey", () => {
+    // Inline, so the mark does not depend on another host being up, and no
+    // request leaves the page to fetch it.
+    expect(SYMPOSIUM_HEADER).toContain("background:url(data:image/svg+xml,");
+    expect(SYMPOSIUM_HEADER).toContain(encodeURIComponent('fill="#888"'));
     // Decorative: the link text already names the product.
     expect(SYMPOSIUM_HEADER).toContain('aria-hidden="true"');
-    // In the style, not only the attributes: `width`/`height` on an <svg> are
-    // presentation attributes, so a document's `svg { width: 100% }` — which is
-    // in plenty of ordinary resets — would otherwise stretch the mark.
     expect(SYMPOSIUM_HEADER).toContain("width:17px");
     expect(SYMPOSIUM_HEADER).toContain("height:14px");
+  });
+
+  // The header is prepended, so anything it adds is the *first* of its kind in
+  // the document. A figure that opens with `d3.select("svg")` or
+  // `querySelectorAll("img")[0]` would then find the logo and draw into it, and
+  // interactive figures are an explicitly supported input (D6). A background
+  // image on an empty span answers to neither selector.
+  it("adds no element a document's own figure selectors could find", () => {
+    for (const byline of [SYMPOSIUM_HEADER, SYMPOSIUM_FOOTER]) {
+      expect(byline).not.toContain("<svg");
+      expect(byline).not.toContain("<img");
+      expect(byline).not.toContain("<canvas");
+    }
   });
 
   it("names Symposium and what it is for, in text a reader can see", async () => {
@@ -69,8 +80,6 @@ describe("renderServedHtml — what gets injected", () => {
   it("resets its own anchors rather than inheriting the document's link styles", () => {
     for (const byline of [SYMPOSIUM_HEADER, SYMPOSIUM_FOOTER]) {
       expect(byline).toContain('<a href="https://');
-      // Twice: once on the container, once on the anchor inside it.
-      expect(occurrences(byline, "all:initial")).toBe(2);
       for (const restored of ["font:inherit", "cursor:pointer", "color:#888"]) {
         expect(byline).toContain(restored);
       }
@@ -83,6 +92,12 @@ describe("renderServedHtml — what gets injected", () => {
     // header only by being a prefix of `inline-flex`.
     expect(SYMPOSIUM_FOOTER).toContain("display:inline;");
     expect(SYMPOSIUM_HEADER).toContain("display:inline-flex");
+
+    // One reset per element the byline adds: container and anchor in the footer,
+    // plus the span carrying the mark in the header. Counted rather than merely
+    // found, because "the anchor has one too" is the whole claim.
+    expect(occurrences(SYMPOSIUM_FOOTER, "all:initial")).toBe(2);
+    expect(occurrences(SYMPOSIUM_HEADER, "all:initial")).toBe(3);
   });
 
   // The reader is mid-document; a byline that navigates the page away costs

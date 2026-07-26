@@ -21,7 +21,7 @@ import type { Env } from "./config.js";
 import { findServableVersion } from "./db.js";
 import { errorResponse } from "./errors.js";
 import { isDocId } from "./ids.js";
-import { renderServedHtml } from "./render.js";
+import { RENDER_REVISION, renderServedHtml } from "./render.js";
 import { STORED_CONTENT_TYPE, versionObjectKey } from "./storage.js";
 
 /** Path prefix of the serving surface, used by the router's path fallback. */
@@ -236,11 +236,59 @@ function parseDocPath(pathname: string): DocRoute | null {
  */
 function notModifiedConditions(from: Headers): Headers {
   const conditions = new Headers();
-  for (const name of ["if-none-match", "if-modified-since"]) {
-    const value = from.get(name);
-    if (value !== null) conditions.set(name, value);
+
+  // `If-None-Match` arrives naming a *rendering*; R2 only knows about objects,
+  // so the suffix comes off before the tag is handed on. A tag carrying some
+  // other revision names a rendering this deploy no longer produces, and is
+  // dropped rather than translated — which is exactly what makes that reader
+  // get a 200 with the current bylines instead of a 304 with the old ones.
+  const ifNoneMatch = from.get("if-none-match");
+  if (ifNoneMatch !== null) {
+    const stored =
+      ifNoneMatch.trim() === "*"
+        ? "*"
+        : ifNoneMatch
+            .split(",")
+            .map((tag) => storedEtagOf(tag.trim()))
+            .filter((tag) => tag !== null)
+            .join(", ");
+    if (stored.length > 0) conditions.set("if-none-match", stored);
   }
+
+  const ifModifiedSince = from.get("if-modified-since");
+  if (ifModifiedSince !== null) conditions.set("if-modified-since", ifModifiedSince);
+
   return conditions;
+}
+
+/** The revision suffix that turns an object's validator into a rendering's. */
+const RENDERING_SUFFIX = `.r${RENDER_REVISION}`;
+
+/**
+ * The validator for what a reader actually receives: the stored object's etag
+ * plus the revision of the rendering applied to it.
+ *
+ * Weak, because the bytes are no longer the object's own and this service does
+ * not promise them octet-for-octet across deploys — which is all a strong
+ * validator would be claiming.
+ */
+function servedEtag(objectEtag: string): string {
+  return `W/"${unquoteEtag(objectEtag)}${RENDERING_SUFFIX}"`;
+}
+
+/**
+ * The reverse: the object etag a served validator was built from, or null when
+ * it names a rendering this deploy does not produce.
+ */
+function storedEtagOf(servedTag: string): string | null {
+  const inner = unquoteEtag(servedTag);
+  if (!inner.endsWith(RENDERING_SUFFIX)) return null;
+  return `"${inner.slice(0, -RENDERING_SUFFIX.length)}"`;
+}
+
+/** `W/"x"` and `"x"` alike down to `x` — the only comparison etags allow here. */
+function unquoteEtag(tag: string): string {
+  return tag.replace(/^W\//, "").replace(/^"/, "").replace(/"$/, "");
 }
 
 /**
@@ -255,13 +303,14 @@ function matchesConditions(conditions: Headers, object: R2Object): boolean {
   const ifNoneMatch = conditions.get("if-none-match");
   if (ifNoneMatch !== null) {
     if (ifNoneMatch.trim() === "*") return true;
-    // Weak comparison: `W/"x"` and `"x"` are the same entity for this purpose,
-    // which is the only comparison If-None-Match is allowed to use.
+    // These tags have already been reduced to object etags by
+    // `notModifiedConditions`, so this is the same comparison R2 makes on the
+    // GET path: weak, because `W/"x"` and `"x"` are the same entity here.
     const wanted = ifNoneMatch
       .split(",")
-      .map((tag) => tag.trim().replace(/^W\//, ""))
+      .map((tag) => unquoteEtag(tag.trim()))
       .filter((tag) => tag.length > 0);
-    return wanted.includes(object.httpEtag.replace(/^W\//, ""));
+    return wanted.includes(unquoteEtag(object.httpEtag));
   }
 
   const ifModifiedSince = conditions.get("if-modified-since");
@@ -310,7 +359,7 @@ async function serveObject(
     const object = await env.DOCS.head(key);
     if (object === null) return noDocAt(pathname);
 
-    headers.set("etag", object.httpEtag);
+    headers.set("etag", servedEtag(object.httpEtag));
     // A validator has to mean the same thing whichever method asks. HEAD is
     // defined as GET without the body, so a cache revalidating with HEAD must
     // get the 304 that GET would give it, not a 200 that says the doc changed.
@@ -330,17 +379,18 @@ async function serveObject(
   const object = await env.DOCS.get(key, { onlyIf: conditions });
   if (object === null) return noDocAt(pathname);
 
-  // R2's etag identifies the stored object, and the served bytes are a pure
-  // function of it, so it still identifies the response — while there is one
-  // rendering. The moment a plan can remove the bylines there are two, and this
-  // etag must carry which one, or a cache will hand one publisher's rendering to
-  // another's reader. That work owes a second thing to the cache lifetimes
-  // below: an upgrade reaches `/d/{docId}` within its 60 seconds, but a `/v{n}`
-  // already held by a cache is `immutable` for a year, so a publisher who pays
-  // to drop the bylines keeps them on pinned urls until it expires. Serving at
-  // read time is what makes the change possible at all; it does not make it
-  // instant everywhere.
-  headers.set("etag", object.httpEtag);
+  // The response is the object *and* the rendering applied to it, so the
+  // validator names both. What it does not fix is a copy that never revalidates:
+  // a `/v{n}` a cache is already holding is `immutable` for a year and will not
+  // ask again, so a publisher who pays to drop the bylines keeps them on pinned
+  // urls until it expires, while `/d/{docId}` refreshes within its 60 seconds.
+  // Serving at read time makes the change possible; it does not make it instant.
+  //
+  // When a plan can remove the bylines there will be two renderings of the same
+  // object at the same instant, which a revision alone cannot separate: the
+  // variant has to enter this validator too, or a shared cache will hand one
+  // publisher's branding to another's reader.
+  headers.set("etag", servedEtag(object.httpEtag));
   if (!("body" in object)) return new Response(null, { status: 304, headers });
 
   headers.set("content-type", STORED_CONTENT_TYPE);

@@ -32,6 +32,22 @@
  */
 
 /**
+ * Which rendering the injections below produce. **Bump it whenever any of them
+ * changes.**
+ *
+ * The stored object's etag cannot notice: it identifies the publisher's bytes,
+ * which a byline edit does not touch. Without this in the validator, a reader
+ * or a cache holding an older rendering revalidates, gets `304`, and keeps it —
+ * indefinitely, since each revalidation renews its freshness. That would defeat
+ * the reason for rendering at read time at all.
+ *
+ * It is a number and not a content hash on purpose: the injections are string
+ * constants in this file, so the thing that changes them is an edit to this
+ * file, and a reviewer can see whether the number moved with it.
+ */
+export const RENDER_REVISION = 1;
+
+/**
  * Belt to the `X-Robots-Tag` header's braces (D9). The header is the
  * authoritative signal — it applies to every response including errors — but
  * the meta tag travels with the bytes, so a doc that is copied, mirrored, or
@@ -76,29 +92,47 @@ const BYLINE_LINK =
   "all:initial;font:inherit;display:inline;cursor:pointer;" +
   'color:#888;text-decoration:underline"';
 
+/** The Copilot mark's outline, from `mark-mono-cream.svg` in the product site. */
+const MARK_PATH =
+  "M75.9 6.9c-6.8 1.4-12.5 6-35.5 29.3-33.5 33.8-33.5 33.9-34.2 62.2-0.3 12.4 0 20.2 0.7 22.7 " +
+  "2.4 7.8 10.8 11.2 17.6 7.1 1.7-1.1 14.9-14.1 29.5-29.1 14.5-14.9 26.7-27 27-26.9 0.3 0.2 12.4 12.4 " +
+  "27 27.3 14.6 14.8 27.6 27.8 29 28.7 5.1 3.6 13.6 1.4 16.5-4.2 1.2-2.3 1.5-6.9 1.5-22.3 0-22.9-1.2-28.6-8.3-37.9-7.6-10.2-50-52.3-54.9-54.6-5.1-2.4-10.9-3.2-15.9-2.3z";
+
 /**
- * The Copilot mark, from `mark-mono-cream.svg` in the product site. Inlined
- * rather than linked: a byline that depends on another host's uptime is a byline
- * that is sometimes a broken-image icon, and the document may be read from a
- * mirror or a cache long after this deploy.
+ * The mark as a data URI, not as an element.
  *
- * `currentColor` rather than the source file's cream fill, so it takes the
- * byline's grey and sits legibly on a light or a dark document. No `all:initial`
- * here — on an `<svg>` that resets presentation attributes as well and can break
- * the render; the sizing and fill are pinned instead.
+ * Inlined rather than linked, because a byline that depends on another host's
+ * uptime is a byline that is sometimes a broken-image icon, and the document
+ * may be read from a mirror or a cache long after this deploy. `img-src` on the
+ * serving surface admits `data:`, so nothing in the CSP has to move.
+ *
+ * A data URI rather than an inline `<svg>` because the mark shares the DOM with
+ * an interactive document (D6). Prepending the header puts our element *first*,
+ * so a figure that opens with `d3.select("svg")` or `document.querySelector(
+ * "svg")` — the ordinary way to grab a chart's root — would find the logo and
+ * draw into it. That is a real document breaking on a real selector, not a
+ * hostile one. The byline's own grey is baked in place of `currentColor`, which
+ * costs nothing: `BYLINE_BASE` pins the colour anyway.
+ */
+const COPILOT_MARK_SRC =
+  "data:image/svg+xml," +
+  encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="4 4 152 127" fill="#888">' +
+      `<path d="${MARK_PATH}"/></svg>`,
+  );
+
+/**
+ * And a `<span>` rather than an `<img>`, for the same reason one step further:
+ * `querySelectorAll("img")` is how a lightbox or a caption pass finds a
+ * document's figures, and the mark must not be one of them. A background image
+ * on an empty span answers to neither selector.
  */
 const COPILOT_MARK =
-  '<svg viewBox="4 4 152 127" width="17" height="14" aria-hidden="true" focusable="false" ' +
-  // The attributes above carry the intrinsic size before CSS applies, but they
-  // are presentation attributes and lose to any author rule — and
-  // `svg { width: 100%; height: auto }` is in a lot of ordinary resets. The
-  // inline style is what actually holds the size.
-  'style="display:inline-block;width:17px;height:14px;' +
-  'vertical-align:-0.15em;flex:none;fill:currentColor">' +
-  '<path d="M75.9 6.9c-6.8 1.4-12.5 6-35.5 29.3-33.5 33.8-33.5 33.9-34.2 62.2-0.3 12.4 0 20.2 0.7 22.7 ' +
-  "2.4 7.8 10.8 11.2 17.6 7.1 1.7-1.1 14.9-14.1 29.5-29.1 14.5-14.9 26.7-27 27-26.9 0.3 0.2 12.4 12.4 " +
-  "27 27.3 14.6 14.8 27.6 27.8 29 28.7 5.1 3.6 13.6 1.4 16.5-4.2 1.2-2.3 1.5-6.9 1.5-22.3 0-22.9-1.2-28.6-8.3-37.9-7.6-10.2-50-52.3-54.9-54.6-5.1-2.4-10.9-3.2-15.9-2.3z" +
-  '"/></svg>';
+  '<span aria-hidden="true" style="all:initial;display:inline-block;' +
+  "width:17px;height:14px;vertical-align:-0.15em;flex:none;" +
+  // `url()` unquoted: `encodeURIComponent` leaves nothing in the value that
+  // would close the CSS function or the HTML attribute around it.
+  `background:url(${COPILOT_MARK_SRC}) center/contain no-repeat"></span>`;
 
 /**
  * The header's link carries the mark as well as the name, so both are clickable.

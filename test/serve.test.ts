@@ -590,4 +590,47 @@ describe("HEAD and conditional requests", () => {
     // reader would revalidate into the old page forever.
     expect(latest).toBe(v2);
   });
+
+  // The bytes a reader gets are the object plus a rendering, and only one of
+  // those two is what R2's etag identifies.
+  it("names the rendering in the etag, not only the stored object", async () => {
+    const docId = await twoVersionDoc();
+
+    const etag = (await get(`/d/${docId}`)).headers.get("etag");
+
+    expect(etag).toMatch(/^W\/".+\.r\d+"$/);
+    // Not R2's own validator, which a byline edit cannot move: it identifies
+    // the stored object, and a byline edit leaves that alone.
+    const object = await env.DOCS.head(versionObjectKey(docId, 2));
+    expect(etag).not.toBe(object!.httpEtag);
+    expect(etag).toContain(object!.etag);
+  });
+
+  // The failure this exists to stop: without the revision in the validator, a
+  // reader holding a page rendered by an older deploy revalidates, is told 304,
+  // and keeps it — and each revalidation renews its freshness, so it keeps it
+  // for good. A tag naming a rendering we no longer produce has to miss.
+  it("re-serves in full when the client holds an older rendering", async () => {
+    const docId = await twoVersionDoc();
+    const current = (await get(`/d/${docId}`)).headers.get("etag")!;
+    const older = current.replace(/\.r(\d+)"$/, (_, n) => `.r${Number(n) - 1}"`);
+
+    expect(older).not.toBe(current);
+
+    const response = await get(`/d/${docId}`, { headers: { "if-none-match": older } });
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain(SYMPOSIUM_FOOTER);
+    expect(response.headers.get("etag")).toBe(current);
+  });
+
+  it("still 304s the same rendering on HEAD as on GET", async () => {
+    const docId = await twoVersionDoc();
+    const etag = (await get(`/d/${docId}`)).headers.get("etag")!;
+
+    const head = await send("HEAD", `/d/${docId}`, { headers: { "if-none-match": etag } });
+
+    expect(head.status).toBe(304);
+    expect(head.headers.get("etag")).toBe(etag);
+  });
 });
