@@ -102,6 +102,7 @@ lists the ones that bind day to day.
 | [HTTP API](docs/http-api.md) | Every endpoint, in full. The frozen contract Obsidian Copilot is built against. |
 | [Hosting](docs/hosting.md) | How this runs on Cloudflare. **Start here if you know Vercel but not Workers.** |
 | [Serving domain](docs/serving-domain.md) | Why user content lives on `symposium.site` and never on the brand domain. |
+| [Private sharing](docs/private-sharing.md) | How reader identity works, and the phases from public links to agents. Designed, not built. |
 | [Deploying](docs/deploying.md) | Provisioning the resources and shipping. |
 | [Development](docs/development.md) | Running it locally, including the license-server workaround. |
 | [Comments](docs/comments.md) | Design sketch for the next step of the product. Not planned, not built. |

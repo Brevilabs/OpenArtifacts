@@ -95,9 +95,10 @@ between pushes. Three ways out, and this is a real decision, not a detail:
 resource instead of parsing them out of the page.
 
 **Comments need reader identity, and there is none.** Reading currently requires
-nothing at all, and an anonymous reader cannot be attributed. Access control —
-phase 2 in [cost-at-scale.md](cost-at-scale.md) — is a hard prerequisite, not a
-parallel track, and it is the larger piece of work.
+nothing at all, and an anonymous reader cannot be attributed. Access control is a
+hard prerequisite, not a parallel track, and it is the larger piece of work.
+[private-sharing.md](private-sharing.md) is the design for it — comments are
+Phase 4 there, blocked on the OAuth reader identity in Phase 3.
 
 ## Open questions
 
