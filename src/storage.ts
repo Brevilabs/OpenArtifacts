@@ -33,7 +33,8 @@ export function versionObjectKey(docId: string, n: number): string {
 }
 
 /**
- * Content type of every stored object. Injection happens at push time (D11), so
- * these bytes are the served bytes and this is the type they are served with.
+ * Content type of every stored object, and of every served page. Injection
+ * happens on the way out, so the two are not the same bytes — but the transform
+ * only adds HTML to HTML, so it is the same type either way.
  */
 export const STORED_CONTENT_TYPE = "text/html; charset=utf-8";

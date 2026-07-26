@@ -149,8 +149,10 @@ model in [cost-at-scale.md](cost-at-scale.md) works at all: a document read by
 Storage is $0.015/GB-month; writes (Class A) $4.50 per million, reads (Class B)
 $0.36 per million. A push is a couple of writes, a read is one.
 
-Because objects are immutable and HTML is finished at publish time, serving is a
-straight read-and-stream — the Worker never re-renders anything.
+Objects are immutable, and serving is a read plus one streaming rewrite: R2
+holds the publisher's document and Symposium's additions go in on the way out.
+The pass never buffers, so it costs CPU proportional to bytes already in flight,
+and the CDN keeps repeat readers off the Worker entirely.
 
 ## Config, vars and secrets
 

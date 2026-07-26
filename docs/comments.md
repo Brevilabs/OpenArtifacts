@@ -85,8 +85,9 @@ immutable; the shared `/d/{docId}` link is a mutable pointer with a 60-second
 lifetime. See [http-api.md](http-api.md).) Threads make the page vary with state
 between pushes. Three ways out, and this is a real decision, not a detail:
 
-1. Serve the stored document as now and fetch threads separately — keeps push-time
-   rendering and both cache lifetimes intact, costs an agent a second request.
+1. Serve the stored document as now and fetch threads separately — keeps the
+   additions a pure function of the version and both cache lifetimes intact,
+   costs an agent a second request.
 2. Compose the page per read — kills caching.
 3. Re-render and store on every comment — write amplification, reads stay static.
 
