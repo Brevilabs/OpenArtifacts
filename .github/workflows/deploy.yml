@@ -194,13 +194,32 @@ jobs:
       # A deploy that reports success and serves nothing is the failure this
       # catches. Both hosts, because they are separate custom domains and one
       # can be attached while the other is not.
+      #
+      # Retried, because the deploy above is already irreversible: a single
+      # transient timeout would fail the job, skip the recording step, and leave
+      # the repo page naming the previous SHA while the new one serves — the
+      # drift this workflow exists to remove, caused by the check for it.
+      #
+      # A loop rather than `curl --retry`, which acts on curl-level transients
+      # and, absent `--fail`, does not treat an HTTP 502 as an error at all.
+      # The status code is what this step judges, so the retry belongs around
+      # the comparison.
       - name: Check both hosts answer
         run: |
           set -euo pipefail
           for host in api.symposium.md symposium.site; do
-            code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "https://$host/health")"
+            code=""
+            for attempt in 1 2 3 4 5; do
+              code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "https://$host/health" || echo 000)"
+              if [ "$code" = "200" ]; then break; fi
+              echo "$host → $code (attempt $attempt of 5)"
+              sleep 5
+            done
             echo "$host → $code"
-            [ "$code" = "200" ] || { echo "::error::$host answered $code"; exit 1; }
+            if [ "$code" != "200" ]; then
+              echo "::error::$host answered $code after 5 attempts"
+              exit 1
+            fi
           done
 
       # The `production` record is created by the `environment:` block above.

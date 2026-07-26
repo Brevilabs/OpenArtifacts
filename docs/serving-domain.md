@@ -79,26 +79,25 @@ insuring against is one occurrence.
 
 ## Status
 
-**Both domains are registered as of 2026-07-25** — `symposium.md` for the brand,
-`symposium.site` for documents — and both are delegated to Cloudflare. Neither is
-attached to the Worker yet, so nothing is reachable: `workers_dev` is `false`
-precisely because the path-prefix fallback would otherwise serve `/d/*` on a
-`workers.dev` url, which is the mistake this whole document argues against. The
-fallback stays in the router for the window where one host var is set and the
-other is not.
+**The split is live.** `symposium.site` serves documents and `api.symposium.md`
+serves the API, both attached as Worker custom domains, with `SERVING_HOST` and
+`API_HOST` set to match. `workers_dev` is `false` and stays that way: the
+path-prefix fallback would otherwise serve `/d/*` on a `workers.dev` url, which
+is the mistake this whole document argues against. The fallback stays in the
+router for the window where one host var is set and the other is not.
 
-Three things become true together when the real domains land, and
-[`CLAUDE.md`](../CLAUDE.md) carries the detail:
+Three things had to land together. One has;
+[`CLAUDE.md`](../CLAUDE.md) carries the detail on the rest:
 
-1. **Set `SERVING_HOST` and `API_HOST`.** The router resolves surface by host
-   first and only falls back to path prefixes while both are empty. Leaving them
-   unset means `/api/v1` stays reachable on the serving domain, which defeats the
-   split.
-2. **Add a Cache Rule.** Cloudflare does not cache HTML by default, and `/d/{docId}`
-   has no file extension, so attaching a domain alone changes nothing.
-3. **Purge on delete, in the same change.** Once there is an edge cache, an
-   unshared doc keeps being served from it. Shipping caching without purging is
-   how a withdrawn document stays readable.
+1. **Set `SERVING_HOST` and `API_HOST`.** Done. The router resolves surface by
+   host first and only falls back to path prefixes while both are empty.
+2. **Add a Cache Rule.** Outstanding. Cloudflare does not cache HTML by default,
+   and `/d/{docId}` has no file extension, so attaching the domains changed
+   nothing about caching.
+3. **Purge on delete, in the same change.** Outstanding, and coupled to the one
+   above. Once there is an edge cache, an unshared doc keeps being served from
+   it. Shipping caching without purging is how a withdrawn document stays
+   readable.
 
 ## What changes when reading stops being anonymous
 

@@ -87,14 +87,14 @@ rows — and D1 has a 30-day Time Travel window underneath. Do it well before
 there is enough data that reconstructing it by hand would hurt. Until then,
 treat D1 as a system of record, not as a cache.
 
-## Owed when the real serving domain lands
+## Owed now that the serving domain has landed
 
-`workers_dev` is `false`, so the Worker is unreachable until a custom domain is
-attached — the router would otherwise serve `/d/*` on a `workers.dev` hostname,
-and that domain is on the Public Suffix List, so a listing against it would take
-every Worker on the account's subdomain. Two things become true the moment user
-content moves to a real serving domain, and both are easy to miss because
-nothing fails loudly without them:
+The domains are attached: documents on `symposium.site`, the API on
+`api.symposium.md`. `workers_dev` stays `false` — the router would otherwise
+serve `/d/*` on a `workers.dev` hostname, and that domain is on the Public
+Suffix List, so a listing against it would take every Worker on the account's
+subdomain. Two things came due the moment user content moved to a real serving
+domain, and both are easy to miss because nothing fails loudly without them:
 
 - **Caching needs a Cache Rule, not just a domain.** Cloudflare does not cache
   HTML by default — eligibility is decided by file extension, not MIME type and
@@ -108,10 +108,10 @@ nothing fails loudly without them:
   without the second is how a withdrawn doc stays readable. The private-cache
   copies readers already hold are unrecallable by any design, and the README says
   so.
-- **Set `SERVING_HOST` and `API_HOST`.** The router resolves surface by host
-  first and only falls back to path prefixes while both are empty. Leaving them
-  unset on a two-domain deployment means `/api/v1` stays reachable on the
-  sacrificial domain, which is the whole point of splitting them.
+`SERVING_HOST` and `API_HOST` are already set, which is what makes the router
+resolve surface by host instead of falling back to path prefixes. Leave them
+set: unset on a two-domain deployment, `/api/v1` becomes reachable on the
+sacrificial domain, which is the whole point of splitting them.
 
 ## Git hygiene
 
