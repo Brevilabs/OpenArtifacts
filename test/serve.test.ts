@@ -2,7 +2,7 @@ import { createExecutionContext, env, waitOnExecutionContext } from "cloudflare:
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Env } from "../src/config.js";
 import { DOC_ID_LENGTH } from "../src/ids.js";
-import { NOINDEX_META, SYMPOSIUM_FOOTER } from "../src/render.js";
+import { NOINDEX_META, SYMPOSIUM_FOOTER, SYMPOSIUM_HEADER } from "../src/render.js";
 import { versionObjectKey } from "../src/storage.js";
 import worker from "../src/index.js";
 
@@ -157,6 +157,25 @@ describe("GET /d/{docId}", () => {
     expect(html).toContain(SYMPOSIUM_FOOTER);
     expect(object).not.toContain(NOINDEX_META);
     expect(object).not.toContain(SYMPOSIUM_FOOTER);
+  });
+
+  // End to end, because "injected once" is asserted against the renderer in
+  // isolation elsewhere, and the question a publisher actually asks is about a
+  // document they pushed. Documents stored before injection moved carry their
+  // own baked copy and would show two footers until re-pushed; nothing pushed
+  // through this path can, because nothing is ever baked into the bytes.
+  it("adds exactly one of each to a freshly pushed document", async () => {
+    const docId = await push({ title: "A note", html: page("<p>hello</p>") });
+
+    const html = await (await get(`/d/${docId}`)).text();
+
+    for (const addition of [NOINDEX_META, SYMPOSIUM_HEADER, SYMPOSIUM_FOOTER]) {
+      expect(html.split(addition).length - 1).toBe(1);
+    }
+    // The bylines' own markers, so a future restyle that changes the constants
+    // cannot make the count above pass by matching nothing.
+    expect(html.split("symposium-header").length - 1).toBe(1);
+    expect(html.split("symposium-footer").length - 1).toBe(1);
   });
 
   it("serves version 1 at the same url before there is a version 2", async () => {
