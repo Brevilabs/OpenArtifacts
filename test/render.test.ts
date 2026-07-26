@@ -47,13 +47,23 @@ describe("bakeServedHtml — what gets injected", () => {
     expect(SYMPOSIUM_FOOTER).toContain('href="https://symposium.md"');
   });
 
-  // `all:initial` resets the container, not its descendants, so without an
-  // explicit colour the anchors inherit the document's own link styling.
-  it("styles its own anchors rather than inheriting the document's", () => {
+  // A container reset does not reach descendants, so a document's
+  // `a { display: none }` would delete the branding. The anchors carry their
+  // own reset, then put back what they need.
+  it("resets its own anchors rather than inheriting the document's link styles", () => {
     for (const byline of [SYMPOSIUM_HEADER, SYMPOSIUM_FOOTER]) {
-      expect(byline).toContain("all:initial");
       expect(byline).toContain('<a href="https://');
-      expect(byline).toContain('style="color:#888;text-decoration:underline"');
+      // Twice: once on the container, once on the anchor inside it.
+      expect(occurrences(byline, "all:initial")).toBe(2);
+      for (const restored of [
+        "font:inherit",
+        "display:inline",
+        "cursor:pointer",
+        "color:#888",
+        "text-decoration:underline",
+      ]) {
+        expect(byline).toContain(restored);
+      }
     }
   });
 

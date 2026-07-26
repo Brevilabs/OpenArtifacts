@@ -43,9 +43,16 @@ const BYLINE_BASE =
   "color:#888;text-align:center";
 
 /**
- * `all:initial` resets the container, not its descendants, so the anchor would
- * otherwise inherit the document's own link colour — often on a background this
- * byline does not control.
+ * The container's `all:initial` does not reach its descendants, so the anchor
+ * carries its own — otherwise a document's `a { display: none }` deletes the
+ * branding, and a stylesheet that hides bare links is ordinary rather than
+ * hostile. `all:initial` also drops `cursor` to `auto` and the font to the UA
+ * default, so both are put back; `font:inherit` takes the byline's.
+ *
+ * Where this stops: a document declaration marked `!important` outranks an
+ * inline one, so `a { display: none !important }` still wins. Closing that
+ * needs shadow DOM or an iframe — the byline would stop being part of the
+ * document — which is a much larger change than a byline warrants.
  *
  * `_blank` because the reader is mid-document: a byline that navigates the page
  * away costs them their place, and the footer sits at the end of something they
@@ -54,7 +61,9 @@ const BYLINE_BASE =
  * `rel` travels with the bytes if the document is mirrored elsewhere.
  */
 const BYLINE_LINK =
-  'target="_blank" rel="noopener noreferrer" style="color:#888;text-decoration:underline"';
+  'target="_blank" rel="noopener noreferrer" style="' +
+  "all:initial;font:inherit;display:inline;cursor:pointer;" +
+  'color:#888;text-decoration:underline"';
 
 /** Where the document came from. Injected at the top of the body. */
 export const SYMPOSIUM_HEADER =
