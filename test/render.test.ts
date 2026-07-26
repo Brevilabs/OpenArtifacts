@@ -91,6 +91,23 @@ describe("bakeServedHtml — where the injections land", () => {
     expect(occurrences(baked, SYMPOSIUM_FOOTER)).toBe(1);
   });
 
+  // The case the test above is named for but does not reach: the handlers hang
+  // on `head` and `body`, so repeating a `<div>` proves nothing. Repeating the
+  // tags they actually match is what catches a guard that only disables the
+  // document-end fallback instead of the injection itself.
+  it("injects each exactly once even when the document repeats head and body", async () => {
+    const baked = await bake(
+      "<!doctype html><html><head></head><body><p>one</p></body>" +
+        "<head></head><body><p>two</p></body></html>",
+    );
+
+    expect(occurrences(baked, NOINDEX_META)).toBe(1);
+    expect(occurrences(baked, SYMPOSIUM_HEADER)).toBe(1);
+    expect(occurrences(baked, SYMPOSIUM_FOOTER)).toBe(1);
+    expect(baked).toContain("<p>one</p>");
+    expect(baked).toContain("<p>two</p>");
+  });
+
   it("keeps the document's own head content, including its own meta tags", async () => {
     const baked = await bake(page("<p>hello</p>"));
 

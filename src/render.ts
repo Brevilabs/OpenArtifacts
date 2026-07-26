@@ -109,15 +109,25 @@ export async function bakeServedHtml(html: string): Promise<Uint8Array> {
   const baked = new HTMLRewriter()
     .on("head", {
       element(head) {
+        if (metaPlaced) return;
         metaPlaced = true;
         head.prepend(NOINDEX_META, AS_HTML);
       },
     })
     .on("body", {
       element(body) {
-        headerPlaced = true;
-        body.prepend(SYMPOSIUM_HEADER, AS_HTML);
+        // Uploaded HTML can carry more than one `<body>` start tag, and this
+        // handler fires for each — as `head`'s does above. Every guard sits on
+        // the mutation rather than beside it, and the footer's sits *inside*
+        // `onEndTag`, so all three hold however start and end tags interleave
+        // across several bodies. A flag that only disables the document-end
+        // fallback is not enough: the fallback was never the path that fired.
+        if (!headerPlaced) {
+          headerPlaced = true;
+          body.prepend(SYMPOSIUM_HEADER, AS_HTML);
+        }
         body.onEndTag((endTag) => {
+          if (footerPlaced) return;
           footerPlaced = true;
           endTag.before(SYMPOSIUM_FOOTER, AS_HTML);
         });
