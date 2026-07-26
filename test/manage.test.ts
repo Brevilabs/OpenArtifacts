@@ -1,5 +1,7 @@
 import { createExecutionContext, env, waitOnExecutionContext } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
+import { deleteDoc } from "../src/api/manage.js";
+import type { Publisher } from "../src/auth.js";
 import type { Env } from "../src/config.js";
 import type { DocRow } from "../src/db.js";
 import { docObjectPrefix, versionObjectKey } from "../src/storage.js";
@@ -235,12 +237,17 @@ describe("DELETE /api/v1/docs/{docId}", () => {
     // 100 pushes a day compounds: a long-lived doc outgrows R2's 1000-key
     // listing page, and a delete that read only the first page would leave the
     // rest of the doc sitting in the bucket forever.
-    await Promise.all(
-      Array.from({ length: 1001 }, (_, i) => env.DOCS.put(versionObjectKey(docId, i + 1), "x")),
-    );
+    //
+    // Three objects over a page of two, not 1001 over a page of 1000: the
+    // listing truncates either way, which is the only condition the loop turns
+    // on. Called directly rather than over HTTP because the page size is the
+    // point here, and every other delete test covers the route.
+    for (let n = 1; n <= 3; n++) await env.DOCS.put(versionObjectKey(docId, n), "x");
 
-    expect((await del(KEY_A, docId)).status).toBe(204);
+    const publisher: Publisher = { id: publisherA, plan: "believer" };
+    const response = await deleteDoc(env, publisher, docId, { objectBatch: 2 });
 
+    expect(response.status).toBe(204);
     expect(await objectKeys(docId)).toEqual([]);
   });
 
