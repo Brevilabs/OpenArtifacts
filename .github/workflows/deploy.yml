@@ -1,0 +1,241 @@
+# CLOUDFLARE_API_TOKEN is an *environment* secret on `production`, and that
+# environment's deployment branch policy allows only `main`. Neither is
+# optional. `workflow_dispatch` runs the workflow definition from the ref it is
+# given, so nothing written in this file can defend this file: a branch that
+# deletes the guard below and dispatches itself is refused only because the
+# branch policy blocks the job, and a branch that also deletes the
+# `environment:` block loses its only path to the token. See docs/deploying.md.
+
+name: Deploy
+
+# Everything that can change what is deployed, or change whether the gates below
+# pass. `test/**` and the tsconfig/vitest/package files are here even though they
+# never alter the Worker: a source change that fails Test, corrected by editing
+# only a test, would otherwise merge without deploying and leave the repo page
+# reporting an undeployed commit as live. A redundant redeploy of identical bytes
+# is the cheaper mistake. Docs and README stay out.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "test/**"
+      - "migrations/**"
+      - "wrangler.jsonc"
+      - "package.json"
+      - "package-lock.json"
+      - "tsconfig.json"
+      - "vitest.config.ts"
+      - ".github/workflows/deploy.yml"
+  workflow_dispatch:
+
+# A deploy must never be cancelled part-way, and two must never overlap: the
+# second would race the first's `wrangler deploy` and the recorded SHA would be
+# whichever finished last rather than whichever is serving.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  deployments: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    # Naming an environment does two things: it creates the deployment record on
+    # the repo page, and it is what makes the token reachable at all, since the
+    # secret lives on this environment rather than on the repository. The
+    # environment's branch policy is therefore also the deploy's access control.
+    environment:
+      name: production
+      url: https://symposium.site
+
+    # The token is deliberately NOT here. A job-level `env` hands the
+    # production credential to every step, including ones that only need to
+    # parse untrusted input, so it lives on the two steps that call Cloudflare
+    # and nowhere else. The account id is not a credential.
+    env:
+      CLOUDFLARE_ACCOUNT_ID: "960579f222ad237394703bd52f28114c"
+
+    steps:
+      # `workflow_dispatch` takes any ref, and the step below would check it
+      # out and ship it with the production token. First step, before checkout,
+      # so a wrong-branch dispatch never reaches the code. A job-level `if:`
+      # would skip instead of fail, and a silent skip reads as a deploy that
+      # worked.
+      #
+      # The ref goes through `env:` rather than `${{ }}` inside the script. A
+      # `${{ }}` expression is pasted into the script text before bash parses
+      # it, and git refs allow `$`, `(` and `)`, so a branch named
+      # `x$(...)` would execute rather than print. `"$REF"` is data.
+      - name: Refuse to deploy anything but main
+        if: github.ref != 'refs/heads/main'
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          echo "::error::Refusing to deploy $REF. Production ships from main."
+          exit 1
+
+      # Full history: the migration check below diffs against the push's base
+      # commit, which a shallow clone does not contain.
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # CI runs these too, on the same push. Repeated here on purpose: the two
+      # workflows run in parallel, so a deploy that trusted CI could finish
+      # before CI went red and ship the build that failed.
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      # Fail on an unapplied migration rather than applying it. Running
+      # `migrations apply` here would let a merged PR silently alter the
+      # production database; failing cannot corrupt anything, and it turns a
+      # code/schema mismatch into a red build instead of a 500 at runtime.
+      #
+      # Compares filenames against the `d1_migrations` table rather than
+      # matching wrangler's console wording, which would break silently the
+      # next time that string changes.
+      - name: Check migrations are applied
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          npx wrangler d1 execute symposium --remote --json \
+            --command "SELECT name FROM d1_migrations" \
+            | jq -r '.[0].results[].name' | sort > /tmp/applied.txt
+          ls migrations/*.sql | xargs -n1 basename | sort > /tmp/on-disk.txt
+          missing="$(comm -23 /tmp/on-disk.txt /tmp/applied.txt)"
+          if [ -n "$missing" ]; then
+            echo "::error::Unapplied migrations. Run: npx wrangler d1 migrations apply symposium --remote"
+            echo "$missing" | sed 's/^/  /'
+            exit 1
+          fi
+          echo "all $(wc -l < /tmp/on-disk.txt | tr -d ' ') migration(s) applied"
+
+          # An applied migration is immutable. `d1_migrations` stores a name and
+          # a timestamp, no checksum, so changing a file already listed there
+          # passes the comparison above while the database never ran the new
+          # SQL, and code expecting the new schema ships against the old one.
+          # Deleting one passes too, and leaves a history that cannot rebuild
+          # the schema on the fresh-account path in docs/deploying.md.
+          #
+          # Names are all D1 can offer, so the evidence comes from git. The
+          # baseline is the last SUCCESSFUL production deployment, not the
+          # push's parent: a failed deploy leaves the bad file on `main`, where
+          # the next push no longer sees it as changed, so a parent-based check
+          # would fail once and then wave the same broken state through
+          # forever. A failed deploy does not move this baseline. It also works
+          # under `workflow_dispatch`, which has no push range at all.
+          # --paginate: without it only the first page is searched, so enough
+          # consecutive failed deploys push the last successful record out of
+          # view, `base` comes back empty, and the check below skips itself.
+          # Retrying would defeat the guard.
+          gh api --paginate "repos/$GITHUB_REPOSITORY/deployments?environment=production&per_page=100" \
+            --jq '.[] | "\(.id) \(.sha)"' > /tmp/deployments.txt
+          base=""
+          while read -r id sha; do
+            ok="$(gh api "repos/$GITHUB_REPOSITORY/deployments/$id/statuses?per_page=100" \
+              --jq '[.[] | select(.state=="success")] | length')"
+            if [ "$ok" -gt 0 ]; then base="$sha"; break; fi
+          done < /tmp/deployments.txt
+
+          if [ -n "$base" ] && git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            echo "comparing migrations against last successful deploy ${base:0:8}"
+            # --no-renames: rename detection is on by default, and a
+            # same-content move reports as a single `R` that this filter drops
+            # entirely. Decomposed into D + A, the old name shows up as the
+            # deletion it is — and the old name is the one `d1_migrations`
+            # knows.
+            git diff --no-renames --name-only --diff-filter=MD "$base" HEAD -- migrations/ \
+              | xargs -r -n1 basename | sort > /tmp/changed.txt
+            clash="$(comm -12 /tmp/changed.txt /tmp/applied.txt)"
+            if [ -n "$clash" ]; then
+              echo "::error::Changed or deleted a migration D1 has already applied. Add a new migration instead."
+              echo "$clash" | sed 's/^/  /'
+              exit 1
+            fi
+          else
+            echo "no successful production deployment to compare against; skipping the immutability check"
+          fi
+
+      # `--message` fills the Message column in the dashboard's Deployments
+      # tab, which is otherwise a list of uuids and timestamps. It is what makes
+      # a rollback decision possible without cross-referencing GitHub.
+      #
+      # No pipe here, deliberately. The default `run:` shell is `bash -e`
+      # without `pipefail`, so piping through `tee` would return tee's exit
+      # code, a failed deploy would pass, the health checks below would pass
+      # against the *previous* deployment, and the job would record a green
+      # deploy for a commit that never shipped.
+      - name: Deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          npx wrangler deploy \
+            --message "$(git log -1 --format='%h %s' | cut -c1-100)"
+
+      # A deploy that reports success and serves nothing is the failure this
+      # catches. Both hosts, because they are separate custom domains and one
+      # can be attached while the other is not.
+      #
+      # Retried, because the deploy above is already irreversible: a single
+      # transient timeout would fail the job, skip the recording step, and leave
+      # the repo page naming the previous SHA while the new one serves — the
+      # drift this workflow exists to remove, caused by the check for it.
+      #
+      # A loop rather than `curl --retry`, which acts on curl-level transients
+      # and, absent `--fail`, does not treat an HTTP 502 as an error at all.
+      # The status code is what this step judges, so the retry belongs around
+      # the comparison.
+      - name: Check both hosts answer
+        run: |
+          set -euo pipefail
+          for host in api.symposium.md symposium.site; do
+            code=""
+            for attempt in 1 2 3 4 5; do
+              code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "https://$host/health" || echo 000)"
+              if [ "$code" = "200" ]; then break; fi
+              echo "$host → $code (attempt $attempt of 5)"
+              sleep 5
+            done
+            echo "$host → $code"
+            if [ "$code" != "200" ]; then
+              echo "::error::$host answered $code after 5 attempts"
+              exit 1
+            fi
+          done
+
+      # The `production` record is created by the `environment:` block above.
+      # This is its pair for the API host, which has no environment of its own.
+      - name: Record the API deployment
+        run: |
+          set -euo pipefail
+          # jq builds the body: required_contexts must be a real empty array,
+          # and gh's -f/-F flags send the string "[]", which the API 422s.
+          # A herestring rather than a heredoc — heredoc terminators inside a
+          # YAML block scalar depend on dedenting and break quietly.
+          body="$(jq -nc --arg sha "$GITHUB_SHA" \
+            '{ref:$sha,environment:"production-api",description:"Publisher API",auto_merge:false,required_contexts:[]}')"
+          id="$(gh api -X POST "repos/$GITHUB_REPOSITORY/deployments" --input - --jq '.id' <<<"$body")"
+          status="$(jq -nc --arg sha "$GITHUB_SHA" \
+            '{state:"success",environment:"production-api",environment_url:"https://api.symposium.md",description:("Deployed from "+$sha)}')"
+          gh api -X POST "repos/$GITHUB_REPOSITORY/deployments/$id/statuses" --input - --silent <<<"$status"
+        env:
+          GH_TOKEN: ${{ github.token }}

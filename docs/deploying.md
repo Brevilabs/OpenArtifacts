@@ -6,13 +6,15 @@ commands are creating.
 
 [← README](../README.md) · [Hosting](hosting.md) · [HTTP API](http-api.md)
 
-> **The Worker has not been deployed yet.** Its storage has: on the Brevilabs
-> account, steps 1–3 below are done, and `wrangler.jsonc` already carries the
-> real `database_id`. What is left is steps 4–8. One thing to know going in: D1
-> is currently the only record of who owns a doc, what it is called, and whether
-> it was deleted, so until per-doc manifests ship, back-ups mean D1's own 30-day
-> Time Travel window rather than "rebuild it from R2". That is fine at low volume
-> and should be fixed well before it isn't — see `CLAUDE.md`.
+> **The Worker is deployed.** All eight steps below have run on the Brevilabs
+> account, and `wrangler.jsonc` carries the real `database_id`. They are kept as
+> the record of how production was built and as the procedure for a fresh
+> account — do not re-run them against Brevilabs'. Routine deploys now happen in
+> CI; see [Later deploys happen in CI](#later-deploys-happen-in-ci). One thing to
+> know going in: D1 is still the only record of who owns a doc, what it is called,
+> and whether it was deleted, so until per-doc manifests ship, back-ups mean D1's
+> own 30-day Time Travel window rather than "rebuild it from R2". That is fine at
+> low volume and should be fixed well before it isn't — see `CLAUDE.md`.
 
 Run in order, from a checkout with `npx wrangler login` already done, against
 whichever account wrangler is logged into.
@@ -41,9 +43,10 @@ right one — leave it alone.
 npx wrangler d1 migrations apply symposium --remote
 ```
 
-**Steps 4–8 ship the Worker, and are what is actually outstanding.** Step 7 is
-the one that makes it reachable: `workers_dev` is `false`, so a Worker with no
-custom domain attached answers on nothing at all.
+**Steps 4–8 ship the Worker.** They have all run on the Brevilabs account; what
+follows is the record of how, and the procedure for a fresh account. Step 7 is
+the one that makes the Worker reachable: `workers_dev` is `false`, so a Worker
+with no custom domain attached answers on nothing at all.
 
 ```bash
 # 4. Credentials for the license server. Both prompt for the value, so neither
@@ -72,8 +75,8 @@ SYMPOSIUM_LICENSE_KEY=<a real lifetime-tier key> \
 The smoke script publishes a doc, reads it, lists it, deletes it and confirms the
 `410`. It spends one push against that key's daily quota and leaves no live doc
 and no stored bytes behind — only the deleted doc's row, which every delete keeps
-so the url can go on answering `410`. It is not part of CI — CI has no key and no
-deployment.
+so the url can go on answering `410`. It is not part of CI, which has no lifetime
+key to spend.
 
 ## There is no workers.dev url
 
@@ -97,5 +100,104 @@ hosts are empty, and the path-prefix fallback would serve `/d/*` on
 — the exact split this document argues for, undone for the length of a deploy.
 The `url` the API returns follows the vars automatically.
 
-Later deploys are steps 5 and 8 alone, plus step 3 whenever a migration is added.
+## Later deploys happen in CI
+
+Merging to `main` runs `.github/workflows/deploy.yml`, which typechecks, tests,
+refuses to deploy over an unapplied migration, ships, checks both hosts answer,
+and records what shipped on the repo page. Nobody deploys from a laptop.
+
+It needs one secret, `CLOUDFLARE_API_TOKEN` — an *environment* secret on
+`production`, never a repository one, for the reasons below. It is configured on
+the Brevilabs repo; what follows is how it was built and how to rebuild it. The
+token holds two account permissions: **Workers Scripts: Edit** to deploy, and
+**D1: Edit** to read the `d1_migrations` table. Not a Global API Key, which
+would also reach DNS and every other zone setting. Create it under My Profile →
+API Tokens → Create Token; the *Edit Cloudflare Workers* template is a fine
+starting point, but it does **not** include D1, so add that row by hand. Scope
+Account Resources to the one account and Zone Resources to `symposium.site` and
+`symposium.md` specifically, which is what authorizes the custom-domain routes.
+Leave Client IP filtering empty: GitHub's runners have no stable egress IPs.
+
+D1: Edit is broader than the guard needs — it only runs a `SELECT` — but the
+query endpoint takes arbitrary SQL, so a read-only permission may not authorize
+it and an under-scoped token fails every deploy rather than degrading. The cost
+is real and worth naming: this token can write the production database, which is
+the price of checking the schema from CI at all.
+
+Add it under Settings → Environments → production → **Environment secrets**, and
+set that environment's **deployment branch policy** to `main`. Both halves are
+load-bearing, and the reason is that `workflow_dispatch` runs the workflow
+definition from whatever ref it is given: a branch carrying an edited copy of
+`deploy.yml` with the guard removed would otherwise deploy itself. The branch
+policy refuses the job, and a branch that strips the `environment:` block to
+escape the policy loses the only path to the secret. A repository secret has
+neither property — every workflow in the repo can read it, so the guard in
+`deploy.yml` would be the only thing standing between a feature branch and
+production, and that guard lives in the file such a branch is editing.
+
+The `main` rule must be **branch**-typed. GitHub's rules carry a ref type, and
+the API reports this one as `{"name":"main","type":"branch"}`. A tag-typed rule
+named `main` — or any `*` tag rule — would let someone push a tag called `main`
+and dispatch from it, which no branch rule matches and no in-file guard survives.
+Check with:
+
+```bash
+gh api repos/Brevilabs/symposium/environments/production/deployment-branch-policies \
+  --jq '.branch_policies[] | {name, type}'
+```
+
+Required reviewers would gate this further, but GitHub rejects that protection
+rule on this billing plan for a private repo, so the branch policy is the whole
+of the platform-level control.
+
+Without the secret the workflow cannot run at all, and deploys fall back to being
+manual: steps 5 and 8 above, plus step 3 whenever a migration is added. That is
+also the recovery path if the token is ever revoked.
+
+Migrations remain manual in every case. Step 3, then merge — the workflow fails
+rather than applying one.
+
+Two things the workflow deliberately does not do:
+
+- **It does not apply migrations.** It compares `migrations/` against the
+  `d1_migrations` table and fails when they disagree. Applying them from CI
+  would let a merged PR silently alter the production database; failing cannot
+  corrupt anything and turns a code/schema mismatch into a red build. Apply them
+  by hand, then merge.
+
+  It also fails if an already-applied migration was **changed or deleted**,
+  which the name comparison alone cannot see: `d1_migrations` stores names and
+  timestamps, no checksums, so an edited file looks applied while the database
+  never ran the new SQL. The evidence comes from git, against the last
+  successful production deployment rather than the previous commit — a failed
+  deploy leaves the bad file on `main`, where a commit-to-commit check would
+  stop noticing it. Once applied, a migration is append-only: add a new file.
+- **It does not smoke-test.** That needs a real lifetime key, spends a push from
+  its daily quota, and writes to production R2 and D1 on every merge. `/health`
+  on both hosts is the liveness check instead. Run `scripts/smoke.sh` by hand
+  when the change warrants it.
+
+What remains ungated is that a merge to `main` deploys with no pause. That is
+the same exposure as the manual `wrangler deploy` it replaces, minus the laptop,
+and closing it needs a billing plan that allows required reviewers.
+
+## Rolling back
+
+Every deploy creates an immutable version and Cloudflare keeps them all.
+
+```bash
+npx wrangler versions list          # ids, timestamps, and the commit in Message
+npx wrangler rollback <version-id>
+```
+
+Or the dashboard: **Compute (Workers) → symposium → Deployments**, then
+**⋯ → Rollback** on a version. The workflow passes `--message` so that list
+reads as commits rather than uuids.
+
+**Rollback reverts code and nothing else.** D1 rows and R2 objects written by
+the bad version stay written, which is the other half of why migrations are not
+applied from CI. Nothing records a rollback either, so the deployment records on
+the repo page will name the commit that was deployed forward until the next
+merge corrects them.
+
 All changes ship through a pull request; never push to `main`.

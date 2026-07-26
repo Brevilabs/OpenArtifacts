@@ -13,8 +13,8 @@ comments.
 
 ## What works today
 
-Everything here is built and tested. Nothing is deployed yet, so none of it is
-reachable on the internet until someone runs [Deploying](docs/deploying.md).
+Everything here is built, tested, and live. See [Production](#production) for
+where it runs.
 
 - **Publish a note.** Send rendered HTML, get back a link. Obsidian Copilot
   renders the note locally, so callouts, wikilinks and dataview output survive —
@@ -53,16 +53,15 @@ Roughly in order. Nothing below is started.
 - **The Obsidian side.** A right-click "share" in Copilot that calls this API and
   remembers the doc's id in the note. Without it, the only way to publish is
   `curl` — this is the next thing to build.
-- **Real domains, and actual caching.** There is no `workers.dev` url — that
-  route is off, because the router would serve documents on it and a
-  `workers.dev` listing takes every Worker on the account's subdomain with it.
-  So the domains come first: `symposium.site` for documents, `api.symposium.md`
-  for the API, which is also what keeps one bad upload from getting
-  `symposium.md` flagged by Google Safe Browsing. Caching is a separate fix on
-  top — Cloudflare does not cache HTML by default, so it needs a cache rule, and
-  then deletes have to purge the cache.
+- **Caching.** Cloudflare does not cache HTML by default, so every read today
+  invokes the Worker and touches D1 and R2. It needs a cache rule, and then
+  deletes have to purge the cache in the same change or unshared documents keep
+  being served. The domain split it sits on top of is already live: documents on
+  `symposium.site`, the API on `api.symposium.md`, and no `workers.dev` url at
+  all, since the router would serve documents there and a `workers.dev` listing
+  takes every Worker on the account's subdomain with it.
   [`docs/serving-domain.md`](docs/serving-domain.md) explains why that split
-  can't be added later.
+  could not have been added later.
 - **Backups that don't depend on the database.** Right now the database is the
   only record of who owns a doc and what it's called. The plan is for each doc to
   carry its own description alongside its files, so the database could be rebuilt
@@ -94,6 +93,18 @@ argument for it, and the constraints it has to respect, are in
 [`docs/cost-at-scale.md`](docs/cost-at-scale.md). Read both before proposing
 architecture — several decisions in them are not retrofittable, and `CLAUDE.md`
 lists the ones that bind day to day.
+
+## Production
+
+| | |
+| --- | --- |
+| [symposium.site](https://symposium.site) | Serves published documents. User HTML lives here and never on the brand domain. |
+| [api.symposium.md](https://api.symposium.md) | The publisher API. Key-authenticated, no browser surface. |
+| [Cloudflare dashboard](https://dash.cloudflare.com/960579f222ad237394703bd52f28114c/workers/services/view/symposium/production) | The Worker itself: deployments, versions, logs, and the rollback button. |
+
+Deploys run from [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml)
+on merge to `main`. [Deploying](docs/deploying.md) covers how, and how to roll
+back.
 
 ## Docs
 
