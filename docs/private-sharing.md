@@ -96,9 +96,9 @@ DNS half, so it is not a substitute for separating the two.
 
 Two things follow, and both are ordering constraints rather than preferences:
 
-**It must ship with the first grant, not after it.** An expiring link and a
-password-protected document are both grants, so the theft above works against
-Phase 2 exactly as it works against Phase 3. Shipping privacy on a shared origin
+**It must ship with the first grant, not after it.** The theft above needs a
+shared origin, not an anonymous reader, so a per-reader grant is stolen exactly
+the way an accountless one would have been. Shipping privacy on a shared origin
 first would put grant-bearing urls in circulation before the fence exists.
 
 **It changes every url the product has ever issued.** Nearly free while every
@@ -140,25 +140,21 @@ dependencies, not preference.
 The url is the capability. 80 bits of entropy, `noindex`, no reader identity.
 Publishing gated to lifetime license holders.
 
-### Phase 2 — privacy without accounts
+### Phase 2 — privacy without accounts *(dropped)*
 
-The cheapest thing that answers "can I share this with only some people".
+An earlier plan put expiring links and per-document passwords first, on the
+argument that they are days of work and cover most of what people mean by
+"private". That is no longer the plan. **Private sharing requires an account**
+with symposium.md or Obsidian Copilot, so there is no password path and no
+unauthenticated grant. Nothing private exists until Phase 3 ships.
 
-- **Expiring links.** A grant with a lifetime, signed by the Worker. No reader
-  identity, no database work beyond a key.
-- **Password on a document.** Publisher sets one; readers exchange it for a
-  grant on the brand domain. Still no accounts.
-
-Both are days of work and cover most of what people mean by "private". Neither
-tells you *who* read it, which is exactly why they do not unblock comments.
-
-**Origin isolation ships with this phase, not after it.** An expiring link is a
-grant, so the `window.open` theft above applies from the first private document
-onwards. Once private urls are in circulation, changing their shape breaks them.
+The reasoning it contributed survives, and moved into Phase 3: origin isolation
+was never a consequence of the grant being anonymous.
 
 ### Phase 3 — reader identity
 
-The large one, and the prerequisite for everything after.
+The large one, the prerequisite for everything after, and now the only route to
+a private document.
 
 - OAuth sign-in on `symposium.md` — Google and GitHub cover nearly everyone
   without our storing a password. The session lives on the brand domain only.
@@ -166,6 +162,12 @@ The large one, and the prerequisite for everything after.
   ("anyone at acme.com"), or public. Public stays the default.
 - Grants become per-reader and short-lived, minted after the ACL check.
 - The list endpoint learns who a document is shared with.
+
+**Origin isolation ships with this phase, not after it.** A per-reader grant is
+stolen exactly the way an anonymous one is: the `window.open` theft above needs
+only a shared origin, not an anonymous reader. It applies from the first private
+document onwards, and once private urls are in circulation, changing their shape
+breaks them.
 
 This is where "who read it" becomes answerable, and where the product stops
 being a link and starts being a place.
@@ -214,8 +216,5 @@ the fence.
   derived from the doc id by a one-way function so it need not be stored. The
   second is tempting and has to survive the observation that anyone can compute
   the label from an id they already hold — which is fine — but not the reverse.
-- Whether Phase 2 ships at all, or whether privacy waits for real identity.
-  Shipping it first buys time; it also puts urls in circulation whose shape
-  Phase 3 may want to change.
 - How an agent token is issued and revoked, and whether it is per-document or
   per-publisher.

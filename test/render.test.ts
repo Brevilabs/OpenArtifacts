@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { bakeServedHtml, NOINDEX_META, SYMPOSIUM_FOOTER } from "../src/render.js";
+import {
+  bakeServedHtml,
+  NOINDEX_META,
+  SYMPOSIUM_FOOTER,
+  SYMPOSIUM_HEADER,
+} from "../src/render.js";
 
 const bake = async (html: string): Promise<string> =>
   new TextDecoder().decode(await bakeServedHtml(html));
@@ -22,25 +27,58 @@ describe("bakeServedHtml — what gets injected", () => {
     expect(NOINDEX_META).toBe('<meta name="robots" content="noindex,nofollow">');
   });
 
-  it("names Symposium in text a reader can see", async () => {
+  it("says where the document came from, in text a reader can see", async () => {
     const baked = await bake(page("<p>hello</p>"));
 
-    expect(baked).toContain(">Shared with Symposium<");
+    expect(baked).toContain(">Shared from <");
+    expect(baked).toContain(">obsidiancopilot.com</a>");
+  });
+
+  it("names Symposium and what it is for, in text a reader can see", async () => {
+    const baked = await bake(page("<p>hello</p>"));
+
+    expect(baked).toContain(">Powered by <");
+    expect(baked).toContain(">symposium.md</a>");
+    expect(baked).toContain("where agents and humans get on the same page");
+  });
+
+  it("links both bylines out, which is the whole point of carrying them", async () => {
+    expect(SYMPOSIUM_HEADER).toContain('href="https://obsidiancopilot.com"');
+    expect(SYMPOSIUM_FOOTER).toContain('href="https://symposium.md"');
+  });
+
+  // `all:initial` resets the container, not its descendants, so without an
+  // explicit colour the anchors inherit the document's own link styling.
+  it("styles its own anchors rather than inheriting the document's", () => {
+    for (const byline of [SYMPOSIUM_HEADER, SYMPOSIUM_FOOTER]) {
+      expect(byline).toContain("all:initial");
+      expect(byline).toContain('<a href="https://');
+      expect(byline).toContain('style="color:#888;text-decoration:underline"');
+    }
   });
 });
 
 describe("bakeServedHtml — where the injections land", () => {
-  it("puts the robots meta inside the head and the footer just before </body>", async () => {
+  it("puts the robots meta inside the head, and the bylines around the body", async () => {
     const baked = await bake(page("<p>hello</p>"));
 
     expect(headOf(baked)).toContain(NOINDEX_META);
+    expect(baked).toContain(`<body>${SYMPOSIUM_HEADER}`);
     expect(baked).toContain(`${SYMPOSIUM_FOOTER}</body>`);
+  });
+
+  it("puts the header above the document's own content, not below it", async () => {
+    const baked = await bake(page("<p>hello</p>"));
+
+    expect(baked.indexOf(SYMPOSIUM_HEADER)).toBeLessThan(baked.indexOf("<p>hello</p>"));
+    expect(baked.indexOf(SYMPOSIUM_FOOTER)).toBeGreaterThan(baked.indexOf("<p>hello</p>"));
   });
 
   it("injects each exactly once, however many candidate tags the page has", async () => {
     const baked = await bake(page("<div><p>one</p></div><div><p>two</p></div>"));
 
     expect(occurrences(baked, NOINDEX_META)).toBe(1);
+    expect(occurrences(baked, SYMPOSIUM_HEADER)).toBe(1);
     expect(occurrences(baked, SYMPOSIUM_FOOTER)).toBe(1);
   });
 
@@ -61,6 +99,7 @@ describe("bakeServedHtml — documents missing the tags to hang them on", () => 
     );
 
     expect(headOf(baked)).toContain(NOINDEX_META);
+    expect(baked).toContain(`<body>${SYMPOSIUM_HEADER}`);
     expect(baked).toContain(SYMPOSIUM_FOOTER);
     expect(baked).toContain("<p>hi</p>");
   });
@@ -69,6 +108,7 @@ describe("bakeServedHtml — documents missing the tags to hang them on", () => 
     const baked = await bake("<!doctype html>\n<html>\n<body>\n<p>hi</p>\n</body>\n</html>");
 
     expect(baked).toContain(NOINDEX_META);
+    expect(baked).toContain(`<body>${SYMPOSIUM_HEADER}`);
     expect(baked).toContain(`${SYMPOSIUM_FOOTER}</body>`);
     // The doctype has to stay first: a meta ahead of it would put the page into
     // quirks mode, which is a real change to how the document renders.
@@ -80,7 +120,20 @@ describe("bakeServedHtml — documents missing the tags to hang them on", () => 
 
     expect(baked).toContain("<p>just a fragment</p>");
     expect(baked).toContain(NOINDEX_META);
+    expect(baked).toContain(SYMPOSIUM_HEADER);
     expect(baked).toContain(SYMPOSIUM_FOOTER);
+  });
+
+  // The documented cost of hanging the header on `<body>`: with no start tag to
+  // prepend to, it lands at the document end. Pinned so the tradeoff is a
+  // decision on record rather than a surprise, and so moving the header to a
+  // different hook has to come here and say so.
+  it("puts the header below the content when there is no body start tag", async () => {
+    const baked = await bake("<p>just a fragment</p>");
+
+    expect(baked.indexOf(SYMPOSIUM_HEADER)).toBeGreaterThan(
+      baked.indexOf("<p>just a fragment</p>"),
+    );
   });
 });
 

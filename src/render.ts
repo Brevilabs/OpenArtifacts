@@ -29,34 +29,60 @@
 export const NOINDEX_META = '<meta name="robots" content="noindex,nofollow">';
 
 /**
- * The "Shared with Symposium" byline (D9).
+ * Shared between the two bylines (D9).
  *
  * `all:initial` first, then only the properties we want back: the page's own
- * stylesheet has no way to guess this class, but it very often styles `div`,
- * and a footer inheriting a 4rem serif body font would look like a bug. Inline
- * styles keep it self-contained — no stylesheet to fetch, nothing for the CSP
+ * stylesheet has no way to guess these classes, but it very often styles `div`,
+ * and a byline inheriting a 4rem serif body font would look like a bug. Inline
+ * styles keep them self-contained — no stylesheet to fetch, nothing for the CSP
  * to allow.
  */
+const BYLINE_BASE =
+  "all:initial;display:block;box-sizing:border-box;width:100%;clear:both;" +
+  "font:400 13px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;" +
+  "color:#888;text-align:center";
+
+/**
+ * `all:initial` resets the container, not its descendants, so the anchor would
+ * otherwise inherit the document's own link colour — often on a background this
+ * byline does not control.
+ */
+const BYLINE_LINK = 'style="color:#888;text-decoration:underline"';
+
+/** Where the document came from. Injected at the top of the body. */
+export const SYMPOSIUM_HEADER =
+  '<div class="symposium-header" style="' +
+  BYLINE_BASE +
+  ";margin:0 0 2rem;padding:0.75rem 0;border-bottom:1px solid rgba(128,128,128,0.25)\">" +
+  `Shared from <a href="https://obsidiancopilot.com" ${BYLINE_LINK}>obsidiancopilot.com</a></div>`;
+
+/** What served it. Injected immediately before `</body>`. */
 export const SYMPOSIUM_FOOTER =
   '<div class="symposium-footer" style="' +
-  "all:initial;display:block;box-sizing:border-box;width:100%;clear:both;" +
-  "margin:4rem 0 0;padding:1rem 0;border-top:1px solid rgba(128,128,128,0.25);" +
-  "font:400 13px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;" +
-  'color:#888;text-align:center">Shared with Symposium</div>';
+  BYLINE_BASE +
+  ";margin:4rem 0 0;padding:1rem 0;border-top:1px solid rgba(128,128,128,0.25)\">" +
+  `Powered by <a href="https://symposium.md" ${BYLINE_LINK}>symposium.md</a>, ` +
+  "where agents and humans get on the same page</div>";
 
 /** HTMLRewriter treats injected content as markup, not text, only when asked. */
 const AS_HTML = { html: true } as const;
 
 /**
- * Inject the robots meta and the footer, and change nothing else.
+ * Inject the robots meta and the two bylines, and change nothing else.
  *
- * Both injections have a fallback, because a document is not guaranteed to have
- * the tag we want to hang them on:
+ * Every injection has a fallback, because a document is not guaranteed to have
+ * the tag we want to hang it on:
  *
  * - The meta goes first inside `<head>`. A document with no `<head>` gets it at
  *   the end instead, where the parser hoists it into the body — weaker, since a
  *   robots meta outside the head is not honoured, which is exactly why the
- *   header carries the real signal.
+ *   `X-Robots-Tag` header carries the real signal.
+ * - The header byline is prepended inside `<body>`. A document with no `<body>`
+ *   start tag gets it at the document end instead, which puts the header below
+ *   the content: wrong, but present. Hanging it on `<html>` would be no better,
+ *   because that element's start tag is seen *before* `<body>`, so a fallback
+ *   there would fire on every normal page and inject the header twice. The
+ *   client renders whole documents, so the fallback is the rare path.
  * - The footer goes immediately before `</body>`. `append()` is not used for
  *   this: it silently does nothing when an element has no end tag, and an
  *   unclosed `<body>` is common enough in hand-written HTML that a silently
@@ -70,6 +96,7 @@ const AS_HTML = { html: true } as const;
  */
 export async function bakeServedHtml(html: string): Promise<Uint8Array> {
   let metaPlaced = false;
+  let headerPlaced = false;
   let footerPlaced = false;
 
   const baked = new HTMLRewriter()
@@ -81,6 +108,8 @@ export async function bakeServedHtml(html: string): Promise<Uint8Array> {
     })
     .on("body", {
       element(body) {
+        headerPlaced = true;
+        body.prepend(SYMPOSIUM_HEADER, AS_HTML);
         body.onEndTag((endTag) => {
           footerPlaced = true;
           endTag.before(SYMPOSIUM_FOOTER, AS_HTML);
@@ -90,6 +119,7 @@ export async function bakeServedHtml(html: string): Promise<Uint8Array> {
     .onDocument({
       end(end) {
         if (!metaPlaced) end.append(NOINDEX_META, AS_HTML);
+        if (!headerPlaced) end.append(SYMPOSIUM_HEADER, AS_HTML);
         if (!footerPlaced) end.append(SYMPOSIUM_FOOTER, AS_HTML);
       },
     })

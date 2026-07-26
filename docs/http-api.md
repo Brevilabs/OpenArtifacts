@@ -191,10 +191,13 @@ why the client uploads HTML at all. What the policy forbids is a doc using the
 origin against its readers: no form submission, no framing, no `<base>`
 retargeting. The origin is cookieless and holds nothing but already-public docs.
 
-Two things are injected into the document at push time, so the stored bytes and
+Three things are injected into the document at push time, so the stored bytes and
 the served bytes are the same thing: a `<meta name="robots" content="noindex,nofollow">`
-in the head, and a small `Shared with Symposium` footer before `</body>`. Nothing
-else is touched — the markup is never sanitized, rewritten or reformatted.
+in the head, a `Shared from obsidiancopilot.com` byline at the top of the body,
+and a `Powered by symposium.md` byline before `</body>`. Nothing else is touched
+— the markup is never sanitized, rewritten or reformatted. Because this runs at
+push time, a document published before a byline changed keeps the old one until
+its next push.
 
 `404` for an unknown id or version; `410` once the doc is deleted.
 
