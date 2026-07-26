@@ -1,21 +1,31 @@
-# This workflow cannot run until CLOUDFLARE_API_TOKEN exists as a repository
-# secret. Until then every deploy is still a manual `npx wrangler deploy`, and
-# the deployment records on the repo page go on describing whatever commit they
-# last described. See docs/deploying.md.
+# CLOUDFLARE_API_TOKEN is an *environment* secret on `production`, and that
+# environment's deployment branch policy allows only `main`. Neither is
+# optional. `workflow_dispatch` runs the workflow definition from the ref it is
+# given, so nothing written in this file can defend this file: a branch that
+# deletes the guard below and dispatches itself is refused only because the
+# branch policy blocks the job, and a branch that also deletes the
+# `environment:` block loses its only path to the token. See docs/deploying.md.
 
 name: Deploy
 
-# Only what changes the deployed Worker. A docs-only merge would otherwise
-# redeploy identical bytes and overwrite the recorded SHA with a commit that
-# changed nothing about production.
+# Everything that can change what is deployed, or change whether the gates below
+# pass. `test/**` and the tsconfig/vitest/package files are here even though they
+# never alter the Worker: a source change that fails Test, corrected by editing
+# only a test, would otherwise merge without deploying and leave the repo page
+# reporting an undeployed commit as live. A redundant redeploy of identical bytes
+# is the cheaper mistake. Docs and README stay out.
 on:
   push:
     branches: [main]
     paths:
       - "src/**"
+      - "test/**"
       - "migrations/**"
       - "wrangler.jsonc"
+      - "package.json"
       - "package-lock.json"
+      - "tsconfig.json"
+      - "vitest.config.ts"
       - ".github/workflows/deploy.yml"
   workflow_dispatch:
 
@@ -34,9 +44,10 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
 
-    # Naming an environment is what creates the deployment record on the repo
-    # page and what lets a required reviewer gate the job. Configure the
-    # reviewer in Settings → Environments; without one this deploys on merge.
+    # Naming an environment does two things: it creates the deployment record on
+    # the repo page, and it is what makes the token reachable at all, since the
+    # secret lives on this environment rather than on the repository. The
+    # environment's branch policy is therefore also the deploy's access control.
     environment:
       name: production
       url: https://symposium.site
@@ -67,8 +78,12 @@ jobs:
           echo "::error::Refusing to deploy $REF. Production ships from main."
           exit 1
 
+      # Full history: the migration check below diffs against the push's base
+      # commit, which a shallow clone does not contain.
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -99,6 +114,7 @@ jobs:
       - name: Check migrations are applied
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          BEFORE: ${{ github.event.before }}
         run: |
           set -euo pipefail
           npx wrangler d1 execute symposium --remote --json \
@@ -112,6 +128,26 @@ jobs:
             exit 1
           fi
           echo "all $(wc -l < /tmp/on-disk.txt | tr -d ' ') migration(s) applied"
+
+          # An applied migration is immutable. `d1_migrations` stores a name and
+          # a timestamp, no checksum, so editing a file already listed there
+          # passes the comparison above while the database never ran the new
+          # SQL, and code expecting the new schema ships against the old one.
+          # Names are all D1 can offer, so the evidence comes from git instead.
+          # A first push or a force push leaves no usable base: skip rather than
+          # fail, since a missing base is not evidence of an edit.
+          if [ -n "${BEFORE:-}" ] && git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+            git diff --name-only --diff-filter=M "$BEFORE" HEAD -- migrations/ \
+              | xargs -r -n1 basename | sort > /tmp/edited.txt
+            clash="$(comm -12 /tmp/edited.txt /tmp/applied.txt)"
+            if [ -n "$clash" ]; then
+              echo "::error::Edited a migration D1 has already applied. Add a new migration instead."
+              echo "$clash" | sed 's/^/  /'
+              exit 1
+            fi
+          else
+            echo "no base commit to diff against; skipping the edited-migration check"
+          fi
 
       # `--message` fills the Message column in the dashboard's Deployments
       # tab, which is otherwise a list of uuids and timestamps. It is what makes

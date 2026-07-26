@@ -119,8 +119,19 @@ it and an under-scoped token fails every deploy rather than degrading. The cost
 is real and worth naming: this token can write the production database, which is
 the price of checking the schema from CI at all.
 
-Set it with `gh secret set CLOUDFLARE_API_TOKEN --repo Brevilabs/symposium`,
-which reads the value from stdin and never puts it in shell history.
+Add it as an **environment** secret on `production` (Settings → Environments →
+production), not a repository secret, and set that environment's **deployment
+branch policy to `main`**. Both halves are load-bearing, and the reason is that
+`workflow_dispatch` runs the workflow definition from whatever ref it is given:
+a branch carrying an edited copy of `deploy.yml` with the guard removed would
+otherwise deploy itself. The branch policy refuses the job, and a branch that
+strips the `environment:` block to escape the policy loses the only path to the
+secret. A repository secret has neither property — every workflow in the repo
+can read it.
+
+Required reviewers would gate this further, but GitHub rejects that protection
+rule on this billing plan for a private repo, so the branch policy is the whole
+of the platform-level control.
 
 **Until that secret exists the workflow cannot run**, and deploys stay manual:
 steps 5 and 8 above, plus step 3 whenever a migration is added.
@@ -137,11 +148,9 @@ Two things the workflow deliberately does not do:
   on both hosts is the liveness check instead. Run `scripts/smoke.sh` by hand
   when the change warrants it.
 
-Gate it further in Settings → Environments on the `production` environment. A
-required reviewer turns a merge into "merged, and someone approved the deploy".
-A deployment branch policy limited to `main` enforces at the platform level what
-the workflow's first step already enforces in code, and unlike the workflow it
-cannot be changed by a pull request.
+What remains ungated is that a merge to `main` deploys with no pause. That is
+the same exposure as the manual `wrangler deploy` it replaces, minus the laptop,
+and closing it needs a billing plan that allows required reviewers.
 
 ## Rolling back
 
