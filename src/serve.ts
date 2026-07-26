@@ -1,10 +1,13 @@
 /**
  * The public serving surface: `GET /d/{docId}` and `GET /d/{docId}/v{n}`.
  *
- * Injection already happened at push time (D11), so this file reads an R2
- * object and streams it back untouched. It never parses, rewrites or even
- * decodes the bytes — a served page is byte-identical to the stored version,
- * which is what makes `immutable` an honest thing to say about `/v{n}`.
+ * R2 holds the publisher's own bytes; Symposium's additions — the robots meta
+ * and the two bylines — are injected here, on the way out, by
+ * `renderServedHtml`. That is what lets a byline change, or a plan that removes
+ * one, reach documents already published, and it is why the stored object and
+ * the served page are no longer byte-identical. `immutable` on `/v{n}` stays
+ * honest: the version's content never changes, and the additions are a pure
+ * function of it.
  *
  * What it does add is the header policy below. Since the bytes are somebody
  * else's HTML with somebody else's scripts in it (D6), those headers are the
@@ -18,6 +21,7 @@ import type { Env } from "./config.js";
 import { findServableVersion } from "./db.js";
 import { errorResponse } from "./errors.js";
 import { isDocId } from "./ids.js";
+import { renderServedHtml } from "./render.js";
 import { STORED_CONTENT_TYPE, versionObjectKey } from "./storage.js";
 
 /** Path prefix of the serving surface, used by the router's path fallback. */
@@ -315,22 +319,29 @@ async function serveObject(
     }
 
     headers.set("content-type", STORED_CONTENT_TYPE);
-    // Set only here. On a GET the runtime frames the body itself, and a length
-    // we computed would be a second opinion that content-encoding can falsify.
-    headers.set("content-length", String(object.size));
+    // No `content-length`. `object.size` is the stored document's length, and
+    // what a reader receives is that plus whatever `renderServedHtml` injects —
+    // a number only the transform knows, and running it here would fetch the
+    // body this method promises not to send. HTTP permits omitting it; stating
+    // the stored length would be stating a wrong one.
     return new Response(null, { status: 200, headers });
   }
 
   const object = await env.DOCS.get(key, { onlyIf: conditions });
   if (object === null) return noDocAt(pathname);
 
+  // R2's etag identifies the stored object, and the served bytes are a pure
+  // function of it, so it still identifies the response — while there is one
+  // rendering. The moment a plan can remove the bylines there are two, and this
+  // etag must carry which one, or a cache will hand one publisher's rendering to
+  // another's reader. See the tier work before adding that flag.
   headers.set("etag", object.httpEtag);
   if (!("body" in object)) return new Response(null, { status: 304, headers });
 
   headers.set("content-type", STORED_CONTENT_TYPE);
-  // The stream, never the bytes: a 10MB doc passes through the worker without
-  // ever being a 10MB string in it.
-  return new Response(object.body, { status: 200, headers });
+  // Still the stream, never the bytes: HTMLRewriter transforms as it passes, so
+  // a 10MB doc is never a 10MB string in the worker.
+  return renderServedHtml(new Response(object.body, { status: 200, headers }));
 }
 
 /**

@@ -78,9 +78,9 @@ page itself.
 
 ## What this breaks
 
-**Serving stops being a passthrough.** Today the HTML is rendered once at push
-time and stored, so a read is a lookup and a stream with no per-read composition
-— which is the whole reason serving is cheap. (Only `/d/{docId}/v{n}` is
+**Serving starts to depend on state.** Today a read is a lookup, a stream, and a
+fixed set of additions that are a pure function of the stored version — cheap,
+and cacheable because the answer never varies between readers. (Only `/d/{docId}/v{n}` is
 immutable; the shared `/d/{docId}` link is a mutable pointer with a 60-second
 lifetime. See [http-api.md](http-api.md).) Threads make the page vary with state
 between pushes. Three ways out, and this is a real decision, not a detail:

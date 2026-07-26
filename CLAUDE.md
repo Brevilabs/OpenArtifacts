@@ -61,7 +61,11 @@ These are day-one decisions, not retrofits:
   rows only — never content — and must be rebuildable by scanning R2 manifests.
   **This does not hold yet — see below. Do not rely on it.**
 - Every push mints an **immutable version** served with `cache-control: immutable`.
-  Render at push time, never at read time.
+  R2 stores the publisher's own bytes; Symposium's additions (the robots meta and
+  the two bylines) are injected on the way out by `renderServedHtml`, so a byline
+  change — or a plan that removes one — reaches documents already published.
+  Nothing else is composed per read: the additions are a pure function of the
+  stored version, so the page stays cacheable.
 - **No per-MAU or per-seat priced dependency** anywhere in the serving path.
 - Quotas and per-key rate limits ship with the feature they protect, not later.
 

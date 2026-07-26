@@ -191,13 +191,18 @@ why the client uploads HTML at all. What the policy forbids is a doc using the
 origin against its readers: no form submission, no framing, no `<base>`
 retargeting. The origin is cookieless and holds nothing but already-public docs.
 
-Three things are injected into the document at push time, so the stored bytes and
-the served bytes are the same thing: a `<meta name="robots" content="noindex,nofollow">`
-in the head, a `Shared from Copilot for Obsidian` byline at the top of the body,
-and a `Powered by symposium.md` byline before `</body>`. Nothing else is touched
-— the markup is never sanitized, rewritten or reformatted. Because this runs at
-push time, a document published before a byline changed keeps the old one until
-its next push.
+Three things are injected as the document is served: a
+`<meta name="robots" content="noindex,nofollow">` in the head, a
+`Shared from Copilot for Obsidian` byline at the top of the body, and a
+`Powered by symposium.md` byline before `</body>`. Nothing else is touched — the
+markup is never sanitized, rewritten or reformatted, and what R2 stores is the
+publisher's document exactly as it was pushed.
+
+Serving therefore adds to the stored bytes rather than reproducing them. That is
+what lets a byline change reach documents already published. Two consequences
+worth knowing: `Content-Length` is absent on `HEAD`, because the served length is
+not knowable without running the transform, and the `ETag` identifies the stored
+version, which is sufficient while every reader gets the same rendering.
 
 `404` for an unknown id or version; `410` once the doc is deleted.
 

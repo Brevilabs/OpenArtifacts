@@ -158,15 +158,15 @@ describe("POST /api/v1/docs", () => {
       version: 1,
     });
 
-    // The stored object is the served object (D11), so every claim about what a
-    // reader sees is a claim about these bytes.
+    // R2 holds the publisher's bytes and nothing else: Symposium's additions go
+    // in at serve time, so a byline change reaches documents already published.
     const object = await env.DOCS.get(versionObjectKey(body.docId, 1));
     expect(object).not.toBeNull();
     const html = await object!.text();
 
-    expect(html.slice(0, html.indexOf("</head>"))).toContain(NOINDEX_META);
-    expect(html).toContain(`${SYMPOSIUM_FOOTER}</body>`);
-    expect(html).toContain(article);
+    expect(html).toBe(page(article));
+    expect(html).not.toContain(NOINDEX_META);
+    expect(html).not.toContain(SYMPOSIUM_FOOTER);
     expect(object!.httpMetadata?.contentType).toBe("text/html; charset=utf-8");
 
     // D1 is a pointer index: it has to agree with what R2 actually holds.
@@ -242,7 +242,7 @@ describe("PUT /api/v1/docs/{docId}", () => {
     // Immutability is the point of the version: v1 must still be byte-identical.
     expect(await stored(created.docId, 1)).toBe(v1);
     expect(await stored(created.docId, 2)).toContain("<p>second draft</p>");
-    expect(await stored(created.docId, 2)).toContain(NOINDEX_META);
+    expect(await stored(created.docId, 2)).not.toContain(NOINDEX_META);
 
     expect(await docRow(created.docId)).toMatchObject({ latest_version: 2, title: "A note" });
     expect(await versionRows(created.docId)).toMatchObject([{ n: 1 }, { n: 2 }]);

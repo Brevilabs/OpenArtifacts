@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
-  bakeServedHtml,
   NOINDEX_META,
+  renderServedHtml,
   SYMPOSIUM_FOOTER,
   SYMPOSIUM_HEADER,
 } from "../src/render.js";
 
-const bake = async (html: string): Promise<string> =>
-  new TextDecoder().decode(await bakeServedHtml(html));
+const bake = async (html: string, branding = true): Promise<string> =>
+  await renderServedHtml(new Response(html), branding).text();
 
 /** A document shaped like the ones Obsidian renders. */
 const page = (body: string) =>
@@ -18,7 +18,7 @@ const headOf = (html: string) => html.slice(html.indexOf("<head>"), html.indexOf
 
 const occurrences = (haystack: string, needle: string) => haystack.split(needle).length - 1;
 
-describe("bakeServedHtml — what gets injected", () => {
+describe("renderServedHtml — what gets injected", () => {
   // Every other test here compares against the exported constants, which says
   // only that the constant landed. These pin what the constants must say: D9
   // promises readers a page that asks not to be indexed and admits where it
@@ -95,7 +95,7 @@ describe("bakeServedHtml — what gets injected", () => {
   });
 });
 
-describe("bakeServedHtml — where the injections land", () => {
+describe("renderServedHtml — where the injections land", () => {
   it("puts the robots meta inside the head, and the bylines around the body", async () => {
     const baked = await bake(page("<p>hello</p>"));
 
@@ -177,7 +177,7 @@ describe("bakeServedHtml — where the injections land", () => {
   });
 });
 
-describe("bakeServedHtml — documents missing the tags to hang them on", () => {
+describe("renderServedHtml — documents missing the tags to hang them on", () => {
   it("still footers a document whose body is never closed", async () => {
     // `append()` on an element with no end tag silently does nothing, which is
     // why the footer is injected via the end tag rather than by appending.
@@ -224,7 +224,7 @@ describe("bakeServedHtml — documents missing the tags to hang them on", () => 
   });
 });
 
-describe("bakeServedHtml — the document's own content", () => {
+describe("renderServedHtml — the document's own content", () => {
   it("leaves scripts, handlers and iframes exactly as uploaded (D6)", async () => {
     const interactive =
       '<script>const a = 1 < 2 && 3 > 2; document.title = "x";</script>' +
@@ -260,12 +260,31 @@ describe("bakeServedHtml — the document's own content", () => {
     expect(baked).toContain(body);
   });
 
-  it("returns the bytes that will be stored, not characters", async () => {
-    const bytes = await bakeServedHtml(page("<p>日本語</p>"));
-    const text = new TextDecoder().decode(bytes);
+  it("streams rather than buffering, so a large doc is never a string", async () => {
+    const rendered = renderServedHtml(new Response(page("<p>x</p>")));
 
-    // Three characters, nine bytes. A length in characters would under-report
-    // the object, and the version row's `size` would disagree with what R2 holds.
-    expect(bytes.byteLength).toBe(text.length + 6);
+    // The point of taking and returning a Response: the body is still a stream
+    // the runtime pulls through, not bytes this worker has materialised.
+    expect(rendered.body).toBeInstanceOf(ReadableStream);
+  });
+});
+
+describe("renderServedHtml — branding off", () => {
+  // The separation the tier work depends on: a plan that pays to lose the
+  // bylines must not also lose `noindex`, which is policy rather than branding.
+  it("drops both bylines but keeps the robots meta", async () => {
+    const bare = await bake(page("<p>hello</p>"), false);
+
+    expect(bare).not.toContain(SYMPOSIUM_HEADER);
+    expect(bare).not.toContain(SYMPOSIUM_FOOTER);
+    expect(headOf(bare)).toContain(NOINDEX_META);
+    expect(bare).toContain("<p>hello</p>");
+  });
+
+  it("still adds the meta to a document with no head", async () => {
+    const bare = await bake("<!doctype html><html><body><p>hi</p></body></html>", false);
+
+    expect(bare).toContain(NOINDEX_META);
+    expect(bare).not.toContain(SYMPOSIUM_HEADER);
   });
 });

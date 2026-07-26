@@ -1,11 +1,14 @@
 /**
- * Push-time rendering: the one pass that turns an uploaded document into the
+ * Serve-time rendering: the one pass that turns a stored document into the
  * bytes readers get.
  *
- * It runs once per version, at push time, and what it produces is what R2
- * stores (D11) — serving is a pure passthrough, so this cost is paid once per
- * push rather than once per read, and a served page can never disagree with the
- * stored object.
+ * It runs on the response stream, not on the stored object, and R2 holds the
+ * publisher's own bytes untouched. That costs a streaming parse per read
+ * instead of one per push, and buys the property the alternative cannot have:
+ * changing a byline, or a plan that removes one, takes effect on documents
+ * already published. Nothing tells this service that a licence changed plan —
+ * reads never authenticate — so a re-bake job would have no trigger and an
+ * upgraded publisher would keep their watermark forever.
  *
  * It is emphatically *not* a sanitizer. Uploaded scripts run (D6): the document
  * arrives already rendered by Obsidian, complete with callouts, dataview output
@@ -158,17 +161,22 @@ const AS_HTML = { html: true } as const;
  * and not worth attempting; correctness for documents a client actually renders
  * is what these guards are for.
  *
- * Returns the bytes to store: the caller needs their length for the version row
- * and hands the same buffer to R2, so a string round-trip would copy 10MB for
- * nothing.
+ * Takes and returns a `Response` so the body stays a stream: a 10MB document
+ * passes through the worker without ever being a 10MB string in it, exactly as
+ * it did when serving was a passthrough.
+ *
+ * `branding` will be false for plans that pay to remove the bylines. It does not
+ * reach the robots meta, and must not: `noindex` is policy, and a flag that
+ * switched it off would make paid customers' documents indexable — the worst
+ * possible bug to ship attached to an upgrade.
  */
-export async function bakeServedHtml(html: string): Promise<Uint8Array> {
+export function renderServedHtml(response: Response, branding = true): Response {
   let metaPlaced = false;
   let headerPlaced = false;
   let footerPlaced = false;
   let templateDepth = 0;
 
-  const baked = new HTMLRewriter()
+  return new HTMLRewriter()
     // `<template>` content is inert: the browser parses it into a fragment, so
     // a `head` or `body` token inside one is not the document's. lol-html sees
     // the tokens anyway, and without this the first such token consumes the
@@ -202,21 +210,19 @@ export async function bakeServedHtml(html: string): Promise<Uint8Array> {
         // element makes lol-html pair that element's own end tag.
         if (headerPlaced || templateDepth > 0) return;
         headerPlaced = true;
-        body.prepend(SYMPOSIUM_HEADER, AS_HTML);
+        if (branding) body.prepend(SYMPOSIUM_HEADER, AS_HTML);
         body.onEndTag((endTag) => {
           footerPlaced = true;
-          endTag.before(SYMPOSIUM_FOOTER, AS_HTML);
+          if (branding) endTag.before(SYMPOSIUM_FOOTER, AS_HTML);
         });
       },
     })
     .onDocument({
       end(end) {
         if (!metaPlaced) end.append(NOINDEX_META, AS_HTML);
-        if (!headerPlaced) end.append(SYMPOSIUM_HEADER, AS_HTML);
-        if (!footerPlaced) end.append(SYMPOSIUM_FOOTER, AS_HTML);
+        if (branding && !headerPlaced) end.append(SYMPOSIUM_HEADER, AS_HTML);
+        if (branding && !footerPlaced) end.append(SYMPOSIUM_FOOTER, AS_HTML);
       },
     })
-    .transform(new Response(html));
-
-  return new Uint8Array(await baked.arrayBuffer());
+    .transform(response);
 }
