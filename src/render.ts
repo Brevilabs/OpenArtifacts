@@ -144,15 +144,29 @@ const BYLINE_LINK_WITH_MARK =
   "all:initial;font:inherit;display:inline-flex;align-items:center;gap:0.4em;" +
   'cursor:pointer;color:#888;text-decoration:none"';
 
+/**
+ * The two spans the header needs for layout, each reset like everything else it
+ * adds.
+ *
+ * The rule is one per element, without exception: `all:initial` on the container
+ * does not reach descendants, so a span left bare is a span a document's
+ * `span { font-size: 0 }` or `span { position: absolute }` reaches — and a
+ * stylesheet with a broad `span` rule is ordinary rather than hostile. `font`
+ * and `color` come straight back, since the point is to inherit the byline's,
+ * not the document's.
+ */
+const SPAN_RESET = "all:initial;font:inherit;color:inherit;";
+
 /** Where the document came from. Injected at the top of the body. */
 export const SYMPOSIUM_HEADER =
   '<div class="symposium-header" style="' +
   BYLINE_BASE +
   ";margin:0 0 2rem;padding:0.75rem 0;border-bottom:1px solid rgba(128,128,128,0.25)\">" +
-  '<span style="display:inline-flex;align-items:center;gap:0.4em">Shared from ' +
+  `<span style="${SPAN_RESET}display:inline-flex;align-items:center;gap:0.4em">Shared from ` +
   `<a href="https://obsidiancopilot.com" ${BYLINE_LINK_WITH_MARK}>` +
   COPILOT_MARK +
-  '<span style="text-decoration:underline">Copilot for Obsidian</span></a></span></div>';
+  `<span style="${SPAN_RESET}text-decoration:underline">Copilot for Obsidian</span>` +
+  "</a></span></div>";
 
 /** What served it. Injected immediately before `</body>`. */
 export const SYMPOSIUM_FOOTER =

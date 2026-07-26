@@ -200,9 +200,18 @@ publisher's document exactly as it was pushed.
 
 Serving therefore adds to the stored bytes rather than reproducing them. That is
 what lets a byline change reach documents already published. Two consequences
-worth knowing: `Content-Length` is absent on `HEAD`, because the served length is
-not knowable without running the transform, and the `ETag` identifies the stored
-version, which is sufficient while every reader gets the same rendering.
+worth knowing:
+
+- `Content-Length` is absent on `HEAD`. The served length is not knowable without
+  running the transform, and reporting the stored one would be reporting a wrong
+  number.
+- The `ETag` identifies **the stored version and the rendering applied to it**,
+  not the stored version alone — a byline change moves it even though the stored
+  bytes are untouched, which is what stops a revalidating cache serving an old
+  rendering forever. Treat it as opaque, as always: its shape is not a contract
+  and it will change again. What is stable is the behaviour — the same document
+  and the same rendering always produce the same tag, and `If-None-Match` with
+  it returns `304`.
 
 `404` for an unknown id or version; `410` once the doc is deleted.
 

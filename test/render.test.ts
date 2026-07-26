@@ -93,11 +93,14 @@ describe("renderServedHtml — what gets injected", () => {
     expect(SYMPOSIUM_FOOTER).toContain("display:inline;");
     expect(SYMPOSIUM_HEADER).toContain("display:inline-flex");
 
-    // One reset per element the byline adds: container and anchor in the footer,
-    // plus the span carrying the mark in the header. Counted rather than merely
-    // found, because "the anchor has one too" is the whole claim.
-    expect(occurrences(SYMPOSIUM_FOOTER, "all:initial")).toBe(2);
-    expect(occurrences(SYMPOSIUM_HEADER, "all:initial")).toBe(3);
+    // One reset per element the byline adds — no exceptions, since a bare span
+    // is one a document's `span { font-size: 0 }` reaches. Counted against the
+    // tags rather than hard-coded, so an element added later cannot skip one.
+    for (const byline of [SYMPOSIUM_HEADER, SYMPOSIUM_FOOTER]) {
+      const elements =
+        occurrences(byline, "<div") + occurrences(byline, "<a ") + occurrences(byline, "<span");
+      expect(occurrences(byline, "all:initial")).toBe(elements);
+    }
   });
 
   // The reader is mid-document; a byline that navigates the page away costs
