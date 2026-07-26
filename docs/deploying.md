@@ -108,7 +108,10 @@ permissions on the Brevilabs account: **Workers Scripts: Edit** to deploy, and
 **D1: Edit** to read the `d1_migrations` table. Not a Global API Key, which
 would also reach DNS and every other zone setting. Create it under My Profile →
 API Tokens → Create Token; the *Edit Cloudflare Workers* template is a fine
-starting point, but confirm D1 is in its permission list and add it if not.
+starting point, but it does **not** include D1, so add that row by hand. Scope
+Account Resources to the one account and Zone Resources to `symposium.site` and
+`symposium.md` specifically, which is what authorizes the custom-domain routes.
+Leave Client IP filtering empty: GitHub's runners have no stable egress IPs.
 
 D1: Edit is broader than the guard needs — it only runs a `SELECT` — but the
 query endpoint takes arbitrary SQL, so a read-only permission may not authorize
@@ -134,9 +137,11 @@ Two things the workflow deliberately does not do:
   on both hosts is the liveness check instead. Run `scripts/smoke.sh` by hand
   when the change warrants it.
 
-Gate it further by adding a required reviewer to the `production` environment in
-Settings → Environments, which turns a merge into "merged, and someone approved
-the deploy".
+Gate it further in Settings → Environments on the `production` environment. A
+required reviewer turns a merge into "merged, and someone approved the deploy".
+A deployment branch policy limited to `main` enforces at the platform level what
+the workflow's first step already enforces in code, and unlike the workflow it
+cannot be changed by a pull request.
 
 ## Rolling back
 
