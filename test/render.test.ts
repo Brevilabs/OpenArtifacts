@@ -30,8 +30,19 @@ describe("bakeServedHtml — what gets injected", () => {
   it("says where the document came from, in text a reader can see", async () => {
     const baked = await bake(page("<p>hello</p>"));
 
-    expect(baked).toContain(">Shared from <");
-    expect(baked).toContain(">obsidiancopilot.com</a>");
+    expect(baked).toContain("Shared from ");
+    expect(baked).toContain(">Copilot for Obsidian</span>");
+  });
+
+  // Inlined rather than linked: a byline that fetches its logo from another host
+  // is a broken-image icon whenever that host is unreachable, and these bytes
+  // outlive the deploy that produced them.
+  it("carries the Copilot mark inline, tinted by the byline's own colour", () => {
+    expect(SYMPOSIUM_HEADER).toContain("<svg ");
+    expect(SYMPOSIUM_HEADER).toContain("fill:currentColor");
+    expect(SYMPOSIUM_HEADER).not.toContain("<img");
+    // Decorative: the link text already names the product.
+    expect(SYMPOSIUM_HEADER).toContain('aria-hidden="true"');
   });
 
   it("names Symposium and what it is for, in text a reader can see", async () => {
@@ -55,16 +66,18 @@ describe("bakeServedHtml — what gets injected", () => {
       expect(byline).toContain('<a href="https://');
       // Twice: once on the container, once on the anchor inside it.
       expect(occurrences(byline, "all:initial")).toBe(2);
-      for (const restored of [
-        "font:inherit",
-        "display:inline",
-        "cursor:pointer",
-        "color:#888",
-        "text-decoration:underline",
-      ]) {
+      for (const restored of ["font:inherit", "cursor:pointer", "color:#888"]) {
         expect(byline).toContain(restored);
       }
+      // Underlined either way, but the header puts it on the text rather than
+      // the anchor, so the mark beside it is not underlined too.
+      expect(byline).toContain("text-decoration:underline");
     }
+
+    // Asserted apart, because a shared `display:inline` check would pass for the
+    // header only by being a prefix of `inline-flex`.
+    expect(SYMPOSIUM_FOOTER).toContain("display:inline;");
+    expect(SYMPOSIUM_HEADER).toContain("display:inline-flex");
   });
 
   // The reader is mid-document; a byline that navigates the page away costs

@@ -65,12 +65,44 @@ const BYLINE_LINK =
   "all:initial;font:inherit;display:inline;cursor:pointer;" +
   'color:#888;text-decoration:underline"';
 
+/**
+ * The Copilot mark, from `mark-mono-cream.svg` in the product site. Inlined
+ * rather than linked: a byline that depends on another host's uptime is a byline
+ * that is sometimes a broken-image icon, and the document may be read from a
+ * mirror or a cache long after this deploy.
+ *
+ * `currentColor` rather than the source file's cream fill, so it takes the
+ * byline's grey and sits legibly on a light or a dark document. No `all:initial`
+ * here — on an `<svg>` that resets presentation attributes as well and can break
+ * the render; the sizing and fill are pinned instead.
+ */
+const COPILOT_MARK =
+  '<svg viewBox="4 4 152 127" width="17" height="14" aria-hidden="true" focusable="false" ' +
+  'style="display:inline-block;vertical-align:-0.15em;flex:none;fill:currentColor">' +
+  '<path d="M75.9 6.9c-6.8 1.4-12.5 6-35.5 29.3-33.5 33.8-33.5 33.9-34.2 62.2-0.3 12.4 0 20.2 0.7 22.7 ' +
+  "2.4 7.8 10.8 11.2 17.6 7.1 1.7-1.1 14.9-14.1 29.5-29.1 14.5-14.9 26.7-27 27-26.9 0.3 0.2 12.4 12.4 " +
+  "27 27.3 14.6 14.8 27.6 27.8 29 28.7 5.1 3.6 13.6 1.4 16.5-4.2 1.2-2.3 1.5-6.9 1.5-22.3 0-22.9-1.2-28.6-8.3-37.9-7.6-10.2-50-52.3-54.9-54.6-5.1-2.4-10.9-3.2-15.9-2.3z" +
+  '"/></svg>';
+
+/**
+ * The header's link carries the mark as well as the name, so both are clickable.
+ * `inline-flex` to keep them on one line at a shared baseline, and the underline
+ * moves to the text — an underlined logo reads as a rendering fault.
+ */
+const BYLINE_LINK_WITH_MARK =
+  'target="_blank" rel="noopener noreferrer" style="' +
+  "all:initial;font:inherit;display:inline-flex;align-items:center;gap:0.4em;" +
+  'cursor:pointer;color:#888;text-decoration:none"';
+
 /** Where the document came from. Injected at the top of the body. */
 export const SYMPOSIUM_HEADER =
   '<div class="symposium-header" style="' +
   BYLINE_BASE +
   ";margin:0 0 2rem;padding:0.75rem 0;border-bottom:1px solid rgba(128,128,128,0.25)\">" +
-  `Shared from <a href="https://obsidiancopilot.com" ${BYLINE_LINK}>obsidiancopilot.com</a></div>`;
+  '<span style="display:inline-flex;align-items:center;gap:0.4em">Shared from ' +
+  `<a href="https://obsidiancopilot.com" ${BYLINE_LINK_WITH_MARK}>` +
+  COPILOT_MARK +
+  '<span style="text-decoration:underline">Copilot for Obsidian</span></a></span></div>';
 
 /** What served it. Injected immediately before `</body>`. */
 export const SYMPOSIUM_FOOTER =

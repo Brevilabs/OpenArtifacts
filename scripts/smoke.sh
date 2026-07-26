@@ -144,7 +144,7 @@ printf '      docId %s\n      url   %s\n' "$DOC_ID" "$DOC_URL"
 public_request "$DOC_URL"
 expect_status 200 "GET $DOC_URL"
 expect_body "$MARKER" "the page serves the bytes that were pushed"
-expect_body "obsidiancopilot.com" "the page carries the header byline"
+expect_body "Copilot for Obsidian</span>" "the page carries the header byline"
 expect_body "symposium.md</a>" "the page carries the footer byline, linked"
 
 api_request GET "$BASE_URL/api/v1/docs?limit=100"

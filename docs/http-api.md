@@ -193,7 +193,7 @@ retargeting. The origin is cookieless and holds nothing but already-public docs.
 
 Three things are injected into the document at push time, so the stored bytes and
 the served bytes are the same thing: a `<meta name="robots" content="noindex,nofollow">`
-in the head, a `Shared from obsidiancopilot.com` byline at the top of the body,
+in the head, a `Shared from Copilot for Obsidian` byline at the top of the body,
 and a `Powered by symposium.md` byline before `</body>`. Nothing else is touched
 — the markup is never sanitized, rewritten or reformatted. Because this runs at
 push time, a document published before a byline changed keeps the old one until
