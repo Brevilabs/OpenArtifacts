@@ -41,9 +41,10 @@ right one — leave it alone.
 npx wrangler d1 migrations apply symposium --remote
 ```
 
-**Steps 4–8 ship the Worker, and are what is actually outstanding.** Step 7 is
-the one that makes it reachable: `workers_dev` is `false`, so a Worker with no
-custom domain attached answers on nothing at all.
+**Steps 4–8 ship the Worker.** They have all run on the Brevilabs account; what
+follows is the record of how, and the procedure for a fresh account. Step 7 is
+the one that makes the Worker reachable: `workers_dev` is `false`, so a Worker
+with no custom domain attached answers on nothing at all.
 
 ```bash
 # 4. Credentials for the license server. Both prompt for the value, so neither

@@ -102,18 +102,14 @@ reader → Cloudflare edge → Worker (src/index.ts)
 
 The Worker's first decision is which of two surfaces a request belongs to:
 `/api/v1/*` is the publisher API and needs a key, `/d/*` is public reading. They
-are split so they can later sit on separate domains — user content on a
-throwaway one, the API on the brand one — for reasons in
+sit on separate domains — user content on `symposium.site`, a domain chosen to be
+disposable, the API on `api.symposium.md` — for reasons in
 [cost-at-scale.md](cost-at-scale.md) §5.
 
-**Nothing is cached today**, and attaching a domain would not by itself change
-that. Two independent reasons:
-
-1. Nothing is reachable yet — `workers_dev` is off and no custom domain is
-   attached, so there is no hostname for a cache to sit in front of.
-2. Cloudflare does not cache HTML by default *on any domain*. Eligibility is
-   decided by file extension — not MIME type, and not the `Cache-Control` the
-   Worker sends — and `/d/{docId}` has no extension.
+**Nothing is cached today**, and attaching the domains did not by itself change
+that: Cloudflare does not cache HTML by default *on any domain*. Eligibility is
+decided by file extension — not MIME type, and not the `Cache-Control` the
+Worker sends — and `/d/{docId}` has no extension.
 
 Caching therefore needs an explicit **Cache Rule** on the serving zone, or the
 Cache API inside the Worker. Until one exists, every read invokes the Worker and

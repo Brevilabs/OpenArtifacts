@@ -143,7 +143,11 @@ jobs:
           # would fail once and then wave the same broken state through
           # forever. A failed deploy does not move this baseline. It also works
           # under `workflow_dispatch`, which has no push range at all.
-          gh api "repos/$GITHUB_REPOSITORY/deployments?environment=production&per_page=50" \
+          # --paginate: without it only the first page is searched, so enough
+          # consecutive failed deploys push the last successful record out of
+          # view, `base` comes back empty, and the check below skips itself.
+          # Retrying would defeat the guard.
+          gh api --paginate "repos/$GITHUB_REPOSITORY/deployments?environment=production&per_page=100" \
             --jq '.[] | "\(.id) \(.sha)"' > /tmp/deployments.txt
           base=""
           while read -r id sha; do
