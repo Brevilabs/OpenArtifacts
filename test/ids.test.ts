@@ -19,14 +19,21 @@ describe("encodeBase32", () => {
     expect(seen.size).toBe(256);
   });
 
-  it("pads the trailing partial group with zero bits, not characters", () => {
-    // 16 bytes = 128 bits = 25 full groups of 5 bits, then 3 bits left over
-    // that get zero-padded out to a 26th character.
+  it("emits no padding character", () => {
+    // 10 bytes = 80 bits = exactly 16 groups of 5, so an id has no trailing
+    // partial group at all. The zero-padding branch still exists for other
+    // lengths and is covered below.
     expect(encodeBase32(new Uint8Array(DOC_ID_BYTES))).toHaveLength(DOC_ID_LENGTH);
     expect(encodeBase32(new Uint8Array(DOC_ID_BYTES))).not.toContain("=");
   });
 
-  it("carries all 128 bits — flipping any single bit changes the id", () => {
+  it("pads a trailing partial group with zero bits, not characters", () => {
+    // One byte is 8 bits: one full group of 5, then 3 bits zero-padded into a
+    // second character. Kept because DOC_ID_BYTES no longer exercises it.
+    expect(encodeBase32(new Uint8Array([0xff]))).toBe("zw");
+  });
+
+  it("carries all 80 bits — flipping any single bit changes the id", () => {
     // The encoder shifts a 32-bit accumulator, so a bit dropped off the top
     // would silently collapse distinct inputs onto one id and shrink the
     // guessing space well below 2^128.
@@ -43,7 +50,7 @@ describe("encodeBase32", () => {
 describe("newDocId", () => {
   const ids = Array.from({ length: 1000 }, newDocId);
 
-  it("is 26 lowercase Crockford base32 characters", () => {
+  it("is 16 lowercase Crockford base32 characters", () => {
     for (const id of ids) {
       expect(id).toHaveLength(DOC_ID_LENGTH);
       expect(id).toMatch(CROCKFORD);
@@ -66,8 +73,8 @@ describe("newDocId", () => {
   });
 
   it("spends its full entropy budget rather than a fixed prefix", () => {
-    // Every one of the 26 characters carries data — the last one 3 bits — so a
-    // sequential or constant-seeded id would leave some position never varying.
+    // Every one of the 16 characters carries a full 5 bits, so a sequential or
+    // constant-seeded id would leave some position never varying.
     for (let i = 0; i < DOC_ID_LENGTH; i++) {
       const distinct = new Set(ids.map((id) => id[i]));
       expect(distinct.size).toBeGreaterThan(1);

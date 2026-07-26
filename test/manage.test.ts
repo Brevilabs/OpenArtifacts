@@ -4,6 +4,7 @@ import { deleteDoc } from "../src/api/manage.js";
 import type { Publisher } from "../src/auth.js";
 import type { Env } from "../src/config.js";
 import type { DocRow } from "../src/db.js";
+import { DOC_ID_LENGTH } from "../src/ids.js";
 import { docObjectPrefix, versionObjectKey } from "../src/storage.js";
 import worker from "../src/index.js";
 
@@ -18,7 +19,13 @@ const KEY_A = "cplus_live_a1b2c3d4e5f60718";
 const KEY_B = "cplus_live_9988776655443322";
 
 /** A doc id of the right shape that no push ever minted. */
-const UNKNOWN_DOC_ID = "0123456789abcdefghjkmnpqrs";
+/**
+ * A well-formed id that is not in the database. Derived from DOC_ID_LENGTH, not
+ * written out: a literal of the wrong length is rejected by `isDocId` on shape
+ * before D1 is consulted, which silently turns every "not found" test into a
+ * test of the shape check.
+ */
+const UNKNOWN_DOC_ID = "0123456789abcdefghjkmnpqrstvwxyz".repeat(2).slice(0, DOC_ID_LENGTH);
 
 async function sha256Hex(value: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
@@ -170,7 +177,7 @@ async function seedDoc(
 }
 
 /** Valid doc ids that sort predictably, so a paging test can name what it expects. */
-const seededId = (i: number) => String(i).padStart(26, "0");
+const seededId = (i: number) => String(i).padStart(DOC_ID_LENGTH, "0");
 
 /** Every docId the list yields when walked to the end, in order. */
 async function walk(key: string, limit: number): Promise<string[]> {

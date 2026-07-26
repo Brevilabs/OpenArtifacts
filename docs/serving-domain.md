@@ -99,3 +99,15 @@ Three things become true together when the real domains land, and
 3. **Purge on delete, in the same change.** Once there is an edge cache, an
    unshared doc keeps being served from it. Shipping caching without purging is
    how a withdrawn document stays readable.
+
+## What changes when reading stops being anonymous
+
+The argument above rests on the serving origin being cookieless, which is also
+what lets uploaded documents run scripts. Private sharing breaks that, and the
+way out is to keep identity on the brand domain and grant access per document
+rather than by session — and that is not sufficient on its own. A hostile public
+document can `window.open` a private one and read the grant off the popup once it
+returns to this origin, so isolating documents from each other is a prerequisite,
+not an enhancement. It is nearly free to adopt now and effectively impossible
+once readers hold private links.
+[private-sharing.md](private-sharing.md) has the reasoning and the phases.

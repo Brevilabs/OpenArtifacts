@@ -179,8 +179,10 @@ export function servingError(code: "not_found" | "gone" | "internal", message: s
 
 /**
  * One message for "no such id", "malformed id" and "no such version" alike. The
- * id space is not worth probing at 128 bits, but a reply that distinguished the
- * cases would still be telling a stranger which ids are real.
+ * id space is not worth probing at 80 bits, but a reply that distinguished the
+ * cases would still be telling a stranger which ids are real — and that matters
+ * more now the space is smaller, since an oracle is worth more to an enumerator
+ * than the raw arithmetic suggests.
  */
 function noDocAt(pathname: string): Response {
   return servingError("not_found", `No doc at ${pathname}`);
