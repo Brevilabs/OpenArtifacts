@@ -23,8 +23,8 @@
  * and embedded interactive figures, and stripping or escaping any of it would
  * destroy the fidelity that is the whole reason the client renders HTML. Safety
  * comes from the serving headers and a cookieless sacrificial origin, not from
- * rewriting the publisher's markup. The only edits made here are the two
- * additions below.
+ * rewriting the publisher's markup. The only edits made here are the additions
+ * below.
  *
  * HTMLRewriter rather than string surgery, because it is a real HTML tokenizer:
  * a `<head>` written inside a comment or emitted by `document.write("<head>")`
@@ -45,7 +45,7 @@
  * constants in this file, so the thing that changes them is an edit to this
  * file, and a reviewer can see whether the number moved with it.
  */
-export const RENDER_REVISION = 1;
+export const RENDER_REVISION = 2;
 
 /**
  * Belt to the `X-Robots-Tag` header's braces (D9). The header is the
@@ -54,6 +54,33 @@ export const RENDER_REVISION = 1;
  * served from anywhere else keeps asking not to be indexed.
  */
 export const NOINDEX_META = '<meta name="robots" content="noindex,nofollow">';
+
+/**
+ * What the reader's tab shows. Without it a shared doc carries the browser's
+ * blank-page glyph, which is the least identifiable thing in a row of tabs.
+ *
+ * The mark is `favicon.svg` from the product site, inlined as a data URI for
+ * the reasons the Copilot mark below is: no second request, and nothing to
+ * break when these bytes are read from a mirror long after this deploy.
+ * `img-src` — the directive favicons load under — already admits `data:`.
+ * `encodeURIComponent` escapes the `"` and `#` in the markup, so nothing in
+ * the value can close the `href` around it.
+ *
+ * A document that declares its own icon keeps that markup; ours is prepended
+ * ahead of it, and which one the tab shows is then the browser's choice.
+ * Detecting the case to stay out of it would cost a second pass over the head,
+ * and neither outcome is wrong: the page is the publisher's, and it is served
+ * by us.
+ */
+export const FAVICON_LINK =
+  '<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,' +
+  encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">' +
+      '<rect width="32" height="32" rx="7" fill="#121413"/>' +
+      '<path d="M9 11.5h14M9 16h14M9 20.5h9" stroke="#46d17f" stroke-width="2.4" ' +
+      'stroke-linecap="round"/></svg>',
+  ) +
+  '">';
 
 /**
  * Shared between the two bylines (D9).
@@ -180,15 +207,17 @@ export const SYMPOSIUM_FOOTER =
 const AS_HTML = { html: true } as const;
 
 /**
- * Inject the robots meta and the two bylines, and change nothing else.
+ * Inject the robots meta, the favicon and the two bylines, and change nothing
+ * else.
  *
  * Every injection has a fallback, because a document is not guaranteed to have
  * the tag we want to hang it on:
  *
- * - The meta goes first inside `<head>`. A document with no `<head>` gets it at
- *   the end instead, where the parser hoists it into the body — weaker, since a
- *   robots meta outside the head is not honoured, which is exactly why the
- *   `X-Robots-Tag` header carries the real signal.
+ * - The meta and the favicon go first inside `<head>`. A document with no
+ *   `<head>` gets them at the end instead, where the parser hoists them into
+ *   the body — weaker for the meta, since a robots meta outside the head is not
+ *   honoured, which is exactly why the `X-Robots-Tag` header carries the real
+ *   signal, and best-effort for the icon.
  * - The header byline is prepended inside `<body>`. A document with no `<body>`
  *   start tag gets it at the document end instead, which puts the header below
  *   the content: wrong, but present. Hanging it on `<html>` would be no better,
@@ -216,22 +245,27 @@ const AS_HTML = { html: true } as const;
  * passes through the worker without ever being a 10MB string in it, exactly as
  * it did when serving was a passthrough.
  *
- * `branding` will be false for plans that pay to remove the bylines. It does not
- * reach the robots meta, and must not: `noindex` is policy, and a flag that
+ * `branding` will be false for plans that pay to remove the bylines. It takes
+ * the favicon with them — a Symposium mark in the reader's tab is branding too.
+ * It does not reach the robots meta, and must not: `noindex` is policy, and a flag that
  * switched it off would make paid customers' documents indexable — the worst
  * possible bug to ship attached to an upgrade.
  */
 export function renderServedHtml(response: Response, branding = true): Response {
-  let metaPlaced = false;
+  const head = branding ? NOINDEX_META + FAVICON_LINK : NOINDEX_META;
+  let headPlaced = false;
   let headerPlaced = false;
   let footerPlaced = false;
 
   return new HTMLRewriter()
+    // One `prepend()` for both, because each prepend goes *ahead* of the last:
+    // two calls would have to be written in the reverse of the order they
+    // produce, which is a trap for the next edit.
     .on("head", {
-      element(head) {
-        if (metaPlaced) return;
-        metaPlaced = true;
-        head.prepend(NOINDEX_META, AS_HTML);
+      element(element) {
+        if (headPlaced) return;
+        headPlaced = true;
+        element.prepend(head, AS_HTML);
       },
     })
     .on("body", {
@@ -254,7 +288,7 @@ export function renderServedHtml(response: Response, branding = true): Response 
     })
     .onDocument({
       end(end) {
-        if (!metaPlaced) end.append(NOINDEX_META, AS_HTML);
+        if (!headPlaced) end.append(head, AS_HTML);
         if (branding && !headerPlaced) end.append(SYMPOSIUM_HEADER, AS_HTML);
         if (branding && !footerPlaced) end.append(SYMPOSIUM_FOOTER, AS_HTML);
       },
