@@ -191,10 +191,13 @@ why the client uploads HTML at all. What the policy forbids is a doc using the
 origin against its readers: no form submission, no framing, no `<base>`
 retargeting. The origin is cookieless and holds nothing but already-public docs.
 
-Three things are injected as the document is served: a
+Four things are injected as the document is served: a
 `<meta name="robots" content="noindex,nofollow">` in the head, a
+`<link rel="icon">` beside it carrying the Symposium mark as a `data:` URI, a
 `Shared from Copilot for Obsidian` byline at the top of the body, and a
-`Powered by symposium.md` byline before `</body>`. Nothing else is touched — the
+`Powered by symposium.md` byline before `</body>`. A document that ships its own
+icon keeps that markup — both links are then in the head, and which one the tab
+shows is the browser's choice. Nothing else is touched — the
 markup is never sanitized, rewritten or reformatted, and what R2 stores is the
 publisher's document exactly as it was pushed.
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  FAVICON_LINK,
   NOINDEX_META,
   renderServedHtml,
   SYMPOSIUM_FOOTER,
@@ -25,6 +26,22 @@ describe("renderServedHtml — what gets injected", () => {
   // came from, and both claims are about literal bytes, not about a symbol.
   it("asks robots not to index or follow", () => {
     expect(NOINDEX_META).toBe('<meta name="robots" content="noindex,nofollow">');
+  });
+
+  // Inline for the reason the Copilot mark is: an icon fetched from another
+  // host is a blank tab whenever that host is unreachable, and these bytes
+  // outlive the deploy that produced them.
+  it("carries the tab icon inline, in the brand's own colours", () => {
+    expect(FAVICON_LINK).toContain('rel="icon"');
+    expect(FAVICON_LINK).toContain('href="data:image/svg+xml,');
+    for (const colour of ["#121413", "#46d17f"]) {
+      expect(FAVICON_LINK).toContain(encodeURIComponent(colour));
+    }
+    // Escaped, so the `"` on every attribute inside the SVG cannot close the
+    // `href` around it.
+    const href = FAVICON_LINK.slice(FAVICON_LINK.indexOf('href="') + 6, -2);
+    expect(href).not.toContain('"');
+    expect(decodeURIComponent(href.slice("data:image/svg+xml,".length))).toContain("<svg ");
   });
 
   it("says where the document came from, in text a reader can see", async () => {
@@ -114,10 +131,10 @@ describe("renderServedHtml — what gets injected", () => {
 });
 
 describe("renderServedHtml — where the injections land", () => {
-  it("puts the robots meta inside the head, and the bylines around the body", async () => {
+  it("puts the robots meta and the icon inside the head, and the bylines around the body", async () => {
     const baked = await bake(page("<p>hello</p>"));
 
-    expect(headOf(baked)).toContain(NOINDEX_META);
+    expect(baked).toContain(`<head>${NOINDEX_META}${FAVICON_LINK}`);
     expect(baked).toContain(`<body>${SYMPOSIUM_HEADER}`);
     expect(baked).toContain(`${SYMPOSIUM_FOOTER}</body>`);
   });
@@ -133,6 +150,7 @@ describe("renderServedHtml — where the injections land", () => {
     const baked = await bake(page("<div><p>one</p></div><div><p>two</p></div>"));
 
     expect(occurrences(baked, NOINDEX_META)).toBe(1);
+    expect(occurrences(baked, FAVICON_LINK)).toBe(1);
     expect(occurrences(baked, SYMPOSIUM_HEADER)).toBe(1);
     expect(occurrences(baked, SYMPOSIUM_FOOTER)).toBe(1);
   });
@@ -208,6 +226,7 @@ describe("renderServedHtml — documents missing the tags to hang them on", () =
     const baked = await bake("<!doctype html>\n<html>\n<body>\n<p>hi</p>\n</body>\n</html>");
 
     expect(baked).toContain(NOINDEX_META);
+    expect(baked).toContain(FAVICON_LINK);
     expect(baked).toContain(`<body>${SYMPOSIUM_HEADER}`);
     expect(baked).toContain(`${SYMPOSIUM_FOOTER}</body>`);
     // The doctype has to stay first: a meta ahead of it would put the page into
@@ -285,11 +304,14 @@ describe("renderServedHtml — the document's own content", () => {
 describe("renderServedHtml — branding off", () => {
   // The separation the tier work depends on: a plan that pays to lose the
   // bylines must not also lose `noindex`, which is policy rather than branding.
-  it("drops both bylines but keeps the robots meta", async () => {
+  // The tab icon goes with them: a Symposium mark in the reader's tab is
+  // branding too. The robots meta is policy and stays.
+  it("drops both bylines and the icon but keeps the robots meta", async () => {
     const bare = await bake(page("<p>hello</p>"), false);
 
     expect(bare).not.toContain(SYMPOSIUM_HEADER);
     expect(bare).not.toContain(SYMPOSIUM_FOOTER);
+    expect(bare).not.toContain(FAVICON_LINK);
     expect(headOf(bare)).toContain(NOINDEX_META);
     expect(bare).toContain("<p>hello</p>");
   });
