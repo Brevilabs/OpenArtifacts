@@ -34,26 +34,32 @@ async function sha256Hex(value: string): Promise<string> {
 
 /**
  * Give a key a publisher row validated just now — what a real request leaves
- * behind after auth, and what `docs.publisher` needs as a foreign key. These
- * tests are about managing docs, not about authenticating, so the license cache
- * is warm and no license server is ever reached.
+ * behind after auth. These tests are about managing docs, not about
+ * authenticating, so the license cache is warm and no license server is ever
+ * reached.
+ *
+ * Each key gets its own account by default; passing one explicitly is how a test
+ * says "these two keys are the same person". Returns that account, which is what
+ * the key's doc rows will carry.
  */
-async function seedPublisher(key: string): Promise<string> {
-  const id = await sha256Hex(key);
+async function seedPublisher(key: string, owner?: string): Promise<string> {
+  const keyHash = await sha256Hex(key);
+  const account = owner ?? `account-${keyHash.slice(0, 8)}`;
   await env.DB.prepare(
-    "INSERT OR REPLACE INTO publishers (key_hash, plan, validated_at) VALUES (?, 'believer', ?)",
+    `INSERT OR REPLACE INTO publishers (key_hash, plan, validated_at, owner)
+     VALUES (?, 'believer', ?, ?)`,
   )
-    .bind(id, Date.now())
+    .bind(keyHash, Date.now(), account)
     .run();
-  return id;
+  return account;
 }
 
-let publisherA = "";
-let publisherB = "";
+let ownerA = "";
+let ownerB = "";
 
 beforeEach(async () => {
-  publisherA = await seedPublisher(KEY_A);
-  publisherB = await seedPublisher(KEY_B);
+  ownerA = await seedPublisher(KEY_A);
+  ownerB = await seedPublisher(KEY_B);
 });
 
 /** Statuses whose responses may not carry a body, per the Response constructor. */
@@ -155,17 +161,17 @@ const allObjectKeys = async () => (await env.DOCS.list()).objects.map((o) => o.k
  * the millisecond — which is what the cursor's tie-break is about.
  */
 async function seedDoc(
-  publisher: string,
+  owner: string,
   id: string,
   createdAt: number,
   options: { versions?: number } = {},
 ): Promise<string> {
   const versions = options.versions ?? 1;
   await env.DB.prepare(
-    `INSERT INTO docs (id, publisher, title, latest_version, created_at, updated_at)
+    `INSERT INTO docs (id, owner, title, latest_version, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?)`,
   )
-    .bind(id, publisher, `seeded ${id}`, versions, createdAt, createdAt)
+    .bind(id, owner, `seeded ${id}`, versions, createdAt, createdAt)
     .run();
 
   for (let n = 1; n <= versions; n++) {
@@ -240,7 +246,7 @@ describe("DELETE /api/v1/docs/{docId}", () => {
   });
 
   it("clears a doc holding more objects than one R2 listing returns", async () => {
-    const docId = await seedDoc(publisherA, seededId(1), Date.now());
+    const docId = await seedDoc(ownerA, seededId(1), Date.now());
     // 100 pushes a day compounds: a long-lived doc outgrows R2's 1000-key
     // listing page, and a delete that read only the first page would leave the
     // rest of the doc sitting in the bucket forever.
@@ -251,7 +257,7 @@ describe("DELETE /api/v1/docs/{docId}", () => {
     // point here, and every other delete test covers the route.
     for (let n = 1; n <= 3; n++) await env.DOCS.put(versionObjectKey(docId, n), "x");
 
-    const publisher: Publisher = { id: publisherA, plan: "believer" };
+    const publisher: Publisher = { owner: ownerA, plan: "believer" };
     const response = await deleteDoc(env, publisher, docId, { objectBatch: 2 });
 
     expect(response.status).toBe(204);
@@ -280,7 +286,7 @@ describe("DELETE /api/v1/docs/{docId}", () => {
     });
 
     expect(await docRow(created.docId)).toMatchObject({
-      publisher: publisherA,
+      owner: ownerA,
       deleted_at: null,
     });
     expect(await objectKeys(created.docId)).toEqual([versionObjectKey(created.docId, 1)]);
@@ -415,9 +421,9 @@ describe("GET /api/v1/docs", () => {
 
   it("orders newest first", async () => {
     const ids = [3, 1, 2].map((i) => seededId(i));
-    await seedDoc(publisherA, ids[0]!, 3_000);
-    await seedDoc(publisherA, ids[1]!, 1_000);
-    await seedDoc(publisherA, ids[2]!, 2_000);
+    await seedDoc(ownerA, ids[0]!, 3_000);
+    await seedDoc(ownerA, ids[1]!, 1_000);
+    await seedDoc(ownerA, ids[2]!, 2_000);
 
     const body = await listed(await list(KEY_A));
 
@@ -434,7 +440,7 @@ describe("GET /api/v1/docs", () => {
     // The crash artifact push.ts documents: a row with no versions and no
     // object, whose id was never returned to anyone. It still counts against
     // the 500-doc ceiling, so hiding it would make it unclearable.
-    const stranded = await seedDoc(publisherA, seededId(1), Date.now(), { versions: 0 });
+    const stranded = await seedDoc(ownerA, seededId(1), Date.now(), { versions: 0 });
 
     const body = await listed(await list(KEY_A));
 
@@ -443,7 +449,7 @@ describe("GET /api/v1/docs", () => {
   });
 
   it("defaults to 50 docs a page", async () => {
-    for (let i = 1; i <= 51; i++) await seedDoc(publisherA, seededId(i), i);
+    for (let i = 1; i <= 51; i++) await seedDoc(ownerA, seededId(i), i);
 
     const body = await listed(await list(KEY_A));
 
@@ -452,7 +458,7 @@ describe("GET /api/v1/docs", () => {
   });
 
   it("honours a limit, and omits the cursor on the last page", async () => {
-    for (let i = 1; i <= 3; i++) await seedDoc(publisherA, seededId(i), i);
+    for (let i = 1; i <= 3; i++) await seedDoc(ownerA, seededId(i), i);
 
     const first = await listed(await list(KEY_A, "?limit=2"));
     expect(first.docs).toHaveLength(2);
@@ -513,7 +519,7 @@ describe("paging through the list", () => {
   it("yields every doc exactly once, with no duplicates and no gaps", async () => {
     const expected: string[] = [];
     for (let i = 1; i <= 7; i++) {
-      expected.push(await seedDoc(publisherA, seededId(i), 1_000 + i));
+      expected.push(await seedDoc(ownerA, seededId(i), 1_000 + i));
     }
     expected.reverse();
 
@@ -528,14 +534,14 @@ describe("paging through the list", () => {
     // `created_at` alone is not a cursor. Without the id tie-break these five
     // docs would repeat or vanish across page boundaries.
     const ids: string[] = [];
-    for (let i = 1; i <= 5; i++) ids.push(await seedDoc(publisherA, seededId(i), 42));
+    for (let i = 1; i <= 5; i++) ids.push(await seedDoc(ownerA, seededId(i), 42));
     ids.reverse();
 
     expect(await walk(KEY_A, 2)).toEqual(ids);
   });
 
   it("never repeats a doc when a newer one is pushed mid-walk", async () => {
-    for (let i = 1; i <= 4; i++) await seedDoc(publisherA, seededId(i), 1_000 + i);
+    for (let i = 1; i <= 4; i++) await seedDoc(ownerA, seededId(i), 1_000 + i);
 
     const first = await listed(await list(KEY_A, "?limit=2"));
     // OFFSET paging renumbers here and page 2 would re-serve a doc from page 1.
@@ -550,7 +556,7 @@ describe("paging through the list", () => {
   });
 
   it("skips a doc deleted mid-walk and keeps the rest whole", async () => {
-    for (let i = 1; i <= 6; i++) await seedDoc(publisherA, seededId(i), 1_000 + i);
+    for (let i = 1; i <= 6; i++) await seedDoc(ownerA, seededId(i), 1_000 + i);
 
     // Page one takes 6 and 5.
     const first = await listed(await list(KEY_A, "?limit=2"));
@@ -577,13 +583,61 @@ describe("paging through the list", () => {
   });
 
   it("stops walking a publisher's page at their own docs", async () => {
-    for (let i = 1; i <= 4; i++) await seedDoc(publisherA, seededId(i), 1_000 + i);
-    for (let i = 5; i <= 8; i++) await seedDoc(publisherB, seededId(i), 1_000 + i);
+    for (let i = 1; i <= 4; i++) await seedDoc(ownerA, seededId(i), 1_000 + i);
+    for (let i = 5; i <= 8; i++) await seedDoc(ownerB, seededId(i), 1_000 + i);
 
     // B's docs are newer, so a scan that ignored the publisher predicate on the
     // resume step would walk straight into them.
     expect(await walk(KEY_A, 2)).toEqual([4, 3, 2, 1].map((i) => seededId(i)));
     expect(await walk(KEY_B, 3)).toEqual([8, 7, 6, 5].map((i) => seededId(i)));
+  });
+});
+
+/**
+ * The point of owning documents by account rather than by key: which key you
+ * happen to be holding stops deciding what you can see.
+ */
+describe("two keys belonging to one account", () => {
+  const ACCOUNT = "e2b7a0c4-1f3d-4a6b-9c8e-2d5f7a1b3c9d";
+
+  beforeEach(async () => {
+    // Re-seed both keys onto the same account, over the per-key rows the outer
+    // `beforeEach` wrote.
+    await seedPublisher(KEY_A, ACCOUNT);
+    await seedPublisher(KEY_B, ACCOUNT);
+  });
+
+  it("list one merged shelf, whichever key asks", async () => {
+    const fromA = await publish(KEY_A, "Pushed with A");
+    const fromB = await publish(KEY_B, "Pushed with B");
+
+    for (const key of [KEY_A, KEY_B]) {
+      const body = await listed(await list(key));
+      expect(body.docs.map((doc) => doc.docId).sort()).toEqual([fromA.docId, fromB.docId].sort());
+    }
+  });
+
+  it("can each unshare what the other published", async () => {
+    const fromA = await publish(KEY_A, "Pushed with A");
+
+    expect((await del(KEY_B, fromA.docId)).status).toBe(204);
+  });
+
+  it("store the account id on the doc, not the key hash", async () => {
+    const created = await publish(KEY_A, "A note");
+
+    expect(await docRow(created.docId)).toMatchObject({ owner: ACCOUNT });
+  });
+
+  it("stay invisible to a key on a different account", async () => {
+    const other = "9a1c3e5f-7b9d-4f2a-8c6e-0d4b8f2a6c1e";
+    await seedPublisher(KEY_B, other);
+    const fromA = await publish(KEY_A, "Mine");
+
+    expect(await listed(await list(KEY_B))).toEqual({ docs: [] });
+    // 404, never 403: another account's doc is indistinguishable from one that
+    // never existed, on every endpoint.
+    expect((await del(KEY_B, fromA.docId)).status).toBe(404);
   });
 });
 
@@ -594,14 +648,14 @@ describe("paging through the list", () => {
  */
 describe("a publisher whose plan may no longer publish", () => {
   /** Downgrade in place, with the cache left warm so no license server is reached. */
-  const downgrade = (publisher: string) =>
+  const downgrade = async (key: string) =>
     env.DB.prepare("UPDATE publishers SET plan = 'plus', validated_at = ? WHERE key_hash = ?")
-      .bind(Date.now(), publisher)
+      .bind(Date.now(), await sha256Hex(key))
       .run();
 
   it("can still unshare a doc it published while it was entitled", async () => {
     const created = await publish(KEY_A, "Published while entitled");
-    await downgrade(publisherA);
+    await downgrade(KEY_A);
 
     expect((await del(KEY_A, created.docId)).status).toBe(204);
 
@@ -614,7 +668,7 @@ describe("a publisher whose plan may no longer publish", () => {
 
   it("can still list what it has published, which is how it finds what to unshare", async () => {
     const created = await publish(KEY_A, "Still mine");
-    await downgrade(publisherA);
+    await downgrade(KEY_A);
 
     const { docs } = await listed(await list(KEY_A));
 
@@ -622,7 +676,7 @@ describe("a publisher whose plan may no longer publish", () => {
   });
 
   it("cannot publish a new doc", async () => {
-    await downgrade(publisherA);
+    await downgrade(KEY_A);
 
     const response = await send("POST", "/api/v1/docs", KEY_A, { html: page("<p>new</p>") });
 
@@ -638,7 +692,7 @@ describe("a publisher whose plan may no longer publish", () => {
 
   it("cannot push a new version over a doc it already owns", async () => {
     const created = await publish(KEY_A, "Frozen at v1");
-    await downgrade(publisherA);
+    await downgrade(KEY_A);
 
     const response = await send("PUT", `/api/v1/docs/${created.docId}`, KEY_A, {
       html: page("<p>v2</p>"),

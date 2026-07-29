@@ -113,6 +113,7 @@ back.
 | [HTTP API](docs/http-api.md) | Every endpoint, in full. The frozen contract Obsidian Copilot is built against. |
 | [Hosting](docs/hosting.md) | How this runs on Cloudflare. **Start here if you know Vercel but not Workers.** |
 | [Serving domain](docs/serving-domain.md) | Why user content lives on `symposium.site` and never on the brand domain. |
+| [Identity](docs/identity.md) | Who owns a document, why it is the account and not the license key, and how symposium.md sign-in slots in. |
 | [Private sharing](docs/private-sharing.md) | How reader identity works, and the phases from public links to agents. Designed, not built. |
 | [Deploying](docs/deploying.md) | Provisioning the resources and shipping. |
 | [Development](docs/development.md) | Running it locally, including the license-server workaround. |

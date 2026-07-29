@@ -157,6 +157,18 @@ also the recovery path if the token is ever revoked.
 Migrations remain manual in every case. Step 3, then merge — the workflow fails
 rather than applying one.
 
+**That order leaves the old Worker running against the new schema**, from the
+moment the migration lands until the deploy that follows the merge finishes.
+Whatever the old code reads or writes that the migration changed will fail for
+those few minutes. A migration must therefore be **backward compatible with the
+Worker already deployed**: add nullable columns, do not drop or rename ones the
+live code still uses, and split anything else into two releases — widen, deploy,
+backfill, then narrow in a later migration.
+
+The one migration that ignores this is `0002`, which drops and recreates every
+table. It was applied before there were users or data, where a few minutes of
+`500`s cost nothing. That licence expires the day someone else is publishing.
+
 Two things the workflow deliberately does not do:
 
 - **It does not apply migrations.** It compares `migrations/` against the

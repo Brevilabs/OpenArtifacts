@@ -33,7 +33,13 @@ Authorization: Bearer <license key>
 
 The key is validated against the Brevilabs license server and cached for an hour.
 Only the key's SHA-256 is ever stored; the raw key is never persisted or logged.
-A publisher *is* that hash, so the same key always sees the same docs.
+
+**Documents belong to the Brevilabs account, not to the key.** Validation
+resolves the key to the account that holds it, and that account owns everything
+published with it. So every key on one account sees one list, and any of them
+can push a new version of, or unshare, a document another one created. Replacing
+a key changes nothing about which documents you have. Nothing in this API takes
+an account id as input, and none is ever returned.
 
 **A valid key is not sufficient to publish.** Publishing requires an entitled
 plan, and in phase 1 that is **the lifetime tier only** (`BELIEVER` on the
@@ -111,7 +117,7 @@ it does on `POST`.
 The `url` never changes. `version` increments by one and the previous version
 stays readable forever at `/d/{docId}/v{n}`.
 
-`404 not_found` if the doc does not exist, belongs to another publisher, or was
+`404 not_found` if the doc does not exist, belongs to another account, or was
 deleted — see [Not found, never forbidden](#not-found-never-forbidden).
 
 ### `DELETE /api/v1/docs/{docId}` — unshare
@@ -130,14 +136,15 @@ holding one will go on serving it without asking us again. Unshare stops new
 readers, not readers who already fetched — the same way it cannot un-download a
 file. Treat it as withdrawing the link, not as revoking the content.
 
-`404 not_found` if the doc does not exist, belongs to another publisher, **or was
+`404 not_found` if the doc does not exist, belongs to another account, **or was
 already deleted**. A retry after a timeout therefore sees `404`, not `204`; what
 is idempotent is the outcome, which is the part a client cares about. Treat
 `404` from a delete as success.
 
 ### `GET /api/v1/docs` — list my docs
 
-Only the calling publisher's live docs, newest first by creation time.
+Every live doc the calling account holds, newest first by creation time —
+whichever of its keys published them.
 
 | Query | Type | Default | Notes |
 | --- | --- | --- | --- |
@@ -244,7 +251,7 @@ Two of these are worth handling deliberately in a client:
   internal`, never `401`, precisely so the client does not prompt for a new key
   over a key that is perfectly good. Retry instead.
 - <a id="not-found-never-forbidden"></a>**Not found, never forbidden.** There is
-  no `403`. A doc belonging to another publisher answers exactly like a doc that
+  no `403`. A doc belonging to another account answers exactly like a doc that
   never existed, because a distinguishable reply would confirm the id is real.
 
 ## Quotas
@@ -257,6 +264,9 @@ one.
 | HTML per doc | 10 MB | `413 too_large` |
 | Pushes per day | 100 (UTC day, rolls at midnight) | `429 quota_exceeded` |
 | Live docs held | 500 | `429 quota_exceeded` |
+
+Both limits are **per account, not per key**: two keys on one account share one
+daily allowance and one 500-document ceiling rather than getting two.
 
 Both `POST` and `PUT` spend one push. A rejected push spends nothing: a `413`,
 a `400`, or a `PUT` at a doc you do not own leaves the day's allowance intact.

@@ -37,26 +37,29 @@ async function sha256Hex(value: string): Promise<string> {
  * Give a key a publisher row validated just now.
  *
  * This is what a real request leaves behind after auth (phase 2), and it is
- * also what the `docs.publisher` foreign key needs. A fresh `validated_at`
- * means the license cache is warm, so no test here ever needs the license
- * server — these tests are about pushing, not about authenticating.
+ * A fresh `validated_at` means the license cache is warm, so no test here ever
+ * needs the license server — these tests are about pushing, not authenticating.
+ *
+ * Returns the account the key resolves to, which is what its doc rows carry.
  */
 async function seedPublisher(key: string): Promise<string> {
-  const id = await sha256Hex(key);
+  const keyHash = await sha256Hex(key);
+  const account = `account-${keyHash.slice(0, 8)}`;
   await env.DB.prepare(
-    "INSERT OR REPLACE INTO publishers (key_hash, plan, validated_at) VALUES (?, 'believer', ?)",
+    `INSERT OR REPLACE INTO publishers (key_hash, plan, validated_at, owner)
+     VALUES (?, 'believer', ?, ?)`,
   )
-    .bind(id, Date.now())
+    .bind(keyHash, Date.now(), account)
     .run();
-  return id;
+  return account;
 }
 
-let publisherA = "";
-let publisherB = "";
+let ownerA = "";
+let ownerB = "";
 
 beforeEach(async () => {
-  publisherA = await seedPublisher(KEY_A);
-  publisherB = await seedPublisher(KEY_B);
+  ownerA = await seedPublisher(KEY_A);
+  ownerB = await seedPublisher(KEY_B);
 });
 
 interface PushResponse {
@@ -130,7 +133,7 @@ async function seedDocs(publisher: string, live: number, deleted = 0): Promise<v
   const now = Date.now();
   await env.DB.prepare(
     `WITH RECURSIVE seq(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM seq WHERE i < ?)
-     INSERT INTO docs (id, publisher, title, latest_version, created_at, updated_at, deleted_at)
+     INSERT INTO docs (id, owner, title, latest_version, created_at, updated_at, deleted_at)
      SELECT printf('%0' || ? || 'd', i), ?, 'seeded', 1, ?, ?, CASE WHEN i > ? THEN ? END
        FROM seq`,
   )
@@ -171,7 +174,7 @@ describe("POST /api/v1/docs", () => {
 
     // D1 is a pointer index: it has to agree with what R2 actually holds.
     expect(await docRow(body.docId)).toMatchObject({
-      publisher: publisherA,
+      owner: ownerA,
       title: "A note",
       latest_version: 1,
       deleted_at: null,
@@ -278,9 +281,9 @@ describe("PUT /api/v1/docs/{docId}", () => {
 
     expect(await env.DOCS.head(versionObjectKey(created.docId, 2))).toBeNull();
     expect(await stored(created.docId, 1)).toContain("<p>x</p>");
-    expect(await docRow(created.docId)).toMatchObject({ latest_version: 1, publisher: publisherA });
+    expect(await docRow(created.docId)).toMatchObject({ latest_version: 1, owner: ownerA });
     // And it cost the caller nothing: a push that never happened is not a push.
-    expect(await quotaRows()).toMatchObject([{ publisher: publisherA, pushes: 1 }]);
+    expect(await quotaRows()).toMatchObject([{ owner: ownerA, pushes: 1 }]);
   });
 
   it("404s a doc that does not exist", async () => {
@@ -380,12 +383,12 @@ describe("the 10MB body ceiling", () => {
 
 describe("the daily push quota", () => {
   const spend = (publisher: string, pushes: number, day = utcDay(Date.now())) =>
-    env.DB.prepare("INSERT INTO push_quota (publisher, day, pushes) VALUES (?, ?, ?)")
+    env.DB.prepare("INSERT INTO push_quota (owner, day, pushes) VALUES (?, ?, ?)")
       .bind(publisher, day, pushes)
       .run();
 
   it("429s a publisher who has used today's pushes", async () => {
-    await spend(publisherA, MAX_PUSHES_PER_DAY);
+    await spend(ownerA, MAX_PUSHES_PER_DAY);
 
     const response = await post(KEY_A, { title: "t", html: page("<p>x</p>") });
 
@@ -397,7 +400,7 @@ describe("the daily push quota", () => {
   });
 
   it("429s the update path too, and only after the last push is spent", async () => {
-    await spend(publisherA, MAX_PUSHES_PER_DAY - 1);
+    await spend(ownerA, MAX_PUSHES_PER_DAY - 1);
 
     // The last push of the day: creating the doc.
     const created = await pushedOk(await post(KEY_A, { title: "t", html: page("<p>x</p>") }), 201);
@@ -410,14 +413,14 @@ describe("the daily push quota", () => {
   });
 
   it("counts each publisher separately", async () => {
-    await spend(publisherA, MAX_PUSHES_PER_DAY);
+    await spend(ownerA, MAX_PUSHES_PER_DAY);
 
     expect((await post(KEY_A, { title: "t", html: page("<p>x</p>") })).status).toBe(429);
     expect((await post(KEY_B, { title: "t", html: page("<p>x</p>") })).status).toBe(201);
   });
 
   it("rolls over at the UTC day boundary", async () => {
-    await spend(publisherA, MAX_PUSHES_PER_DAY, utcDay(Date.now() - 24 * 60 * 60 * 1000));
+    await spend(ownerA, MAX_PUSHES_PER_DAY, utcDay(Date.now() - 24 * 60 * 60 * 1000));
 
     expect((await post(KEY_A, { title: "t", html: page("<p>x</p>") })).status).toBe(201);
   });
@@ -427,7 +430,7 @@ describe("the daily push quota", () => {
     await post(KEY_A, { title: "t", html: page("<p>y</p>") });
 
     expect(await quotaRows()).toMatchObject([
-      { publisher: publisherA, day: utcDay(Date.now()), pushes: 2 },
+      { owner: ownerA, day: utcDay(Date.now()), pushes: 2 },
     ]);
   });
 
@@ -443,11 +446,11 @@ describe("the daily push quota", () => {
     expect(responses.map((r) => r.status)).toEqual(Array(concurrent).fill(201));
     // Read-then-increment would let two pushes see the same count and one
     // increment vanish, which is the hole a claim-in-one-statement upsert closes.
-    expect(await quotaRows()).toMatchObject([{ publisher: publisherA, pushes: concurrent }]);
+    expect(await quotaRows()).toMatchObject([{ owner: ownerA, pushes: concurrent }]);
   });
 
   it("gives the last push of the day to exactly one of two racing pushes", async () => {
-    await spend(publisherA, MAX_PUSHES_PER_DAY - 1);
+    await spend(ownerA, MAX_PUSHES_PER_DAY - 1);
 
     const statuses = (
       await Promise.all([
@@ -498,7 +501,7 @@ describe("a push whose write fails partway", () => {
 
 describe("the live-doc quota", () => {
   it("429s a publisher already holding the maximum", async () => {
-    await seedDocs(publisherA, MAX_DOCS_PER_PUBLISHER);
+    await seedDocs(ownerA, MAX_DOCS_PER_PUBLISHER);
 
     const response = await post(KEY_A, { title: "one more", html: page("<p>x</p>") });
 
@@ -512,20 +515,20 @@ describe("the live-doc quota", () => {
   });
 
   it("does not count deleted docs, so deleting one makes room", async () => {
-    await seedDocs(publisherA, MAX_DOCS_PER_PUBLISHER - 1, 5);
+    await seedDocs(ownerA, MAX_DOCS_PER_PUBLISHER - 1, 5);
 
     expect((await post(KEY_A, { title: "one more", html: page("<p>x</p>") })).status).toBe(201);
   });
 
   it("does not limit updates to docs the publisher already holds", async () => {
     const created = await pushedOk(await post(KEY_A, { title: "t", html: page("<p>x</p>") }), 201);
-    await seedDocs(publisherA, MAX_DOCS_PER_PUBLISHER);
+    await seedDocs(ownerA, MAX_DOCS_PER_PUBLISHER);
 
     expect((await put(KEY_A, created.docId, { html: page("<p>y</p>") })).status).toBe(200);
   });
 
   it("counts each publisher's docs separately", async () => {
-    await seedDocs(publisherB, MAX_DOCS_PER_PUBLISHER);
+    await seedDocs(ownerB, MAX_DOCS_PER_PUBLISHER);
 
     expect((await post(KEY_A, { title: "t", html: page("<p>x</p>") })).status).toBe(201);
   });
@@ -878,7 +881,7 @@ describe("races the review found", () => {
    * publisher at the edge pushes concurrently rather than one at a time.
    */
   it("holds the doc ceiling when creates arrive together", async () => {
-    await seedDocs(publisherA, MAX_DOCS_PER_PUBLISHER - 1);
+    await seedDocs(ownerA, MAX_DOCS_PER_PUBLISHER - 1);
 
     const responses = await Promise.all(
       Array.from({ length: 8 }, () => post(KEY_A, { title: "t", html: page("<p>x</p>") })),
@@ -891,25 +894,25 @@ describe("races the review found", () => {
     expect(refused).toHaveLength(7);
 
     const { n } = (await env.DB.prepare(
-      "SELECT COUNT(*) AS n FROM docs WHERE publisher = ? AND deleted_at IS NULL",
+      "SELECT COUNT(*) AS n FROM docs WHERE owner = ? AND deleted_at IS NULL",
     )
-      .bind(publisherA)
+      .bind(ownerA)
       .first<{ n: number }>()) ?? { n: -1 };
     expect(n).toBe(MAX_DOCS_PER_PUBLISHER);
   });
 
   it("does not spend a doc slot on a push refused by the daily quota", async () => {
     await env.DB.prepare(
-      "INSERT INTO push_quota (publisher, day, pushes) VALUES (?, ?, ?)",
+      "INSERT INTO push_quota (owner, day, pushes) VALUES (?, ?, ?)",
     )
-      .bind(publisherA, utcDay(Date.now()), MAX_PUSHES_PER_DAY)
+      .bind(ownerA, utcDay(Date.now()), MAX_PUSHES_PER_DAY)
       .run();
 
     const response = await post(KEY_A, { title: "t", html: page("<p>x</p>") });
 
     expect(response.status).toBe(429);
-    const { n } = (await env.DB.prepare("SELECT COUNT(*) AS n FROM docs WHERE publisher = ?")
-      .bind(publisherA)
+    const { n } = (await env.DB.prepare("SELECT COUNT(*) AS n FROM docs WHERE owner = ?")
+      .bind(ownerA)
       .first<{ n: number }>()) ?? { n: -1 };
     expect(n).toBe(0);
     expect(await allObjects()).toHaveLength(0);

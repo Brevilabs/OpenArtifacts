@@ -229,7 +229,7 @@ export async function createDoc(
     env.DB,
     {
       id: docId,
-      publisher: publisher.id,
+      owner: publisher.owner,
       title,
       created_at: now,
       updated_at: now,
@@ -244,7 +244,7 @@ export async function createDoc(
   }
 
   const day = utcDay(now);
-  if (!(await reserveDailyPush(env.DB, publisher.id, day))) {
+  if (!(await reserveDailyPush(env.DB, publisher.owner, day))) {
     await deleteDocRow(env.DB, docId);
     return dailyQuotaExceeded();
   }
@@ -255,7 +255,7 @@ export async function createDoc(
   // that loses that race — the doc is gone, and the push is given back rather
   // than spent on a url that would serve 410.
   if (!(await storeVersion(env, docId, FIRST_VERSION, parsed.body.html, title, now))) {
-    await refundDailyPush(env.DB, publisher.id, day);
+    await refundDailyPush(env.DB, publisher.owner, day);
     return docNotFound(docId);
   }
   return pushed(env, requestUrl, docId, FIRST_VERSION, 201);
@@ -278,22 +278,22 @@ export async function updateDoc(
   // so it must not spend one of today's. `reserveNextVersion` re-checks both
   // atomically, which is what actually guarantees it — this read only fixes
   // which error a rejected push gets.
-  if (!(await ownsLiveDoc(env.DB, docId, publisher.id))) {
+  if (!(await ownsLiveDoc(env.DB, docId, publisher.owner))) {
     return docNotFound(docId);
   }
 
   const now = Date.now();
   const day = utcDay(now);
-  if (!(await reserveDailyPush(env.DB, publisher.id, day))) {
+  if (!(await reserveDailyPush(env.DB, publisher.owner, day))) {
     return dailyQuotaExceeded();
   }
 
   // Past this point the push is paid for, and a delete can still land at either
   // of the two steps below. Both give the push back: a rejected push costs the
   // caller nothing, which is the same promise the ownership check above makes.
-  const version = await reserveNextVersion(env.DB, docId, publisher.id);
+  const version = await reserveNextVersion(env.DB, docId, publisher.owner);
   if (version === null) {
-    await refundDailyPush(env.DB, publisher.id, day);
+    await refundDailyPush(env.DB, publisher.owner, day);
     return docNotFound(docId);
   }
 
@@ -306,7 +306,7 @@ export async function updateDoc(
   // 200 would hand back a url that serves 410, so a lost race reads as what it
   // is from the caller's side: the doc is gone.
   if (!(await storeVersion(env, docId, version, parsed.body.html, title, now))) {
-    await refundDailyPush(env.DB, publisher.id, day);
+    await refundDailyPush(env.DB, publisher.owner, day);
     return docNotFound(docId);
   }
 

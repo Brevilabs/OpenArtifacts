@@ -1,12 +1,17 @@
 /**
  * Publisher authentication.
  *
- * A publisher is a Copilot Plus license key, and the only identifier the rest of
- * the system ever sees is that key's SHA-256 (D2). The raw key exists inside this
- * module for exactly as long as it takes to hash it and hand it to the license
- * server — it is never stored, logged, or returned, not even a prefix of it.
- * Everything downstream depends on `Publisher.id`, so swapping in a free-tier
- * identity later means adding a branch here and touching nothing else.
+ * A publisher presents a Copilot Plus license key, and the only identifier the
+ * rest of the system ever sees is that key's SHA-256 (D2). The raw key exists
+ * inside this module for exactly as long as it takes to hash it and hand it to
+ * the license server — it is never stored, logged, or returned, not even a
+ * prefix of it.
+ *
+ * The key identifies a *credential*; `Publisher.owner` identifies whose
+ * documents it publishes, and every doc query keys off that. The license server
+ * resolves one to the other, returning the app-sites `User.id` that owns the
+ * key. Nothing downstream reads the value, so a different identity — a free
+ * tier, a dashboard session — is a branch here and nothing else.
  *
  * This module answers *who*, never *may they*. The plan rides along on the
  * resolved publisher and the router decides what it entitles them to, because
@@ -77,8 +82,16 @@ export const INELIGIBLE_PLAN: { reason: PublisherFailure; message: string } = {
 };
 
 export interface Publisher {
-  /** SHA-256 hex of the license key. The only publisher identity in the system. */
-  id: string;
+  /**
+   * The app-sites `User.id` whose documents these are. Every doc query keys off
+   * it, which is what makes two keys on one account see one shelf and lets a
+   * symposium.md session find the same documents from `session.user.id` alone.
+   *
+   * The license key itself appears nowhere outside this module: it identifies a
+   * credential, and nothing downstream has any business knowing which one was
+   * used.
+   */
+  owner: string;
   plan: string;
 }
 
@@ -147,20 +160,26 @@ export async function resolvePublisher(
   const checkedAt = now();
 
   if (cached && checkedAt - cached.validated_at < LICENSE_CACHE_TTL_MS) {
-    return { ok: true, publisher: { id, plan: cached.plan } };
+    return { ok: true, publisher: { owner: cached.owner, plan: cached.plan } };
   }
 
   const check = await validateLicense(token, env, deps);
 
   switch (check.status) {
     case "valid":
-      await store.save({ key_hash: id, plan: check.plan, validated_at: checkedAt });
-      return { ok: true, publisher: { id, plan: check.plan } };
+      await store.save({
+        key_hash: id,
+        plan: check.plan,
+        validated_at: checkedAt,
+        owner: check.owner,
+      });
+      return { ok: true, publisher: { owner: check.owner, plan: check.plan } };
 
     case "denied":
-      // Deliberately no row write and no row delete: a previously valid key that
-      // has since lapsed keeps its `publishers` row, because `docs.publisher`
-      // still references it. It just stops resolving.
+      // Deliberately no row write and no row delete. A previously valid key that
+      // has since lapsed keeps its `publishers` row — that row is what an
+      // outage falls back to, and throwing it away would turn a revoked key
+      // into a lost account. It simply stops resolving.
       return {
         ok: false,
         reason: "invalid_license",
@@ -173,7 +192,7 @@ export async function resolvePublisher(
         // published before. The plan rides along, so a publisher downgraded
         // since their last successful validation loses publishing here too
         // while keeping list and delete.
-        return { ok: true, publisher: { id, plan: cached.plan } };
+        return { ok: true, publisher: { owner: cached.owner, plan: cached.plan } };
       }
       return {
         ok: false,
@@ -206,7 +225,16 @@ export function publisherErrorResponse(failure: {
 }
 
 type LicenseCheck =
-  | { status: "valid"; plan: string }
+  | {
+      status: "valid";
+      plan: string;
+      /**
+       * The app-sites `User.id` behind the key, which the license server returns
+       * as `accountId`. Never null: a response that names no account does not
+       * reach here — see `validateLicense`.
+       */
+      owner: string;
+    }
   | { status: "denied" }
   | { status: "unreachable" };
 
@@ -290,12 +318,26 @@ async function validateLicense(token: string, env: Env, deps: AuthDeps): Promise
 
   // The server plan is an uppercase enum (`PLUS`, `BELIEVER`); store it folded
   // so nothing downstream has to guess the casing, as the reference does too.
+  // The account that owns the key, which the license server sends as
+  // `accountId`. Unlike the plan, this cannot degrade to a placeholder: it is
+  // the identity every document is filed under, so a response we cannot read it
+  // from is a response we cannot act on. Blank counts as unreadable — an empty
+  // string would be one shared owner that every such key falls into, which is
+  // one publisher reading another's documents.
+  //
+  // `unreachable`, not `denied`: the key may be perfectly good and the fault
+  // ours, so this lands on the cached-validation path and answers 500 rather
+  // than telling a paying customer their key is bad.
+  const owner = payload.accountId;
+  if (typeof owner !== "string" || owner.trim() === "") return UNREACHABLE;
+
   const plan = typeof payload.plan === "string" ? payload.plan.toLowerCase() : UNKNOWN_PLAN;
   // The plan is carried, never judged here. `UNKNOWN_PLAN` is not in
   // PUBLISHING_PLANS, so a response whose plan we cannot read authenticates but
   // cannot publish — the safe direction.
-  return { status: "valid", plan };
+  return { status: "valid", plan, owner };
 }
+
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null;

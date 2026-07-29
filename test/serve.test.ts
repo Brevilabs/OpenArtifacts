@@ -9,7 +9,7 @@ import worker from "../src/index.js";
 /**
  * The served page is no longer the stored object: `renderServedHtml` adds the
  * robots meta and the bylines on the way out. What survives is that the
- * publisher's document is carried through untouched, which is what these
+ * owner's document is carried through untouched, which is what these
  * assertions are actually about.
  */
 async function expectServes(response: Response, docId: string, version: number) {
@@ -18,7 +18,7 @@ async function expectServes(response: Response, docId: string, version: number) 
   expect(document).not.toContain(NOINDEX_META);
   expect(html).toContain(NOINDEX_META);
   expect(html).toContain(SYMPOSIUM_FOOTER);
-  // Everything inside the body the publisher sent, in order, still there.
+  // Everything inside the body the owner sent, in order, still there.
   const inner = document.slice(document.indexOf("<body>") + 6, document.indexOf("</body>"));
   expect(html).toContain(inner.trim());
   return html;
@@ -50,18 +50,19 @@ async function sha256Hex(value: string): Promise<string> {
 
 /**
  * A publisher row with a fresh validation, which is what a real request leaves
- * behind after auth and what `docs.publisher` needs as a foreign key. Reading is
- * unauthenticated, so this exists only so the pushes that set up each test can
- * run without a license server.
+ * behind after auth. Reading is unauthenticated, so this exists only so the
+ * pushes that set up each test can run without a license server.
  */
-let publisher = "";
+let owner = "";
 
 beforeEach(async () => {
-  publisher = await sha256Hex(KEY);
+  const keyHash = await sha256Hex(KEY);
+  owner = `account-${keyHash.slice(0, 8)}`;
   await env.DB.prepare(
-    "INSERT OR REPLACE INTO publishers (key_hash, plan, validated_at) VALUES (?, 'believer', ?)",
+    `INSERT OR REPLACE INTO publishers (key_hash, plan, validated_at, owner)
+     VALUES (?, 'believer', ?, ?)`,
   )
-    .bind(publisher, Date.now())
+    .bind(keyHash, Date.now(), owner)
     .run();
 });
 
@@ -145,7 +146,7 @@ describe("GET /d/{docId}", () => {
     expect(response.headers.get("set-cookie")).toBeNull();
     expect(response.headers.get("content-type")).toBe("text/html; charset=utf-8");
 
-    // Not byte-for-byte any more: the stored object is the publisher's document,
+    // Not byte-for-byte any more: the stored object is the owner's document,
     // and the additions go in on the way out. The reader gets both, the bucket
     // holds neither, which is what lets a byline change reach this document
     // without a re-push.
@@ -160,7 +161,7 @@ describe("GET /d/{docId}", () => {
   });
 
   // End to end, because "injected once" is asserted against the renderer in
-  // isolation elsewhere, and the question a publisher actually asks is about a
+  // isolation elsewhere, and the question a owner actually asks is about a
   // document they pushed. Documents stored before injection moved carry their
   // own baked copy and would show two footers until re-pushed; nothing pushed
   // through this path can, because nothing is ever baked into the bytes.
@@ -421,10 +422,10 @@ describe("a doc that is not there", () => {
     // The other half of a push that died mid-write: a `docs` row whose id was
     // never returned to anyone, so nothing points at it and nothing has bytes.
     await env.DB.prepare(
-      `INSERT INTO docs (id, publisher, title, latest_version, created_at, updated_at)
+      `INSERT INTO docs (id, owner, title, latest_version, created_at, updated_at)
        VALUES (?, ?, 'stranded', 1, ?, ?)`,
     )
-      .bind(UNKNOWN_DOC_ID, publisher, Date.now(), Date.now())
+      .bind(UNKNOWN_DOC_ID, owner, Date.now(), Date.now())
       .run();
 
     expect((await get(`/d/${UNKNOWN_DOC_ID}`)).status).toBe(404);
