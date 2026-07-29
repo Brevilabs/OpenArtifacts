@@ -338,16 +338,11 @@ async function validateLicense(token: string, env: Env, deps: AuthDeps): Promise
  * ownership stays on the key hash, where the worst case is a shelf that looks
  * like today's.
  *
- * `authUserId` is the column name in app-sites (`LicenseKeyConfig`); `userId` is
- * accepted too so the license server can name the field either way without a
- * lockstep release here.
+ * `authUserId` after the app-sites column that holds it, `LicenseKeyConfig`.
  */
 function readOwner(payload: Record<string, unknown>): string | null {
-  for (const field of ["authUserId", "userId"]) {
-    const value = payload[field];
-    if (typeof value === "string" && value.trim() !== "") return value;
-  }
-  return null;
+  const value = payload.authUserId;
+  return typeof value === "string" && value.trim() !== "" ? value : null;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {

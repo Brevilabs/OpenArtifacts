@@ -131,7 +131,10 @@ describe("resolvePublisher — a valid key", () => {
 
     const result = await resolvePublisher(KEY, env(), { store, now, fetch: license.fetch });
 
-    expect(result).toEqual({ ok: true, publisher: { id: KEY_HASH, owner: KEY_HASH, plan: "believer" } });
+    expect(result).toEqual({
+      ok: true,
+      publisher: { id: KEY_HASH, owner: KEY_HASH, plan: "believer" },
+    });
     expect(license.calls).toHaveLength(1);
     expect(store.rows.get(KEY_HASH)).toEqual({
       key_hash: KEY_HASH,
@@ -154,17 +157,6 @@ describe("resolvePublisher — a valid key", () => {
       publisher: { id: KEY_HASH, owner: ACCOUNT, plan: "believer" },
     });
     expect(store.rows.get(KEY_HASH)?.owner).toBe(ACCOUNT);
-  });
-
-  it("accepts `userId` as well, so the license server may name the field either way", async () => {
-    const store = memoryStore();
-    const license = licenseServer(
-      answers({ isValid: true, plan: "believer", backendAccess: true, userId: ACCOUNT }),
-    );
-
-    const result = await resolvePublisher(KEY, env(), { store, now, fetch: license.fetch });
-
-    expect(result).toMatchObject({ publisher: { owner: ACCOUNT } });
   });
 
   // A blank id would be a single owner that every misconfigured key falls into,
@@ -301,7 +293,10 @@ describe("resolvePublisher — a valid key", () => {
       fetch: licenseServer(answers({ isValid: true, plan: "BELIEVER", backendAccess: true })).fetch,
     });
 
-    expect(result).toEqual({ ok: true, publisher: { id: KEY_HASH, owner: KEY_HASH, plan: "believer" } });
+    expect(result).toEqual({
+      ok: true,
+      publisher: { id: KEY_HASH, owner: KEY_HASH, plan: "believer" },
+    });
     expect(store.rows.get(KEY_HASH)?.plan).toBe("believer");
   });
 
@@ -323,7 +318,10 @@ describe("resolvePublisher — the one-hour cache", () => {
 
     const result = await resolvePublisher(KEY, env(), { store, now, fetch: license.fetch });
 
-    expect(result).toEqual({ ok: true, publisher: { id: KEY_HASH, owner: KEY_HASH, plan: "believer" } });
+    expect(result).toEqual({
+      ok: true,
+      publisher: { id: KEY_HASH, owner: KEY_HASH, plan: "believer" },
+    });
     expect(license.calls).toHaveLength(0);
   });
 
@@ -334,7 +332,10 @@ describe("resolvePublisher — the one-hour cache", () => {
     const result = await resolvePublisher(KEY, env(), { store, now, fetch: license.fetch });
 
     expect(license.calls).toHaveLength(1);
-    expect(result).toEqual({ ok: true, publisher: { id: KEY_HASH, owner: KEY_HASH, plan: "believer" } });
+    expect(result).toEqual({
+      ok: true,
+      publisher: { id: KEY_HASH, owner: KEY_HASH, plan: "believer" },
+    });
     expect(store.rows.get(KEY_HASH)).toEqual({
       key_hash: KEY_HASH,
       plan: "believer",
@@ -431,7 +432,10 @@ describe("a plan that may not publish", () => {
 
     // The key is real, so it resolves to a publisher and gets a row like any
     // other. What it cannot do is publish, and that is the router's call.
-    expect(result).toEqual({ ok: true, publisher: { id: KEY_HASH, owner: KEY_HASH, plan: "plus" } });
+    expect(result).toEqual({
+      ok: true,
+      publisher: { id: KEY_HASH, owner: KEY_HASH, plan: "plus" },
+    });
     expect(store.rows.get(KEY_HASH)?.plan).toBe("plus");
   });
 
@@ -558,7 +562,10 @@ describe("resolvePublisher — the license server is down", () => {
         fetch: licenseServer(reply as () => Response).fetch,
       });
 
-      expect(result).toEqual({ ok: true, publisher: { id: KEY_HASH, owner: KEY_HASH, plan: "believer" } });
+      expect(result).toEqual({
+      ok: true,
+      publisher: { id: KEY_HASH, owner: KEY_HASH, plan: "believer" },
+    });
     });
 
     it(`refuses an unknown key when ${label}`, async () => {
@@ -629,7 +636,10 @@ describe("authenticateRequest", () => {
       fetch: licenseServer(validBeliever).fetch,
     });
 
-    expect(result).toEqual({ ok: true, publisher: { id: KEY_HASH, owner: KEY_HASH, plan: "believer" } });
+    expect(result).toEqual({
+      ok: true,
+      publisher: { id: KEY_HASH, owner: KEY_HASH, plan: "believer" },
+    });
   });
 
   it("fails on a missing or malformed header without consulting anything", async () => {
