@@ -78,9 +78,11 @@ export function d1PublisherStore(db: D1Database): PublisherStore {
         .first<PublisherRow>();
     },
 
-    // `owner` is refreshed like `plan` is: both describe the account behind the
-    // key, so a key reassigned to another account follows it on the next
-    // validation without a migration step.
+    // `owner` is written on every validation, like `plan` is. That is a refresh,
+    // not a transfer: a license key's `authUserId` is set when the key is
+    // created and never updated in app-sites, so the value cannot change under
+    // us. If key transfer is ever added there, this cache becomes a hole — see
+    // the note in `docs/identity.md`.
     async save(row) {
       await db
         .prepare(

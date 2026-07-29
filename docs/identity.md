@@ -100,6 +100,16 @@ endpoint that accepted an owner id as a parameter would silently turn every id
 into a password — this is the easiest way to undo the model, and it would not
 look like a security change when it was written.
 
+**A license key never changes hands, and the validation cache depends on that.**
+`LicenseKeyConfig.authUserId` is written when a key is created and is never
+updated — every write to that table in app-sites sets only `delete`. That is what
+makes it safe to serve a cached owner for an hour without re-asking: the value
+cannot have moved. Introducing key transfer upstream would turn this cache into a
+hole, because a transferred key would keep resolving to its previous account —
+and so keep listing, updating and unsharing that account's documents — until the
+row expired. Transfer needs a cache purge shipped with it, or it must stay
+impossible.
+
 **Cross-provider linking rests on the provider's email verification.** With
 `allowDangerousEmailAccountLinking` on, a provider asserting an address it does
 not own would be handed the matching account. The `signIn` callback blocks any

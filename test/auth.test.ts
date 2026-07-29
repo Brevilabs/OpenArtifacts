@@ -223,26 +223,6 @@ describe("resolvePublisher — a valid key", () => {
     expect(result).toMatchObject({ publisher: { owner: ACCOUNT } });
   });
 
-  it("moves the docs when the license server reassigns the key", async () => {
-    const store = memoryStore();
-    store.rows.set(KEY_HASH, {
-      ...validatedAt(LICENSE_CACHE_TTL_MS + 1),
-      owner: ACCOUNT,
-    });
-    const moved = "0f9e8d7c-6b5a-4392-8170-a1b2c3d4e5f6";
-
-    const result = await resolvePublisher(KEY, env(), {
-      store,
-      now,
-      fetch: licenseServer(
-        answers({ isValid: true, plan: "believer", backendAccess: true, accountId: moved }),
-      ).fetch,
-    });
-
-    expect(result).toMatchObject({ publisher: { owner: moved } });
-    expect(store.rows.get(KEY_HASH)?.owner).toBe(moved);
-  });
-
   it("asks the license server with our own credential, not the publisher's key", async () => {
     const license = licenseServer(validBeliever);
 
