@@ -57,6 +57,12 @@ These are day-one decisions, not retrofits:
 - Shared docs are **`noindex` + `nofollow` by default**.
 - **Publisher-gated, reader-open**: publishing requires a key; reading requires
   nothing.
+- **Documents belong to an account, not to the credential that published them.**
+  `docs.owner` is an app-sites `User.id`, and it is always *derived* — from a
+  validated license key, later from a signed session — and **never accepted as
+  input**. An endpoint that took an owner id as a parameter would turn every id
+  into a password, and would not look like a security change when written.
+  `docs/identity.md` is the whole model.
 - **R2 is the system of record**, and the stored format is HTML. D1 holds pointer
   rows only — never content — and must be rebuildable by scanning R2 manifests.
   **This does not hold yet — see below. Do not rely on it.**
