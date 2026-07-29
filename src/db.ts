@@ -13,21 +13,13 @@ export interface PublisherRow {
   plan: string;
   /** Epoch ms of the last successful license-server validation. */
   validated_at: number;
-  /**
-   * The app-sites `User.id` this key belongs to, cached from the last
-   * validation. Null while the license server returns none; `Publisher.owner`
-   * falls back to the key hash for those.
-   */
-  owner: string | null;
+  /** The app-sites `User.id` this key belongs to. */
+  owner: string;
 }
 
 export interface DocRow {
   id: string;
-  /**
-   * An app-sites `User.id`, or the SHA-256 of a license key for a doc published
-   * before account ids were available. Opaque — only ever compared for equality,
-   * which is what lets the identity behind it change freely.
-   */
+  /** The app-sites `User.id` that owns the doc. */
   owner: string;
   title: string;
   /**
@@ -86,20 +78,16 @@ export function d1PublisherStore(db: D1Database): PublisherStore {
         .first<PublisherRow>();
     },
 
-    // A resolved `owner` overwrites the cached one, so a key reassigned to
-    // another account lands here on the next validation with no migration step.
-    // A *missing* one does not: `COALESCE` keeps what we already knew. The
-    // difference matters because the two are not the same event — a license
-    // server that has stopped returning account ids, or a response we could not
-    // read, would otherwise silently move every doc back under the key hash and
-    // empty the publisher's shelf.
+    // `owner` is refreshed like `plan` is: both describe the account behind the
+    // key, so a key reassigned to another account follows it on the next
+    // validation without a migration step.
     async save(row) {
       await db
         .prepare(
           `INSERT INTO publishers (key_hash, plan, validated_at, owner) VALUES (?, ?, ?, ?)
            ON CONFLICT(key_hash) DO UPDATE SET plan = excluded.plan,
                                                validated_at = excluded.validated_at,
-                                               owner = COALESCE(excluded.owner, publishers.owner)`,
+                                               owner = excluded.owner`,
         )
         .bind(row.key_hash, row.plan, row.validated_at, row.owner)
         .run();
@@ -124,10 +112,10 @@ export function d1PublisherStore(db: D1Database): PublisherStore {
  * `docs_by_owner_live` covers the subquery, so it is an index scan of only this
  * owner's live rows.
  *
- * `owner` used to be a foreign key onto `publishers`, which made "no doc without
- * a publisher we validated" a database constraint. It cannot be one any more —
- * a `User.id` has no `publishers` row to point at — so that invariant now rests
- * entirely on auth having resolved a publisher before this is reached.
+ * `owner` is not a foreign key onto `publishers`: that table is keyed by license
+ * key, and an account is not one. "No doc without a publisher we validated" is
+ * therefore the auth path's invariant rather than the database's — only a
+ * resolved publisher reaches this.
  */
 export async function insertDocWithinQuota(
   db: D1Database,
