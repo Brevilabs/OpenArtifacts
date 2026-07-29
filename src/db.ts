@@ -1,5 +1,5 @@
 /**
- * Row types for the D1 pointer index, one per table in 0001_init.sql.
+ * Row types for the D1 pointer index, one per table in `migrations/`.
  *
  * D1 holds pointers only — ids, sizes, timestamps. The bytes live in R2, and
  * every row here is reconstructible from it, so a lost D1 is a rebuild rather
@@ -13,12 +13,22 @@ export interface PublisherRow {
   plan: string;
   /** Epoch ms of the last successful license-server validation. */
   validated_at: number;
+  /**
+   * The app-sites `User.id` this key belongs to, cached from the last
+   * validation. Null while the license server returns none; `Publisher.owner`
+   * falls back to the key hash for those.
+   */
+  owner: string | null;
 }
 
 export interface DocRow {
   id: string;
-  /** `publishers.key_hash` of the owner. */
-  publisher: string;
+  /**
+   * An app-sites `User.id`, or the SHA-256 of a license key for a doc published
+   * before account ids were available. Opaque — only ever compared for equality,
+   * which is what lets the identity behind it change freely.
+   */
+  owner: string;
   title: string;
   /**
    * Highest version number *reserved*; 0 before the first push lands.
@@ -47,7 +57,8 @@ export interface VersionRow {
 }
 
 export interface PushQuotaRow {
-  publisher: string;
+  /** The owner id from `docs.owner`, so the ceiling follows the documents. */
+  owner: string;
   /** UTC day, `YYYY-MM-DD`. */
   day: string;
   pushes: number;
@@ -70,21 +81,27 @@ export function d1PublisherStore(db: D1Database): PublisherStore {
   return {
     read(keyHash) {
       return db
-        .prepare("SELECT key_hash, plan, validated_at FROM publishers WHERE key_hash = ?")
+        .prepare("SELECT key_hash, plan, validated_at, owner FROM publishers WHERE key_hash = ?")
         .bind(keyHash)
         .first<PublisherRow>();
     },
 
-    // `docs.publisher` is a foreign key onto this table, so this upsert is also
-    // what guarantees a row exists before the first push inserts a doc.
+    // A resolved `owner` overwrites the cached one, so a key reassigned to
+    // another account lands here on the next validation with no migration step.
+    // A *missing* one does not: `COALESCE` keeps what we already knew. The
+    // difference matters because the two are not the same event — a license
+    // server that has stopped returning account ids, or a response we could not
+    // read, would otherwise silently move every doc back under the key hash and
+    // empty the publisher's shelf.
     async save(row) {
       await db
         .prepare(
-          `INSERT INTO publishers (key_hash, plan, validated_at) VALUES (?, ?, ?)
+          `INSERT INTO publishers (key_hash, plan, validated_at, owner) VALUES (?, ?, ?, ?)
            ON CONFLICT(key_hash) DO UPDATE SET plan = excluded.plan,
-                                               validated_at = excluded.validated_at`,
+                                               validated_at = excluded.validated_at,
+                                               owner = COALESCE(excluded.owner, publishers.owner)`,
         )
-        .bind(row.key_hash, row.plan, row.validated_at)
+        .bind(row.key_hash, row.plan, row.validated_at, row.owner)
         .run();
     },
   };
@@ -104,12 +121,13 @@ export function d1PublisherStore(db: D1Database): PublisherStore {
  * ceiling firing concurrent creates would otherwise have every one of them read
  * the same count and every one of them insert. A quota documented as a hard
  * number has to behave like one under the concurrency an agent produces.
- * `docs_by_publisher_live` covers the subquery, so it is an index scan of only
- * this publisher's live rows.
+ * `docs_by_owner_live` covers the subquery, so it is an index scan of only this
+ * owner's live rows.
  *
- * `publisher` is a foreign key onto `publishers`, so this fails unless auth has
- * already written that row. That is the intended coupling: no doc without a
- * publisher we validated.
+ * `owner` used to be a foreign key onto `publishers`, which made "no doc without
+ * a publisher we validated" a database constraint. It cannot be one any more —
+ * a `User.id` has no `publishers` row to point at — so that invariant now rests
+ * entirely on auth having resolved a publisher before this is reached.
  */
 export async function insertDocWithinQuota(
   db: D1Database,
@@ -118,18 +136,18 @@ export async function insertDocWithinQuota(
 ): Promise<boolean> {
   const result = await db
     .prepare(
-      `INSERT INTO docs (id, publisher, title, latest_version, created_at, updated_at)
+      `INSERT INTO docs (id, owner, title, latest_version, created_at, updated_at)
        SELECT ?, ?, ?, ?, ?, ?
-        WHERE (SELECT COUNT(*) FROM docs WHERE publisher = ? AND deleted_at IS NULL) < ?`,
+        WHERE (SELECT COUNT(*) FROM docs WHERE owner = ? AND deleted_at IS NULL) < ?`,
     )
     .bind(
       doc.id,
-      doc.publisher,
+      doc.owner,
       doc.title,
       FIRST_VERSION,
       doc.created_at,
       doc.updated_at,
-      doc.publisher,
+      doc.owner,
       maxDocs,
     )
     .run();
@@ -195,16 +213,16 @@ export async function deleteVersionRow(
 export async function reserveNextVersion(
   db: D1Database,
   docId: string,
-  publisher: string,
+  owner: string,
 ): Promise<number | null> {
   const reserved = await db
     .prepare(
       `UPDATE docs
           SET latest_version = latest_version + 1
-        WHERE id = ? AND publisher = ? AND deleted_at IS NULL
+        WHERE id = ? AND owner = ? AND deleted_at IS NULL
         RETURNING latest_version`,
     )
-    .bind(docId, publisher)
+    .bind(docId, owner)
     .first<{ latest_version: number }>();
 
   return reserved?.latest_version ?? null;
@@ -329,7 +347,7 @@ export async function findServableVersion(
 }
 
 /**
- * Whether this publisher owns a live doc with that id — the same conflation of
+ * Whether this owner has a live doc with that id — the same conflation of
  * "missing", "someone else's" and "deleted" that `reserveNextVersion` makes,
  * for the same reason, and answered identically for all three so the shape of
  * the reply cannot confirm another publisher's doc exists.
@@ -337,11 +355,11 @@ export async function findServableVersion(
 export async function ownsLiveDoc(
   db: D1Database,
   docId: string,
-  publisher: string,
+  owner: string,
 ): Promise<boolean> {
   const row = await db
-    .prepare("SELECT 1 FROM docs WHERE id = ? AND publisher = ? AND deleted_at IS NULL")
-    .bind(docId, publisher)
+    .prepare("SELECT 1 FROM docs WHERE id = ? AND owner = ? AND deleted_at IS NULL")
+    .bind(docId, owner)
     .first();
 
   return row !== null;
@@ -364,17 +382,17 @@ export async function ownsLiveDoc(
 export async function softDeleteDoc(
   db: D1Database,
   docId: string,
-  publisher: string,
+  owner: string,
   atMs: number,
 ): Promise<boolean> {
   const deleted = await db
     .prepare(
       `UPDATE docs
           SET deleted_at = ?
-        WHERE id = ? AND publisher = ? AND deleted_at IS NULL
+        WHERE id = ? AND owner = ? AND deleted_at IS NULL
         RETURNING id`,
     )
-    .bind(atMs, docId, publisher)
+    .bind(atMs, docId, owner)
     .first<{ id: string }>();
 
   return deleted !== null;
@@ -407,10 +425,10 @@ export interface DocListCursor {
 }
 
 /**
- * A page of one publisher's live docs, newest first.
+ * A page of one owner's live docs, newest first.
  *
- * Keyset, not OFFSET. The `docs_by_publisher_live` partial index is
- * `(publisher, created_at DESC, id DESC)`, and it supplies both the filter and
+ * Keyset, not OFFSET. The `docs_by_owner_live` partial index is
+ * `(owner, created_at DESC, id DESC)`, and it supplies both the filter and
  * the ordering, so no page is ever sorted in a temp b-tree. It is also the only
  * paging that stays correct while the publisher keeps pushing: OFFSET renumbers
  * the moment a newer doc appears, so a doc would shift onto a page the caller
@@ -423,8 +441,8 @@ export interface DocListCursor {
  * The resume predicate is a row-value comparison rather than the expanded
  * `a < ? OR (a = ? AND b < ?)`. The two mean the same thing, but only the row
  * value becomes an index range constraint — `EXPLAIN QUERY PLAN` shows
- * `(publisher=? AND (created_at,id)<(?,?))` against the expanded form's
- * `(publisher=?)`, which walks from the newest doc and discards rows until it
+ * `(owner=? AND (created_at,id)<(?,?))` against the expanded form's
+ * `(owner=?)`, which walks from the newest doc and discards rows until it
  * passes the cursor. Both are correct; one seeks.
  *
  * The two statements differ only in that predicate. Written out rather than
@@ -433,7 +451,7 @@ export interface DocListCursor {
  */
 export async function listPublisherDocs(
   db: D1Database,
-  publisher: string,
+  owner: string,
   after: DocListCursor | null,
   limit: number,
 ): Promise<DocListRow[]> {
@@ -447,18 +465,18 @@ export async function listPublisherDocs(
       ? db
           .prepare(
             `SELECT ${columns} FROM docs d
-              WHERE d.publisher = ? AND d.deleted_at IS NULL
+              WHERE d.owner = ? AND d.deleted_at IS NULL
               ${order}`,
           )
-          .bind(publisher, limit)
+          .bind(owner, limit)
       : db
           .prepare(
             `SELECT ${columns} FROM docs d
-              WHERE d.publisher = ? AND d.deleted_at IS NULL
+              WHERE d.owner = ? AND d.deleted_at IS NULL
                 AND (d.created_at, d.id) < (?, ?)
               ${order}`,
           )
-          .bind(publisher, after.created_at, after.id, limit);
+          .bind(owner, after.created_at, after.id, limit);
 
   return (await statement.all<DocListRow>()).results;
 }

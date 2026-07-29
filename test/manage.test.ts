@@ -34,18 +34,27 @@ async function sha256Hex(value: string): Promise<string> {
 
 /**
  * Give a key a publisher row validated just now — what a real request leaves
- * behind after auth, and what `docs.publisher` needs as a foreign key. These
- * tests are about managing docs, not about authenticating, so the license cache
- * is warm and no license server is ever reached.
+ * behind after auth. These tests are about managing docs, not about
+ * authenticating, so the license cache is warm and no license server is ever
+ * reached.
+ *
+ * `owner` is the account the key belongs to, left null by default so the key
+ * owns its own docs: the state every key is in until the license server starts
+ * naming accounts. Passing one is how a test says "these two keys are the same
+ * person".
+ *
+ * Returns the owner the key will resolve to, which is what the doc rows will
+ * carry — not the key hash, once the two differ.
  */
-async function seedPublisher(key: string): Promise<string> {
+async function seedPublisher(key: string, owner: string | null = null): Promise<string> {
   const id = await sha256Hex(key);
   await env.DB.prepare(
-    "INSERT OR REPLACE INTO publishers (key_hash, plan, validated_at) VALUES (?, 'believer', ?)",
+    `INSERT OR REPLACE INTO publishers (key_hash, plan, validated_at, owner)
+     VALUES (?, 'believer', ?, ?)`,
   )
-    .bind(id, Date.now())
+    .bind(id, Date.now(), owner)
     .run();
-  return id;
+  return owner ?? id;
 }
 
 let publisherA = "";
@@ -162,7 +171,7 @@ async function seedDoc(
 ): Promise<string> {
   const versions = options.versions ?? 1;
   await env.DB.prepare(
-    `INSERT INTO docs (id, publisher, title, latest_version, created_at, updated_at)
+    `INSERT INTO docs (id, owner, title, latest_version, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?)`,
   )
     .bind(id, publisher, `seeded ${id}`, versions, createdAt, createdAt)
@@ -251,7 +260,7 @@ describe("DELETE /api/v1/docs/{docId}", () => {
     // point here, and every other delete test covers the route.
     for (let n = 1; n <= 3; n++) await env.DOCS.put(versionObjectKey(docId, n), "x");
 
-    const publisher: Publisher = { id: publisherA, plan: "believer" };
+    const publisher: Publisher = { id: publisherA, owner: publisherA, plan: "believer" };
     const response = await deleteDoc(env, publisher, docId, { objectBatch: 2 });
 
     expect(response.status).toBe(204);
@@ -280,7 +289,7 @@ describe("DELETE /api/v1/docs/{docId}", () => {
     });
 
     expect(await docRow(created.docId)).toMatchObject({
-      publisher: publisherA,
+      owner: publisherA,
       deleted_at: null,
     });
     expect(await objectKeys(created.docId)).toEqual([versionObjectKey(created.docId, 1)]);
@@ -584,6 +593,54 @@ describe("paging through the list", () => {
     // resume step would walk straight into them.
     expect(await walk(KEY_A, 2)).toEqual([4, 3, 2, 1].map((i) => seededId(i)));
     expect(await walk(KEY_B, 3)).toEqual([8, 7, 6, 5].map((i) => seededId(i)));
+  });
+});
+
+/**
+ * The point of owning documents by account rather than by key: which key you
+ * happen to be holding stops deciding what you can see.
+ */
+describe("two keys belonging to one account", () => {
+  const ACCOUNT = "e2b7a0c4-1f3d-4a6b-9c8e-2d5f7a1b3c9d";
+
+  beforeEach(async () => {
+    // Re-seed both keys onto the same account, over the per-key rows the outer
+    // `beforeEach` wrote.
+    await seedPublisher(KEY_A, ACCOUNT);
+    await seedPublisher(KEY_B, ACCOUNT);
+  });
+
+  it("list one merged shelf, whichever key asks", async () => {
+    const fromA = await publish(KEY_A, "Pushed with A");
+    const fromB = await publish(KEY_B, "Pushed with B");
+
+    for (const key of [KEY_A, KEY_B]) {
+      const body = await listed(await list(key));
+      expect(body.docs.map((doc) => doc.docId).sort()).toEqual([fromA.docId, fromB.docId].sort());
+    }
+  });
+
+  it("can each unshare what the other published", async () => {
+    const fromA = await publish(KEY_A, "Pushed with A");
+
+    expect((await del(KEY_B, fromA.docId)).status).toBe(204);
+  });
+
+  it("store the account id on the doc, not the key hash", async () => {
+    const created = await publish(KEY_A, "A note");
+
+    expect(await docRow(created.docId)).toMatchObject({ owner: ACCOUNT });
+  });
+
+  it("stay invisible to a key on a different account", async () => {
+    const other = "9a1c3e5f-7b9d-4f2a-8c6e-0d4b8f2a6c1e";
+    await seedPublisher(KEY_B, other);
+    const fromA = await publish(KEY_A, "Mine");
+
+    expect(await listed(await list(KEY_B))).toEqual({ docs: [] });
+    // 404, never 403: another account's doc is indistinguishable from one that
+    // never existed, on every endpoint.
+    expect((await del(KEY_B, fromA.docId)).status).toBe(404);
   });
 });
 

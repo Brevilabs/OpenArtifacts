@@ -130,7 +130,7 @@ async function seedDocs(publisher: string, live: number, deleted = 0): Promise<v
   const now = Date.now();
   await env.DB.prepare(
     `WITH RECURSIVE seq(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM seq WHERE i < ?)
-     INSERT INTO docs (id, publisher, title, latest_version, created_at, updated_at, deleted_at)
+     INSERT INTO docs (id, owner, title, latest_version, created_at, updated_at, deleted_at)
      SELECT printf('%0' || ? || 'd', i), ?, 'seeded', 1, ?, ?, CASE WHEN i > ? THEN ? END
        FROM seq`,
   )
@@ -171,7 +171,7 @@ describe("POST /api/v1/docs", () => {
 
     // D1 is a pointer index: it has to agree with what R2 actually holds.
     expect(await docRow(body.docId)).toMatchObject({
-      publisher: publisherA,
+      owner: publisherA,
       title: "A note",
       latest_version: 1,
       deleted_at: null,
@@ -278,9 +278,9 @@ describe("PUT /api/v1/docs/{docId}", () => {
 
     expect(await env.DOCS.head(versionObjectKey(created.docId, 2))).toBeNull();
     expect(await stored(created.docId, 1)).toContain("<p>x</p>");
-    expect(await docRow(created.docId)).toMatchObject({ latest_version: 1, publisher: publisherA });
+    expect(await docRow(created.docId)).toMatchObject({ latest_version: 1, owner: publisherA });
     // And it cost the caller nothing: a push that never happened is not a push.
-    expect(await quotaRows()).toMatchObject([{ publisher: publisherA, pushes: 1 }]);
+    expect(await quotaRows()).toMatchObject([{ owner: publisherA, pushes: 1 }]);
   });
 
   it("404s a doc that does not exist", async () => {
@@ -380,7 +380,7 @@ describe("the 10MB body ceiling", () => {
 
 describe("the daily push quota", () => {
   const spend = (publisher: string, pushes: number, day = utcDay(Date.now())) =>
-    env.DB.prepare("INSERT INTO push_quota (publisher, day, pushes) VALUES (?, ?, ?)")
+    env.DB.prepare("INSERT INTO push_quota (owner, day, pushes) VALUES (?, ?, ?)")
       .bind(publisher, day, pushes)
       .run();
 
@@ -427,7 +427,7 @@ describe("the daily push quota", () => {
     await post(KEY_A, { title: "t", html: page("<p>y</p>") });
 
     expect(await quotaRows()).toMatchObject([
-      { publisher: publisherA, day: utcDay(Date.now()), pushes: 2 },
+      { owner: publisherA, day: utcDay(Date.now()), pushes: 2 },
     ]);
   });
 
@@ -443,7 +443,7 @@ describe("the daily push quota", () => {
     expect(responses.map((r) => r.status)).toEqual(Array(concurrent).fill(201));
     // Read-then-increment would let two pushes see the same count and one
     // increment vanish, which is the hole a claim-in-one-statement upsert closes.
-    expect(await quotaRows()).toMatchObject([{ publisher: publisherA, pushes: concurrent }]);
+    expect(await quotaRows()).toMatchObject([{ owner: publisherA, pushes: concurrent }]);
   });
 
   it("gives the last push of the day to exactly one of two racing pushes", async () => {
@@ -891,7 +891,7 @@ describe("races the review found", () => {
     expect(refused).toHaveLength(7);
 
     const { n } = (await env.DB.prepare(
-      "SELECT COUNT(*) AS n FROM docs WHERE publisher = ? AND deleted_at IS NULL",
+      "SELECT COUNT(*) AS n FROM docs WHERE owner = ? AND deleted_at IS NULL",
     )
       .bind(publisherA)
       .first<{ n: number }>()) ?? { n: -1 };
@@ -900,7 +900,7 @@ describe("races the review found", () => {
 
   it("does not spend a doc slot on a push refused by the daily quota", async () => {
     await env.DB.prepare(
-      "INSERT INTO push_quota (publisher, day, pushes) VALUES (?, ?, ?)",
+      "INSERT INTO push_quota (owner, day, pushes) VALUES (?, ?, ?)",
     )
       .bind(publisherA, utcDay(Date.now()), MAX_PUSHES_PER_DAY)
       .run();
@@ -908,7 +908,7 @@ describe("races the review found", () => {
     const response = await post(KEY_A, { title: "t", html: page("<p>x</p>") });
 
     expect(response.status).toBe(429);
-    const { n } = (await env.DB.prepare("SELECT COUNT(*) AS n FROM docs WHERE publisher = ?")
+    const { n } = (await env.DB.prepare("SELECT COUNT(*) AS n FROM docs WHERE owner = ?")
       .bind(publisherA)
       .first<{ n: number }>()) ?? { n: -1 };
     expect(n).toBe(0);

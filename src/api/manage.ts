@@ -92,7 +92,7 @@ export async function deleteDoc(
   // An id that cannot exist is answered without touching D1.
   if (!isDocId(docId)) return docNotFound(docId);
 
-  if (!(await softDeleteDoc(env.DB, docId, publisher.id, Date.now()))) {
+  if (!(await softDeleteDoc(env.DB, docId, publisher.owner, Date.now()))) {
     return docNotFound(docId);
   }
 
@@ -220,7 +220,7 @@ export async function listDocs(
     );
   }
 
-  const rows = await listPublisherDocs(env.DB, publisher.id, after, limit + 1);
+  const rows = await listPublisherDocs(env.DB, publisher.owner, after, limit + 1);
   const page = rows.slice(0, limit);
 
   const body: ListResponse = {

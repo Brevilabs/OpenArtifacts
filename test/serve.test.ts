@@ -421,7 +421,7 @@ describe("a doc that is not there", () => {
     // The other half of a push that died mid-write: a `docs` row whose id was
     // never returned to anyone, so nothing points at it and nothing has bytes.
     await env.DB.prepare(
-      `INSERT INTO docs (id, publisher, title, latest_version, created_at, updated_at)
+      `INSERT INTO docs (id, owner, title, latest_version, created_at, updated_at)
        VALUES (?, ?, 'stranded', 1, ?, ?)`,
     )
       .bind(UNKNOWN_DOC_ID, publisher, Date.now(), Date.now())

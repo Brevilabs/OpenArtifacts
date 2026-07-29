@@ -21,6 +21,13 @@ const KEY = "cplus_live_9f4c1a77e0b24d3e";
 /** Computed independently of the implementation. */
 const KEY_HASH = createHash("sha256").update(KEY).digest("hex");
 
+/**
+ * An app-sites `User.id`. Shaped like the real thing — a `gen_random_uuid()`
+ * — and deliberately nothing like a key hash, so an assertion cannot pass by
+ * confusing the two.
+ */
+const ACCOUNT = "e2b7a0c4-1f3d-4a6b-9c8e-2d5f7a1b3c9d";
+
 const NOW = 1_800_000_000_000;
 const now = () => NOW;
 
@@ -52,6 +59,7 @@ const validatedAt = (msAgo: number): PublisherRow => ({
   key_hash: KEY_HASH,
   plan: "believer",
   validated_at: NOW - msAgo,
+  owner: null,
 });
 
 interface LicenseStub {
@@ -123,13 +131,126 @@ describe("resolvePublisher — a valid key", () => {
 
     const result = await resolvePublisher(KEY, env(), { store, now, fetch: license.fetch });
 
-    expect(result).toEqual({ ok: true, publisher: { id: KEY_HASH, plan: "believer" } });
+    expect(result).toEqual({ ok: true, publisher: { id: KEY_HASH, owner: KEY_HASH, plan: "believer" } });
     expect(license.calls).toHaveLength(1);
     expect(store.rows.get(KEY_HASH)).toEqual({
       key_hash: KEY_HASH,
       plan: "believer",
       validated_at: NOW,
+      owner: null,
     });
+  });
+
+  it("owns documents by the account the license server names", async () => {
+    const store = memoryStore();
+    const license = licenseServer(
+      answers({ isValid: true, plan: "believer", backendAccess: true, authUserId: ACCOUNT }),
+    );
+
+    const result = await resolvePublisher(KEY, env(), { store, now, fetch: license.fetch });
+
+    expect(result).toEqual({
+      ok: true,
+      publisher: { id: KEY_HASH, owner: ACCOUNT, plan: "believer" },
+    });
+    expect(store.rows.get(KEY_HASH)?.owner).toBe(ACCOUNT);
+  });
+
+  it("accepts `userId` as well, so the license server may name the field either way", async () => {
+    const store = memoryStore();
+    const license = licenseServer(
+      answers({ isValid: true, plan: "believer", backendAccess: true, userId: ACCOUNT }),
+    );
+
+    const result = await resolvePublisher(KEY, env(), { store, now, fetch: license.fetch });
+
+    expect(result).toMatchObject({ publisher: { owner: ACCOUNT } });
+  });
+
+  // A blank id would be a single owner that every misconfigured key falls into,
+  // which is one publisher reading another's shelf. Falling back to the key hash
+  // is the failure that keeps them apart.
+  it.each([
+    ["a blank account id", ""],
+    ["a whitespace account id", "   "],
+    ["a non-string account id", 42],
+  ])("treats %s as none, leaving the key owning its own docs", async (_label, authUserId) => {
+    const store = memoryStore();
+    const license = licenseServer(
+      answers({ isValid: true, plan: "believer", backendAccess: true, authUserId }),
+    );
+
+    const result = await resolvePublisher(KEY, env(), { store, now, fetch: license.fetch });
+
+    expect(result).toMatchObject({ publisher: { id: KEY_HASH, owner: KEY_HASH } });
+    expect(store.rows.get(KEY_HASH)?.owner).toBeNull();
+  });
+
+  it("resolves a cached account without asking the license server", async () => {
+    const store = memoryStore();
+    store.rows.set(KEY_HASH, { ...validatedAt(0), owner: ACCOUNT });
+    const license = licenseServer(validBeliever);
+
+    const result = await resolvePublisher(KEY, env(), { store, now, fetch: license.fetch });
+
+    expect(result).toMatchObject({ publisher: { id: KEY_HASH, owner: ACCOUNT } });
+    expect(license.calls).toHaveLength(0);
+  });
+
+  // The regression this guards: a license server that stops returning the field
+  // would otherwise move every doc back under the key hash on the next
+  // validation, and empty the publisher's shelf without an error anywhere.
+  it("keeps a known account when a later validation names none", async () => {
+    const store = memoryStore();
+    store.rows.set(KEY_HASH, {
+      ...validatedAt(LICENSE_CACHE_TTL_MS + 1),
+      owner: ACCOUNT,
+    });
+
+    const result = await resolvePublisher(KEY, env(), {
+      store,
+      now,
+      fetch: licenseServer(validBeliever).fetch,
+    });
+
+    expect(result).toMatchObject({ publisher: { owner: ACCOUNT } });
+    expect(store.rows.get(KEY_HASH)?.owner).toBe(ACCOUNT);
+  });
+
+  it("keeps a known account through an outage", async () => {
+    const store = memoryStore();
+    store.rows.set(KEY_HASH, {
+      ...validatedAt(LICENSE_CACHE_TTL_MS + 1),
+      owner: ACCOUNT,
+    });
+
+    const result = await resolvePublisher(KEY, env(), {
+      store,
+      now,
+      fetch: licenseServer(() => Promise.reject(new Error("down"))).fetch,
+    });
+
+    expect(result).toMatchObject({ publisher: { owner: ACCOUNT } });
+  });
+
+  it("moves the docs when the license server reassigns the key", async () => {
+    const store = memoryStore();
+    store.rows.set(KEY_HASH, {
+      ...validatedAt(LICENSE_CACHE_TTL_MS + 1),
+      owner: ACCOUNT,
+    });
+    const moved = "0f9e8d7c-6b5a-4392-8170-a1b2c3d4e5f6";
+
+    const result = await resolvePublisher(KEY, env(), {
+      store,
+      now,
+      fetch: licenseServer(
+        answers({ isValid: true, plan: "believer", backendAccess: true, authUserId: moved }),
+      ).fetch,
+    });
+
+    expect(result).toMatchObject({ publisher: { owner: moved } });
+    expect(store.rows.get(KEY_HASH)?.owner).toBe(moved);
   });
 
   it("asks the license server with our own credential, not the publisher's key", async () => {
@@ -180,7 +301,7 @@ describe("resolvePublisher — a valid key", () => {
       fetch: licenseServer(answers({ isValid: true, plan: "BELIEVER", backendAccess: true })).fetch,
     });
 
-    expect(result).toEqual({ ok: true, publisher: { id: KEY_HASH, plan: "believer" } });
+    expect(result).toEqual({ ok: true, publisher: { id: KEY_HASH, owner: KEY_HASH, plan: "believer" } });
     expect(store.rows.get(KEY_HASH)?.plan).toBe("believer");
   });
 
@@ -202,7 +323,7 @@ describe("resolvePublisher — the one-hour cache", () => {
 
     const result = await resolvePublisher(KEY, env(), { store, now, fetch: license.fetch });
 
-    expect(result).toEqual({ ok: true, publisher: { id: KEY_HASH, plan: "believer" } });
+    expect(result).toEqual({ ok: true, publisher: { id: KEY_HASH, owner: KEY_HASH, plan: "believer" } });
     expect(license.calls).toHaveLength(0);
   });
 
@@ -213,11 +334,12 @@ describe("resolvePublisher — the one-hour cache", () => {
     const result = await resolvePublisher(KEY, env(), { store, now, fetch: license.fetch });
 
     expect(license.calls).toHaveLength(1);
-    expect(result).toEqual({ ok: true, publisher: { id: KEY_HASH, plan: "believer" } });
+    expect(result).toEqual({ ok: true, publisher: { id: KEY_HASH, owner: KEY_HASH, plan: "believer" } });
     expect(store.rows.get(KEY_HASH)).toEqual({
       key_hash: KEY_HASH,
       plan: "believer",
       validated_at: NOW,
+      owner: null,
     });
   });
 
@@ -309,7 +431,7 @@ describe("a plan that may not publish", () => {
 
     // The key is real, so it resolves to a publisher and gets a row like any
     // other. What it cannot do is publish, and that is the router's call.
-    expect(result).toEqual({ ok: true, publisher: { id: KEY_HASH, plan: "plus" } });
+    expect(result).toEqual({ ok: true, publisher: { id: KEY_HASH, owner: KEY_HASH, plan: "plus" } });
     expect(store.rows.get(KEY_HASH)?.plan).toBe("plus");
   });
 
@@ -335,6 +457,7 @@ describe("a plan that may not publish", () => {
     // is refreshed like anyone else's and the stale `believer` is gone.
     expect(store.rows.get(KEY_HASH)).toEqual({
       key_hash: KEY_HASH,
+      owner: null,
       plan: "plus",
       validated_at: NOW,
     });
@@ -362,7 +485,7 @@ describe("the gate is on publishing, not on the publisher", () => {
   /** A warm row, so auth resolves off the cache and never touches the network. */
   const seeded = (plan: string) => {
     const db = fakeD1();
-    db.rows.set(KEY_HASH, { key_hash: KEY_HASH, plan, validated_at: Date.now() });
+    db.rows.set(KEY_HASH, { key_hash: KEY_HASH, plan, validated_at: Date.now(), owner: null });
     return db;
   };
 
@@ -435,7 +558,7 @@ describe("resolvePublisher — the license server is down", () => {
         fetch: licenseServer(reply as () => Response).fetch,
       });
 
-      expect(result).toEqual({ ok: true, publisher: { id: KEY_HASH, plan: "believer" } });
+      expect(result).toEqual({ ok: true, publisher: { id: KEY_HASH, owner: KEY_HASH, plan: "believer" } });
     });
 
     it(`refuses an unknown key when ${label}`, async () => {
@@ -506,7 +629,7 @@ describe("authenticateRequest", () => {
       fetch: licenseServer(validBeliever).fetch,
     });
 
-    expect(result).toEqual({ ok: true, publisher: { id: KEY_HASH, plan: "believer" } });
+    expect(result).toEqual({ ok: true, publisher: { id: KEY_HASH, owner: KEY_HASH, plan: "believer" } });
   });
 
   it("fails on a missing or malformed header without consulting anything", async () => {
@@ -552,6 +675,7 @@ function fakeD1(): D1Database & { rows: Map<string, PublisherRow> } {
           key_hash: String(args[0]),
           plan: String(args[1]),
           validated_at: Number(args[2]),
+          owner: args[3] === null ? null : String(args[3]),
         });
         return { success: true };
       },
@@ -629,6 +753,7 @@ describe("/api/v1 is gated on a publisher", () => {
       key_hash: KEY_HASH,
       plan: "believer",
       validated_at: Date.now() - 5 * 60 * 60 * 1000,
+      owner: null,
     });
 
     const res = await call(`Bearer ${KEY}`, db);

@@ -1,12 +1,17 @@
 /**
  * Publisher authentication.
  *
- * A publisher is a Copilot Plus license key, and the only identifier the rest of
- * the system ever sees is that key's SHA-256 (D2). The raw key exists inside this
- * module for exactly as long as it takes to hash it and hand it to the license
- * server — it is never stored, logged, or returned, not even a prefix of it.
- * Everything downstream depends on `Publisher.id`, so swapping in a free-tier
- * identity later means adding a branch here and touching nothing else.
+ * A publisher presents a Copilot Plus license key, and the only identifier the
+ * rest of the system ever sees is that key's SHA-256 (D2). The raw key exists
+ * inside this module for exactly as long as it takes to hash it and hand it to
+ * the license server — it is never stored, logged, or returned, not even a
+ * prefix of it.
+ *
+ * The key identifies a *credential*; `Publisher.owner` identifies whose
+ * documents it publishes, and every doc query keys off that. Today the license
+ * server resolves it to an app-sites `User.id`, and to the key's own hash when
+ * it names none. Nothing downstream reads the value, so a different identity —
+ * a free tier, a dashboard session — is a branch here and nothing else.
  *
  * This module answers *who*, never *may they*. The plan rides along on the
  * resolved publisher and the router decides what it entitles them to, because
@@ -77,8 +82,19 @@ export const INELIGIBLE_PLAN: { reason: PublisherFailure; message: string } = {
 };
 
 export interface Publisher {
-  /** SHA-256 hex of the license key. The only publisher identity in the system. */
+  /** SHA-256 hex of the license key. Identifies the *credential*, not the person. */
   id: string;
+  /**
+   * Who owns the documents this key publishes: the app-sites `User.id` the
+   * license server named, or the key's own hash while it names none. Every doc
+   * query keys off this, never off `id` — that is what makes two keys on one
+   * account see one shelf, and what lets a dashboard session find the same docs
+   * from `session.user.id` alone.
+   *
+   * The fallback is why this ships before the license server returns the field:
+   * with no account id anywhere, every key owns exactly what it owns today.
+   */
+  owner: string;
   plan: string;
 }
 
@@ -147,20 +163,25 @@ export async function resolvePublisher(
   const checkedAt = now();
 
   if (cached && checkedAt - cached.validated_at < LICENSE_CACHE_TTL_MS) {
-    return { ok: true, publisher: { id, plan: cached.plan } };
+    return { ok: true, publisher: { id, owner: cached.owner ?? id, plan: cached.plan } };
   }
 
   const check = await validateLicense(token, env, deps);
 
   switch (check.status) {
-    case "valid":
-      await store.save({ key_hash: id, plan: check.plan, validated_at: checkedAt });
-      return { ok: true, publisher: { id, plan: check.plan } };
+    case "valid": {
+      // A fresh answer wins, but a fresh answer that named no account must not
+      // discard one we already had — the same asymmetry `save` encodes, applied
+      // to what this request goes on to use.
+      const owner = check.owner ?? cached?.owner ?? null;
+      await store.save({ key_hash: id, plan: check.plan, validated_at: checkedAt, owner });
+      return { ok: true, publisher: { id, owner: owner ?? id, plan: check.plan } };
+    }
 
     case "denied":
       // Deliberately no row write and no row delete: a previously valid key that
-      // has since lapsed keeps its `publishers` row, because `docs.publisher`
-      // still references it. It just stops resolving.
+      // has since lapsed keeps its `publishers` row: it is the only record of
+      // which account their documents belong to. It just stops resolving.
       return {
         ok: false,
         reason: "invalid_license",
@@ -172,8 +193,9 @@ export async function resolvePublisher(
         // Stale but real. An outage must not lock out a publisher who has
         // published before. The plan rides along, so a publisher downgraded
         // since their last successful validation loses publishing here too
-        // while keeping list and delete.
-        return { ok: true, publisher: { id, plan: cached.plan } };
+        // while keeping list and delete. So does the owner, which is what keeps
+        // an outage from showing them somebody else's shelf — or an empty one.
+        return { ok: true, publisher: { id, owner: cached.owner ?? id, plan: cached.plan } };
       }
       return {
         ok: false,
@@ -206,7 +228,17 @@ export function publisherErrorResponse(failure: {
 }
 
 type LicenseCheck =
-  | { status: "valid"; plan: string }
+  | {
+      status: "valid";
+      plan: string;
+      /**
+       * The app-sites `User.id` behind the key (`LicenseKeyConfig.authUserId`),
+       * or null when the server does not name one — which is every response
+       * until that field is added there. Null is not a failure: it means
+       * ownership stays on the key hash, exactly as it is today.
+       */
+      owner: string | null;
+    }
   | { status: "denied" }
   | { status: "unreachable" };
 
@@ -294,7 +326,28 @@ async function validateLicense(token: string, env: Env, deps: AuthDeps): Promise
   // The plan is carried, never judged here. `UNKNOWN_PLAN` is not in
   // PUBLISHING_PLANS, so a response whose plan we cannot read authenticates but
   // cannot publish — the safe direction.
-  return { status: "valid", plan };
+  return { status: "valid", plan, owner: readOwner(payload) };
+}
+
+/**
+ * The account id from a validation response, or null when it names none.
+ *
+ * Blank is treated as absent rather than as an owner: an empty string would be a
+ * single shared owner id that every key with a misconfigured response falls
+ * into, which is one publisher seeing another's documents. Null instead means
+ * ownership stays on the key hash, where the worst case is a shelf that looks
+ * like today's.
+ *
+ * `authUserId` is the column name in app-sites (`LicenseKeyConfig`); `userId` is
+ * accepted too so the license server can name the field either way without a
+ * lockstep release here.
+ */
+function readOwner(payload: Record<string, unknown>): string | null {
+  for (const field of ["authUserId", "userId"]) {
+    const value = payload[field];
+    if (typeof value === "string" && value.trim() !== "") return value;
+  }
+  return null;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {

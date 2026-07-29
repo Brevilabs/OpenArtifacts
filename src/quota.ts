@@ -94,17 +94,17 @@ export function utcDay(atMs: number): string {
  */
 export async function reserveDailyPush(
   db: D1Database,
-  publisher: string,
+  owner: string,
   day: string,
 ): Promise<boolean> {
   const claimed = await db
     .prepare(
-      `INSERT INTO push_quota (publisher, day, pushes) VALUES (?, ?, 1)
-       ON CONFLICT(publisher, day) DO UPDATE SET pushes = push_quota.pushes + 1
+      `INSERT INTO push_quota (owner, day, pushes) VALUES (?, ?, 1)
+       ON CONFLICT(owner, day) DO UPDATE SET pushes = push_quota.pushes + 1
          WHERE push_quota.pushes < ?
        RETURNING pushes`,
     )
-    .bind(publisher, day, MAX_PUSHES_PER_DAY)
+    .bind(owner, day, MAX_PUSHES_PER_DAY)
     .first<{ pushes: number }>();
 
   return claimed !== null;
@@ -129,14 +129,14 @@ export async function reserveDailyPush(
  */
 export async function refundDailyPush(
   db: D1Database,
-  publisher: string,
+  owner: string,
   day: string,
 ): Promise<void> {
   await db
     .prepare(
       `UPDATE push_quota SET pushes = pushes - 1
-        WHERE publisher = ? AND day = ? AND pushes > 0`,
+        WHERE owner = ? AND day = ? AND pushes > 0`,
     )
-    .bind(publisher, day)
+    .bind(owner, day)
     .run();
 }
