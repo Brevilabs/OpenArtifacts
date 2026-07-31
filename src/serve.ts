@@ -1,9 +1,9 @@
 /**
  * The public serving surface: `GET /d/{docId}` and `GET /d/{docId}/v{n}`.
  *
- * R2 holds the publisher's own bytes; Symposium's additions — the robots meta
- * and the two bylines — are injected here, on the way out, by
- * `renderServedHtml`. That is what lets a byline change, or a plan that removes
+ * R2 holds the publisher's own bytes; Symposium's additions — the robots meta,
+ * the favicon, the social card and the two bylines — are injected here, on the
+ * way out, by `renderServedHtml`. That is what lets a byline change, or a plan that removes
  * one, reach documents already published, and it is why the stored object and
  * the served page are no longer byte-identical. `immutable` on `/v{n}` stays
  * honest: the version's content never changes, and the additions are a pure

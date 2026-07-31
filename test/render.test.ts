@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   FAVICON_LINK,
   NOINDEX_META,
+  OG_IMAGE_URL,
   renderServedHtml,
+  SOCIAL_CARD_META,
+  socialTitleMeta,
   SYMPOSIUM_FOOTER,
   SYMPOSIUM_HEADER,
 } from "../src/render.js";
@@ -42,6 +45,94 @@ describe("renderServedHtml — what gets injected", () => {
     const href = FAVICON_LINK.slice(FAVICON_LINK.indexOf('href="') + 6, -2);
     expect(href).not.toContain('"');
     expect(decodeURIComponent(href.slice("data:image/svg+xml,".length))).toContain("<svg ");
+  });
+
+  // The card image is the one addition that cannot be inlined: an `og:image` is
+  // fetched by the unfurler over http(s), so a data URI is not a value any of
+  // them accept. Pinned on the brand domain rather than a deployment url,
+  // because `/v{n}` pages hand this string to crawlers for a year.
+  it("points the card image at a stable brand-domain url", () => {
+    expect(OG_IMAGE_URL).toBe("https://symposium.md/og-image.png");
+    expect(SOCIAL_CARD_META).toContain(`<meta property="og:image" content="${OG_IMAGE_URL}">`);
+  });
+
+  // Without the dimensions a crawler that has not fetched the image yet has to
+  // guess whether it is big enough for a full-bleed card, and several of them
+  // render a thumbnail — or nothing — on the first paste. They are the actual
+  // size of the file at the url above.
+  it("states the image size and asks for a full-bleed card", () => {
+    expect(SOCIAL_CARD_META).toContain('<meta property="og:image:width" content="1200">');
+    expect(SOCIAL_CARD_META).toContain('<meta property="og:image:height" content="630">');
+    expect(SOCIAL_CARD_META).toContain('<meta name="twitter:card" content="summary_large_image">');
+  });
+
+  // A static title would unfurl every document under the same words, which is
+  // worse than none: the fallback an unfurler reaches for is the document's own
+  // `<title>`, and that at least names the document.
+  it("takes the card title from the document, not from a constant", async () => {
+    const baked = await bake(page("<p>hello</p>"));
+
+    expect(baked).toContain('<meta property="og:title" content="A note">');
+    expect(SOCIAL_CARD_META).not.toContain("og:title");
+  });
+
+  // Publisher-controlled text going back into markup, injected as HTML. A `<`
+  // that survived would open an element inside the head rather than sit in a
+  // `content=""`.
+  //
+  // The count is what carries the claim. Inside `<title>` the sequence is text
+  // — RCDATA, which the parser never treats as a tag — and those are the
+  // publisher's own bytes, so it stays exactly as uploaded. What must not
+  // happen is a *second* copy arriving from our injection, where it would be
+  // markup.
+  it("escapes a title that would otherwise close the tag it sits in", async () => {
+    const hostile = '"><script>alert(1)</script><meta x="';
+    const baked = await bake(
+      `<!doctype html><html><head><title>${hostile}</title></head><body><p>hi</p></body></html>`,
+    );
+
+    expect(baked).toContain(`<title>${hostile}</title>`);
+    expect(occurrences(baked, "<script>alert(1)</script>")).toBe(1);
+    expect(headOf(baked)).toContain(
+      '<meta property="og:title" content="&quot;&gt;&lt;script&gt;alert(1)&lt;/script&gt;' +
+        '&lt;meta x=&quot;">',
+    );
+  });
+
+  it("collapses the whitespace a pretty-printed title spans lines with", () => {
+    expect(socialTitleMeta("  Weekly\n  review  ")).toBe(
+      '<meta property="og:title" content="Weekly review">',
+    );
+  });
+
+  // An empty `content` stops an unfurler from falling back to `<title>`, so a
+  // document with nothing to say gets no tag rather than an empty one.
+  it("emits no title tag at all when the document has no title text", async () => {
+    const baked = await bake(
+      "<!doctype html><html><head><title>  </title></head><body><p>hi</p></body></html>",
+    );
+
+    expect(baked).not.toContain("og:title");
+  });
+
+  // An unclosed `<title>` makes the parser treat the rest of the document as
+  // title text. Bounded, so that cannot put a whole document in a meta tag.
+  it("caps the title rather than letting an unclosed one swallow the document", async () => {
+    const baked = await bake(
+      `<!doctype html><html><head><title>${"x".repeat(2000)}</title></head>` +
+        "<body><p>hi</p></body></html>",
+    );
+
+    const content = /<meta property="og:title" content="(x+)">/.exec(baked)?.[1] ?? "";
+    expect(content.length).toBe(300);
+  });
+
+  // `<svg><title>` is a chart's accessible name, not the document's.
+  it("ignores a title that belongs to an inline SVG", async () => {
+    const baked = await bake(page('<svg><title>Revenue by quarter</title></svg>'));
+
+    expect(baked).toContain('<meta property="og:title" content="A note">');
+    expect(baked).toContain("<title>Revenue by quarter</title>");
   });
 
   it("says where the document came from, in text a reader can see", async () => {
@@ -131,12 +222,22 @@ describe("renderServedHtml — what gets injected", () => {
 });
 
 describe("renderServedHtml — where the injections land", () => {
-  it("puts the robots meta and the icon inside the head, and the bylines around the body", async () => {
+  it("puts the robots meta, the icon and the card inside the head, and the bylines around the body", async () => {
     const baked = await bake(page("<p>hello</p>"));
 
-    expect(baked).toContain(`<head>${NOINDEX_META}${FAVICON_LINK}`);
+    expect(baked).toContain(`<head>${NOINDEX_META}${FAVICON_LINK}${SOCIAL_CARD_META}`);
     expect(baked).toContain(`<body>${SYMPOSIUM_HEADER}`);
     expect(baked).toContain(`${SYMPOSIUM_FOOTER}</body>`);
+  });
+
+  // `og:title` is read out of the document's own `<title>`, which has not been
+  // seen when `<head>` opens — so it is the one head injection that lands at the
+  // end tag instead of the start. It still has to be *in* the head.
+  it("puts the card title inside the head even though it is injected last", async () => {
+    const baked = await bake(page("<p>hello</p>"));
+
+    expect(headOf(baked)).toContain('<meta property="og:title" content="A note">');
+    expect(baked).toContain('<meta property="og:title" content="A note"></head>');
   });
 
   it("puts the header above the document's own content, not below it", async () => {
@@ -151,8 +252,23 @@ describe("renderServedHtml — where the injections land", () => {
 
     expect(occurrences(baked, NOINDEX_META)).toBe(1);
     expect(occurrences(baked, FAVICON_LINK)).toBe(1);
+    expect(occurrences(baked, SOCIAL_CARD_META)).toBe(1);
+    expect(occurrences(baked, "og:title")).toBe(1);
     expect(occurrences(baked, SYMPOSIUM_HEADER)).toBe(1);
     expect(occurrences(baked, SYMPOSIUM_FOOTER)).toBe(1);
+  });
+
+  // A repeated head is the shape that catches a card title accumulated across
+  // both of them, or injected once per head. First one wins, like everything
+  // else here.
+  it("takes the card title from the first head, once, when the document has two", async () => {
+    const baked = await bake(
+      "<!doctype html><html><head><title>first</title></head><body><p>one</p></body>" +
+        "<head><title>second</title></head><body><p>two</p></body></html>",
+    );
+
+    expect(occurrences(baked, "og:title")).toBe(1);
+    expect(baked).toContain('<meta property="og:title" content="first">');
   });
 
   // The case the test above is named for but does not reach: the handlers hang
@@ -220,6 +336,18 @@ describe("renderServedHtml — documents missing the tags to hang them on", () =
     expect(baked).toContain(`<body>${SYMPOSIUM_HEADER}`);
     expect(baked).toContain(SYMPOSIUM_FOOTER);
     expect(baked).toContain("<p>hi</p>");
+  });
+
+  // The documented cost of the split: a head with no end tag keeps the image
+  // tags, because those are prepended, and the title meta falls out of the head.
+  // Pinned so that cost stays a decision on record — and because losing it is
+  // survivable, the unfurler falling back to `<title>` for the same string.
+  it("keeps the card image when the head is never closed", async () => {
+    const baked = await bake("<!doctype html><html><head><title>t</title><body><p>hi</p>");
+
+    expect(headOf(baked)).toContain(SOCIAL_CARD_META);
+    expect(baked).toContain("og:title");
+    expect(baked).toContain("<title>t</title>");
   });
 
   it("still injects into a document with no head", async () => {
@@ -306,12 +434,17 @@ describe("renderServedHtml — branding off", () => {
   // bylines must not also lose `noindex`, which is policy rather than branding.
   // The tab icon goes with them: a Symposium mark in the reader's tab is
   // branding too. The robots meta is policy and stays.
-  it("drops both bylines and the icon but keeps the robots meta", async () => {
+  it("drops both bylines, the icon and the card but keeps the robots meta", async () => {
     const bare = await bake(page("<p>hello</p>"), false);
 
     expect(bare).not.toContain(SYMPOSIUM_HEADER);
     expect(bare).not.toContain(SYMPOSIUM_FOOTER);
     expect(bare).not.toContain(FAVICON_LINK);
+    // The card carries Symposium's own image into somebody else's Discord,
+    // which is the most visible branding of the lot. `og:title` goes with it:
+    // a title with no image unfurls worse than the fallback would.
+    expect(bare).not.toContain(SOCIAL_CARD_META);
+    expect(bare).not.toContain("og:");
     expect(headOf(bare)).toContain(NOINDEX_META);
     expect(bare).toContain("<p>hello</p>");
   });

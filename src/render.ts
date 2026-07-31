@@ -45,7 +45,7 @@
  * constants in this file, so the thing that changes them is an edit to this
  * file, and a reviewer can see whether the number moved with it.
  */
-export const RENDER_REVISION = 2;
+export const RENDER_REVISION = 3;
 
 /**
  * Belt to the `X-Robots-Tag` header's braces (D9). The header is the
@@ -81,6 +81,98 @@ export const FAVICON_LINK =
       'stroke-linecap="round"/></svg>',
   ) +
   '">';
+
+/**
+ * The card image every shared doc unfurls with, on the brand domain.
+ *
+ * It is the one Symposium addition that cannot be inlined. A data URI is not a
+ * valid `og:image` — every unfurler fetches the value over http(s) from its own
+ * infrastructure, never from the reader's browser — so this is a hard
+ * dependency on a url staying alive, which is exactly the dependency the
+ * favicon and the Copilot mark were inlined to avoid.
+ *
+ * Given that, `symposium.md` rather than the marketing site's Vercel
+ * deployment url: pinned `/v{n}` pages are served `immutable` for a year, so a
+ * document published today is still handing this url to crawlers long after
+ * this deploy, and a preview deployment's hostname is not a thing to bet that
+ * on. It is the same 1200×630 image the product site's own card uses.
+ *
+ * It loads on the *unfurler's* side, so nothing about it touches the serving
+ * origin's CSP or costs a reader a request.
+ */
+export const OG_IMAGE_URL = "https://symposium.md/og-image.png";
+
+/**
+ * The part of the card that is the same for every document: which image, how
+ * big it is, and that it should be shown full-bleed rather than as a thumbnail.
+ *
+ * `og:image:width`/`height` matter more than they look. Without them a crawler
+ * that has not yet fetched the image has to guess whether it is large enough
+ * for a big card, and several of them render a small square — or nothing — on
+ * the first unfurl and only correct it on a later scrape. Stating the real
+ * dimensions makes the first paste render right.
+ *
+ * `twitter:card` is the only `twitter:` tag carried: X falls back to the `og:`
+ * tags for everything else, and duplicating them would be two strings to keep
+ * in step for no gain. `og:type` is absent for the same reason in reverse —
+ * nothing that unfurls these links renders anything differently for it.
+ *
+ * `og:site_name` does earn its place: it is the small label Discord and Slack
+ * put above the title, and naming Symposium there is the branding this exists
+ * for.
+ */
+export const SOCIAL_CARD_META =
+  '<meta property="og:site_name" content="Symposium">' +
+  `<meta property="og:image" content="${OG_IMAGE_URL}">` +
+  '<meta property="og:image:width" content="1200">' +
+  '<meta property="og:image:height" content="630">' +
+  '<meta property="og:image:alt" content="Where people and agents get on the same page">' +
+  '<meta name="twitter:card" content="summary_large_image">';
+
+/** How much of a document's title the card carries. Every unfurler truncates
+ * well before this; the cap is here so an unclosed `<title>` — which makes the
+ * parser treat the rest of the document as title text — cannot put a whole
+ * document into a meta tag. */
+const MAX_CARD_TITLE = 300;
+
+/**
+ * A title read out of the document is publisher-controlled text going back into
+ * markup, so it is escaped rather than trusted. `&` first, or it would re-escape
+ * the ampersands the later replacements introduce.
+ *
+ * All four of `&<>"` and not just the quote that closes the attribute: the
+ * injection is handed to HTMLRewriter as markup (`AS_HTML`), so a `<` in a title
+ * would open an element rather than sit in a `content=""`.
+ */
+function escapeAttribute(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+/**
+ * The per-document half of the card: `og:title`, taken from the document's own
+ * `<title>`.
+ *
+ * A static title would be worse than none — every doc would unfurl under the
+ * same words, and a link to a specific document would say nothing about which
+ * one. Taking it from the document keeps this a pure function of the stored
+ * bytes, which is what lets the served etag stay a per-object validator: no D1
+ * read, and nothing that can drift out from under a pinned `/v{n}` url.
+ *
+ * Whitespace is collapsed because a pretty-printed `<title>` spans lines, and
+ * the newlines would reach the card as-is.
+ *
+ * Empty means no tag rather than an empty one: unfurlers fall back to the
+ * `<title>` element on their own, and an empty `content` would stop them.
+ */
+export function socialTitleMeta(rawTitle: string): string {
+  const title = rawTitle.replace(/\s+/g, " ").trim();
+  if (title.length === 0) return "";
+  return `<meta property="og:title" content="${escapeAttribute(title)}">`;
+}
 
 /**
  * Shared between the two bylines (D9).
@@ -207,17 +299,26 @@ export const SYMPOSIUM_FOOTER =
 const AS_HTML = { html: true } as const;
 
 /**
- * Inject the robots meta, the favicon and the two bylines, and change nothing
- * else.
+ * Inject the robots meta, the favicon, the social card and the two bylines, and
+ * change nothing else.
  *
  * Every injection has a fallback, because a document is not guaranteed to have
  * the tag we want to hang it on:
  *
- * - The meta and the favicon go first inside `<head>`. A document with no
- *   `<head>` gets them at the end instead, where the parser hoists them into
- *   the body — weaker for the meta, since a robots meta outside the head is not
- *   honoured, which is exactly why the `X-Robots-Tag` header carries the real
- *   signal, and best-effort for the icon.
+ * - The meta, the favicon and the static half of the social card go first
+ *   inside `<head>`. A document with no `<head>` gets them at the end instead,
+ *   where the parser hoists them into the body — weaker for the meta, since a
+ *   robots meta outside the head is not honoured, which is exactly why the
+ *   `X-Robots-Tag` header carries the real signal, and best-effort for the icon
+ *   and the card.
+ * - `og:title` cannot go with them, because it is read out of the document's
+ *   own `<title>` and that tag has not been seen yet when `<head>` opens. It is
+ *   injected before `</head>` instead, by which point it has. A document that
+ *   never closes its head keeps the image tags — they were prepended — and
+ *   loses only this one, and losing it costs little: an unfurler with no
+ *   `og:title` falls back to the `<title>` element, which is the same string.
+ *   That is why the split is worth a second injection site rather than moving
+ *   the whole card to the end tag.
  * - The header byline is prepended inside `<body>`. A document with no `<body>`
  *   start tag gets it at the document end instead, which puts the header below
  *   the content: wrong, but present. Hanging it on `<html>` would be no better,
@@ -246,26 +347,66 @@ const AS_HTML = { html: true } as const;
  * it did when serving was a passthrough.
  *
  * `branding` will be false for plans that pay to remove the bylines. It takes
- * the favicon with them — a Symposium mark in the reader's tab is branding too.
+ * the favicon and the social card with them — a Symposium mark in the reader's
+ * tab is branding too, and a card carrying Symposium's own image is the most
+ * visible branding of the lot: it is what a paying customer's link shows in
+ * somebody else's Discord. `og:title` goes with it rather than being kept on
+ * its own, because a card with a title and no image is a worse unfurl than the
+ * one an unfurler builds from `<title>` by itself.
  * It does not reach the robots meta, and must not: `noindex` is policy, and a flag that
  * switched it off would make paid customers' documents indexable — the worst
  * possible bug to ship attached to an upgrade.
  */
 export function renderServedHtml(response: Response, branding = true): Response {
-  const head = branding ? NOINDEX_META + FAVICON_LINK : NOINDEX_META;
+  const head = branding ? NOINDEX_META + FAVICON_LINK + SOCIAL_CARD_META : NOINDEX_META;
   let headPlaced = false;
+  let cardTitlePlaced = false;
   let headerPlaced = false;
   let footerPlaced = false;
 
+  // The document's own `<title>`, accumulated as it streams past. Text arrives
+  // in chunks, and an entity in the middle of one splits it into more, so this
+  // cannot stop at the first chunk — it stops at the element's end tag.
+  let documentTitle = "";
+  let titleClosed = false;
+
   return new HTMLRewriter()
-    // One `prepend()` for both, because each prepend goes *ahead* of the last:
-    // two calls would have to be written in the reverse of the order they
-    // produce, which is a trap for the next edit.
+    // `head > title` and not `title`: an inline `<svg>` may carry a `<title>`
+    // of its own as its accessible name, and a chart's "Revenue by quarter" is
+    // not what the document is called.
+    .on("head > title", {
+      element(element) {
+        // First title wins, matching every other injection here. A second one
+        // is marked closed on sight so its text is never accumulated.
+        if (titleClosed || documentTitle.length > 0) {
+          titleClosed = true;
+          return;
+        }
+        element.onEndTag(() => {
+          titleClosed = true;
+        });
+      },
+      text(chunk) {
+        if (titleClosed) return;
+        documentTitle = (documentTitle + chunk.text).slice(0, MAX_CARD_TITLE);
+      },
+    })
     .on("head", {
       element(element) {
         if (headPlaced) return;
         headPlaced = true;
+        // One `prepend()` for all three, because each prepend goes *ahead* of
+        // the last: separate calls would have to be written in the reverse of
+        // the order they produce, which is a trap for the next edit.
         element.prepend(head, AS_HTML);
+        // Registered on the head that got the prepend, for the reason the
+        // footer's callback is registered on the body that got the header.
+        element.onEndTag((endTag) => {
+          cardTitlePlaced = true;
+          if (!branding) return;
+          const titleMeta = socialTitleMeta(documentTitle);
+          if (titleMeta.length > 0) endTag.before(titleMeta, AS_HTML);
+        });
       },
     })
     .on("body", {
@@ -289,6 +430,10 @@ export function renderServedHtml(response: Response, branding = true): Response 
     .onDocument({
       end(end) {
         if (!headPlaced) end.append(head, AS_HTML);
+        if (branding && !cardTitlePlaced) {
+          const titleMeta = socialTitleMeta(documentTitle);
+          if (titleMeta.length > 0) end.append(titleMeta, AS_HTML);
+        }
         if (branding && !headerPlaced) end.append(SYMPOSIUM_HEADER, AS_HTML);
         if (branding && !footerPlaced) end.append(SYMPOSIUM_FOOTER, AS_HTML);
       },
