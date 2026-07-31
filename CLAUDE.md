@@ -68,7 +68,7 @@ These are day-one decisions, not retrofits:
   **This does not hold yet — see below. Do not rely on it.**
 - Every push mints an **immutable version** served with `cache-control: immutable`.
   R2 stores the publisher's own bytes; Symposium's additions (the robots meta,
-  the favicon and the two bylines) are injected on the way out by
+  the favicon, the social card and the two bylines) are injected on the way out by
   `renderServedHtml`, so a byline change — or a plan that removes one — reaches
   documents already published.
   Nothing else is composed per read: the additions are a pure function of the
