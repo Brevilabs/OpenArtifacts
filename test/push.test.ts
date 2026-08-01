@@ -123,6 +123,18 @@ const quotaRows = async () =>
 
 const allObjects = async () => (await env.DOCS.list()).objects;
 
+/** Every persistence surface a rejected PUT must leave unchanged. */
+async function pushPersistence() {
+  return {
+    docs: (await env.DB.prepare("SELECT * FROM docs ORDER BY id").all<DocRow>()).results,
+    versions: (
+      await env.DB.prepare("SELECT * FROM versions ORDER BY doc_id, n").all<VersionRow>()
+    ).results,
+    quota: await quotaRows(),
+    objectKeys: (await allObjects()).map((object) => object.key),
+  };
+}
+
 async function pushedOk(response: Response, status: number): Promise<PushResponse> {
   expect(response.status).toBe(status);
   return (await response.json()) as PushResponse;
@@ -270,27 +282,30 @@ describe("PUT /api/v1/docs/{docId}", () => {
       await post(KEY_A, { title: "Private", html: page("<p>x</p>") }),
       201,
     );
+    const before = await pushPersistence();
 
     const response = await put(KEY_B, created.docId, { html: page("<p>hijacked</p>") });
 
     // 404, never 403: a 403 would confirm the id is real.
     expect(response.status).toBe(404);
     await expect(response.json()).resolves.toEqual({
-      error: { code: "not_found", message: expect.any(String) },
+      error: { code: "not_found", message: `No doc with id ${created.docId}.` },
     });
 
-    expect(await env.DOCS.head(versionObjectKey(created.docId, 2))).toBeNull();
+    expect(await pushPersistence()).toEqual(before);
     expect(await stored(created.docId, 1)).toContain("<p>x</p>");
-    expect(await docRow(created.docId)).toMatchObject({ latest_version: 1, owner: ownerA });
-    // And it cost the caller nothing: a push that never happened is not a push.
-    expect(await quotaRows()).toMatchObject([{ owner: ownerA, pushes: 1 }]);
   });
 
   it("404s a doc that does not exist", async () => {
+    const before = await pushPersistence();
+
     const response = await put(KEY_A, UNKNOWN_DOC_ID, { html: page("<p>x</p>") });
 
     expect(response.status).toBe(404);
-    expect(await allObjects()).toHaveLength(0);
+    await expect(response.json()).resolves.toEqual({
+      error: { code: "not_found", message: `No doc with id ${UNKNOWN_DOC_ID}.` },
+    });
+    expect(await pushPersistence()).toEqual(before);
   });
 
   it("404s an id that could never be a doc id, without touching D1", async () => {
@@ -336,11 +351,15 @@ describe("PUT /api/v1/docs/{docId}", () => {
     await env.DB.prepare("UPDATE docs SET deleted_at = ? WHERE id = ?")
       .bind(Date.now(), created.docId)
       .run();
+    const before = await pushPersistence();
 
     const response = await put(KEY_A, created.docId, { html: page("<p>y</p>") });
 
     expect(response.status).toBe(404);
-    expect(await env.DOCS.head(versionObjectKey(created.docId, 2))).toBeNull();
+    await expect(response.json()).resolves.toEqual({
+      error: { code: "not_found", message: `No doc with id ${created.docId}.` },
+    });
+    expect(await pushPersistence()).toEqual(before);
   });
 });
 
