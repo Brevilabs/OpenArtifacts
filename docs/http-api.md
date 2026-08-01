@@ -290,9 +290,14 @@ symposium: 9f2k4mvq7t0xbz3n
 ---
 ```
 
-If a `PUT` answers `404`, the stored id is stale — the doc was deleted, or the
-note travelled to a vault signed in with a different license key. Fall back to
-`POST` and replace the id in frontmatter with the new one.
+If a `PUT` answers `404 not_found`, treat the update as terminal: stop and
+surface the failure for identity reconciliation. Do not automatically `POST` a
+replacement or remove or overwrite the saved `docId`. The response deliberately
+does not reveal whether the id is unknown, deleted, or belongs to another
+account.
+
+Publishing as a new document is a separate action that requires explicit user
+confirmation.
 
 ## A whole round trip
 
