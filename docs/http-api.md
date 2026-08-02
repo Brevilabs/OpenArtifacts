@@ -41,13 +41,11 @@ can push a new version of, or unshare, a document another one created. Replacing
 a key changes nothing about which documents you have. Nothing in this API takes
 an account id as input, and none is ever returned.
 
-**A valid key is not sufficient to publish.** Publishing requires an entitled
-plan, and in phase 1 that is **the lifetime tier only** (`BELIEVER` on the
-license server, sold as Supporter): a current Plus key authenticates and is
-still refused. The refusal is `401 unauthorized` like every other auth failure,
-so no client change is needed — only the human-readable `message` distinguishes
-it. Widening the entitled set later is a server-side change with no client
-release.
+**Publishing requires a paid plan.** Both current license-server paid plans are
+entitled: `PLUS` subscriptions and the lifetime `BELIEVER` plan (sold as
+Supporter). An unknown or otherwise ineligible plan is refused with `401
+unauthorized` like every other auth failure, so only the human-readable
+`message` distinguishes it.
 
 The entitlement is **per operation, not per key**, and only `POST /api/v1/docs`
 and `PUT /api/v1/docs/{docId}` are gated on it. A publisher whose plan no longer
@@ -303,7 +301,7 @@ confirmation.
 
 ```bash
 BASE=https://api.symposium.md
-KEY=<lifetime license key>
+KEY=<paid Copilot license key>
 
 # publish
 curl -sS -X POST "$BASE/api/v1/docs" \

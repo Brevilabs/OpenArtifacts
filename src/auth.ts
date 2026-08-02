@@ -1,7 +1,7 @@
 /**
  * Publisher authentication.
  *
- * A publisher presents a Copilot Plus license key, and the only identifier the
+ * A publisher presents a Brevilabs license key, and the only identifier the
  * rest of the system ever sees is that key's SHA-256 (D2). The raw key exists
  * inside this module for exactly as long as it takes to hash it and hand it to
  * the license server — it is never stored, logged, or returned, not even a
@@ -46,16 +46,17 @@ const LICENSE_TIMEOUT_MS = 5_000;
 const UNKNOWN_PLAN = "unknown";
 
 /**
- * The plans entitled to publish. Phase 1 is Believers only.
+ * The paid Copilot plans entitled to publish.
  *
- * This is a product decision rather than a technical one: a lifetime tier is a
- * small and known population, which is the right blast radius for the first
- * public-hosting surface we operate. Widening it is adding a string here.
+ * The license server currently has two paid plans: Plus subscriptions and the
+ * lifetime Believer enum (sold as Supporter). Keep this explicit rather than
+ * treating every plan other than `free` as paid: a new or malformed value must
+ * fail closed until its entitlement is understood.
  *
  * Lowercase because `validateLicense` folds the license server's uppercase enum
  * before it gets here, and because `publishers.plan` stores the folded form.
  */
-const PUBLISHING_PLANS: ReadonlySet<string> = new Set(["believer"]);
+const PUBLISHING_PLANS: ReadonlySet<string> = new Set(["plus", "believer"]);
 
 /**
  * Entitlement is per *operation*, not per identity, so this is deliberately not
@@ -74,11 +75,7 @@ export function mayPublish(plan: string): boolean {
 /** The refusal a route gives a valid key whose plan may not publish. */
 export const INELIGIBLE_PLAN: { reason: PublisherFailure; message: string } = {
   reason: "ineligible_plan",
-  // "lifetime", not "Believer": `BELIEVER` is the license server's database
-  // enum, and the plan customers actually bought is sold as *Supporter*.
-  // Naming the enum here would print a word the reader has never seen. This
-  // mismatch is deliberate — do not "fix" it to match PUBLISHING_PLANS.
-  message: "Publishing is currently limited to lifetime license holders.",
+  message: "Publishing requires a paid plan.",
 };
 
 export interface Publisher {
@@ -316,8 +313,9 @@ async function validateLicense(token: string, env: Env, deps: AuthDeps): Promise
     typeof payload.backendAccess === "boolean" ? payload.backendAccess : isValid;
   if (!isValid || !backendAccess) return { status: "denied" };
 
-  // The server plan is an uppercase enum (`PLUS`, `BELIEVER`); store it folded
-  // so nothing downstream has to guess the casing, as the reference does too.
+  // The server plan is an uppercase enum (`FREE`, `PLUS`, `BELIEVER`); store it
+  // folded so nothing downstream has to guess the casing, as the reference
+  // does too.
   // The account that owns the key, which the license server sends as
   // `accountId`. Unlike the plan, this cannot degrade to a placeholder: it is
   // the identity every document is filed under, so a response we cannot read it

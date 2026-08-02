@@ -38,18 +38,19 @@ async function sha256Hex(value: string): Promise<string> {
  * authenticating, so the license cache is warm and no license server is ever
  * reached.
  *
- * Each key gets its own account by default; passing one explicitly is how a test
- * says "these two keys are the same person". Returns that account, which is what
- * the key's doc rows will carry.
+ * Each key gets its own account and a Believer plan by default. Passing an
+ * account explicitly is how a test says "these two keys are the same person";
+ * passing a plan exercises entitlement. Returns the account, which is what the
+ * key's doc rows will carry.
  */
-async function seedPublisher(key: string, owner?: string): Promise<string> {
+async function seedPublisher(key: string, owner?: string, plan = "believer"): Promise<string> {
   const keyHash = await sha256Hex(key);
   const account = owner ?? `account-${keyHash.slice(0, 8)}`;
   await env.DB.prepare(
     `INSERT OR REPLACE INTO publishers (key_hash, plan, validated_at, owner)
-     VALUES (?, 'believer', ?, ?)`,
+     VALUES (?, ?, ?, ?)`,
   )
-    .bind(keyHash, Date.now(), account)
+    .bind(keyHash, plan, Date.now(), account)
     .run();
   return account;
 }
@@ -198,6 +199,27 @@ async function walk(key: string, limit: number): Promise<string[]> {
   }
   throw new Error("the list never ran out of pages");
 }
+
+describe("paid publishing plans", () => {
+  it("lets a Plus subscriber publish and push a new version", async () => {
+    await seedPublisher(KEY_A, ownerA, "plus");
+
+    const created = await publish(KEY_A, "Plus v1");
+    const updated = await push(
+      KEY_A,
+      { title: "Plus v2", html: page("<p>second draft</p>") },
+      created.docId,
+    );
+
+    expect(created.version).toBe(1);
+    expect(updated.version).toBe(2);
+    expect((await read(`/d/${created.docId}`)).status).toBe(200);
+    expect(await objectKeys(created.docId)).toEqual([
+      versionObjectKey(created.docId, 1),
+      versionObjectKey(created.docId, 2),
+    ]);
+  });
+});
 
 describe("DELETE /api/v1/docs/{docId}", () => {
   it("204s a doc I own and turns its public url into a 410", async () => {
@@ -647,15 +669,15 @@ describe("two keys belonging to one account", () => {
  * already put on the internet — most of all the power to take it down.
  */
 describe("a publisher whose plan may no longer publish", () => {
-  /** Downgrade in place, with the cache left warm so no license server is reached. */
-  const downgrade = async (key: string) =>
-    env.DB.prepare("UPDATE publishers SET plan = 'plus', validated_at = ? WHERE key_hash = ?")
+  /** Mark it ineligible, with the cache left warm so no license server is reached. */
+  const makeIneligible = async (key: string) =>
+    env.DB.prepare("UPDATE publishers SET plan = 'unknown', validated_at = ? WHERE key_hash = ?")
       .bind(Date.now(), await sha256Hex(key))
       .run();
 
   it("can still unshare a doc it published while it was entitled", async () => {
     const created = await publish(KEY_A, "Published while entitled");
-    await downgrade(KEY_A);
+    await makeIneligible(KEY_A);
 
     expect((await del(KEY_A, created.docId)).status).toBe(204);
 
@@ -668,7 +690,7 @@ describe("a publisher whose plan may no longer publish", () => {
 
   it("can still list what it has published, which is how it finds what to unshare", async () => {
     const created = await publish(KEY_A, "Still mine");
-    await downgrade(KEY_A);
+    await makeIneligible(KEY_A);
 
     const { docs } = await listed(await list(KEY_A));
 
@@ -676,7 +698,7 @@ describe("a publisher whose plan may no longer publish", () => {
   });
 
   it("cannot publish a new doc", async () => {
-    await downgrade(KEY_A);
+    await makeIneligible(KEY_A);
 
     const response = await send("POST", "/api/v1/docs", KEY_A, { html: page("<p>new</p>") });
 
@@ -686,13 +708,12 @@ describe("a publisher whose plan may no longer publish", () => {
     // The frozen code, so a client matching on `code` is unaffected; only the
     // message carries the distinction.
     expect(body.error.code).toBe("unauthorized");
-    expect(body.error.message).toContain("lifetime");
-    expect(body.error.message).not.toMatch(/believer/i);
+    expect(body.error.message).toContain("paid plan");
   });
 
   it("cannot push a new version over a doc it already owns", async () => {
     const created = await publish(KEY_A, "Frozen at v1");
-    await downgrade(KEY_A);
+    await makeIneligible(KEY_A);
 
     const response = await send("PUT", `/api/v1/docs/${created.docId}`, KEY_A, {
       html: page("<p>v2</p>"),
