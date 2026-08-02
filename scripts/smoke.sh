@@ -23,13 +23,13 @@ BASE_URL=${1:-${SYMPOSIUM_BASE_URL:-}}
 
 usage() {
   cat >&2 <<'EOF'
-usage: SYMPOSIUM_LICENSE_KEY=<lifetime license key> scripts/smoke.sh <base url>
+usage: SYMPOSIUM_LICENSE_KEY=<paid Copilot license key> scripts/smoke.sh <base url>
 
   <base url>          the API host, e.g. https://api.symposium.md
                       (or set SYMPOSIUM_BASE_URL instead of passing it)
                       Document reads use the url the push returns, so the
                       serving domain is never passed in.
-  SYMPOSIUM_LICENSE_KEY   a lifetime-tier license key with a push quota to spare.
+  SYMPOSIUM_LICENSE_KEY   a paid license key with a push quota to spare.
                       Never passed as an argument, never printed.
 EOF
   exit 2

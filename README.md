@@ -35,14 +35,13 @@ where it runs.
   stored files are destroyed. Copies already sitting in someone's browser cache
   can't be recalled — no design can do that.
 - **See your docs.** List everything you've published, newest first.
-- **Publishing is gated to lifetime license holders.** Phase 1 is deliberately
-  narrow: the lifetime tier is a small, known group, which is the right size of
-  audience for the first public-hosting surface we run. A current Plus key
-  authenticates and is still refused, and is told why. Keys are checked against
-  the existing license server and the answer is cached for an hour, so a
-  license-server outage doesn't stop someone who has published before. Only
-  publishing is gated — anyone whose plan lapses keeps listing and unshare, so
-  no one is ever locked out of taking down what they already made public.
+- **Publishing is available to every paid Copilot user.** Active Plus
+  subscriptions and lifetime Supporter/Believer licenses are entitled. Keys are
+  checked against the existing license server and the answer is cached for an
+  hour, so a license-server outage doesn't stop someone who has published
+  before. The entitlement gate applies only to publishing; an authenticated
+  key whose recorded plan no longer qualifies can still list and unshare its
+  documents.
 - **Limits that stop abuse, not people.** 10MB per doc, 100 pushes a day, 500
   docs — generous enough that a real user never notices.
 
@@ -69,12 +68,10 @@ Roughly in order. Nothing below is started.
   there is a lot.
 - **Keeping old versions from piling up.** Every push is kept forever today.
   Fine for people, less fine once agents push on every edit.
-- **Opening publishing beyond lifetime holders.** Plus first, then a standalone
-  subscription around $2.99/mo for people who don't use Copilot at all. Widening
-  it is adding a string to one set in `src/auth.ts`, so the gate moves when the
-  abuse tooling and the support load say it can, not when the code is ready.
-  Publishing stays paid either way — reading is free and always will be, and free
-  publishing is not on the roadmap.
+- **A standalone publishing subscription.** Paid Copilot plans already include
+  publishing; a roughly $2.99/mo standalone option will let people who don't use
+  Copilot publish too. Reading stays free, and free publishing is not on the
+  roadmap.
   [`docs/cost-at-scale.md`](docs/cost-at-scale.md) §8 has the reasoning,
   including what the gate costs us in distribution.
 - **Then the actual product**: comments anchored to passages, agents drafting

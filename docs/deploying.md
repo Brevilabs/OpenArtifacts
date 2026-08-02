@@ -68,15 +68,15 @@ npx wrangler deploy
 #    makes it reachable, and by now the running version already knows the hosts.
 
 # 8. Check what just shipped, end to end, against the surface that ships.
-SYMPOSIUM_LICENSE_KEY=<a real lifetime-tier key> \
+SYMPOSIUM_LICENSE_KEY=<a real paid Copilot key> \
   scripts/smoke.sh https://api.symposium.md
 ```
 
 The smoke script publishes a doc, reads it, lists it, deletes it and confirms the
 `410`. It spends one push against that key's daily quota and leaves no live doc
 and no stored bytes behind — only the deleted doc's row, which every delete keeps
-so the url can go on answering `410`. It is not part of CI, which has no lifetime
-key to spend.
+so the url can go on answering `410`. It is not part of CI, which has no paid
+license key to spend.
 
 ## There is no workers.dev url
 
@@ -184,7 +184,7 @@ Two things the workflow deliberately does not do:
   successful production deployment rather than the previous commit — a failed
   deploy leaves the bad file on `main`, where a commit-to-commit check would
   stop noticing it. Once applied, a migration is append-only: add a new file.
-- **It does not smoke-test.** That needs a real lifetime key, spends a push from
+- **It does not smoke-test.** That needs a real paid license key, spends a push from
   its daily quota, and writes to production R2 and D1 on every merge. `/health`
   on both hosts is the liveness check instead. Run `scripts/smoke.sh` by hand
   when the change warrants it.

@@ -149,7 +149,7 @@ step.
 ### Phase 1 — public links *(shipped)*
 
 The url is the capability. 80 bits of entropy, `noindex`, no reader identity.
-Publishing gated to lifetime license holders.
+Publishing is gated to paid Copilot plans.
 
 ### Phase 2 — reader identity
 

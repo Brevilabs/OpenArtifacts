@@ -397,10 +397,15 @@ describe("resolvePublisher — a key the license server rejects", () => {
   });
 });
 
-describe("a plan that may not publish", () => {
-  const validPlus = answers({ isValid: true, plan: "plus", backendAccess: true, accountId: ACCOUNT });
+describe("publishing plan eligibility", () => {
+  const validPlus = answers({
+    isValid: true,
+    plan: "PLUS",
+    backendAccess: true,
+    accountId: ACCOUNT,
+  });
 
-  it("still authenticates — entitlement is not authentication", async () => {
+  it("authenticates a Plus subscriber and allows it to publish", async () => {
     const store = memoryStore();
 
     const result = await resolvePublisher(KEY, env(), {
@@ -409,13 +414,18 @@ describe("a plan that may not publish", () => {
       fetch: licenseServer(validPlus).fetch,
     });
 
-    // The key is real, so it resolves to a publisher and gets a row like any
-    // other. What it cannot do is publish, and that is the router's call.
     expect(result).toEqual({
       ok: true,
       publisher: { owner: ACCOUNT, plan: "plus" },
     });
     expect(store.rows.get(KEY_HASH)?.plan).toBe("plus");
+    expect(mayPublish("plus")).toBe(true);
+  });
+
+  it("allows every currently paid plan and fails closed for other values", () => {
+    expect(mayPublish("believer")).toBe(true);
+    expect(mayPublish("free")).toBe(false);
+    expect(mayPublish("unknown")).toBe(false);
   });
 
   it("carries a plan it cannot read as one that may not publish", async () => {
@@ -431,13 +441,13 @@ describe("a plan that may not publish", () => {
     expect(mayPublish(result.publisher.plan)).toBe(false);
   });
 
-  it("writes a downgrade back through the ordinary valid path", async () => {
+  it("writes a plan change back through the ordinary valid path", async () => {
     const store = memoryStore(validatedAt(LICENSE_CACHE_TTL_MS));
 
     await resolvePublisher(KEY, env(), { store, now, fetch: licenseServer(validPlus).fetch });
 
-    // No special case needed: a downgraded publisher authenticates, so the row
-    // is refreshed like anyone else's and the stale `believer` is gone.
+    // The refreshed cache must carry the current plan so the router makes its
+    // entitlement decision from the latest successful validation.
     expect(store.rows.get(KEY_HASH)).toEqual({
       key_hash: KEY_HASH,
       owner: ACCOUNT,
@@ -446,7 +456,7 @@ describe("a plan that may not publish", () => {
     });
   });
 
-  it("refuses with the frozen code, and says why without naming the DB enum", async () => {
+  it("refuses an ineligible plan with the frozen code and a useful message", async () => {
     const response = publisherErrorResponse(INELIGIBLE_PLAN);
 
     expect(response.status).toBe(401);
@@ -454,11 +464,8 @@ describe("a plan that may not publish", () => {
     expect(await response.json()).toEqual({
       error: { code: "unauthorized", message: INELIGIBLE_PLAN.message },
     });
-    expect(INELIGIBLE_PLAN.message).toContain("lifetime");
+    expect(INELIGIBLE_PLAN.message).toContain("paid plan");
     expect(INELIGIBLE_PLAN.message).not.toContain("not valid");
-    // `BELIEVER` is the license server's DB enum and the plan is *sold* as
-    // Supporter, so neither word means anything to the person reading this.
-    expect(INELIGIBLE_PLAN.message).not.toMatch(/believer/i);
   });
 });
 
@@ -488,7 +495,7 @@ describe("the gate is on publishing, not on the publisher", () => {
       ["POST", "/docs"],
       ["PUT", `/docs/${VALID_DOC_ID}`],
     ] as const) {
-      const res = await call(method, path, seeded("plus"));
+      const res = await call(method, path, seeded("unknown"));
 
       expect(res.status).toBe(401);
       await expect(res.json()).resolves.toEqual({
@@ -504,16 +511,10 @@ describe("the gate is on publishing, not on the publisher", () => {
   // which is a claim about D1 rather than about the gate.
 
   it("leaves the doc list working for a plan that may not publish", async () => {
-    const res = await call("GET", "/docs", seeded("plus"));
+    const res = await call("GET", "/docs", seeded("unknown"));
 
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toEqual({ docs: [] });
-  });
-
-  it("lets an entitled plan past the gate", async () => {
-    const res = await call("GET", "/docs", seeded("believer"));
-
-    expect(res.status).toBe(200);
   });
 });
 

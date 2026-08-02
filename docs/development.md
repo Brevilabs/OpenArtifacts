@@ -22,9 +22,8 @@ wrangler@latest`.
 There is no license server locally, so the first push against `wrangler dev`
 fails with `internal`. Warm the validation cache by hand — the worker trusts a
 `publishers` row younger than an hour whose plan may publish, and a key is
-identified by the SHA-256 of itself. The plan has to be `believer`: any other
-value is not entitled to publish, so the row is skipped and the push falls
-through to a license server that is not there.
+identified by the SHA-256 of itself. Use `plus` or `believer`, the two paid plans
+entitled to publish. Any other value is refused by the publishing gate.
 
 `owner` is the account the documents get filed under — in production the
 `accountId` the license server returns, and locally any string you like, since
@@ -38,7 +37,7 @@ HASH=$(printf '%s' "$KEY" | shasum -a 256 | cut -d' ' -f1)
 npx wrangler d1 migrations apply symposium --local
 npx wrangler d1 execute symposium --local --command \
   "INSERT OR REPLACE INTO publishers (key_hash, plan, validated_at, owner)
-   VALUES ('$HASH', 'believer', $(($(date +%s) * 1000)), 'local-account')"
+   VALUES ('$HASH', 'plus', $(($(date +%s) * 1000)), 'local-account')"
 
 SYMPOSIUM_LICENSE_KEY=$KEY scripts/smoke.sh http://127.0.0.1:8787
 ```
