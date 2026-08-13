@@ -20,7 +20,6 @@ async function capture(env: Env, owner: string, event: SymposiumEvent): Promise<
   if (!env.POSTHOG_PROJECT_API_KEY || !env.POSTHOG_HOST || !env.ENVIRONMENT) return;
 
   const properties: Record<string, string | boolean> = {
-    distinct_id: owner,
     service: "symposium",
     environment: env.ENVIRONMENT,
     // Keep the shared account id available for event analysis without creating
@@ -35,6 +34,7 @@ async function capture(env: Env, owner: string, event: SymposiumEvent): Promise<
     body: JSON.stringify({
       api_key: env.POSTHOG_PROJECT_API_KEY,
       event: event.event,
+      distinct_id: owner,
       properties,
     }),
   });

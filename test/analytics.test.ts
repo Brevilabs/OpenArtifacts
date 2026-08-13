@@ -42,6 +42,7 @@ const page = (text: string) =>
 interface CapturePayload {
   api_key: string;
   event: string;
+  distinct_id: string;
   properties: Record<string, unknown>;
 }
 
@@ -96,8 +97,8 @@ describe("PostHog publishing analytics", () => {
         payload: {
           api_key: "phc_test",
           event: "symposium_publish",
+          distinct_id: owner,
           properties: {
-            distinct_id: owner,
             service: "symposium",
             environment: "test",
             $process_person_profile: false,
@@ -110,8 +111,8 @@ describe("PostHog publishing analytics", () => {
         payload: {
           api_key: "phc_test",
           event: "symposium_publish",
+          distinct_id: owner,
           properties: {
-            distinct_id: owner,
             service: "symposium",
             environment: "test",
             $process_person_profile: false,
@@ -124,8 +125,8 @@ describe("PostHog publishing analytics", () => {
         payload: {
           api_key: "phc_test",
           event: "symposium_unshare",
+          distinct_id: owner,
           properties: {
-            distinct_id: owner,
             service: "symposium",
             environment: "test",
             $process_person_profile: false,

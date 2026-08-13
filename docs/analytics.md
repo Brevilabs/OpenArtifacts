@@ -14,7 +14,7 @@ size, raw error, referrer, IP address, or reader identifier is sent to PostHog.
 
 The Worker emits these events only after a successful API response:
 
-| API operation | Event | Properties |
+| API operation | Event | PostHog fields |
 | --- | --- | --- |
 | `POST /api/v1/docs` (`201`) | `symposium_publish` | `distinct_id`, `operation=create`, `service=symposium`, `environment`, `$process_person_profile=false` |
 | `PUT /api/v1/docs/{id}` (`200`) | `symposium_publish` | `distinct_id`, `operation=update`, `service=symposium`, `environment`, `$process_person_profile=false` |
