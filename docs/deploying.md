@@ -49,13 +49,14 @@ the one that makes the Worker reachable: `workers_dev` is `false`, so a Worker
 with no custom domain attached answers on nothing at all.
 
 ```bash
-# 4. Credentials for the license server. Both prompt for the value, so neither
-#    ends up in your shell history. LICENSE_API_KEY is *ours*, never a
+# 4. Runtime secrets. Each command prompts for the value, so none ends up in
+#    shell history. LICENSE_API_KEY is *ours*, never a
 #    publisher's key. On a first deploy the Worker does not exist yet, so the
 #    first of these also asks whether to create it — answer yes; step 5
 #    overwrites the placeholder and the secrets survive it.
 npx wrangler secret put LICENSE_API_URL     # e.g. https://api.brevilabs.com
 npx wrangler secret put LICENSE_API_KEY
+npx wrangler secret put POSTHOG_PROJECT_API_KEY # phc_ project ingest key
 
 # 5. Ship. The Worker has no hostname yet — see below.
 npx wrangler deploy

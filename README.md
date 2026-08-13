@@ -113,6 +113,7 @@ back.
 | [Identity](docs/identity.md) | Who owns a document, why it is the account and not the license key, and how symposium.md sign-in slots in. |
 | [Private sharing](docs/private-sharing.md) | How reader identity works, and the phases from public links to agents. Designed, not built. |
 | [Deploying](docs/deploying.md) | Provisioning the resources and shipping. |
+| [Product analytics](docs/analytics.md) | Privacy-safe publishing events and aggregate document-view reporting. |
 | [Development](docs/development.md) | Running it locally, including the license-server workaround. |
 | [Comments](docs/comments.md) | Design sketch for the next step of the product. Not planned, not built. |
 | [Positioning](docs/positioning.md) | Why the product exists and what it becomes. |

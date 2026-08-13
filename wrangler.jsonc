@@ -63,6 +63,8 @@
   // nothing, so going first costs nothing.
   "vars": {
     "SERVING_HOST": "symposium.site",
-    "API_HOST": "api.symposium.md"
+    "API_HOST": "api.symposium.md",
+    "POSTHOG_HOST": "https://us.i.posthog.com",
+    "ENVIRONMENT": "production"
   }
 }
