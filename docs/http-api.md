@@ -221,11 +221,14 @@ worth knowing:
   and the same rendering always produce the same tag, and `If-None-Match` with
   it returns `304`.
 
-`404` for an unknown id or version; `410` once the doc is deleted.
+`404` for an unknown id or version. Once the doc is deleted, `GET` returns a
+self-contained reader-facing HTML page with `410 Gone`; `HEAD` returns the same
+status and headers without a body.
 
 ## Errors
 
-Every failure, on both surfaces, is:
+Every publisher-facing failure and every public-serving failure except a
+deleted document is:
 
 ```json
 {"error": {"code": "not_found", "message": "No doc with id ..."}}
@@ -238,7 +241,6 @@ Match on `code`. `message` is human-facing and free to change.
 | `bad_request` | 400 | Malformed JSON, `html` missing, empty or not a string, non-string `title`, junk `limit` or `cursor`. |
 | `unauthorized` | 401 | No `Authorization: Bearer` header, the license server rejected the key, or — on `POST` and `PUT` only — the key's plan is not entitled to publish. Carries `WWW-Authenticate: Bearer`. |
 | `not_found` | 404 | No such doc, not yours, already deleted, or no route. |
-| `gone` | 410 | The doc was deleted by its author. |
 | `too_large` | 413 | `html` over 10MB. |
 | `quota_exceeded` | 429 | Daily push or doc-count ceiling reached. |
 | `internal` | 500 | Our fault, including the license server being unreachable for a key we have never seen. |

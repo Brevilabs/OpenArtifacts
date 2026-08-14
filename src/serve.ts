@@ -21,7 +21,12 @@ import type { Env } from "./config.js";
 import { findServableVersion } from "./db.js";
 import { errorResponse } from "./errors.js";
 import { isDocId } from "./ids.js";
-import { RENDER_REVISION, renderServedHtml } from "./render.js";
+import {
+  FAVICON_LINK,
+  NOINDEX_META,
+  RENDER_REVISION,
+  renderServedHtml,
+} from "./render.js";
 import { STORED_CONTENT_TYPE, versionObjectKey } from "./storage.js";
 
 /** Path prefix of the serving surface, used by the router's path fallback. */
@@ -166,19 +171,61 @@ function servingHeaders(cacheControl: string): Headers {
 }
 
 /**
- * Every failure this surface answers with, exported because the router's
+ * Every JSON failure this surface answers with, exported because the router's
  * catch-all needs one too: a binding that throws mid-read must still produce a
  * *serving* response, or an outage becomes the one doc url that invites a
  * crawler in. Routing a thrown error back through here is what makes the header
  * policy a property of the surface rather than of remembering to add it.
  *
- * All of them are `no-store` rather than cacheable. 410 in particular is
- * heuristically cacheable by default, and a delete is the one answer a publisher
- * may need to be able to correct. Uncached costs us nothing: none of these ever
- * reached R2.
+ * All of them are `no-store` rather than cacheable. Uncached costs us nothing:
+ * none of these ever reached R2.
  */
-export function servingError(code: "not_found" | "gone" | "internal", message: string): Response {
+export function servingError(code: "not_found" | "internal", message: string): Response {
   return errorResponse(code, message, servingHeaders("no-store"));
+}
+
+const DELETED_DOCUMENT_PAGE = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+${NOINDEX_META}
+${FAVICON_LINK}
+<title>Document deleted · Symposium</title>
+<style>
+  :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 2rem; color: #edf3ee; background: #0d100e; }
+  main { width: min(100%, 34rem); padding: clamp(2rem, 6vw, 4rem); border: 1px solid #2b332e; border-radius: 1.5rem; background: #121613; box-shadow: 0 1.5rem 5rem rgba(0, 0, 0, 0.35); }
+  .brand { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 3.5rem; color: #a7b0aa; font-size: 0.75rem; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; }
+  .mark { display: grid; gap: 0.25rem; width: 2rem; padding: 0.5rem 0.4rem; border-radius: 0.5rem; background: #46d17f; }
+  .mark span { display: block; height: 2px; border-radius: 999px; background: #0d100e; }
+  .mark span:last-child { width: 65%; }
+  h1 { max-width: 12ch; margin: 0; color: #f7faf7; font-size: clamp(2.25rem, 7vw, 4.25rem); line-height: 0.98; letter-spacing: -0.055em; }
+  p { max-width: 30rem; margin: 1.5rem 0 0; color: #a7b0aa; font-size: 1.05rem; line-height: 1.7; }
+  a { display: inline-flex; margin-top: 2rem; color: #72e29d; font-weight: 650; text-underline-offset: 0.25em; }
+  a:hover { color: #a0efbd; }
+</style>
+</head>
+<body>
+<main>
+  <div class="brand"><span class="mark" aria-hidden="true"><span></span><span></span><span></span></span>Symposium</div>
+  <h1>This document is gone.</h1>
+  <p>The author deleted this document. If you still need it, ask them to share a new copy.</p>
+  <a href="https://symposium.md">About Symposium</a>
+</main>
+</body>
+</html>`;
+
+function deletedDocumentResponse(method: string): Response {
+  // 410 is heuristically cacheable by default. A publisher may need to correct
+  // a mistaken deletion, so this response must never be stored by a cache.
+  const headers = servingHeaders("no-store");
+  headers.set("content-type", STORED_CONTENT_TYPE);
+  return new Response(method === "HEAD" ? null : DELETED_DOCUMENT_PAGE, {
+    status: 410,
+    headers,
+  });
 }
 
 /**
@@ -428,7 +475,7 @@ export async function handleServing(request: Request, url: URL, env: Env): Promi
   const found = await findServableVersion(env.DB, route.docId, route.pinned);
   if (found === null) return noDocAt(url.pathname);
   if (found.deleted_at !== null) {
-    return servingError("gone", "This doc was deleted by its author.");
+    return deletedDocumentResponse(request.method);
   }
   if (found.version === null) return noDocAt(url.pathname);
 

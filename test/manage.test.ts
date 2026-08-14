@@ -235,9 +235,8 @@ describe("DELETE /api/v1/docs/{docId}", () => {
     // than concluding they mistyped it. That is what the kept row buys.
     const gone = await read(`/d/${created.docId}`);
     expect(gone.status).toBe(410);
-    await expect(gone.json()).resolves.toEqual({
-      error: { code: "gone", message: expect.any(String) },
-    });
+    expect(gone.headers.get("content-type")).toBe("text/html; charset=utf-8");
+    expect(await gone.text()).toContain("The author deleted this document.");
   });
 
   it("410s the doc's pinned versions too", async () => {

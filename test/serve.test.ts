@@ -378,9 +378,12 @@ describe("a deleted doc", () => {
     const response = await get(`/d/${docId}`);
 
     expect(response.status).toBe(410);
-    await expect(response.json()).resolves.toEqual({
-      error: { code: "gone", message: expect.any(String) },
-    });
+    expect(response.headers.get("content-type")).toBe("text/html; charset=utf-8");
+    const html = await response.text();
+    expect(html).toContain("<title>Document deleted · Symposium</title>");
+    expect(html).toContain("This document is gone.");
+    expect(html).toContain("The author deleted this document.");
+    expect(html).toContain(NOINDEX_META);
     // A reader who bookmarked the link deserves to know it was withdrawn, not
     // to wonder whether they mistyped it.
     expect(response.headers.get("cache-control")).toBe("no-store");
@@ -393,6 +396,8 @@ describe("a deleted doc", () => {
     for (const path of [`/d/${docId}/v1`, `/d/${docId}/v2`, `/d/${docId}/v99`]) {
       const response = await get(path);
       expect({ path, status: response.status }).toEqual({ path, status: 410 });
+      expect(response.headers.get("content-type")).toBe("text/html; charset=utf-8");
+      expect(await response.text()).toContain("The author deleted this document.");
     }
   });
 
@@ -526,7 +531,12 @@ describe("HEAD and conditional requests", () => {
     const docId = await twoVersionDoc();
     await softDelete(docId);
 
-    expect((await send("HEAD", `/d/${docId}`)).status).toBe(410);
+    const response = await send("HEAD", `/d/${docId}`);
+
+    expect(response.status).toBe(410);
+    expect(response.headers.get("content-type")).toBe("text/html; charset=utf-8");
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(await response.text()).toBe("");
   });
 
   it("answers a matching If-None-Match with 304 and no body", async () => {
