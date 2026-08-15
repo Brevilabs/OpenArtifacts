@@ -148,15 +148,15 @@ export default {
       }
     } catch (error) {
       // R2 and D1 can fail mid-request. Left uncaught they become workerd's
-      // plain-text 500 — the one response the frozen contract does not describe,
-      // and Copilot parses `{error:{code}}` on every failure. The cause is
-      // logged rather than returned: it can quote a query or a key.
+      // plain-text 500. The API keeps its JSON contract, while the reader-facing
+      // surface gets a proper status page. The cause is logged rather than
+      // returned because it can quote a query or a key.
       console.error("unhandled error", { path: url.pathname, error });
       const message = "Something went wrong on our end. Please try again.";
       // The surface still decides the headers. A 500 on a doc url is a serving
       // response like any other, and has to carry the robots tag that proves it.
       return surface === "serving"
-        ? servingError("internal", message)
+        ? servingError(request.method, "internal")
         : errorResponse("internal", message);
     }
   },
