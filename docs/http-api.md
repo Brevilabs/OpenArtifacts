@@ -221,20 +221,31 @@ worth knowing:
   and the same rendering always produce the same tag, and `If-None-Match` with
   it returns `304`.
 
-`404` for an unknown id or version. Once the doc is deleted, `GET` returns a
-self-contained reader-facing HTML page with `410 Gone`; `HEAD` returns the same
-status and headers without a body.
+Every Worker-controlled reader outcome where no document can be displayed is a
+self-contained HTML page:
+
+| Status | Reader sees |
+| --- | --- |
+| `404 Not Found` | A neutral unavailable page for an unknown or malformed link, a missing version, or missing stored bytes. |
+| `410 Gone` | An explicit deleted page when the retained doc row proves the author withdrew it. |
+| `500 Internal Server Error` | A temporary-unavailable page when a serving dependency fails. |
+
+All three are `no-store` and retain the serving header policy above. `HEAD`
+returns the same status and headers as `GET` without a body. Healthy `200` and
+conditional `304` responses are unchanged.
 
 ## Errors
 
-Every publisher-facing failure and every public-serving failure except a
-deleted document is:
+Every publisher-facing API failure is JSON:
 
 ```json
 {"error": {"code": "not_found", "message": "No doc with id ..."}}
 ```
 
 Match on `code`. `message` is human-facing and free to change.
+
+The public serving surface uses the HTML status pages above instead. It never
+exposes this API payload to a reader.
 
 | `code` | HTTP | When |
 | --- | --- | --- |

@@ -121,6 +121,8 @@ describe("worker dispatch", () => {
   it("hands /d to the serving surface on workers.dev", async () => {
     const res = await get(`https://${WORKERS_DEV}/d/abc`);
     expect(res.status).toBe(404);
+    expect(res.headers.get("content-type")).toBe("text/html; charset=utf-8");
+    expect(await res.text()).toContain("This document isn’t available.");
     expect(res.headers.get("x-robots-tag")).toBe("noindex, nofollow");
   });
 
@@ -135,11 +137,10 @@ describe("worker dispatch", () => {
       });
       expect(res.status).toBe(404);
       // Two independent signals that the serving surface answered: only it
-      // stamps the robots header, and only it phrases the miss as a doc.
+      // stamps the robots header, and only it renders an HTML status page.
       expect(res.headers.get("x-robots-tag")).toBe("noindex, nofollow");
-      await expect(res.json()).resolves.toEqual({
-        error: { code: "not_found", message: expect.stringContaining("No doc at") },
-      });
+      expect(res.headers.get("content-type")).toBe("text/html; charset=utf-8");
+      expect(await res.text()).toContain("This document isn’t available.");
     }
   });
 

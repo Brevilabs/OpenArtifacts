@@ -24,6 +24,23 @@ async function expectServes(response: Response, docId: string, version: number) 
   return html;
 }
 
+async function expectStatusPage(
+  response: Response,
+  status: number,
+  title: string,
+  heading: string,
+  message: string,
+) {
+  expect(response.status).toBe(status);
+  expect(response.headers.get("content-type")).toBe("text/html; charset=utf-8");
+  expect(response.headers.get("cache-control")).toBe("no-store");
+
+  const html = await response.text();
+  expect(html).toContain(`<title>${title} · Symposium</title>`);
+  expect(html).toContain(`<h1 id="page-title">${heading}</h1>`);
+  expect(html).toContain(message);
+  expect(html).toContain(NOINDEX_META);
+}
 
 /**
  * A host matching neither SERVING_HOST nor API_HOST, which is what makes the
@@ -34,7 +51,6 @@ const ORIGIN = "https://symposium.workers.dev";
 
 const KEY = "cplus_live_a1b2c3d4e5f60718";
 
-/** A doc id of the right shape that no push ever minted. */
 /**
  * A well-formed id that is not in the database. Derived from DOC_ID_LENGTH, not
  * written out: a literal of the wrong length is rejected by `isDocId` on shape
@@ -248,6 +264,7 @@ describe("GET /d/{docId}/v{n}", () => {
     for (const n of [3, 4, 99]) {
       const response = await get(`/d/${docId}/v${n}`);
       expect({ n, status: response.status }).toEqual({ n, status: 404 });
+      expect(await response.text()).toContain("This document isn’t available.");
     }
   });
 
@@ -350,10 +367,13 @@ describe("the headers on every served page", () => {
     const docId = await twoVersionDoc();
     const response = await get(`/d/${docId}`, undefined, { DOCS: brokenDocs });
 
-    expect(response.status).toBe(500);
-    await expect(response.json()).resolves.toEqual({
-      error: { code: "internal", message: expect.any(String) },
-    });
+    await expectStatusPage(
+      response,
+      500,
+      "Document temporarily unavailable",
+      "We can’t open this document right now.",
+      "Something went wrong on our end. Please try again in a moment.",
+    );
     expect(response.headers.get("x-robots-tag")).toBe("noindex, nofollow");
     expect(response.headers.get("cache-control")).toBe("no-store");
     expect(response.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
@@ -377,13 +397,13 @@ describe("a deleted doc", () => {
 
     const response = await get(`/d/${docId}`);
 
-    expect(response.status).toBe(410);
-    expect(response.headers.get("content-type")).toBe("text/html; charset=utf-8");
-    const html = await response.text();
-    expect(html).toContain("<title>Document deleted · Symposium</title>");
-    expect(html).toContain("This document is gone.");
-    expect(html).toContain("The author deleted this document.");
-    expect(html).toContain(NOINDEX_META);
+    await expectStatusPage(
+      response,
+      410,
+      "Document deleted",
+      "This document is gone.",
+      "The author deleted this document.",
+    );
     // A reader who bookmarked the link deserves to know it was withdrawn, not
     // to wonder whether they mistyped it.
     expect(response.headers.get("cache-control")).toBe("no-store");
@@ -416,11 +436,13 @@ describe("a doc that is not there", () => {
   it("404s an id no push ever minted", async () => {
     const response = await get(`/d/${UNKNOWN_DOC_ID}`);
 
-    expect(response.status).toBe(404);
-    await expect(response.json()).resolves.toEqual({
-      error: { code: "not_found", message: expect.stringContaining("No doc at") },
-    });
-    expect(response.headers.get("cache-control")).toBe("no-store");
+    await expectStatusPage(
+      response,
+      404,
+      "Document unavailable",
+      "This document isn’t available.",
+      "The link may be incorrect, or the author may have deleted the document.",
+    );
   });
 
   it("404s a doc row with no version yet", async () => {
@@ -433,7 +455,9 @@ describe("a doc that is not there", () => {
       .bind(UNKNOWN_DOC_ID, owner, Date.now(), Date.now())
       .run();
 
-    expect((await get(`/d/${UNKNOWN_DOC_ID}`)).status).toBe(404);
+    const response = await get(`/d/${UNKNOWN_DOC_ID}`);
+    expect(response.status).toBe(404);
+    expect(await response.text()).toContain("This document isn’t available.");
   });
 
   it("404s an object D1 promises but R2 does not have", async () => {
@@ -442,7 +466,9 @@ describe("a doc that is not there", () => {
 
     // R2 is the system of record, so its answer wins over the pointer index's
     // — a missing object is a miss, not a 500.
-    expect((await get(`/d/${docId}`)).status).toBe(404);
+    const missing = await get(`/d/${docId}`);
+    expect(missing.status).toBe(404);
+    expect(await missing.text()).toContain("This document isn’t available.");
     expect((await get(`/d/${docId}/v1`)).status).toBe(200);
   });
 
@@ -477,6 +503,8 @@ describe("a doc that is not there", () => {
     for (const path of impossible) {
       const response = await get(path, undefined, servingHost);
       expect({ path, status: response.status }).toEqual({ path, status: 404 });
+      expect(response.headers.get("content-type")).toBe("text/html; charset=utf-8");
+      expect(await response.text()).toContain("This document isn’t available.");
       expect(response.headers.get("x-robots-tag")).toBe("noindex, nofollow");
     }
   });
@@ -487,6 +515,7 @@ describe("a doc that is not there", () => {
     for (const method of ["POST", "PUT", "DELETE", "PATCH"]) {
       const response = await send(method, `/d/${docId}`);
       expect({ method, status: response.status }).toEqual({ method, status: 404 });
+      expect(await response.text()).toContain("This document isn’t available.");
     }
     // And the doc is untouched by the attempt.
     expect((await get(`/d/${docId}`)).status).toBe(200);
@@ -524,7 +553,12 @@ describe("HEAD and conditional requests", () => {
   });
 
   it("404s HEAD for a doc that is not there", async () => {
-    expect((await send("HEAD", `/d/${UNKNOWN_DOC_ID}`)).status).toBe(404);
+    const response = await send("HEAD", `/d/${UNKNOWN_DOC_ID}`);
+
+    expect(response.status).toBe(404);
+    expect(response.headers.get("content-type")).toBe("text/html; charset=utf-8");
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(await response.text()).toBe("");
   });
 
   it("410s HEAD for a deleted doc", async () => {
@@ -534,6 +568,22 @@ describe("HEAD and conditional requests", () => {
     const response = await send("HEAD", `/d/${docId}`);
 
     expect(response.status).toBe(410);
+    expect(response.headers.get("content-type")).toBe("text/html; charset=utf-8");
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(await response.text()).toBe("");
+  });
+
+  it("500s HEAD with the temporary page headers and no body", async () => {
+    const docId = await twoVersionDoc();
+    const brokenDocs = {
+      head: () => {
+        throw new Error("R2 unavailable");
+      },
+    } as unknown as R2Bucket;
+
+    const response = await send("HEAD", `/d/${docId}`, {}, { DOCS: brokenDocs });
+
+    expect(response.status).toBe(500);
     expect(response.headers.get("content-type")).toBe("text/html; charset=utf-8");
     expect(response.headers.get("cache-control")).toBe("no-store");
     expect(await response.text()).toBe("");

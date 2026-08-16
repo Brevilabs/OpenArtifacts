@@ -19,7 +19,6 @@
  */
 import type { Env } from "./config.js";
 import { findServableVersion } from "./db.js";
-import { errorResponse } from "./errors.js";
 import { isDocId } from "./ids.js";
 import {
   FAVICON_LINK,
@@ -170,28 +169,47 @@ function servingHeaders(cacheControl: string): Headers {
   });
 }
 
-/**
- * Every JSON failure this surface answers with, exported because the router's
- * catch-all needs one too: a binding that throws mid-read must still produce a
- * *serving* response, or an outage becomes the one doc url that invites a
- * crawler in. Routing a thrown error back through here is what makes the header
- * policy a property of the surface rather than of remembering to add it.
- *
- * All of them are `no-store` rather than cacheable. Uncached costs us nothing:
- * none of these ever reached R2.
- */
-export function servingError(code: "not_found" | "internal", message: string): Response {
-  return errorResponse(code, message, servingHeaders("no-store"));
+type ServingPageKind = "not_found" | "deleted" | "internal";
+
+interface ServingPageCopy {
+  status: 404 | 410 | 500;
+  title: string;
+  heading: string;
+  message: string;
 }
 
-const DELETED_DOCUMENT_PAGE = `<!doctype html>
+const SERVING_PAGES: Record<ServingPageKind, ServingPageCopy> = {
+  not_found: {
+    status: 404,
+    title: "Document unavailable",
+    heading: "This document isn’t available.",
+    message:
+      "The link may be incorrect, or the author may have deleted the document. Check the address or ask the author to share a new copy.",
+  },
+  deleted: {
+    status: 410,
+    title: "Document deleted",
+    heading: "This document is gone.",
+    message:
+      "The author deleted this document. If you still need it, ask them to share a new copy.",
+  },
+  internal: {
+    status: 500,
+    title: "Document temporarily unavailable",
+    heading: "We can’t open this document right now.",
+    message: "Something went wrong on our end. Please try again in a moment.",
+  },
+};
+
+function servingPageHtml(copy: ServingPageCopy): string {
+  return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 ${NOINDEX_META}
 ${FAVICON_LINK}
-<title>Document deleted · Symposium</title>
+<title>${copy.title} · Symposium</title>
 <style>
   :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
   * { box-sizing: border-box; }
@@ -208,35 +226,40 @@ ${FAVICON_LINK}
 </style>
 </head>
 <body>
-<main>
+<main aria-labelledby="page-title">
   <div class="brand"><span class="mark" aria-hidden="true"><span></span><span></span><span></span></span>Symposium</div>
-  <h1>This document is gone.</h1>
-  <p>The author deleted this document. If you still need it, ask them to share a new copy.</p>
+  <h1 id="page-title">${copy.heading}</h1>
+  <p>${copy.message}</p>
   <a href="https://symposium.md">About Symposium</a>
 </main>
 </body>
 </html>`;
+}
 
-function deletedDocumentResponse(method: string): Response {
-  // 410 is heuristically cacheable by default. A publisher may need to correct
-  // a mistaken deletion, so this response must never be stored by a cache.
+/**
+ * Every failure page is `no-store`. A 410 is heuristically cacheable by
+ * default, a 404 may later become a document, and a 500 is explicitly
+ * temporary. Keeping one response path makes the serving security policy and
+ * HEAD behavior properties of the surface rather than per-error conventions.
+ */
+function servingPageResponse(method: string, kind: ServingPageKind): Response {
+  const copy = SERVING_PAGES[kind];
   const headers = servingHeaders("no-store");
   headers.set("content-type", STORED_CONTENT_TYPE);
-  return new Response(method === "HEAD" ? null : DELETED_DOCUMENT_PAGE, {
-    status: 410,
+  return new Response(method === "HEAD" ? null : servingPageHtml(copy), {
+    status: copy.status,
     headers,
   });
 }
 
-/**
- * One message for "no such id", "malformed id" and "no such version" alike. The
- * id space is not worth probing at 80 bits, but a reply that distinguished the
- * cases would still be telling a stranger which ids are real — and that matters
- * more now the space is smaller, since an oracle is worth more to an enumerator
- * than the raw arithmetic suggests.
- */
-function noDocAt(pathname: string): Response {
-  return servingError("not_found", `No doc at ${pathname}`);
+/** Exported because the router's serving-surface catch-all needs the same page. */
+export function servingError(method: string, code: "not_found" | "internal"): Response {
+  return servingPageResponse(method, code);
+}
+
+/** One neutral page for every miss, so it never confirms whether an id existed. */
+function noDocAt(method: string): Response {
+  return servingError(method, "not_found");
 }
 
 interface DocRoute {
@@ -398,7 +421,6 @@ async function serveObject(
   env: Env,
   route: DocRoute,
   version: number,
-  pathname: string,
 ): Promise<Response> {
   const key = versionObjectKey(route.docId, version);
   const headers = servingHeaders(
@@ -412,7 +434,7 @@ async function serveObject(
   // wins over D1's rather than becoming a 500.
   if (request.method === "HEAD") {
     const object = await env.DOCS.head(key);
-    if (object === null) return noDocAt(pathname);
+    if (object === null) return noDocAt(request.method);
 
     headers.set("etag", servedEtag(object.httpEtag));
     // A validator has to mean the same thing whichever method asks. HEAD is
@@ -432,7 +454,7 @@ async function serveObject(
   }
 
   const object = await env.DOCS.get(key, { onlyIf: conditions });
-  if (object === null) return noDocAt(pathname);
+  if (object === null) return noDocAt(request.method);
 
   // The response is the object *and* the rendering applied to it, so the
   // validator names both. What it does not fix is a copy that never revalidates:
@@ -466,22 +488,22 @@ export async function handleServing(request: Request, url: URL, env: Env): Promi
   // does not have, and nothing that legitimately reads a doc sends anything
   // else — a POST to a doc url is a probe, and it gets what a probe gets.
   if (request.method !== "GET" && request.method !== "HEAD") {
-    return noDocAt(url.pathname);
+    return noDocAt(request.method);
   }
 
   const route = parseDocPath(url.pathname);
-  if (route === null) return noDocAt(url.pathname);
+  if (route === null) return noDocAt(request.method);
 
   const found = await findServableVersion(env.DB, route.docId, route.pinned);
-  if (found === null) return noDocAt(url.pathname);
+  if (found === null) return noDocAt(request.method);
   if (found.deleted_at !== null) {
-    return deletedDocumentResponse(request.method);
+    return servingPageResponse(request.method, "deleted");
   }
-  if (found.version === null) return noDocAt(url.pathname);
+  if (found.version === null) return noDocAt(request.method);
 
   // `return await`, not `return`, for the reason spelled out in index.ts: an
   // async function that hands back somebody else's promise unawaited drops
   // itself out of the rejection's stack and, in workerd, gets the rejection
   // reported as unhandled even though the router catches it.
-  return await serveObject(request, env, route, found.version, url.pathname);
+  return await serveObject(request, env, route, found.version);
 }
