@@ -29,6 +29,13 @@ export interface Env {
    * publisher's license key, and the two must never be confused.
    */
   LICENSE_API_KEY?: string;
+
+  /** PostHog project ingest key. A deployed Worker secret; never committed. */
+  POSTHOG_PROJECT_API_KEY?: string;
+  /** PostHog ingestion origin, configured as a non-secret Worker variable. */
+  POSTHOG_HOST?: string;
+  /** Deployment name attached to analytics events, e.g. `production`. */
+  ENVIRONMENT?: string;
 }
 
 /**

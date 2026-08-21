@@ -13,3 +13,9 @@ LICENSE_API_URL="https://api.brevilabs.com"
 # Publisher keys arrive per request in the Authorization header and are never
 # stored; only their SHA-256 is.
 LICENSE_API_KEY=""
+
+# Existing Brevilabs PostHog project's public ingest key. This authorizes event
+# capture only; do not use a phx_ personal API key here.
+POSTHOG_PROJECT_API_KEY=""
+# Override wrangler.jsonc's production label whenever local capture is enabled.
+ENVIRONMENT="development"

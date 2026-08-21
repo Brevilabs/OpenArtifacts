@@ -1,5 +1,6 @@
 import { deleteDoc, listDocs } from "./api/manage.js";
 import { createDoc, updateDoc } from "./api/push.js";
+import { capturePublish, captureUnshare, scheduleCapture } from "./analytics.js";
 import {
   authenticateRequest,
   INELIGIBLE_PLAN,
@@ -68,7 +69,12 @@ export function resolveSurface(hostname: string, pathname: string, config: Surfa
  * Every API request authenticates before any handler sees it, so a handler can
  * assume a publisher and never has to reason about the license key.
  */
-async function handleApi(request: Request, url: URL, env: Env): Promise<Response> {
+async function handleApi(
+  request: Request,
+  url: URL,
+  env: Env,
+  ctx: ExecutionContext,
+): Promise<Response> {
   const auth = await authenticateRequest(request, env);
   if (!auth.ok) return publisherErrorResponse(auth);
 
@@ -101,16 +107,28 @@ async function handleApi(request: Request, url: URL, env: Env): Promise<Response
   // promise, for the reason spelled out on the catch below.
   if (collection === "docs" && extra.length === 0) {
     if (docId === undefined && request.method === "POST") {
-      return await createDoc(request, url, env, auth.publisher);
+      const response = await createDoc(request, url, env, auth.publisher);
+      if (response.status === 201) {
+        scheduleCapture(ctx, capturePublish(env, auth.publisher.owner, "create"));
+      }
+      return response;
     }
     if (docId === undefined && request.method === "GET") {
       return await listDocs(url, env, auth.publisher);
     }
     if (docId !== undefined && request.method === "PUT") {
-      return await updateDoc(request, url, env, auth.publisher, docId);
+      const response = await updateDoc(request, url, env, auth.publisher, docId);
+      if (response.status === 200) {
+        scheduleCapture(ctx, capturePublish(env, auth.publisher.owner, "update"));
+      }
+      return response;
     }
     if (docId !== undefined && request.method === "DELETE") {
-      return await deleteDoc(env, auth.publisher, docId);
+      const response = await deleteDoc(env, auth.publisher, docId);
+      if (response.status === 204) {
+        scheduleCapture(ctx, captureUnshare(env, auth.publisher.owner));
+      }
+      return response;
     }
   }
 
@@ -118,7 +136,7 @@ async function handleApi(request: Request, url: URL, env: Env): Promise<Response
 }
 
 export default {
-  async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
     // Deliberately outside the surface split: the deploy smoke check has to
@@ -140,7 +158,7 @@ export default {
       // handle it, which fails the whole test run.
       switch (surface) {
         case "api":
-          return await handleApi(request, url, env);
+          return await handleApi(request, url, env, ctx);
         case "serving":
           return await handleServing(request, url, env);
         default:
