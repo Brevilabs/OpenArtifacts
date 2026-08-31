@@ -45,7 +45,7 @@
  * constants in this file, so the thing that changes them is an edit to this
  * file, and a reviewer can see whether the number moved with it.
  */
-export const RENDER_REVISION = 3;
+export const RENDER_REVISION = 4;
 
 /**
  * Belt to the `X-Robots-Tag` header's braces (D9). The header is the
@@ -85,13 +85,13 @@ export const FAVICON_LINK =
 /**
  * The card image every shared doc unfurls with, on the brand domain.
  *
- * It is the one Symposium addition that cannot be inlined. A data URI is not a
+ * It is the one OpenArtifacts addition that cannot be inlined. A data URI is not a
  * valid `og:image` — every unfurler fetches the value over http(s) from its own
  * infrastructure, never from the reader's browser — so this is a hard
  * dependency on a url staying alive, which is exactly the dependency the
  * favicon and the Copilot mark were inlined to avoid.
  *
- * Given that, `symposium.md` rather than the marketing site's Vercel
+ * Given that, `openartifacts.ai` rather than the marketing site's Vercel
  * deployment url: pinned `/v{n}` pages are served `immutable` for a year, so a
  * document published today is still handing this url to crawlers long after
  * this deploy, and a preview deployment's hostname is not a thing to bet that
@@ -100,7 +100,7 @@ export const FAVICON_LINK =
  * It loads on the *unfurler's* side, so nothing about it touches the serving
  * origin's CSP or costs a reader a request.
  */
-export const OG_IMAGE_URL = "https://symposium.md/og-image.png";
+export const OG_IMAGE_URL = "https://openartifacts.ai/og-image.png";
 
 /**
  * The part of the card that is the same for every document: which image, how
@@ -118,11 +118,11 @@ export const OG_IMAGE_URL = "https://symposium.md/og-image.png";
  * nothing that unfurls these links renders anything differently for it.
  *
  * `og:site_name` does earn its place: it is the small label Discord and Slack
- * put above the title, and naming Symposium there is the branding this exists
+ * put above the title, and naming OpenArtifacts there is the branding this exists
  * for.
  */
 export const SOCIAL_CARD_META =
-  '<meta property="og:site_name" content="Symposium">' +
+  '<meta property="og:site_name" content="OpenArtifacts">' +
   `<meta property="og:image" content="${OG_IMAGE_URL}">` +
   '<meta property="og:image:width" content="1200">' +
   '<meta property="og:image:height" content="630">' +
@@ -277,8 +277,8 @@ const BYLINE_LINK_WITH_MARK =
 const SPAN_RESET = "all:initial;font:inherit;color:inherit;";
 
 /** Where the document came from. Injected at the top of the body. */
-export const SYMPOSIUM_HEADER =
-  '<div class="symposium-header" style="' +
+export const OPENARTIFACTS_HEADER =
+  '<div class="openartifacts-header" style="' +
   BYLINE_BASE +
   ";margin:0 0 2rem;padding:0.75rem 0;border-bottom:1px solid rgba(128,128,128,0.25)\">" +
   `<span style="${SPAN_RESET}display:inline-flex;align-items:center;gap:0.4em">Shared from ` +
@@ -288,11 +288,11 @@ export const SYMPOSIUM_HEADER =
   "</a></span></div>";
 
 /** What served it. Injected immediately before `</body>`. */
-export const SYMPOSIUM_FOOTER =
-  '<div class="symposium-footer" style="' +
+export const OPENARTIFACTS_FOOTER =
+  '<div class="openartifacts-footer" style="' +
   BYLINE_BASE +
   ";margin:4rem 0 0;padding:1rem 0;border-top:1px solid rgba(128,128,128,0.25)\">" +
-  `Powered by <a href="https://symposium.md" ${BYLINE_LINK}>symposium.md</a>, ` +
+  `Powered by <a href="https://openartifacts.ai" ${BYLINE_LINK}>openartifacts.ai</a>, ` +
   "where agents and humans get on the same page</div>";
 
 /** HTMLRewriter treats injected content as markup, not text, only when asked. */
@@ -347,8 +347,8 @@ const AS_HTML = { html: true } as const;
  * it did when serving was a passthrough.
  *
  * `branding` will be false for plans that pay to remove the bylines. It takes
- * the favicon and the social card with them — a Symposium mark in the reader's
- * tab is branding too, and a card carrying Symposium's own image is the most
+ * the favicon and the social card with them — an OpenArtifacts mark in the reader's
+ * tab is branding too, and a card carrying OpenArtifacts' own image is the most
  * visible branding of the lot: it is what a paying customer's link shows in
  * somebody else's Discord. `og:title` goes with it rather than being kept on
  * its own, because a card with a title and no image is a worse unfurl than the
@@ -420,10 +420,10 @@ export function renderServedHtml(response: Response, branding = true): Response 
         // before `c`.
         if (headerPlaced) return;
         headerPlaced = true;
-        if (branding) body.prepend(SYMPOSIUM_HEADER, AS_HTML);
+        if (branding) body.prepend(OPENARTIFACTS_HEADER, AS_HTML);
         body.onEndTag((endTag) => {
           footerPlaced = true;
-          if (branding) endTag.before(SYMPOSIUM_FOOTER, AS_HTML);
+          if (branding) endTag.before(OPENARTIFACTS_FOOTER, AS_HTML);
         });
       },
     })
@@ -434,8 +434,8 @@ export function renderServedHtml(response: Response, branding = true): Response 
           const titleMeta = socialTitleMeta(documentTitle);
           if (titleMeta.length > 0) end.append(titleMeta, AS_HTML);
         }
-        if (branding && !headerPlaced) end.append(SYMPOSIUM_HEADER, AS_HTML);
-        if (branding && !footerPlaced) end.append(SYMPOSIUM_FOOTER, AS_HTML);
+        if (branding && !headerPlaced) end.append(OPENARTIFACTS_HEADER, AS_HTML);
+        if (branding && !footerPlaced) end.append(OPENARTIFACTS_FOOTER, AS_HTML);
       },
     })
     .transform(response);

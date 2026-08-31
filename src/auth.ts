@@ -82,7 +82,7 @@ export interface Publisher {
   /**
    * The app-sites `User.id` whose documents these are. Every doc query keys off
    * it, which is what makes two keys on one account see one shelf and lets a
-   * symposium.md session find the same documents from `session.user.id` alone.
+   * openartifacts.ai session find the same documents from `session.user.id` alone.
    *
    * The license key itself appears nowhere outside this module: it identifies a
    * credential, and nothing downstream has any business knowing which one was

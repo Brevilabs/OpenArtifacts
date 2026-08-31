@@ -1,5 +1,5 @@
 {
-  "name": "symposium",
+  "name": "openartifacts",
   "version": "0.0.0",
   "description": "Push a local md/html file, get a public HTML page on the internet",
   "type": "module",

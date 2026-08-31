@@ -50,7 +50,7 @@ jobs:
     # environment's branch policy is therefore also the deploy's access control.
     environment:
       name: production
-      url: https://symposium.site
+      url: https://openartifacts.site
 
     # The token is deliberately NOT here. A job-level `env` hands the
     # production credential to every step, including ones that only need to
@@ -175,6 +175,72 @@ jobs:
             echo "no successful production deployment to compare against; skipping the immutability check"
           fi
 
+      # The first four-host cutover needs a safe predecessor. If this workflow
+      # attached the two new domains and flipped their roles in one deploy, a
+      # rollback to the old two-host router would apply path fallback on the new
+      # domains: the document host could expose the API, and the API host could
+      # serve uploaded HTML. Refuse that state instead of trying to repair it
+      # automatically with the production credential.
+      #
+      # A one-time compatibility deploy (documented in docs/deploying.md)
+      # attaches all four routes while keeping the old hosts canonical. After
+      # that, either the compatibility mapping or the final canonical mapping
+      # is a safe predecessor for this deploy.
+      - name: Require a safe four-host predecessor
+        run: |
+          set -euo pipefail
+
+          mapping_is_live() {
+            local mapping="$1"
+            local specs=()
+            if [ "$mapping" = "canonical" ]; then
+              specs=(
+                "api.openartifacts.ai|200|"
+                "openartifacts.site|200|"
+                "api.symposium.md|200|"
+                "symposium.site|307|https://openartifacts.site/health?probe=deploy"
+              )
+            else
+              specs=(
+                "api.symposium.md|200|"
+                "symposium.site|200|"
+                "api.openartifacts.ai|200|"
+                "openartifacts.site|307|https://symposium.site/health?probe=deploy"
+              )
+            fi
+
+            local spec host want expected_location url result code location
+            for spec in "${specs[@]}"; do
+              IFS='|' read -r host want expected_location <<<"$spec"
+              url="https://$host/health"
+              if [ -n "$expected_location" ]; then url="$url?probe=deploy"; fi
+              if ! result="$(curl -sS -o /dev/null -w '%{http_code}|%{redirect_url}' --max-time 20 "$url")"; then
+                return 1
+              fi
+              code="${result%%|*}"
+              location="${result#*|}"
+              if [ "$code" != "$want" ]; then return 1; fi
+              if [ -n "$expected_location" ] && [ "$location" != "$expected_location" ]; then
+                return 1
+              fi
+            done
+          }
+
+          for attempt in 1 2 3 4 5; do
+            if mapping_is_live canonical; then
+              echo "canonical four-host mapping is live"
+              exit 0
+            fi
+            if mapping_is_live compatibility; then
+              echo "compatibility rollback floor is live"
+              exit 0
+            fi
+            if [ "$attempt" -lt 5 ]; then sleep 5; fi
+          done
+
+          echo "::error::No safe four-host predecessor is live. Run and record the one-time compatibility deployment in docs/deploying.md before retrying."
+          exit 1
+
       # `--message` fills the Message column in the dashboard's Deployments
       # tab, which is otherwise a list of uuids and timestamps. It is what makes
       # a rollback decision possible without cross-referencing GitHub.
@@ -192,8 +258,8 @@ jobs:
             --message "$(git log -1 --format='%h %s' | cut -c1-100)"
 
       # A deploy that reports success and serves nothing is the failure this
-      # catches. Both hosts, because they are separate custom domains and one
-      # can be attached while the other is not.
+      # catches. Every canonical and compatibility host is checked because each
+      # is a separate custom domain and one route can fail independently.
       #
       # Retried, because the deploy above is already irreversible: a single
       # transient timeout would fail the job, skip the recording step, and leave
@@ -204,20 +270,43 @@ jobs:
       # and, absent `--fail`, does not treat an HTTP 502 as an error at all.
       # The status code is what this step judges, so the retry belongs around
       # the comparison.
-      - name: Check both hosts answer
+      - name: Check canonical and legacy hosts
         run: |
           set -euo pipefail
-          for host in api.symposium.md symposium.site; do
+          for spec in \
+            "api.openartifacts.ai 200 -" \
+            "openartifacts.site 200 -" \
+            "api.symposium.md 200 -" \
+            "symposium.site 307 https://openartifacts.site/health?probe=deploy"
+          do
+            set -- $spec
+            host="$1"
+            want="$2"
+            expected_location="$3"
+            url="https://$host/health"
+            if [ "$expected_location" != "-" ]; then url="$url?probe=deploy"; fi
+
             code=""
+            location=""
             for attempt in 1 2 3 4 5; do
-              code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "https://$host/health" || echo 000)"
-              if [ "$code" = "200" ]; then break; fi
-              echo "$host → $code (attempt $attempt of 5)"
+              result="$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' --max-time 20 "$url" || echo '000 ')"
+              code="${result%% *}"
+              location="${result#* }"
+              if [ "$code" = "$want" ]; then
+                if [ "$expected_location" = "-" ] || [ "$location" = "$expected_location" ]; then
+                  break
+                fi
+              fi
+              echo "$host → $code $location (attempt $attempt of 5)"
               sleep 5
             done
-            echo "$host → $code"
-            if [ "$code" != "200" ]; then
-              echo "::error::$host answered $code after 5 attempts"
+            echo "$host → $code $location"
+            if [ "$code" != "$want" ]; then
+              echo "::error::$host answered $code; expected $want"
+              exit 1
+            fi
+            if [ "$expected_location" != "-" ] && [ "$location" != "$expected_location" ]; then
+              echo "::error::$host redirected to $location; expected $expected_location"
               exit 1
             fi
           done
@@ -235,7 +324,7 @@ jobs:
             '{ref:$sha,environment:"production-api",description:"Publisher API",auto_merge:false,required_contexts:[]}')"
           id="$(gh api -X POST "repos/$GITHUB_REPOSITORY/deployments" --input - --jq '.id' <<<"$body")"
           status="$(jq -nc --arg sha "$GITHUB_SHA" \
-            '{state:"success",environment:"production-api",environment_url:"https://api.symposium.md",description:("Deployed from "+$sha)}')"
+            '{state:"success",environment:"production-api",environment_url:"https://api.openartifacts.ai",description:("Deployed from "+$sha)}')"
           gh api -X POST "repos/$GITHUB_REPOSITORY/deployments/$id/statuses" --input - --silent <<<"$status"
         env:
           GH_TOKEN: ${{ github.token }}

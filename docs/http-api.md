@@ -16,12 +16,19 @@ Two surfaces on two domains:
 | API | `/api/v1/*` | required | Publisher-facing. JSON in, JSON out. |
 | Serving | `/d/*` | none | Reader-facing. Public HTML. Never sets a cookie. |
 
-The API is served from `api.symposium.md` and documents from `symposium.site`.
+The API is served from `api.openartifacts.ai` and documents from `openartifacts.site`.
 The `url` field a push returns therefore points at a different host than the one
 the client called, which is the reason a client must never build a doc url
 itself. **Always use the `url` the API returns.**
 
-`GET /health` → `200 {"ok": true}` is reachable on both, unauthenticated.
+Compatibility is host-level, not a second contract: `api.symposium.md` serves
+the API natively so released clients keep their method, body, and Authorization
+header. `symposium.site` returns `307` to the same path and query on
+`openartifacts.site`. Both API hosts return canonical document urls.
+
+`GET /health` → `200 {"ok": true}` is reachable on both canonical hosts and the
+legacy API host, unauthenticated. The legacy document host redirects it like
+every other path.
 
 ## Authentication
 
@@ -83,7 +90,7 @@ Any other method or path under `/api/v1` is `404 not_found`.
 
 ```json
 {"docId": "9f2k4mvq7t0xbz3n",
- "url": "https://symposium.site/d/9f2k4mvq7t0xbz3n",
+ "url": "https://openartifacts.site/d/9f2k4mvq7t0xbz3n",
  "version": 1}
 ```
 
@@ -108,7 +115,7 @@ it does on `POST`.
 
 ```json
 {"docId": "9f2k4mvq7t0xbz3n",
- "url": "https://symposium.site/d/9f2k4mvq7t0xbz3n",
+ "url": "https://openartifacts.site/d/9f2k4mvq7t0xbz3n",
  "version": 2}
 ```
 
@@ -153,7 +160,7 @@ whichever of its keys published them.
 {"docs": [
    {"docId": "9f2k4mvq7t0xbz3n",
     "title": "Q3 architecture review",
-    "url": "https://symposium.site/d/9f2k4mvq7t0xbz3n",
+    "url": "https://openartifacts.site/d/9f2k4mvq7t0xbz3n",
     "version": 2,
     "updatedAt": 1785000000000}
  ],
@@ -198,9 +205,9 @@ retargeting. The origin is cookieless and holds nothing but already-public docs.
 
 Four things are injected as the document is served: a
 `<meta name="robots" content="noindex,nofollow">` in the head, a
-`<link rel="icon">` beside it carrying the Symposium mark as a `data:` URI, a
+`<link rel="icon">` beside it carrying the OpenArtifacts mark as a `data:` URI, a
 `Shared from Copilot for Obsidian` byline at the top of the body, and a
-`Powered by symposium.md` byline before `</body>`. A document that ships its own
+`Powered by openartifacts.ai` byline before `</body>`. A document that ships its own
 icon keeps that markup — both links are then in the head, and which one the tab
 shows is the browser's choice. Nothing else is touched — the
 markup is never sanitized, rewritten or reformatted, and what R2 stores is the
@@ -313,19 +320,19 @@ confirmation.
 ## A whole round trip
 
 ```bash
-BASE=https://api.symposium.md
+BASE=https://api.openartifacts.ai
 KEY=<paid Copilot license key>
 
 # publish
 curl -sS -X POST "$BASE/api/v1/docs" \
   -H "authorization: Bearer $KEY" -H 'content-type: application/json' \
   -d '{"title":"Notes","html":"<!doctype html><html><body><p>hello</p></body></html>"}'
-# → {"docId":"9f2k…","url":"https://symposium.site/d/9f2k…","version":1}
+# → {"docId":"9f2k…","url":"https://openartifacts.site/d/9f2k…","version":1}
 
 # The document reads use the `url` that push returned, never "$BASE/d/…": the
 # page lives on the serving domain, and the API host resolves every path to the
 # API surface, which would answer these unauthenticated reads 401.
-DOC=https://symposium.site/d/9f2k…
+DOC=https://openartifacts.site/d/9f2k…
 
 curl -sS "$DOC"                                # the public page, no auth
 curl -sS "$BASE/api/v1/docs?limit=10" -H "authorization: Bearer $KEY"

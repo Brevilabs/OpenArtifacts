@@ -8,28 +8,37 @@ import {
 } from "./auth.js";
 import type { Env } from "./config.js";
 import { errorResponse } from "./errors.js";
-import { handleServing, servingError, SERVING_PREFIX } from "./serve.js";
+import {
+  handleServing,
+  servingError,
+  servingRedirect,
+  SERVING_PREFIX,
+} from "./serve.js";
 
 /**
  * The two surfaces. They are separate because user HTML has to be served from a
  * sacrificial host that never carries the API — a doc that turns out to be
  * phishing should cost us the serving domain, not the brand domain.
  */
-export type Surface = "api" | "serving" | "unknown";
+export type Surface = "api" | "serving" | "legacy-serving" | "unknown";
 
 export interface SurfaceConfig {
-  /** Host serving public docs. Empty/undefined in v0. */
+  /** Canonical host serving public docs. Empty/undefined locally. */
   servingHost?: string;
-  /** Host exposing /api/v1. Empty/undefined in v0. */
+  /** Canonical host exposing /api/v1. Empty/undefined locally. */
   apiHost?: string;
+  /** Previous docs host. It redirects to servingHost. */
+  legacyServingHost?: string;
+  /** Previous API host. It serves the API natively for released clients. */
+  legacyApiHost?: string;
 }
 
 const API_PREFIX = "/api/v1";
 
 /**
  * Lowercase and drop the trailing root dot, so `A.Com` and `a.com.` both match
- * `a.com`. The root dot matters: `new URL("https://symposium.page./x").hostname` is
- * `"symposium.page."`, so without this a request with a dotted Host header would
+ * `a.com`. The root dot matters: `new URL("https://openartifacts.site./x").hostname` is
+ * `"openartifacts.site."`, so without this a request with a dotted Host header would
  * miss the serving-host match and fall through to the path prefix — which is
  * exactly how `/api/v1` would become reachable on the serving domain.
  */
@@ -46,18 +55,35 @@ function pathIsUnder(pathname: string, prefix: string): boolean {
   return pathname === prefix || pathname.startsWith(`${prefix}/`);
 }
 
+function hostsAreConfigured(config: SurfaceConfig): boolean {
+  return [
+    config.servingHost,
+    config.apiHost,
+    config.legacyServingHost,
+    config.legacyApiHost,
+  ].some((host) => host?.trim());
+}
+
 /**
  * Host first, path second.
  *
- * Once the hosts are configured, the host alone decides the surface: a request
+ * Once any host is configured, the host alone decides the surface: a request
  * arriving on SERVING_HOST is the serving surface no matter what path it asks
  * for, which is what makes `/api/v1` unreachable there rather than merely
- * unadvertised. When the host matches nothing configured — the v0 workers.dev
- * case, and the migration window before DNS moves — the path prefix decides.
+ * unadvertised. Unknown production hosts fail closed. Path-prefix fallback is
+ * only for local development, when every host var is empty.
  */
 export function resolveSurface(hostname: string, pathname: string, config: SurfaceConfig): Surface {
   if (hostMatches(hostname, config.servingHost)) return "serving";
-  if (hostMatches(hostname, config.apiHost)) return "api";
+  if (hostMatches(hostname, config.legacyServingHost)) return "legacy-serving";
+  if (
+    hostMatches(hostname, config.apiHost) ||
+    hostMatches(hostname, config.legacyApiHost)
+  ) {
+    return "api";
+  }
+
+  if (hostsAreConfigured(config)) return "unknown";
 
   if (pathIsUnder(pathname, API_PREFIX)) return "api";
   if (pathIsUnder(pathname, SERVING_PREFIX)) return "serving";
@@ -121,16 +147,33 @@ export default {
   async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
-    // Deliberately outside the surface split: the deploy smoke check has to
-    // reach it on whichever host it lands on, and it discloses nothing.
-    if (url.pathname === "/health") {
-      return Response.json({ ok: true });
-    }
-
-    const surface = resolveSurface(url.hostname, url.pathname, {
+    const surfaceConfig = {
       servingHost: env.SERVING_HOST,
       apiHost: env.API_HOST,
-    });
+      legacyServingHost: env.LEGACY_SERVING_HOST,
+      legacyApiHost: env.LEGACY_API_HOST,
+    };
+    const surface = resolveSurface(url.hostname, url.pathname, surfaceConfig);
+
+    if (surface === "legacy-serving") {
+      const servingHost = env.SERVING_HOST?.trim();
+      if (!servingHost) return servingError(request.method, "internal");
+
+      const target = new URL(url);
+      target.protocol = "https:";
+      target.hostname = normalizeHostname(servingHost);
+      target.port = "";
+      return servingRedirect(target.toString());
+    }
+
+    // Local development has no configured hosts. In production, health answers
+    // only on an explicit serving/API host; an unknown Host still fails closed.
+    if (
+      url.pathname === "/health" &&
+      (surface !== "unknown" || !hostsAreConfigured(surfaceConfig))
+    ) {
+      return Response.json({ ok: true });
+    }
 
     try {
       // `return await`, not `return` — here, and at every dispatch either

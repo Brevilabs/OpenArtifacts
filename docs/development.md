@@ -1,6 +1,6 @@
 # Development
 
-Running Symposium on your machine. No Cloudflare account needed.
+Running OpenArtifacts on your machine. No Cloudflare account needed.
 
 [← README](../README.md) · [HTTP API](http-api.md) · [Deploying](deploying.md)
 
@@ -39,7 +39,7 @@ npx wrangler d1 execute symposium --local --command \
   "INSERT OR REPLACE INTO publishers (key_hash, plan, validated_at, owner)
    VALUES ('$HASH', 'plus', $(($(date +%s) * 1000)), 'local-account')"
 
-SYMPOSIUM_LICENSE_KEY=$KEY scripts/smoke.sh http://127.0.0.1:8787
+OPENARTIFACTS_LICENSE_KEY=$KEY scripts/smoke.sh http://127.0.0.1:8787
 ```
 
 Alternatively, copy `.dev.vars.example` to `.dev.vars` and point

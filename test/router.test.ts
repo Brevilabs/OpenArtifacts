@@ -2,19 +2,36 @@ import { describe, expect, it } from "vitest";
 import type { Env } from "../src/config.js";
 import worker, { resolveSurface } from "../src/index.js";
 
-/** Phase 1 routing never touches a binding, so the storage bindings stay unset. */
+/** Routing tests never touch storage, so those bindings stay unset. */
 const env = (vars: Partial<Env> = {}): Env =>
-  ({ SERVING_HOST: "", API_HOST: "", ...vars }) as Env;
+  ({
+    SERVING_HOST: "",
+    API_HOST: "",
+    LEGACY_SERVING_HOST: "",
+    LEGACY_API_HOST: "",
+    ...vars,
+  }) as Env;
 
 const ctx = {} as ExecutionContext;
 
 const get = (url: string, vars: Partial<Env> = {}) =>
   worker.fetch(new Request(url), env(vars), ctx);
 
-const WORKERS_DEV = "symposium.workers.dev";
-const TWO_DOMAIN = { servingHost: "symposium.page", apiHost: "api.symposium.md" };
+const WORKERS_DEV = "openartifacts.workers.dev";
+const HOSTS = {
+  servingHost: "openartifacts.site",
+  apiHost: "api.openartifacts.ai",
+  legacyServingHost: "symposium.site",
+  legacyApiHost: "api.symposium.md",
+};
+const PRODUCTION_ENV: Partial<Env> = {
+  SERVING_HOST: HOSTS.servingHost,
+  API_HOST: HOSTS.apiHost,
+  LEGACY_SERVING_HOST: HOSTS.legacyServingHost,
+  LEGACY_API_HOST: HOSTS.legacyApiHost,
+};
 
-describe("resolveSurface — workers.dev, no hosts configured", () => {
+describe("resolveSurface — local development, no hosts configured", () => {
   const unset = {};
 
   it("routes /api/v1 paths to the API surface", () => {
@@ -35,117 +52,137 @@ describe("resolveSurface — workers.dev, no hosts configured", () => {
   });
 
   it("ignores empty host vars the same as absent ones", () => {
-    expect(resolveSurface(WORKERS_DEV, "/api/v1/docs", { servingHost: "", apiHost: "" })).toBe(
-      "api",
-    );
+    expect(
+      resolveSurface(WORKERS_DEV, "/api/v1/docs", {
+        servingHost: "",
+        apiHost: "",
+        legacyServingHost: "",
+        legacyApiHost: "",
+      }),
+    ).toBe("api");
   });
 });
 
-describe("resolveSurface — two configured domains", () => {
-  it("routes by host, not path", () => {
-    expect(resolveSurface("symposium.page", "/d/abc", TWO_DOMAIN)).toBe("serving");
-    expect(resolveSurface("api.symposium.md", "/api/v1/docs", TWO_DOMAIN)).toBe("api");
+describe("resolveSurface — canonical and legacy domains", () => {
+  it("routes the canonical hosts by surface", () => {
+    expect(resolveSurface("openartifacts.site", "/d/abc", HOSTS)).toBe("serving");
+    expect(resolveSurface("api.openartifacts.ai", "/api/v1/docs", HOSTS)).toBe("api");
   });
 
-  it("keeps /api/v1 off the serving host", () => {
-    expect(resolveSurface("symposium.page", "/api/v1/docs", TWO_DOMAIN)).toBe("serving");
-    expect(resolveSurface("symposium.page", "/api/v1/docs/abc", TWO_DOMAIN)).toBe("serving");
+  it("redirects the legacy document host and serves the legacy API natively", () => {
+    expect(resolveSurface("symposium.site", "/d/abc", HOSTS)).toBe("legacy-serving");
+    expect(resolveSurface("api.symposium.md", "/api/v1/docs", HOSTS)).toBe("api");
   });
 
-  it("keeps doc serving off the API host", () => {
-    expect(resolveSurface("api.symposium.md", "/d/abc", TWO_DOMAIN)).toBe("api");
+  it("keeps /api/v1 off both document hosts", () => {
+    expect(resolveSurface("openartifacts.site", "/api/v1/docs", HOSTS)).toBe("serving");
+    expect(resolveSurface("symposium.site", "/api/v1/docs", HOSTS)).toBe("legacy-serving");
   });
 
-  it("matches the host case-insensitively and ignores the root dot", () => {
-    // Both forms reach `/api/v1` if the match fails, so each asserts the
-    // security property rather than just a normalisation detail.
-    expect(resolveSurface("SYMPOSIUM.PAGE", "/api/v1/docs", TWO_DOMAIN)).toBe("serving");
-    expect(resolveSurface("symposium.page.", "/api/v1/docs", TWO_DOMAIN)).toBe("serving");
-    expect(resolveSurface("symposium.page", "/api/v1/docs", { servingHost: "SYMPOSIUM.Page." })).toBe(
-      "serving",
-    );
+  it("keeps document serving off both API hosts", () => {
+    expect(resolveSurface("api.openartifacts.ai", "/d/abc", HOSTS)).toBe("api");
+    expect(resolveSurface("api.symposium.md", "/d/abc", HOSTS)).toBe("api");
   });
 
-  it("does not match a subdomain or suffix of a configured host", () => {
-    // A path with no prefix to fall back on, so "unknown" can only mean the
-    // host itself did not match.
-    expect(resolveSurface("evil.symposium.page", "/nope", TWO_DOMAIN)).toBe("unknown");
-    expect(resolveSurface("symposium.page.evil.com", "/nope", TWO_DOMAIN)).toBe("unknown");
-    expect(resolveSurface("notsymposium.page", "/nope", TWO_DOMAIN)).toBe("unknown");
-    // And a lookalike host still gets no serving treatment for an API path.
-    expect(resolveSurface("evil.symposium.page", "/api/v1/docs", TWO_DOMAIN)).toBe("api");
+  it("matches every configured host case-insensitively and ignores the root dot", () => {
+    expect(resolveSurface("OPENARTIFACTS.SITE.", "/api/v1/docs", HOSTS)).toBe("serving");
+    expect(resolveSurface("SYMPOSIUM.SITE.", "/d/abc", HOSTS)).toBe("legacy-serving");
+    expect(resolveSurface("API.OPENARTIFACTS.AI.", "/d/abc", HOSTS)).toBe("api");
+    expect(resolveSurface("API.SYMPOSIUM.MD.", "/d/abc", HOSTS)).toBe("api");
   });
 
-  it("falls back to path prefixes on an unrecognised host", () => {
-    expect(resolveSurface(WORKERS_DEV, "/api/v1/docs", TWO_DOMAIN)).toBe("api");
-    expect(resolveSurface(WORKERS_DEV, "/d/abc", TWO_DOMAIN)).toBe("serving");
+  it("fails closed on unknown hosts even when the path names a surface", () => {
+    expect(resolveSurface(WORKERS_DEV, "/api/v1/docs", HOSTS)).toBe("unknown");
+    expect(resolveSurface(WORKERS_DEV, "/d/abc", HOSTS)).toBe("unknown");
+    expect(resolveSurface("evil.openartifacts.site", "/api/v1/docs", HOSTS)).toBe("unknown");
+    expect(resolveSurface("openartifacts.site.evil.com", "/d/abc", HOSTS)).toBe("unknown");
   });
 
-  it("routes by host when only the serving host is configured", () => {
-    expect(resolveSurface("symposium.page", "/api/v1/docs", { servingHost: "symposium.page" })).toBe(
-      "serving",
-    );
+  it("fails closed when only part of the production host config is present", () => {
+    expect(
+      resolveSurface(WORKERS_DEV, "/api/v1/docs", { servingHost: "openartifacts.site" }),
+    ).toBe("unknown");
   });
 });
 
 describe("worker dispatch", () => {
-  it("serves the health check on any host", async () => {
-    for (const host of [WORKERS_DEV, "symposium.page", "api.symposium.md"]) {
-      const res = await get(`https://${host}/health`, {
-        SERVING_HOST: "symposium.page",
-        API_HOST: "api.symposium.md",
-      });
+  it("serves health on canonical hosts and the native legacy API host", async () => {
+    for (const host of ["openartifacts.site", "api.openartifacts.ai", "api.symposium.md"]) {
+      const res = await get(`https://${host}/health`, PRODUCTION_ENV);
       expect(res.status).toBe(200);
       await expect(res.json()).resolves.toEqual({ ok: true });
     }
   });
 
-  it("answers unknown paths with the error contract", async () => {
-    const res = await get(`https://${WORKERS_DEV}/nope`);
-    expect(res.status).toBe(404);
-    expect(res.headers.get("content-type")).toContain("application/json");
-    await expect(res.json()).resolves.toEqual({
-      error: { code: "not_found", message: expect.stringContaining("/nope") },
-    });
+  it("redirects legacy document health and fails closed on an unknown host", async () => {
+    const legacy = await get("https://symposium.site/health?probe=deploy", PRODUCTION_ENV);
+    expect(legacy.status).toBe(307);
+    expect(legacy.headers.get("location")).toBe(
+      "https://openartifacts.site/health?probe=deploy",
+    );
+
+    const unknown = await get(`https://${WORKERS_DEV}/health`, PRODUCTION_ENV);
+    expect(unknown.status).toBe(404);
   });
 
-  it("hands /api/v1 to the API surface on workers.dev", async () => {
-    // The API surface authenticates before it routes (phase 2), so an
-    // unauthenticated request stops at 401 rather than reaching a handler.
-    const res = await get(`https://${WORKERS_DEV}/api/v1/docs`);
+  it("preserves the exact path and query when redirecting an old document URL", async () => {
+    const res = await get(
+      "https://symposium.site/d/9f2k4mvq7t0xbz3n/v2?source=old%20note&view=full",
+      PRODUCTION_ENV,
+    );
+
+    expect(res.status).toBe(307);
+    expect(res.headers.get("location")).toBe(
+      "https://openartifacts.site/d/9f2k4mvq7t0xbz3n/v2?source=old%20note&view=full",
+    );
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(res.headers.get("x-robots-tag")).toBe("noindex, nofollow");
+    expect(res.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(res.headers.get("set-cookie")).toBeNull();
+  });
+
+  it("serves the old API host natively without an auth redirect", async () => {
+    const res = await get("https://api.symposium.md/api/v1/docs", PRODUCTION_ENV);
     expect(res.status).toBe(401);
-    // The serving surface stamps every response it produces; the API does not.
+    expect(res.headers.get("location")).toBeNull();
     expect(res.headers.get("x-robots-tag")).toBeNull();
   });
 
-  it("hands /d to the serving surface on workers.dev", async () => {
-    const res = await get(`https://${WORKERS_DEV}/d/abc`);
+  it("answers unknown configured hosts without falling through by path", async () => {
+    const res = await get(`https://${WORKERS_DEV}/api/v1/docs`, PRODUCTION_ENV);
     expect(res.status).toBe(404);
-    expect(res.headers.get("content-type")).toBe("text/html; charset=utf-8");
-    expect(await res.text()).toContain("This document isn’t available.");
-    expect(res.headers.get("x-robots-tag")).toBe("noindex, nofollow");
+    expect(res.headers.get("content-type")).toContain("application/json");
+    expect(res.headers.get("x-robots-tag")).toBeNull();
   });
 
-  it("never reaches the API surface on the serving host", async () => {
-    // Including the trailing-root-dot form, which `new URL()` preserves in
-    // `hostname` and which would otherwise miss the host match and fall
-    // through to the /api/v1 path prefix.
-    for (const host of ["symposium.page", "symposium.page.", "SYMPOSIUM.PAGE"]) {
-      const res = await get(`https://${host}/api/v1/docs`, {
-        SERVING_HOST: "symposium.page",
-        API_HOST: "api.symposium.md",
-      });
-      expect(res.status).toBe(404);
-      // Two independent signals that the serving surface answered: only it
-      // stamps the robots header, and only it renders an HTML status page.
-      expect(res.headers.get("x-robots-tag")).toBe("noindex, nofollow");
-      expect(res.headers.get("content-type")).toBe("text/html; charset=utf-8");
-      expect(await res.text()).toContain("This document isn’t available.");
+  it("keeps the API off the canonical document host", async () => {
+    const res = await get("https://openartifacts.site/api/v1/docs", PRODUCTION_ENV);
+    expect(res.status).toBe(404);
+    expect(res.headers.get("x-robots-tag")).toBe("noindex, nofollow");
+    expect(res.headers.get("content-type")).toBe("text/html; charset=utf-8");
+    expect(await res.text()).toContain("This document isn’t available.");
+  });
+
+  it("keeps documents off both API hosts", async () => {
+    for (const host of ["api.openartifacts.ai", "api.symposium.md"]) {
+      const res = await get(`https://${host}/d/9f2k4mvq7t0xbz3n`, PRODUCTION_ENV);
+      expect(res.status).toBe(401);
+      expect(res.headers.get("x-robots-tag")).toBeNull();
     }
   });
 
-  it("never sets a cookie on the serving surface", async () => {
-    const res = await get("https://symposium.page/d/abc", { SERVING_HOST: "symposium.page" });
+  it("keeps local path fallback for wrangler dev", async () => {
+    const api = await get(`https://${WORKERS_DEV}/api/v1/docs`);
+    expect(api.status).toBe(401);
+
+    const serving = await get(`https://${WORKERS_DEV}/d/abc`);
+    expect(serving.status).toBe(404);
+    expect(serving.headers.get("x-robots-tag")).toBe("noindex, nofollow");
+  });
+
+  it("never sets a cookie on the canonical document surface", async () => {
+    const res = await get("https://openartifacts.site/d/abc", PRODUCTION_ENV);
     expect(res.headers.get("set-cookie")).toBeNull();
   });
 });

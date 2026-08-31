@@ -21,7 +21,7 @@ That sentence is what buys `'unsafe-inline'`, `'unsafe-eval'` and an open
 and Pyodide. Private sharing falsifies both halves of it at once.
 
 **So the obvious implementation is the one that must not be built.** Put a
-session cookie on `symposium.site` and any uploaded document's JavaScript can
+session cookie on `openartifacts.site` and any uploaded document's JavaScript can
 issue same-origin `fetch()` calls carrying that session. `HttpOnly` does not
 help: it stops a script *reading* the cookie, not *using* it. One hostile
 document would read every private document its reader can reach and post the
@@ -33,14 +33,14 @@ interactive documents. Both are load-bearing.
 
 ## The shape: identity never touches the serving origin
 
-`symposium.site` stays cookieless forever. Identity lives on the brand domain,
+`openartifacts.site` stays cookieless forever. Identity lives on the brand domain,
 and access is granted **per document** rather than ambiently.
 
 ```
-reader → symposium.site/d/{id}      private, no grant → 302
-       → symposium.md  sign in       OAuth, session lives here
+reader → openartifacts.site/d/{id}      private, no grant → 302
+       → openartifacts.ai  sign in       OAuth, session lives here
        → API checks the ACL          mints a short-lived signed grant
-       → symposium.site/d/{id}?…     signature verified, bytes served
+       → openartifacts.site/d/{id}?…     signature verified, bytes served
 ```
 
 Grants remove *ambient* authority: a document's scripts cannot forge a grant for
@@ -51,9 +51,9 @@ a document they were not given. That is necessary and it is not sufficient.
 A hostile public document can steal a grant somebody else legitimately obtained:
 
 1. It calls `window.open('/d/{targetId}')` and keeps the opener reference.
-2. The popup bounces to `symposium.md`, where the reader signs in and comes back
+2. The popup bounces to `openartifacts.ai`, where the reader signs in and comes back
    with a grant.
-3. Back on `symposium.site`, opener and popup are same-origin **again**, because
+3. Back on `openartifacts.site`, opener and popup are same-origin **again**, because
    the same-origin check is evaluated per access rather than pinned at open
    time. The opener reads `popup.location.href`, which contains the signature,
    and `popup.document`, which contains the document.
@@ -72,7 +72,7 @@ crosses an origin boundary and the opener can read nothing.
 
 ### The origin label must not be the capability
 
-The obvious form of that — `{docId}.symposium.site` — trades one leak for
+The obvious form of that — `{docId}.openartifacts.site` — trades one leak for
 another. A hostname is not confidential: it appears in the DNS query, and absent
 Encrypted Client Hello it appears in the TLS SNI, both before any encryption. A
 recursive resolver, a corporate DNS server, or anything on the network path
@@ -89,7 +89,7 @@ So the two jobs need two identifiers:
 | origin label | no | isolates browsing contexts |
 | doc id, and any grant | yes | authorises the read, stays in the encrypted path |
 
-`{originLabel}.symposium.site/d/{docId}` gives isolation without exposure. The
+`{originLabel}.openartifacts.site/d/{docId}` gives isolation without exposure. The
 label being enumerable is harmless: reaching the origin without the path id and
 the grant gets you nothing. ECH would close the SNI half of the leak but not the
 DNS half, so it is not a substitute for separating the two.
@@ -140,7 +140,7 @@ step.
 > **An earlier plan had a phase between 1 and 2**: expiring links and
 > per-document passwords, on the argument that they are days of work and cover
 > most of what people mean by "private". It is dropped. **Private sharing
-> requires an account** with symposium.md or Obsidian Copilot, so there is no
+> requires an account** with openartifacts.ai or Obsidian Copilot, so there is no
 > password path and no unauthenticated grant, and nothing private exists until
 > Phase 2 ships. Recorded here because the case for it was reasonable and will
 > be made again; what defeats it is that it buys weeks of convenience at the
@@ -156,7 +156,7 @@ Publishing is gated to paid Copilot plans.
 The large one, the prerequisite for everything after, and the only route to a
 private document.
 
-- OAuth sign-in on `symposium.md` — Google and GitHub cover nearly everyone
+- OAuth sign-in on `openartifacts.ai` — Google and GitHub cover nearly everyone
   without our storing a password. The session lives on the brand domain only.
 - A `readers` table, and an ACL per document: named readers, or a domain rule
   ("anyone at acme.com"), or public. Public stays the default.

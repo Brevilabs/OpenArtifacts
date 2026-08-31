@@ -6,16 +6,16 @@ import { commitVersionMetadata } from "../src/db.js";
 import type { DocRow, PushQuotaRow, VersionRow } from "../src/db.js";
 import { DOC_ID_LENGTH, isDocId } from "../src/ids.js";
 import { MAX_REQUEST_BYTES, utcDay, utf8Length } from "../src/quota.js";
-import { NOINDEX_META, SYMPOSIUM_FOOTER } from "../src/render.js";
+import { NOINDEX_META, OPENARTIFACTS_FOOTER } from "../src/render.js";
 import { versionObjectKey } from "../src/storage.js";
 import worker from "../src/index.js";
 
 /**
- * A host matching neither SERVING_HOST nor API_HOST, which is what makes the
- * router fall back to path prefixes. Deliberately not a real deployment host:
- * these tests are about the surfaces, not about which domain carries them.
+ * Local routing has no configured hosts, so it falls back to path prefixes.
+ * Deliberately not a real deployment host: these tests are about the surfaces,
+ * not about which production domain carries them.
  */
-const API_ORIGIN = "https://symposium.workers.dev";
+const API_ORIGIN = "https://openartifacts.workers.dev";
 
 /**
  * A well-formed id that is not in the database. Derived from DOC_ID_LENGTH, not
@@ -74,6 +74,7 @@ async function send(
   key: string | null,
   body?: unknown,
   overrides: Partial<Env> = {},
+  origin = API_ORIGIN,
 ): Promise<Response> {
   const headers = new Headers();
   if (key !== null) headers.set("authorization", `Bearer ${key}`);
@@ -86,8 +87,15 @@ async function send(
 
   const ctx = createExecutionContext();
   const response = await worker.fetch(
-    new Request(`${API_ORIGIN}${path}`, init),
-    { ...env, ...overrides },
+    new Request(`${origin}${path}`, init),
+    {
+      ...env,
+      SERVING_HOST: "",
+      API_HOST: "",
+      LEGACY_SERVING_HOST: "",
+      LEGACY_API_HOST: "",
+      ...overrides,
+    },
     ctx,
   );
   await waitOnExecutionContext(ctx);
@@ -158,11 +166,11 @@ describe("POST /api/v1/docs", () => {
     const article = `<p>${"content ".repeat(26_000)}</p>`;
     expect(article.length).toBeGreaterThan(200 * 1024);
 
-    // `SERVING_HOST: ""` pins the request-host fallback instead of inheriting
-    // whatever wrangler.jsonc configures. This test is about the stored bytes;
-    // which host the url names is D3's job, below.
+    // The helper pins local path fallback instead of inheriting the production
+    // hosts from wrangler.jsonc. This test is about the stored bytes; which host
+    // the url names is D3's job, below.
     const body = await pushedOk(
-      await post(KEY_A, { title: "A note", html: page(article) }, { SERVING_HOST: "" }),
+      await post(KEY_A, { title: "A note", html: page(article) }),
       201,
     );
 
@@ -173,7 +181,7 @@ describe("POST /api/v1/docs", () => {
       version: 1,
     });
 
-    // R2 holds the publisher's bytes and nothing else: Symposium's additions go
+    // R2 holds the publisher's bytes and nothing else: OpenArtifacts' additions go
     // in at serve time, so a byline change reaches documents already published.
     const object = await env.DOCS.get(versionObjectKey(body.docId, 1));
     expect(object).not.toBeNull();
@@ -181,7 +189,7 @@ describe("POST /api/v1/docs", () => {
 
     expect(html).toBe(page(article));
     expect(html).not.toContain(NOINDEX_META);
-    expect(html).not.toContain(SYMPOSIUM_FOOTER);
+    expect(html).not.toContain(OPENARTIFACTS_FOOTER);
     expect(object!.httpMetadata?.contentType).toBe("text/html; charset=utf-8");
 
     // D1 is a pointer index: it has to agree with what R2 actually holds.
@@ -195,7 +203,7 @@ describe("POST /api/v1/docs", () => {
   });
 
   it("keeps uploaded scripts intact (D6)", async () => {
-    const interactive = '<script>window.__symposium = "runs";</script><canvas id="figure"></canvas>';
+    const interactive = '<script>window.__openartifacts = "runs";</script><canvas id="figure"></canvas>';
 
     const body = await pushedOk(
       await post(KEY_A, { title: "Figure", html: page(interactive) }),
@@ -229,13 +237,31 @@ describe("POST /api/v1/docs", () => {
     expect((await docRow(body.docId))?.title).toBe("Untitled");
   });
 
-  it("points the url at the serving host once one is configured (D3)", async () => {
-    const body = await pushedOk(
-      await post(KEY_A, { title: "t", html: page("<p>x</p>") }, { SERVING_HOST: "symposium.page" }),
-      201,
-    );
+  it("returns a canonical document url through both API hosts (D3)", async () => {
+    const hosts: Partial<Env> = {
+      SERVING_HOST: "openartifacts.site",
+      API_HOST: "api.openartifacts.ai",
+      LEGACY_SERVING_HOST: "symposium.site",
+      LEGACY_API_HOST: "api.symposium.md",
+    };
 
-    expect(body.url).toBe(`https://symposium.page/d/${body.docId}`);
+    for (const apiHost of ["api.openartifacts.ai", "api.symposium.md"]) {
+      for (const scheme of ["https", "http"]) {
+        const body = await pushedOk(
+          await send(
+            "POST",
+            "/api/v1/docs",
+            KEY_A,
+            { title: "t", html: page("<p>x</p>") },
+            hosts,
+            `${scheme}://${apiHost}`,
+          ),
+          201,
+        );
+
+        expect(body.url).toBe(`https://openartifacts.site/d/${body.docId}`);
+      }
+    }
   });
 });
 

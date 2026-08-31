@@ -9,11 +9,11 @@ import { docObjectPrefix, versionObjectKey } from "../src/storage.js";
 import worker from "../src/index.js";
 
 /**
- * A host matching neither SERVING_HOST nor API_HOST, which is what makes the
- * router fall back to path prefixes. Deliberately not a real deployment host:
- * these tests are about the surfaces, not about which domain carries them.
+ * Local routing has no configured hosts, so it falls back to path prefixes.
+ * Deliberately not a real deployment host: these tests are about the surfaces,
+ * not about which production domain carries them.
  */
-const API_ORIGIN = "https://symposium.workers.dev";
+const API_ORIGIN = "https://openartifacts.workers.dev";
 
 const KEY_A = "cplus_live_a1b2c3d4e5f60718";
 const KEY_B = "cplus_live_9988776655443322";
@@ -85,7 +85,14 @@ async function send(
   const ctx = createExecutionContext();
   const response = await worker.fetch(
     new Request(`${API_ORIGIN}${path}`, init),
-    { ...env, ...overrides },
+    {
+      ...env,
+      SERVING_HOST: "",
+      API_HOST: "",
+      LEGACY_SERVING_HOST: "",
+      LEGACY_API_HOST: "",
+      ...overrides,
+    },
     ctx,
   );
   await waitOnExecutionContext(ctx);
@@ -434,10 +441,13 @@ describe("GET /api/v1/docs", () => {
     const created = await publish(KEY_A, "A note");
 
     const response = await send("GET", "/api/v1/docs", KEY_A, undefined, {
-      SERVING_HOST: "symposium.page",
+      SERVING_HOST: "openartifacts.site",
+      API_HOST: "openartifacts.workers.dev",
     });
 
-    expect((await listed(response)).docs[0]?.url).toBe(`https://symposium.page/d/${created.docId}`);
+    expect((await listed(response)).docs[0]?.url).toBe(
+      `https://openartifacts.site/d/${created.docId}`,
+    );
   });
 
   it("orders newest first", async () => {

@@ -15,6 +15,6 @@ import type { Env } from "./config.js";
  */
 export function publicDocUrl(env: Env, requestUrl: URL, docId: string): string {
   const servingHost = env.SERVING_HOST?.trim();
-  const origin = servingHost ? `${requestUrl.protocol}//${servingHost}` : requestUrl.origin;
+  const origin = servingHost ? `https://${servingHost}` : requestUrl.origin;
   return `${origin}/d/${docId}`;
 }

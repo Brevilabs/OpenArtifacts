@@ -1,7 +1,7 @@
 /**
  * The public serving surface: `GET /d/{docId}` and `GET /d/{docId}/v{n}`.
  *
- * R2 holds the publisher's own bytes; Symposium's additions — the robots meta,
+ * R2 holds the publisher's own bytes; OpenArtifacts' additions — the robots meta,
  * the favicon, the social card and the two bylines — are injected here, on the
  * way out, by `renderServedHtml`. That is what lets a byline change, or a plan that removes
  * one, reach documents already published, and it is why the stored object and
@@ -42,7 +42,7 @@ const DOC_PATH_PREFIX = `${SERVING_PREFIX}/`;
 const VERSION_SEGMENT = /^v([1-9][0-9]{0,8})$/;
 
 /**
- * The Content Security Policy. This is the security boundary of Symposium, so every
+ * The Content Security Policy. This is the security boundary of OpenArtifacts, so every
  * directive below is a deliberate choice rather than a copied default.
  *
  * The threat model is unusual and worth stating plainly: the page's own author
@@ -209,7 +209,7 @@ function servingPageHtml(copy: ServingPageCopy): string {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 ${NOINDEX_META}
 ${FAVICON_LINK}
-<title>${copy.title} · Symposium</title>
+<title>${copy.title} · OpenArtifacts</title>
 <style>
   :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
   * { box-sizing: border-box; }
@@ -227,10 +227,10 @@ ${FAVICON_LINK}
 </head>
 <body>
 <main aria-labelledby="page-title">
-  <div class="brand"><span class="mark" aria-hidden="true"><span></span><span></span><span></span></span>Symposium</div>
+  <div class="brand"><span class="mark" aria-hidden="true"><span></span><span></span><span></span></span>OpenArtifacts</div>
   <h1 id="page-title">${copy.heading}</h1>
   <p>${copy.message}</p>
-  <a href="https://symposium.md">About Symposium</a>
+  <a href="https://openartifacts.ai">About OpenArtifacts</a>
 </main>
 </body>
 </html>`;
@@ -255,6 +255,13 @@ function servingPageResponse(method: string, kind: ServingPageKind): Response {
 /** Exported because the router's serving-surface catch-all needs the same page. */
 export function servingError(method: string, code: "not_found" | "internal"): Response {
   return servingPageResponse(method, code);
+}
+
+/** Temporary legacy-host redirect with the serving origin's full safety policy. */
+export function servingRedirect(location: string): Response {
+  const headers = servingHeaders("no-store");
+  headers.set("location", location);
+  return new Response(null, { status: 307, headers });
 }
 
 /** One neutral page for every miss, so it never confirms whether an id existed. */

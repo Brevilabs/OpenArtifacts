@@ -5,14 +5,14 @@ used to publish it.**
 
 A license key is a way of proving who you are. It is not who you are. Keeping
 those two apart is what lets someone replace a key, hold two of them, or sign in
-to symposium.md having never made one — and see the same documents throughout.
+to openartifacts.ai having never made one — and see the same documents throughout.
 
 [← README](../README.md) · [HTTP API](http-api.md) · [Private sharing](private-sharing.md)
 
 ## The owner id
 
 `docs.owner` holds an **app-sites `User.id`** — the uuid in the Brevilabs
-Postgres that identifies a person across every Brevilabs product. Symposium
+Postgres that identifies a person across every Brevilabs product. OpenArtifacts
 stores no email and keeps no account table of its own. The id is opaque here:
 nothing parses it, and every query only ever compares it for equality.
 
@@ -21,7 +21,7 @@ Two facts make that enough:
 - **The license server already resolves a key to it.**
   `license.validateLicenseKey` returns `accountId: LicenseKeyConfig.authUserId`
   on every valid response, alongside the plan.
-- **A symposium.md session already carries it.** NextAuth's session callback
+- **An openartifacts.ai session already carries it.** NextAuth's session callback
   sets `session.user.id` to the same uuid.
 
 So both sides arrive at the identical value without deriving anything. There is
@@ -36,7 +36,7 @@ Today there is one credential, and one day there will be two. They meet at
 ```
 Authorization: Bearer <license key>   →  license server  →  accountId  ┐
                                                                        ├→  Publisher.owner  →  docs.owner
-symposium.md session (JWT)            →  session.user.id              ┘
+openartifacts.ai session (JWT)            →  session.user.id              ┘
 ```
 
 `src/auth.ts` is the only module that sees a license key at all. It hashes the
@@ -62,10 +62,10 @@ A fair question, since ownership no longer is. Three reasons:
 
 The hash never leaves that module. It is an index, not an identity.
 
-## What happens when symposium.md gains sign-in
+## What happens when openartifacts.ai gains sign-in
 
 Almost nothing, which is the point. `User` is one NextAuth table shared by every
-app-sites product, so a symposium.md sign-up resolves through the same
+app-sites product, so an openartifacts.ai sign-up resolves through the same
 `authOptions` Copilot already uses:
 
 | On sign-in | Result |
@@ -82,9 +82,9 @@ than a dead end. **No join, and no branch on "is this person a Copilot user."**
 ### The join is for entitlement, not identity
 
 *Who* needs no lookup. *May they publish* does. That gate is currently the
-license key's plan, and a symposium.md-only user has no `LicenseKeyConfig` row at
+license key's plan, and an openartifacts.ai-only user has no `LicenseKeyConfig` row at
 all — so it needs a per-product table, following the shape already in the schema:
-`Customer` for Copilot, `MiyoCustomer` for miyo, and a Symposium equivalent keyed
+`Customer` for Copilot, `MiyoCustomer` for miyo, and an OpenArtifacts equivalent keyed
 by `authUserId`. Joined on the account, answering *what plan*, never *who*.
 
 Keeping that split is what stops the identity model growing a special case per
@@ -124,7 +124,7 @@ should not be relaxed without knowing that.
 - **It does not give a key its own documents.** Two keys on one account share one
   list, one daily push allowance, and one 500-document ceiling. Isolation is per
   account, and `docs/http-api.md` says so.
-- **It does not survive the account being deleted.** Nothing in Symposium
+- **It does not survive the account being deleted.** Nothing in OpenArtifacts
   currently reacts to a `User` row disappearing upstream; the documents would
   simply stop being reachable by anyone. Worth solving before there are accounts
   worth deleting.

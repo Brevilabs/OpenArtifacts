@@ -2,7 +2,7 @@ import { createExecutionContext, env, waitOnExecutionContext } from "cloudflare:
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Env } from "../src/config.js";
 import { DOC_ID_LENGTH } from "../src/ids.js";
-import { NOINDEX_META, SYMPOSIUM_FOOTER, SYMPOSIUM_HEADER } from "../src/render.js";
+import { NOINDEX_META, OPENARTIFACTS_FOOTER, OPENARTIFACTS_HEADER } from "../src/render.js";
 import { versionObjectKey } from "../src/storage.js";
 import worker from "../src/index.js";
 
@@ -17,7 +17,7 @@ async function expectServes(response: Response, docId: string, version: number) 
   const document = await stored(docId, version);
   expect(document).not.toContain(NOINDEX_META);
   expect(html).toContain(NOINDEX_META);
-  expect(html).toContain(SYMPOSIUM_FOOTER);
+  expect(html).toContain(OPENARTIFACTS_FOOTER);
   // Everything inside the body the owner sent, in order, still there.
   const inner = document.slice(document.indexOf("<body>") + 6, document.indexOf("</body>"));
   expect(html).toContain(inner.trim());
@@ -36,18 +36,20 @@ async function expectStatusPage(
   expect(response.headers.get("cache-control")).toBe("no-store");
 
   const html = await response.text();
-  expect(html).toContain(`<title>${title} · Symposium</title>`);
+  expect(html).toContain(`<title>${title} · OpenArtifacts</title>`);
+  expect(html).toContain(">OpenArtifacts</div>");
+  expect(html).toContain('<a href="https://openartifacts.ai">About OpenArtifacts</a>');
   expect(html).toContain(`<h1 id="page-title">${heading}</h1>`);
   expect(html).toContain(message);
   expect(html).toContain(NOINDEX_META);
 }
 
 /**
- * A host matching neither SERVING_HOST nor API_HOST, which is what makes the
- * router fall back to path prefixes. Deliberately not a real deployment host:
- * these tests are about the surfaces, not about which domain carries them.
+ * Local routing has no configured hosts, so it falls back to path prefixes.
+ * Deliberately not a real deployment host: these tests are about the surfaces,
+ * not about which production domain carries them.
  */
-const ORIGIN = "https://symposium.workers.dev";
+const ORIGIN = "https://openartifacts.workers.dev";
 
 const KEY = "cplus_live_a1b2c3d4e5f60718";
 
@@ -94,7 +96,14 @@ async function send(
   const ctx = createExecutionContext();
   const response = await worker.fetch(
     new Request(`${ORIGIN}${path}`, { method, ...init }),
-    { ...env, ...overrides },
+    {
+      ...env,
+      SERVING_HOST: "",
+      API_HOST: "",
+      LEGACY_SERVING_HOST: "",
+      LEGACY_API_HOST: "",
+      ...overrides,
+    },
     ctx,
   );
   await waitOnExecutionContext(ctx);
@@ -171,9 +180,9 @@ describe("GET /d/{docId}", () => {
     expect(html).toContain("<p>second draft</p>");
     expect(html).not.toContain("<p>first draft</p>");
     expect(html).toContain(NOINDEX_META);
-    expect(html).toContain(SYMPOSIUM_FOOTER);
+    expect(html).toContain(OPENARTIFACTS_FOOTER);
     expect(object).not.toContain(NOINDEX_META);
-    expect(object).not.toContain(SYMPOSIUM_FOOTER);
+    expect(object).not.toContain(OPENARTIFACTS_FOOTER);
   });
 
   // End to end, because "injected once" is asserted against the renderer in
@@ -186,13 +195,13 @@ describe("GET /d/{docId}", () => {
 
     const html = await (await get(`/d/${docId}`)).text();
 
-    for (const addition of [NOINDEX_META, SYMPOSIUM_HEADER, SYMPOSIUM_FOOTER]) {
+    for (const addition of [NOINDEX_META, OPENARTIFACTS_HEADER, OPENARTIFACTS_FOOTER]) {
       expect(html.split(addition).length - 1).toBe(1);
     }
     // The bylines' own markers, so a future restyle that changes the constants
     // cannot make the count above pass by matching nothing.
-    expect(html.split("symposium-header").length - 1).toBe(1);
-    expect(html.split("symposium-footer").length - 1).toBe(1);
+    expect(html.split("openartifacts-header").length - 1).toBe(1);
+    expect(html.split("openartifacts-footer").length - 1).toBe(1);
   });
 
   it("serves version 1 at the same url before there is a version 2", async () => {
@@ -498,7 +507,7 @@ describe("a doc that is not there", () => {
     // arrangement in which the prefix lookalikes below reach this handler at
     // all — on workers.dev the router answers them as unknown paths — and it is
     // the arrangement where mistaking `/dx{docId}` for a doc url would matter.
-    const servingHost = { SERVING_HOST: "symposium.workers.dev", DB: noDb };
+    const servingHost = { SERVING_HOST: "openartifacts.workers.dev", DB: noDb };
 
     for (const path of impossible) {
       const response = await get(path, undefined, servingHost);
@@ -700,7 +709,7 @@ describe("HEAD and conditional requests", () => {
     const response = await get(`/d/${docId}`, { headers: { "if-none-match": older } });
 
     expect(response.status).toBe(200);
-    expect(await response.text()).toContain(SYMPOSIUM_FOOTER);
+    expect(await response.text()).toContain(OPENARTIFACTS_FOOTER);
     expect(response.headers.get("etag")).toBe(current);
   });
 

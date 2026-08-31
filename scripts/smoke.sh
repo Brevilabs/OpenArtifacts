@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
-# End-to-end smoke check against a *deployed* Symposium worker.
+# End-to-end smoke check against a *deployed* OpenArtifacts worker.
 #
-#   SYMPOSIUM_LICENSE_KEY=... scripts/smoke.sh https://api.symposium.md
+#   OPENARTIFACTS_LICENSE_KEY=... scripts/smoke.sh https://api.openartifacts.ai
 #
 # It publishes a doc, reads it back from its public url, finds it in the
 # publisher's list, deletes it, and confirms the url has become 410. Every step
@@ -19,24 +19,24 @@
 # machine via `ps`. Nothing here echoes it, and the API never returns it.
 set -euo pipefail
 
-BASE_URL=${1:-${SYMPOSIUM_BASE_URL:-}}
+BASE_URL=${1:-${OPENARTIFACTS_BASE_URL:-}}
 
 usage() {
   cat >&2 <<'EOF'
-usage: SYMPOSIUM_LICENSE_KEY=<paid Copilot license key> scripts/smoke.sh <base url>
+usage: OPENARTIFACTS_LICENSE_KEY=<paid Copilot license key> scripts/smoke.sh <base url>
 
-  <base url>          the API host, e.g. https://api.symposium.md
-                      (or set SYMPOSIUM_BASE_URL instead of passing it)
+  <base url>          the API host, e.g. https://api.openartifacts.ai
+                      (or set OPENARTIFACTS_BASE_URL instead of passing it)
                       Document reads use the url the push returns, so the
                       serving domain is never passed in.
-  SYMPOSIUM_LICENSE_KEY   a paid license key with a push quota to spare.
+  OPENARTIFACTS_LICENSE_KEY   a paid license key with a push quota to spare.
                       Never passed as an argument, never printed.
 EOF
   exit 2
 }
 
 [ -n "$BASE_URL" ] || usage
-[ -n "${SYMPOSIUM_LICENSE_KEY:-}" ] || usage
+[ -n "${OPENARTIFACTS_LICENSE_KEY:-}" ] || usage
 
 # Trailing slashes would double up in every url built below.
 BASE_URL=${BASE_URL%/}
@@ -57,7 +57,7 @@ BODY="$WORK/body"
 # builtin, so escaping the key for that quoting never puts it in a process's
 # arguments either.
 printf 'header = "Authorization: Bearer %s"\n' \
-  "$(printf '%s' "$SYMPOSIUM_LICENSE_KEY" | sed 's/[\\"]/\\&/g')" >"$AUTH"
+  "$(printf '%s' "$OPENARTIFACTS_LICENSE_KEY" | sed 's/[\\"]/\\&/g')" >"$AUTH"
 
 HTTP_STATUS=""
 
@@ -118,10 +118,10 @@ json_string() {
 
 # Marks the doc this run published, so the read-back is checking our own bytes
 # rather than any doc happening to be there.
-MARKER="symposium-smoke-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+MARKER="openartifacts-smoke-$(date -u +%Y%m%dT%H%M%SZ)-$$"
 
 cat >"$WORK/push.json" <<EOF
-{"title":"Symposium smoke check $MARKER",
+{"title":"OpenArtifacts smoke check $MARKER",
  "html":"<!doctype html><html lang=en><head><meta charset=utf-8><title>smoke</title></head><body><p>$MARKER</p></body></html>"}
 EOF
 
@@ -145,7 +145,7 @@ public_request "$DOC_URL"
 expect_status 200 "GET $DOC_URL"
 expect_body "$MARKER" "the page serves the bytes that were pushed"
 expect_body "Copilot for Obsidian</span>" "the page carries the header byline"
-expect_body "symposium.md</a>" "the page carries the footer byline, linked"
+expect_body "openartifacts.ai</a>" "the page carries the footer byline, linked"
 expect_body 'rel="icon"' "the page carries a tab icon"
 
 api_request GET "$BASE_URL/api/v1/docs?limit=100"

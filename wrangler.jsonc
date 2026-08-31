@@ -7,18 +7,19 @@
     "enabled": true
   },
 
-  // The two hostnames the Worker answers on, and the only ones — `workers_dev`
-  // is false. Declared here rather than clicked in the dashboard so the repo
-  // describes production: a custom domain created by hand is state nothing in
-  // this file knows about.
+  // The canonical and legacy hostnames the Worker answers on, and the only
+  // ones — `workers_dev` is false. Declared here rather than clicked in the
+  // dashboard so the repo describes the post-cutover target: the new domains
+  // must exist in Cloudflare before this config can deploy.
   //
   // `custom_domain` makes Cloudflare create and own the DNS record, which is
-  // why neither zone should carry a hand-made record for these names. They must
-  // match `vars` below exactly; the router compares the request host against
-  // those strings, so a name attached here but missing there would fall through
-  // to path prefixes and serve both surfaces on one domain.
+  // why none of the zones should carry a hand-made record for these names. They
+  // must match `vars` below exactly; the router fails closed on every other
+  // host once any configured hostname is present.
   "routes": [
+    { "pattern": "openartifacts.site", "custom_domain": true },
     { "pattern": "symposium.site", "custom_domain": true },
+    { "pattern": "api.openartifacts.ai", "custom_domain": true },
     { "pattern": "api.symposium.md", "custom_domain": true }
   ],
 
@@ -38,9 +39,9 @@
     }
   ],
 
-  // No workers.dev route, ever. `resolveSurface` falls back to path prefixes on
-  // any host matching neither var below, so a workers.dev hostname would serve
-  // /d/* — user HTML on a domain we cannot sacrifice, and one whose Public
+  // No workers.dev route, ever. `resolveSurface` falls back to path prefixes
+  // only when every host var is empty, so an unconfigured workers.dev hostname
+  // would serve /d/* — user HTML on a domain we cannot sacrifice, and one whose Public
   // Suffix List entry makes a listing hit every Worker on the account.
   // docs/serving-domain.md is the argument; docs/deploying.md covers the cost,
   // which is that the Worker has no hostname until a custom domain is attached.
@@ -48,21 +49,24 @@
 
   // The surface split. Documents serve from the sacrificial domain, the API
   // from the brand one, and `resolveSurface` decides by host — so /api/v1 is
-  // unreachable on symposium.site rather than merely unadvertised (see
+  // unreachable on openartifacts.site rather than merely unadvertised (see
   // docs/serving-domain.md, docs/cost-at-scale.md §6).
   //
-  // Both together or neither. The router falls back to path prefixes while
-  // *either* is empty, which would leave /api/v1 answering on the sacrificial
-  // domain and defeat the split.
+  // Configure all four together. The old document host redirects path and
+  // query to the canonical host. The old API host serves natively so released
+  // clients keep their method and Authorization header on every request.
   //
-  // These must be deployed BEFORE the custom domains are attached. Attaching
-  // first binds the real domains to a version that still has them empty, and
-  // for the length of that deploy the fallback serves /d/* on the API host and
-  // /api/v1/* on the serving host — the split inverted, on the first requests
-  // those domains ever take. With workers_dev false this deploy is reachable on
-  // nothing, so going first costs nothing.
+  // Both new Cloudflare zones must exist before this config can ship. The first
+  // four-route deploy must use the compatibility overrides in
+  // docs/deploying.md, keeping the old hosts canonical while this router is
+  // attached everywhere. Record that version as the rollback floor, then let
+  // CI deploy the final mapping below. CI refuses the one-step cutover. Do not
+  // attach the new names by hand to an old Worker version whose router does not
+  // recognize them.
   "vars": {
-    "SERVING_HOST": "symposium.site",
-    "API_HOST": "api.symposium.md"
+    "SERVING_HOST": "openartifacts.site",
+    "API_HOST": "api.openartifacts.ai",
+    "LEGACY_SERVING_HOST": "symposium.site",
+    "LEGACY_API_HOST": "api.symposium.md"
   }
 }
