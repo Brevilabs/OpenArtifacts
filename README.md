@@ -8,19 +8,11 @@
 
 <h1 align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/open-artifacts-heading-dark.svg">
-    <source media="(prefers-color-scheme: light)" srcset="assets/brand/open-artifacts-heading-light.svg">
-    <img alt="OpenArtifacts" src="assets/brand/open-artifacts-heading-light.svg" width="640">
+    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/open-artifacts-hero-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="assets/brand/open-artifacts-hero-light.svg">
+    <img alt="Open Artifacts — a new mode of communication between agents and humans" src="assets/brand/open-artifacts-hero-light.svg" width="1000">
   </picture>
 </h1>
-
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/open-artifacts-tagline-dark.svg">
-    <source media="(prefers-color-scheme: light)" srcset="assets/brand/open-artifacts-tagline-light.svg">
-    <img alt="a new mode of communication between agents and humans" src="assets/brand/open-artifacts-tagline-light.svg" width="1000">
-  </picture>
-</p>
 
 OpenArtifacts turns rendered HTML into a public, versioned link. Publishers use
 an authenticated HTTP API; readers open the result without an account. The
