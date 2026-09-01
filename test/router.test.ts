@@ -8,7 +8,7 @@ const env = (vars: Partial<Env> = {}): Env =>
     SERVING_HOST: "",
     API_HOST: "",
     LEGACY_SERVING_HOST: "",
-    LEGACY_API_HOST: "",
+    RETIRED_API_HOST: "",
     ...vars,
   }) as Env;
 
@@ -22,13 +22,13 @@ const HOSTS = {
   servingHost: "openartifacts.site",
   apiHost: "api.openartifacts.ai",
   legacyServingHost: "symposium.site",
-  legacyApiHost: "api.symposium.md",
+  retiredApiHost: "api.symposium.md",
 };
 const PRODUCTION_ENV: Partial<Env> = {
   SERVING_HOST: HOSTS.servingHost,
   API_HOST: HOSTS.apiHost,
   LEGACY_SERVING_HOST: HOSTS.legacyServingHost,
-  LEGACY_API_HOST: HOSTS.legacyApiHost,
+  RETIRED_API_HOST: HOSTS.retiredApiHost,
 };
 
 describe("resolveSurface — local development, no hosts configured", () => {
@@ -57,7 +57,7 @@ describe("resolveSurface — local development, no hosts configured", () => {
         servingHost: "",
         apiHost: "",
         legacyServingHost: "",
-        legacyApiHost: "",
+        retiredApiHost: "",
       }),
     ).toBe("api");
   });
@@ -69,9 +69,16 @@ describe("resolveSurface — canonical and legacy domains", () => {
     expect(resolveSurface("api.openartifacts.ai", "/api/v1/docs", HOSTS)).toBe("api");
   });
 
-  it("redirects the legacy document host and serves the legacy API natively", () => {
+  it("supports a fresh two-host deployment without legacy or retired hosts", () => {
+    const fresh = { servingHost: "docs.example", apiHost: "api.example" };
+    expect(resolveSurface("docs.example", "/d/abc", fresh)).toBe("serving");
+    expect(resolveSurface("api.example", "/api/v1/docs", fresh)).toBe("api");
+    expect(resolveSurface("other.example", "/api/v1/docs", fresh)).toBe("unknown");
+  });
+
+  it("redirects the legacy document host and retires the old API host", () => {
     expect(resolveSurface("symposium.site", "/d/abc", HOSTS)).toBe("legacy-serving");
-    expect(resolveSurface("api.symposium.md", "/api/v1/docs", HOSTS)).toBe("api");
+    expect(resolveSurface("api.symposium.md", "/api/v1/docs", HOSTS)).toBe("retired-api");
   });
 
   it("keeps /api/v1 off both document hosts", () => {
@@ -79,16 +86,16 @@ describe("resolveSurface — canonical and legacy domains", () => {
     expect(resolveSurface("symposium.site", "/api/v1/docs", HOSTS)).toBe("legacy-serving");
   });
 
-  it("keeps document serving off both API hosts", () => {
+  it("keeps document serving off the canonical and retired API hosts", () => {
     expect(resolveSurface("api.openartifacts.ai", "/d/abc", HOSTS)).toBe("api");
-    expect(resolveSurface("api.symposium.md", "/d/abc", HOSTS)).toBe("api");
+    expect(resolveSurface("api.symposium.md", "/d/abc", HOSTS)).toBe("retired-api");
   });
 
   it("matches every configured host case-insensitively and ignores the root dot", () => {
     expect(resolveSurface("OPENARTIFACTS.SITE.", "/api/v1/docs", HOSTS)).toBe("serving");
     expect(resolveSurface("SYMPOSIUM.SITE.", "/d/abc", HOSTS)).toBe("legacy-serving");
     expect(resolveSurface("API.OPENARTIFACTS.AI.", "/d/abc", HOSTS)).toBe("api");
-    expect(resolveSurface("API.SYMPOSIUM.MD.", "/d/abc", HOSTS)).toBe("api");
+    expect(resolveSurface("API.SYMPOSIUM.MD.", "/d/abc", HOSTS)).toBe("retired-api");
   });
 
   it("fails closed on unknown hosts even when the path names a surface", () => {
@@ -106,8 +113,8 @@ describe("resolveSurface — canonical and legacy domains", () => {
 });
 
 describe("worker dispatch", () => {
-  it("serves health on canonical hosts and the native legacy API host", async () => {
-    for (const host of ["openartifacts.site", "api.openartifacts.ai", "api.symposium.md"]) {
+  it("serves health on the canonical hosts", async () => {
+    for (const host of ["openartifacts.site", "api.openartifacts.ai"]) {
       const res = await get(`https://${host}/health`, PRODUCTION_ENV);
       expect(res.status).toBe(200);
       await expect(res.json()).resolves.toEqual({ ok: true });
@@ -125,28 +132,69 @@ describe("worker dispatch", () => {
     expect(unknown.status).toBe(404);
   });
 
-  it("preserves the exact path and query when redirecting an old document URL", async () => {
-    const res = await get(
-      "https://symposium.site/d/9f2k4mvq7t0xbz3n/v2?source=old%20note&view=full",
-      PRODUCTION_ENV,
-    );
+  it("preserves the exact path and query for GET and HEAD document redirects", async () => {
+    const source = "https://symposium.site/d/9f2k4mvq7t0xbz3n/v2?source=old%20note&view=full";
+    const target =
+      "https://openartifacts.site/d/9f2k4mvq7t0xbz3n/v2?source=old%20note&view=full";
 
-    expect(res.status).toBe(307);
-    expect(res.headers.get("location")).toBe(
-      "https://openartifacts.site/d/9f2k4mvq7t0xbz3n/v2?source=old%20note&view=full",
-    );
-    expect(res.headers.get("cache-control")).toBe("no-store");
-    expect(res.headers.get("x-robots-tag")).toBe("noindex, nofollow");
-    expect(res.headers.get("referrer-policy")).toBe("no-referrer");
-    expect(res.headers.get("x-content-type-options")).toBe("nosniff");
-    expect(res.headers.get("set-cookie")).toBeNull();
+    for (const method of ["GET", "HEAD"]) {
+      const res = await worker.fetch(new Request(source, { method }), env(PRODUCTION_ENV), ctx);
+      expect(res.status).toBe(307);
+      expect(res.headers.get("location")).toBe(target);
+      expect(res.headers.get("cache-control")).toBe("no-store");
+      expect(res.headers.get("x-robots-tag")).toBe("noindex, nofollow");
+      expect(res.headers.get("referrer-policy")).toBe("no-referrer");
+      expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+      expect(res.headers.get("set-cookie")).toBeNull();
+      expect(await res.text()).toBe("");
+    }
   });
 
-  it("serves the old API host natively without an auth redirect", async () => {
-    const res = await get("https://api.symposium.md/api/v1/docs", PRODUCTION_ENV);
-    expect(res.status).toBe(401);
-    expect(res.headers.get("location")).toBeNull();
-    expect(res.headers.get("x-robots-tag")).toBeNull();
+  it("does not redirect non-read methods from the legacy document host", async () => {
+    for (const method of ["POST", "PUT", "DELETE"]) {
+      const res = await worker.fetch(
+        new Request("https://symposium.site/d/9f2k4mvq7t0xbz3n?source=old", { method }),
+        env(PRODUCTION_ENV),
+        ctx,
+      );
+      expect(res.status).toBe(404);
+      expect(res.headers.get("location")).toBeNull();
+      expect(res.headers.get("x-robots-tag")).toBe("noindex, nofollow");
+    }
+  });
+
+  it("returns 410 before auth for every method and path on the retired API host", async () => {
+    const requests = [
+      ["GET", "/health"],
+      ["GET", "/api/v1/docs"],
+      ["POST", "/api/v1/docs"],
+      ["PUT", "/api/v1/docs/9f2k4mvq7t0xbz3n"],
+      ["DELETE", "/api/v1/docs/9f2k4mvq7t0xbz3n"],
+      ["HEAD", "/anything"],
+    ] as const;
+
+    for (const [method, path] of requests) {
+      const res = await worker.fetch(
+        new Request(`https://api.symposium.md${path}`, {
+          method,
+          headers: { authorization: "Bearer deliberately-not-validated" },
+        }),
+        env(PRODUCTION_ENV),
+        ctx,
+      );
+      expect(res.status).toBe(410);
+      expect(res.headers.get("cache-control")).toBe("no-store");
+      expect(res.headers.get("location")).toBeNull();
+      expect(res.headers.get("www-authenticate")).toBeNull();
+      if (method !== "HEAD") {
+        await expect(res.json()).resolves.toEqual({
+          error: {
+            code: "gone",
+            message: "This API host has been retired. Use https://api.openartifacts.ai.",
+          },
+        });
+      }
+    }
   });
 
   it("answers unknown configured hosts without falling through by path", async () => {
@@ -164,12 +212,10 @@ describe("worker dispatch", () => {
     expect(await res.text()).toContain("This document isn’t available.");
   });
 
-  it("keeps documents off both API hosts", async () => {
-    for (const host of ["api.openartifacts.ai", "api.symposium.md"]) {
-      const res = await get(`https://${host}/d/9f2k4mvq7t0xbz3n`, PRODUCTION_ENV);
-      expect(res.status).toBe(401);
-      expect(res.headers.get("x-robots-tag")).toBeNull();
-    }
+  it("keeps documents off the canonical API host", async () => {
+    const res = await get("https://api.openartifacts.ai/d/9f2k4mvq7t0xbz3n", PRODUCTION_ENV);
+    expect(res.status).toBe(401);
+    expect(res.headers.get("x-robots-tag")).toBeNull();
   });
 
   it("keeps local path fallback for wrangler dev", async () => {

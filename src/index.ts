@@ -20,17 +20,17 @@ import {
  * sacrificial host that never carries the API — a doc that turns out to be
  * phishing should cost us the serving domain, not the brand domain.
  */
-export type Surface = "api" | "serving" | "legacy-serving" | "unknown";
+export type Surface = "api" | "serving" | "legacy-serving" | "retired-api" | "unknown";
 
 export interface SurfaceConfig {
   /** Canonical host serving public docs. Empty/undefined locally. */
   servingHost?: string;
   /** Canonical host exposing /api/v1. Empty/undefined locally. */
   apiHost?: string;
-  /** Previous docs host. It redirects to servingHost. */
+  /** Previous docs host. It redirects GET and HEAD to servingHost. */
   legacyServingHost?: string;
-  /** Previous API host. It serves the API natively for released clients. */
-  legacyApiHost?: string;
+  /** Previous API host. It returns 410 without entering the API path. */
+  retiredApiHost?: string;
 }
 
 const API_PREFIX = "/api/v1";
@@ -60,7 +60,7 @@ function hostsAreConfigured(config: SurfaceConfig): boolean {
     config.servingHost,
     config.apiHost,
     config.legacyServingHost,
-    config.legacyApiHost,
+    config.retiredApiHost,
   ].some((host) => host?.trim());
 }
 
@@ -76,12 +76,8 @@ function hostsAreConfigured(config: SurfaceConfig): boolean {
 export function resolveSurface(hostname: string, pathname: string, config: SurfaceConfig): Surface {
   if (hostMatches(hostname, config.servingHost)) return "serving";
   if (hostMatches(hostname, config.legacyServingHost)) return "legacy-serving";
-  if (
-    hostMatches(hostname, config.apiHost) ||
-    hostMatches(hostname, config.legacyApiHost)
-  ) {
-    return "api";
-  }
+  if (hostMatches(hostname, config.apiHost)) return "api";
+  if (hostMatches(hostname, config.retiredApiHost)) return "retired-api";
 
   if (hostsAreConfigured(config)) return "unknown";
 
@@ -151,11 +147,26 @@ export default {
       servingHost: env.SERVING_HOST,
       apiHost: env.API_HOST,
       legacyServingHost: env.LEGACY_SERVING_HOST,
-      legacyApiHost: env.LEGACY_API_HOST,
+      retiredApiHost: env.RETIRED_API_HOST,
     };
     const surface = resolveSurface(url.hostname, url.pathname, surfaceConfig);
 
+    // The old API hostname stays attached because a limited-zone Cloudflare
+    // token cannot reliably delete an omitted custom-domain route. Retire it in
+    // the router instead: every method and path stops before authentication or
+    // an API handler, including /health.
+    if (surface === "retired-api") {
+      return errorResponse(
+        "gone",
+        "This API host has been retired. Use https://api.openartifacts.ai.",
+        { "cache-control": "no-store" },
+      );
+    }
+
     if (surface === "legacy-serving") {
+      if (request.method !== "GET" && request.method !== "HEAD") {
+        return servingError(request.method, "not_found");
+      }
       const servingHost = env.SERVING_HOST?.trim();
       if (!servingHost) return servingError(request.method, "internal");
 

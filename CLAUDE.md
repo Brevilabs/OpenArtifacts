@@ -100,10 +100,11 @@ treat D1 as a system of record, not as a cache.
 
 ## Owed now that the serving domain has landed
 
-The serving split is attached today on the legacy hosts: documents on
+Before the cutover, the serving split uses the old hosts: documents on
 `symposium.site`, the API on `api.symposium.md`. The cutover makes
 `openartifacts.site` and `api.openartifacts.ai` canonical while retaining the
-old document host as a redirect and the old API host as a native alias.
+old document host as a GET/HEAD redirect. The old API custom domain remains
+attached but every method and path returns `410 Gone` before authentication.
 `workers_dev` stays `false` — an unconfigured router would otherwise
 serve `/d/*` on a `workers.dev` hostname, and that domain is on the Public
 Suffix List, so a listing against it would take every Worker on the account's
@@ -122,15 +123,17 @@ domain, and both are easy to miss because nothing fails loudly without them:
   without the second is how a withdrawn doc stays readable. The private-cache
   copies readers already hold are unrecallable by any design, and the README says
   so.
-All four canonical and legacy host vars are set in `wrangler.jsonc`, which makes
-the router resolve by an explicit host allowlist and fail closed on everything
-else. Leave them set together. Path-prefix fallback exists only for local
-development when every host var is empty.
+All four canonical, legacy, and retired host vars are set in `wrangler.jsonc`,
+which makes the router resolve by an explicit host allowlist and fail closed on
+everything else. Leave them set together. Path-prefix fallback exists only for
+local development when every host var is empty.
 
-The first four-domain cutover is two-stage. Deploy the compatibility mapping in
-`docs/deploying.md`, record its Worker version id as the rollback floor, then
-let CI flip the canonical hosts. Never roll back below that floor while either
-new domain remains attached; older versions route unknown hosts by path.
+The first four-domain cutover is one production deployment. Record that Worker
+version id as the hard rollback floor. Never roll back below it while either new
+domain or `api.symposium.md` remains attached: older versions route unknown
+hosts by path and make the retired API live again. A pre-floor emergency
+rollback first detaches those three domains and accepts an API outage; see
+`docs/deploying.md`.
 
 ## Git hygiene
 

@@ -90,7 +90,7 @@ async function send(
       SERVING_HOST: "",
       API_HOST: "",
       LEGACY_SERVING_HOST: "",
-      LEGACY_API_HOST: "",
+      RETIRED_API_HOST: "",
       ...overrides,
     },
     ctx,

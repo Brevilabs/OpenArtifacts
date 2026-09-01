@@ -8,7 +8,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "dev": "wrangler dev",
+    "dev": "wrangler dev --var SERVING_HOST: --var API_HOST: --var LEGACY_SERVING_HOST: --var RETIRED_API_HOST: --local-upstream 127.0.0.1:8787",
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",

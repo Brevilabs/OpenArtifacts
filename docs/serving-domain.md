@@ -79,11 +79,12 @@ insuring against is one occurrence.
 
 ## Status
 
-**The split is live on the legacy hosts today.** `symposium.site` serves
-documents and `api.symposium.md` serves the API. The cutover config makes
+**Before the cutover, the split uses the legacy hosts.** `symposium.site` serves
+documents and `api.symposium.md` serves the API. The cutover makes
 `openartifacts.site` and `api.openartifacts.ai` canonical after their Cloudflare
 zones and custom domains are attached. The legacy document host then redirects
-the exact path and query; the legacy API host keeps serving natively.
+GET and HEAD with the exact path and query. The old API host remains attached
+only to return `410 Gone` for every request before authentication.
 
 `workers_dev` is `false` and stays that way. With any host var set, the router
 uses an explicit allowlist and fails closed on unknown hosts. Path-prefix
@@ -91,10 +92,10 @@ fallback exists only for local development, when all four vars are empty.
 
 The remaining serving work is unchanged:
 
-1. **Attach the new canonical domains in two stages.** Pending on both
-   Cloudflare zones. First deploy the four-host router with the old hosts still
-   canonical and record that version as the rollback floor; then let CI flip
-   the canonical mapping. The deployment gate refuses to skip this step.
+1. **Attach the new canonical domains in one deployment.** Pending on both
+   Cloudflare zones. The first canonical version is the hard rollback floor;
+   older versions cannot safely run while the new or retired API domains remain
+   attached.
 2. **Add a Cache Rule.** Outstanding. Cloudflare does not cache HTML by default,
    and `/d/{docId}` has no file extension, so attaching the new domains will not
    change caching by itself.

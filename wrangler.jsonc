@@ -7,8 +7,8 @@
     "enabled": true
   },
 
-  // The canonical and legacy hostnames the Worker answers on, and the only
-  // ones — `workers_dev` is false. Declared here rather than clicked in the
+  // The canonical, legacy, and retired hostnames the Worker answers on, and the
+  // only ones — `workers_dev` is false. Declared here rather than clicked in the
   // dashboard so the repo describes the post-cutover target: the new domains
   // must exist in Cloudflare before this config can deploy.
   //
@@ -52,21 +52,18 @@
   // unreachable on openartifacts.site rather than merely unadvertised (see
   // docs/serving-domain.md, docs/cost-at-scale.md §6).
   //
-  // Configure all four together. The old document host redirects path and
-  // query to the canonical host. The old API host serves natively so released
-  // clients keep their method and Authorization header on every request.
+  // Configure all four together. The old document host redirects GET and HEAD
+  // with the exact path and query. The old API custom domain stays attached and
+  // returns 410 for every request: a limited-zone Cloudflare token cannot
+  // reliably delete a route in a zone omitted from the new config.
   //
-  // Both new Cloudflare zones must exist before this config can ship. The first
-  // four-route deploy must use the compatibility overrides in
-  // docs/deploying.md, keeping the old hosts canonical while this router is
-  // attached everywhere. Record that version as the rollback floor, then let
-  // CI deploy the final mapping below. CI refuses the one-step cutover. Do not
-  // attach the new names by hand to an old Worker version whose router does not
-  // recognize them.
+  // Both new Cloudflare zones must exist before this config can ship. This is a
+  // one-deploy cutover. Record its version as the rollback floor; older versions
+  // would route the new hosts by path and make api.symposium.md live again.
   "vars": {
     "SERVING_HOST": "openartifacts.site",
     "API_HOST": "api.openartifacts.ai",
     "LEGACY_SERVING_HOST": "symposium.site",
-    "LEGACY_API_HOST": "api.symposium.md"
+    "RETIRED_API_HOST": "api.symposium.md"
   }
 }
