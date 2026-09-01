@@ -22,6 +22,7 @@ import { findServableVersion } from "./db.js";
 import { isDocId } from "./ids.js";
 import {
   FAVICON_LINK,
+  OPENARTIFACTS_MARK_SVG,
   NOINDEX_META,
   RENDER_REVISION,
   renderServedHtml,
@@ -211,23 +212,22 @@ ${NOINDEX_META}
 ${FAVICON_LINK}
 <title>${copy.title} · OpenArtifacts</title>
 <style>
-  :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  :root { color-scheme: dark; font-family: Archivo, "Helvetica Neue", Helvetica, Arial, ui-sans-serif, system-ui, sans-serif; }
   * { box-sizing: border-box; }
-  body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 2rem; color: #edf3ee; background: #0d100e; }
-  main { width: min(100%, 34rem); padding: clamp(2rem, 6vw, 4rem); border: 1px solid #2b332e; border-radius: 1.5rem; background: #121613; box-shadow: 0 1.5rem 5rem rgba(0, 0, 0, 0.35); }
-  .brand { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 3.5rem; color: #a7b0aa; font-size: 0.75rem; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; }
-  .mark { display: grid; gap: 0.25rem; width: 2rem; padding: 0.5rem 0.4rem; border-radius: 0.5rem; background: #46d17f; }
-  .mark span { display: block; height: 2px; border-radius: 999px; background: #0d100e; }
-  .mark span:last-child { width: 65%; }
-  h1 { max-width: 12ch; margin: 0; color: #f7faf7; font-size: clamp(2.25rem, 7vw, 4.25rem); line-height: 0.98; letter-spacing: -0.055em; }
-  p { max-width: 30rem; margin: 1.5rem 0 0; color: #a7b0aa; font-size: 1.05rem; line-height: 1.7; }
-  a { display: inline-flex; margin-top: 2rem; color: #72e29d; font-weight: 650; text-underline-offset: 0.25em; }
-  a:hover { color: #a0efbd; }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 2rem; color: #e9ebee; background: #07080b; }
+  main { width: min(100%, 34rem); padding: clamp(2rem, 6vw, 4rem); border: 1px solid #20242c; border-radius: 1.5rem; background: #0d0f14; box-shadow: 0 1.5rem 5rem rgba(0, 0, 0, 0.45); }
+  .brand { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 3.5rem; color: #8d94a0; font-family: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace; font-size: 0.7rem; font-weight: 500; letter-spacing: 0.16em; text-transform: uppercase; }
+  .mark { display: block; width: 2rem; height: 2rem; }
+  .mark svg { display: block; width: 100%; height: 100%; }
+  h1 { max-width: 12ch; margin: 0; color: #f4f5f7; font-size: clamp(2.25rem, 7vw, 4.25rem); font-weight: 700; line-height: 0.98; letter-spacing: -0.035em; }
+  p { max-width: 30rem; margin: 1.5rem 0 0; color: #8d94a0; font-size: 1.05rem; line-height: 1.7; }
+  a { display: inline-flex; margin-top: 2rem; color: #f6ae52; font-weight: 600; text-underline-offset: 0.25em; }
+  a:hover { color: #f9c47f; }
 </style>
 </head>
 <body>
 <main aria-labelledby="page-title">
-  <div class="brand"><span class="mark" aria-hidden="true"><span></span><span></span><span></span></span>OpenArtifacts</div>
+  <div class="brand"><span class="mark" aria-hidden="true">${OPENARTIFACTS_MARK_SVG}</span>OpenArtifacts</div>
   <h1 id="page-title">${copy.heading}</h1>
   <p>${copy.message}</p>
   <a href="https://openartifacts.ai">About OpenArtifacts</a>
