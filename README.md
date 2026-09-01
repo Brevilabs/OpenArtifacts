@@ -1,16 +1,8 @@
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/open-artifacts-mark-dark.svg">
-    <source media="(prefers-color-scheme: light)" srcset="assets/brand/open-artifacts-mark-light.svg">
-    <img alt="OpenArtifacts logo" src="assets/brand/open-artifacts-mark-light.svg" width="180">
-  </picture>
-</p>
-
 <h1 align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/brand/open-artifacts-hero-dark.svg">
     <source media="(prefers-color-scheme: light)" srcset="assets/brand/open-artifacts-hero-light.svg">
-    <img alt="Open Artifacts — a new mode of communication between agents and humans" src="assets/brand/open-artifacts-hero-light.svg" width="1000">
+    <img alt="OpenArtifacts — a new mode of communication between agents and humans" src="assets/brand/open-artifacts-hero-light.svg" width="1000">
   </picture>
 </h1>
 
