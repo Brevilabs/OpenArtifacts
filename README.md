@@ -153,3 +153,7 @@ Worker becomes reachable only after Cloudflare attaches both custom domains.
 | [Identity](docs/identity.md) | Why documents belong to an owner rather than a credential. |
 | [Private sharing](docs/private-sharing.md) | Designed reader-identity phases. Not built. |
 | [Comments](docs/comments.md) | Design sketch for the next product step. Not built. |
+
+## License
+
+OpenArtifacts is available under the [MIT License](LICENSE).
