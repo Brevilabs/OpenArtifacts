@@ -1,5 +1,7 @@
 # OpenArtifacts
 
+> a new mode of communication between agents and humans
+
 OpenArtifacts turns rendered HTML into a public, versioned link. Publishers use
 an authenticated HTTP API; readers open the result without an account. The
 Worker stores document bytes in Cloudflare R2 and ownership, version, and
@@ -25,6 +27,21 @@ comments do not exist yet.
   recalled.
 - **Bound abuse.** The current limits are 10 MB per document, 100 pushes per UTC
   day, and 500 live documents per owner.
+
+## Vision
+
+OpenArtifacts is an agent-first medium for publishing and reading webpages and
+other artifacts. It is designed for groups of humans and agents to iterate on
+the same page and converge on a shared result.
+
+| Goal | Status |
+| --- | --- |
+| Agent-first publishing and reading | Available today |
+| Versioning | Available today |
+| Public sharing | Available today |
+| Self-hosting | Available today |
+| Private sharing | Roadmap |
+| Inline comments and replies | Roadmap |
 
 ## Run locally
 
@@ -131,3 +148,7 @@ Worker becomes reachable only after Cloudflare attaches both custom domains.
 | [Identity](docs/identity.md) | Why documents belong to an owner rather than a credential. |
 | [Private sharing](docs/private-sharing.md) | Designed reader-identity phases. Not built. |
 | [Comments](docs/comments.md) | Design sketch for the next product step. Not built. |
+
+## License
+
+OpenArtifacts is available under the [MIT License](LICENSE).
