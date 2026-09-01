@@ -2,7 +2,7 @@ import { createExecutionContext, env, waitOnExecutionContext } from "cloudflare:
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Env } from "../src/config.js";
 import { DOC_ID_LENGTH } from "../src/ids.js";
-import { NOINDEX_META, OPENARTIFACTS_FOOTER, OPENARTIFACTS_HEADER } from "../src/render.js";
+import { FAVICON_LINK, NOINDEX_META, OPENARTIFACTS_FOOTER, OPENARTIFACTS_HEADER, OPENARTIFACTS_MARK_SVG } from "../src/render.js";
 import { versionObjectKey } from "../src/storage.js";
 import worker from "../src/index.js";
 
@@ -42,6 +42,11 @@ async function expectStatusPage(
   expect(html).toContain(`<h1 id="page-title">${heading}</h1>`);
   expect(html).toContain(message);
   expect(html).toContain(NOINDEX_META);
+  // The page carries the same cube mark as the tab icon; the retired Symposium
+  // mark must not come back through this template.
+  expect(html).toContain(FAVICON_LINK);
+  expect(html).toContain(`<span class="mark" aria-hidden="true">${OPENARTIFACTS_MARK_SVG}</span>`);
+  expect(html).not.toContain("#46d17f");
 }
 
 /**
