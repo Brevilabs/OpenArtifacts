@@ -21,14 +21,14 @@ The `url` field a push returns therefore points at a different host than the one
 the client called, which is the reason a client must never build a doc url
 itself. **Always use the `url` the API returns.**
 
-Compatibility is host-level, not a second contract: `api.symposium.md` serves
-the API natively so released clients keep their method, body, and Authorization
-header. `symposium.site` returns `307` to the same path and query on
-`openartifacts.site`. Both API hosts return canonical document urls.
+Compatibility is read-only. `symposium.site` returns `307` for GET and HEAD to
+the exact same path and query on `openartifacts.site`; other methods fail with a
+serving-surface `404`. `api.symposium.md` is not an API alias. Every method and
+path on that retired host returns `410 gone` before authentication, without a
+redirect.
 
-`GET /health` → `200 {"ok": true}` is reachable on both canonical hosts and the
-legacy API host, unauthenticated. The legacy document host redirects it like
-every other path.
+`GET /health` → `200 {"ok": true}` is reachable on both canonical hosts. The
+legacy document host redirects it, and the retired API host returns `410`.
 
 ## Authentication
 
@@ -243,7 +243,7 @@ conditional `304` responses are unchanged.
 
 ## Errors
 
-Every publisher-facing API failure is JSON:
+Every publisher-facing API failure, and every retired-host response, is JSON:
 
 ```json
 {"error": {"code": "not_found", "message": "No doc with id ..."}}
@@ -259,6 +259,7 @@ exposes this API payload to a reader.
 | `bad_request` | 400 | Malformed JSON, `html` missing, empty or not a string, non-string `title`, junk `limit` or `cursor`. |
 | `unauthorized` | 401 | No `Authorization: Bearer` header, the license server rejected the key, or — on `POST` and `PUT` only — the key's plan is not entitled to publish. Carries `WWW-Authenticate: Bearer`. |
 | `not_found` | 404 | No such doc, not yours, already deleted, or no route. |
+| `gone` | 410 | Every request to the retired `api.symposium.md` host. The canonical API does not emit this code. |
 | `too_large` | 413 | `html` over 10MB. |
 | `quota_exceeded` | 429 | Daily push or doc-count ceiling reached. |
 | `internal` | 500 | Our fault, including the license server being unreachable for a key we have never seen. |

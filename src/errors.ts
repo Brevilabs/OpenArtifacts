@@ -6,6 +6,7 @@ export type ErrorCode =
   | "bad_request"
   | "unauthorized"
   | "not_found"
+  | "gone"
   | "too_large"
   | "quota_exceeded"
   | "internal";
@@ -14,6 +15,7 @@ const ERROR_STATUS: Record<ErrorCode, number> = {
   bad_request: 400,
   unauthorized: 401,
   not_found: 404,
+  gone: 410,
   too_large: 413,
   quota_exceeded: 429,
   internal: 500,

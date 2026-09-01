@@ -15,9 +15,8 @@ Tests need no credentials and no deployment: `@cloudflare/vitest-pool-workers`
 runs them in the real runtime with the migrations in `migrations/` applied to a
 per-test D1. CI runs `npm run typecheck` and `npm test`, and nothing else.
 
-`wrangler dev` needs a wrangler whose bundled runtime is new enough for the
-`compatibility_date` in `wrangler.jsonc`; if it refuses to start, `npm install
-wrangler@latest`.
+The lockfile pins a Wrangler runtime that supports the checked-in
+`compatibility_date`, so use `npm install` rather than an older global Wrangler.
 
 There is no license server locally, so the first push against `wrangler dev`
 fails with `internal`. Warm the validation cache by hand — the worker trusts a

@@ -105,16 +105,17 @@ reader → Cloudflare edge → Worker (src/index.ts)
 ```
 
 The Worker's first decision is which of two surfaces a request belongs to:
-`/api/v1/*` is the publisher API and needs a key, `/d/*` is public reading. They
-sit on separate canonical domains — user content on `openartifacts.site`, a
-domain chosen to be disposable, the API on `api.openartifacts.ai` — for reasons
-in [cost-at-scale.md](cost-at-scale.md) §5. The compatibility stage redirects
-`openartifacts.site` to the still-canonical `symposium.site`. The final stage
-reverses that redirect, while `api.symposium.md` remains a native API alias for
-released clients throughout.
+`/api/v1/*` is the publisher API and needs a key, `/d/*` is public reading. The
+cutover puts them on separate canonical domains — user content on
+`openartifacts.site`, a domain chosen to be disposable, and the API on
+`api.openartifacts.ai` — for reasons in [cost-at-scale.md](cost-at-scale.md) §5.
+After that deployment, `symposium.site` redirects GET and HEAD to the canonical
+document host with the exact path and query. `api.symposium.md` stays attached
+as a retired surface and returns `410 Gone` for every request before
+authentication.
 
-**Nothing is cached today**, and attaching the domains did not by itself change
-that: Cloudflare does not cache HTML by default *on any domain*. Eligibility is
+**Nothing is cached today**, and attaching the domains does not change that:
+Cloudflare does not cache HTML by default *on any domain*. Eligibility is
 decided by file extension — not MIME type, and not the `Cache-Control` the
 Worker sends — and `/d/{docId}` has no extension.
 
@@ -169,8 +170,8 @@ edited in Cloudflare's UI are overwritten by the next deploy.
 
 Two kinds of configuration, and the split is enforced:
 
-- **Vars** — plaintext in `wrangler.jsonc`, committed. The canonical and legacy
-  serving/API hosts are vars.
+- **Vars** — plaintext in `wrangler.jsonc`, committed. The canonical, legacy,
+  and retired hosts are vars.
 - **Secrets** — never in any file. `wrangler secret put NAME` prompts and stores
   the value encrypted; code reads it off the same `env` object, indistinguishable
   from a var. `LICENSE_API_KEY` is a secret.
@@ -183,17 +184,17 @@ an identifier, the binding will not resolve without it, and it is committed.
 ## Deploys come from CI
 
 Merging to `main` runs `.github/workflows/deploy.yml`, which holds the routine
-deployment credential. The OpenArtifacts cutover has one documented manual
-compatibility deploy from the reviewed `main` SHA so all four domains have a
-safe rollback version before their roles flip. Outside that step,
-`wrangler deploy` uploads whoever's working tree when run by hand and is the
-fallback, not the practice. Cloudflare's own git integration is a third option
-we have not set up. `docs/deploying.md` has the mechanics.
+deployment credential. The OpenArtifacts cutover is one CI deployment, and
+that version becomes the hard rollback floor. `wrangler deploy` uploads
+whoever's working tree when run by hand and is the fallback, not the practice.
+Cloudflare's own git integration is a third option we have not set up.
+`docs/deploying.md` has the mechanics.
 
 Every deploy is retained as a version, and `wrangler rollback` returns to an
-earlier one. While either new domain is attached, never select a version older
-than the recorded OpenArtifacts cutover floor; those versions do not recognize
-all four hosts. There are no per-PR preview URLs unless we configure them.
+earlier one. While either new domain or the retired API domain is attached,
+never select a version older than the recorded OpenArtifacts cutover floor.
+Those versions do not recognize the new hosts and make the retired API live
+again. There are no per-PR preview URLs unless we configure them.
 
 ## Local development
 

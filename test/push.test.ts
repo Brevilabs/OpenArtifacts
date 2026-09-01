@@ -93,7 +93,7 @@ async function send(
       SERVING_HOST: "",
       API_HOST: "",
       LEGACY_SERVING_HOST: "",
-      LEGACY_API_HOST: "",
+      RETIRED_API_HOST: "",
       ...overrides,
     },
     ctx,
@@ -237,30 +237,28 @@ describe("POST /api/v1/docs", () => {
     expect((await docRow(body.docId))?.title).toBe("Untitled");
   });
 
-  it("returns a canonical document url through both API hosts (D3)", async () => {
+  it("returns a canonical document url through the canonical API host (D3)", async () => {
     const hosts: Partial<Env> = {
       SERVING_HOST: "openartifacts.site",
       API_HOST: "api.openartifacts.ai",
       LEGACY_SERVING_HOST: "symposium.site",
-      LEGACY_API_HOST: "api.symposium.md",
+      RETIRED_API_HOST: "api.symposium.md",
     };
 
-    for (const apiHost of ["api.openartifacts.ai", "api.symposium.md"]) {
-      for (const scheme of ["https", "http"]) {
-        const body = await pushedOk(
-          await send(
-            "POST",
-            "/api/v1/docs",
-            KEY_A,
-            { title: "t", html: page("<p>x</p>") },
-            hosts,
-            `${scheme}://${apiHost}`,
-          ),
-          201,
-        );
+    for (const scheme of ["https", "http"]) {
+      const body = await pushedOk(
+        await send(
+          "POST",
+          "/api/v1/docs",
+          KEY_A,
+          { title: "t", html: page("<p>x</p>") },
+          hosts,
+          `${scheme}://api.openartifacts.ai`,
+        ),
+        201,
+      );
 
-        expect(body.url).toBe(`https://openartifacts.site/d/${body.docId}`);
-      }
+      expect(body.url).toBe(`https://openartifacts.site/d/${body.docId}`);
     }
   });
 });
