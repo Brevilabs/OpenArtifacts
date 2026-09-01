@@ -6,11 +6,13 @@ commands are creating.
 
 [← README](../README.md) · [Hosting](hosting.md) · [HTTP API](http-api.md)
 
-> **The Worker is deployed.** All eight steps below have run on the Brevilabs
-> account, and `wrangler.jsonc` carries the real `database_id`. They are kept as
-> the record of how production was built and as the procedure for a fresh
-> account — do not re-run them against Brevilabs'. Routine deploys now happen in
-> CI; see [Later deploys happen in CI](#later-deploys-happen-in-ci). One thing to
+> **The Worker and storage are deployed.** The original provisioning steps have
+> run on the Brevilabs account, and `wrangler.jsonc` carries the real
+> `database_id`. The OpenArtifacts domain cutover remains pending until the new
+> Cloudflare zones exist. These steps are also the procedure for a fresh account
+> — do not re-run the storage commands against Brevilabs'. Routine deploys
+> happen in CI; see
+> [Later deploys happen in CI](#later-deploys-happen-in-ci). One thing to
 > know going in: D1 is still the only record of who owns a doc, what it is called,
 > and whether it was deleted, so until per-doc manifests ship, back-ups mean D1's
 > own 30-day Time Travel window rather than "rebuild it from R2". That is fine at
@@ -43,10 +45,12 @@ right one — leave it alone.
 npx wrangler d1 migrations apply symposium --remote
 ```
 
-**Steps 4–8 ship the Worker.** They have all run on the Brevilabs account; what
-follows is the record of how, and the procedure for a fresh account. Step 7 is
-the one that makes the Worker reachable: `workers_dev` is `false`, so a Worker
-with no custom domain attached answers on nothing at all.
+**Steps 4–9 ship the Worker.** Steps 4–5 have run on the Brevilabs account. The
+rebrand cutover in steps 6–9 must wait for the `openartifacts.ai` and
+`openartifacts.site` Cloudflare zones and the landing-page OG image. It uses two
+Worker versions. The first attaches all four domains while the old hosts remain
+canonical; the second flips the canonical names. That first version is the safe
+rollback floor.
 
 ```bash
 # 4. Credentials for the license server. Both prompt for the value, so neither
@@ -60,16 +64,37 @@ npx wrangler secret put LICENSE_API_KEY
 # 5. Ship. The Worker has no hostname yet — see below.
 npx wrangler deploy
 
-# 6. Set SERVING_HOST and API_HOST in wrangler.jsonc, then redeploy. Still
-#    unreachable, which is the point: the hosts go live before any domain does.
-npx wrangler deploy
+# 6. Merge the reviewed rebrand PR. Its first automatic deploy stops at the
+#    safe-predecessor gate without changing production. From that exact main
+#    checkout, deploy the compatibility mapping. The routes come from
+#    wrangler.jsonc; these four overrides keep the old hosts canonical.
+npx wrangler deploy \
+  --var SERVING_HOST:symposium.site \
+  --var API_HOST:api.symposium.md \
+  --var LEGACY_SERVING_HOST:openartifacts.site \
+  --var LEGACY_API_HOST:api.openartifacts.ai \
+  --message "OpenArtifacts cutover floor"
 
-# 7. Attach symposium.site and api.symposium.md as custom domains. This is what
-#    makes it reachable, and by now the running version already knows the hosts.
+# Copy the printed Current Version ID into the rollout record. It is the oldest
+# version that may remain attached to all four domains.
 
-# 8. Check what just shipped, end to end, against the surface that ships.
-SYMPOSIUM_LICENSE_KEY=<a real paid Copilot key> \
-  scripts/smoke.sh https://api.symposium.md
+# 7. Verify the compatibility mapping: the two API hosts answer natively, the
+#    old document host answers natively, and the new document host redirects to
+#    the same path and query on the old host.
+curl -sS -o /dev/null -w '%{http_code}\n' https://api.symposium.md/health
+curl -sS -o /dev/null -w '%{http_code}\n' https://api.openartifacts.ai/health
+curl -sS -o /dev/null -w '%{http_code}\n' https://symposium.site/health
+curl -sS -o /dev/null -w '%{http_code} %{redirect_url}\n' \
+  'https://openartifacts.site/health?probe=cutover'
+
+# 8. Re-run the main-branch Deploy workflow. Its predecessor gate now passes;
+#    the committed vars flip to the final mapping and CI verifies all four
+#    hosts. Do not edit or remove the legacy routes.
+gh workflow run deploy.yml --repo Brevilabs/OpenArtifacts --ref main
+
+# 9. Check what just shipped, end to end, against the canonical API.
+OPENARTIFACTS_LICENSE_KEY=<a real paid Copilot key> \
+  scripts/smoke.sh https://api.openartifacts.ai
 ```
 
 The smoke script publishes a doc, reads it, lists it, deletes it and confirms the
@@ -83,28 +108,33 @@ license key to spend.
 `workers_dev` is `false`, so step 5 uploads a Worker that answers on nothing at
 all. That is deliberate, not an unfinished state.
 
-The router resolves by host and falls back to path prefixes when the host matches
-neither `SERVING_HOST` nor `API_HOST` — so a `workers.dev` hostname would happily
-serve `/d/*`, putting user HTML on a domain we neither control nor can afford to
-sacrifice. `workers.dev` is on the Public Suffix List, which makes
+The router resolves by an explicit host allowlist and fails closed on unknown
+hosts once any host var is configured. It falls back to path prefixes only when
+all four vars are empty, which is useful locally but would make a `workers.dev`
+hostname serve `/d/*`. That would put user HTML on a domain we neither control
+nor can afford to sacrifice. `workers.dev` is on the Public Suffix List, which makes
 `<subdomain>.workers.dev` the unit a Safe Browsing listing applies to: one bad
 upload would take down every Worker on the account's subdomain. The serving
 domain exists precisely so the blast radius lands somewhere we chose.
 
-So the order is configure, then attach, then test — and the redeploy goes *before*
-the attach, not after. Set `SERVING_HOST` and `API_HOST` in `wrangler.jsonc` and
-redeploy while the Worker is still unreachable, then attach the domains, then
-smoke-test. Attaching first would leave the domains pointing at a version whose
-hosts are empty, and the path-prefix fallback would serve `/d/*` on
-`api.symposium.md` and `/api/v1/*` on `symposium.site` until the redeploy landed
-— the exact split this document argues for, undone for the length of a deploy.
-The `url` the API returns follows the vars automatically.
+So the order is add both new Cloudflare zones, merge the reviewed router, deploy
+the compatibility mapping, record its version id, verify it, then let CI flip
+the canonical mapping. Do not attach the new names by hand to the old router.
+During the compatibility stage, `openartifacts.site` redirects to
+`symposium.site` and both API hosts serve natively. After the flip,
+`symposium.site` redirects to `openartifacts.site`; `api.symposium.md` remains a
+native API alias so authenticated methods keep their body and Authorization
+header. The final `url` returned through either API host names
+`openartifacts.site`.
 
 ## Later deploys happen in CI
 
 Merging to `main` runs `.github/workflows/deploy.yml`, which typechecks, tests,
-refuses to deploy over an unapplied migration, ships, checks both hosts answer,
-and records what shipped on the repo page. Nobody deploys from a laptop.
+refuses to deploy over an unapplied migration, requires a safe four-host
+predecessor, ships, checks all canonical and compatibility hosts, and records
+what shipped on the repo page. The one-time compatibility version in step 6 is
+the only manual Worker deploy in the rebrand. Run it from the reviewed `main`
+SHA; after the canonical flip, nobody deploys from a laptop.
 
 It needs one secret, `CLOUDFLARE_API_TOKEN` — an *environment* secret on
 `production`, never a repository one, for the reasons below. It is configured on
@@ -114,8 +144,9 @@ token holds two account permissions: **Workers Scripts: Edit** to deploy, and
 would also reach DNS and every other zone setting. Create it under My Profile →
 API Tokens → Create Token; the *Edit Cloudflare Workers* template is a fine
 starting point, but it does **not** include D1, so add that row by hand. Scope
-Account Resources to the one account and Zone Resources to `symposium.site` and
-`symposium.md` specifically, which is what authorizes the custom-domain routes.
+Account Resources to the one account and Zone Resources to `openartifacts.site`,
+`openartifacts.ai`, `symposium.site`, and `symposium.md` specifically, which is
+what authorizes the canonical and compatibility custom-domain routes.
 Leave Client IP filtering empty: GitHub's runners have no stable egress IPs.
 
 D1: Edit is broader than the guard needs — it only runs a `SELECT` — but the
@@ -142,7 +173,7 @@ and dispatch from it, which no branch rule matches and no in-file guard survives
 Check with:
 
 ```bash
-gh api repos/Brevilabs/symposium/environments/production/deployment-branch-policies \
+gh api repos/Brevilabs/OpenArtifacts/environments/production/deployment-branch-policies \
   --jq '.branch_policies[] | {name, type}'
 ```
 
@@ -150,9 +181,11 @@ Required reviewers would gate this further, but GitHub rejects that protection
 rule on this billing plan for a private repo, so the branch policy is the whole
 of the platform-level control.
 
-Without the secret the workflow cannot run at all, and deploys fall back to being
-manual: steps 5 and 8 above, plus step 3 whenever a migration is added. That is
-also the recovery path if the token is ever revoked.
+Without the secret the workflow cannot run at all. Deploys then fall back to a
+manual `npx wrangler deploy` from the reviewed `main` SHA, plus step 3 whenever
+a migration is added. For the rebrand, run the compatibility deploy in step 6,
+verify it, then run a plain `npx wrangler deploy` for the final mapping instead
+of dispatching step 8. That is also the recovery path if the token is revoked.
 
 Migrations remain manual in every case. Step 3, then merge — the workflow fails
 rather than applying one.
@@ -186,8 +219,8 @@ Two things the workflow deliberately does not do:
   stop noticing it. Once applied, a migration is append-only: add a new file.
 - **It does not smoke-test.** That needs a real paid license key, spends a push from
   its daily quota, and writes to production R2 and D1 on every merge. `/health`
-  on both hosts is the liveness check instead. Run `scripts/smoke.sh` by hand
-  when the change warrants it.
+  on the canonical and compatibility hosts is the liveness check instead. Run
+  `scripts/smoke.sh` by hand when the change warrants it.
 
 What remains ungated is that a merge to `main` deploys with no pause. That is
 the same exposure as the manual `wrangler deploy` it replaces, minus the laptop,
@@ -195,16 +228,25 @@ and closing it needs a billing plan that allows required reviewers.
 
 ## Rolling back
 
-Every deploy creates an immutable version and Cloudflare keeps them all.
+Every deploy creates an immutable version and Cloudflare keeps them all. The
+OpenArtifacts cutover has a hard floor: never activate a version older than the
+`Current Version ID` recorded in step 6 while either new custom domain is
+attached. Older versions know only two hosts and would route the new domains by
+path, exposing the wrong surface.
 
 ```bash
 npx wrangler versions list          # ids, timestamps, and the commit in Message
-npx wrangler rollback <version-id>
+npx wrangler rollback               # immediate predecessor
+npx wrangler rollback <version-id>  # cutover floor or newer only
 ```
 
 Or the dashboard: **Compute (Workers) → symposium → Deployments**, then
-**⋯ → Rollback** on a version. The workflow passes `--message` so that list
-reads as commits rather than uuids.
+**⋯ → Rollback** on the immediate predecessor or a version at or above the
+recorded cutover floor. The compatibility version's message is
+`OpenArtifacts cutover floor`; the workflow passes commit messages on later
+versions. Do not select a pre-floor dashboard version. If one is ever required,
+first detach both new custom domains and verify they no longer invoke this
+Worker, then roll back.
 
 **Rollback reverts code and nothing else.** D1 rows and R2 objects written by
 the bad version stay written, which is the other half of why migrations are not

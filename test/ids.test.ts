@@ -64,7 +64,7 @@ describe("newDocId", () => {
   it("is url-safe as a single path segment", () => {
     for (const id of ids.slice(0, 50)) {
       expect(encodeURIComponent(id)).toBe(id);
-      expect(new URL(`https://symposium.page/d/${id}`).pathname).toBe(`/d/${id}`);
+      expect(new URL(`https://openartifacts.page/d/${id}`).pathname).toBe(`/d/${id}`);
     }
   });
 

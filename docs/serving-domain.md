@@ -1,7 +1,7 @@
 # Why user content gets its own domain
 
-**The rule: `symposium.md` is the brand. `symposium.site` serves the documents.
-Nothing a user uploaded is ever served from `symposium.md`.**
+**The rule: `openartifacts.ai` is the brand. `openartifacts.site` serves the documents.
+Nothing a user uploaded is ever served from `openartifacts.ai`.**
 
 This is listed as a non-negotiable constraint in [`CLAUDE.md`](../CLAUDE.md), and
 it is the kind of decision that looks like premature caution right up until the
@@ -11,7 +11,7 @@ morning it is not. This doc is why it holds.
 
 ## What we are actually protecting against
 
-Symposium serves arbitrary user-uploaded HTML with scripts enabled. That is not
+OpenArtifacts serves arbitrary user-uploaded HTML with scripts enabled. That is not
 a compromise, it is the product — interactive figures and embedded simulations
 are the reason the client uploads HTML instead of markdown
 ([http-api.md](http-api.md)). It also happens to be the exact profile that
@@ -26,12 +26,12 @@ and a domain with a history gets flagged faster and cleared slower the second
 time.
 
 Splitting the domains does not prevent any of that. It decides which domain
-absorbs it. A flagged `symposium.site` is a bad week for document serving. A
-flagged `symposium.md` is a bad week for the company.
+absorbs it. A flagged `openartifacts.site` is a bad week for document serving. A
+flagged `openartifacts.ai` is a bad week for the company.
 
 ## Why a subdomain does not work
 
-`docs.symposium.md` buys nothing. Reputation systems operate on the registrable
+`docs.openartifacts.ai` buys nothing. Reputation systems operate on the registrable
 domain — the eTLD+1 — so a listing against a subdomain lands on the parent.
 Cookies and CSP have the same problem in the other direction: same-site
 protections treat a subdomain as related, which is precisely what you do not want
@@ -48,7 +48,7 @@ The pattern is well settled among everyone who has been burned:
 
 Note what these have in common: the serving domain is still obviously the brand.
 Separation costs nothing in recognition. A reader landing on
-`symposium.site/d/abc` knows exactly whose product they are looking at.
+`openartifacts.site/d/abc` knows exactly whose product they are looking at.
 
 ## Why it cannot be fixed later
 
@@ -79,21 +79,25 @@ insuring against is one occurrence.
 
 ## Status
 
-**The split is live.** `symposium.site` serves documents and `api.symposium.md`
-serves the API, both attached as Worker custom domains, with `SERVING_HOST` and
-`API_HOST` set to match. `workers_dev` is `false` and stays that way: the
-path-prefix fallback would otherwise serve `/d/*` on a `workers.dev` url, which
-is the mistake this whole document argues against. The fallback stays in the
-router for the window where one host var is set and the other is not.
+**The split is live on the legacy hosts today.** `symposium.site` serves
+documents and `api.symposium.md` serves the API. The cutover config makes
+`openartifacts.site` and `api.openartifacts.ai` canonical after their Cloudflare
+zones and custom domains are attached. The legacy document host then redirects
+the exact path and query; the legacy API host keeps serving natively.
 
-Three things had to land together. One has;
-[`CLAUDE.md`](../CLAUDE.md) carries the detail on the rest:
+`workers_dev` is `false` and stays that way. With any host var set, the router
+uses an explicit allowlist and fails closed on unknown hosts. Path-prefix
+fallback exists only for local development, when all four vars are empty.
 
-1. **Set `SERVING_HOST` and `API_HOST`.** Done. The router resolves surface by
-   host first and only falls back to path prefixes while both are empty.
+The remaining serving work is unchanged:
+
+1. **Attach the new canonical domains in two stages.** Pending on both
+   Cloudflare zones. First deploy the four-host router with the old hosts still
+   canonical and record that version as the rollback floor; then let CI flip
+   the canonical mapping. The deployment gate refuses to skip this step.
 2. **Add a Cache Rule.** Outstanding. Cloudflare does not cache HTML by default,
-   and `/d/{docId}` has no file extension, so attaching the domains changed
-   nothing about caching.
+   and `/d/{docId}` has no file extension, so attaching the new domains will not
+   change caching by itself.
 3. **Purge on delete, in the same change.** Outstanding, and coupled to the one
    above. Once there is an edge cache, an unshared doc keeps being served from
    it. Shipping caching without purging is how a withdrawn document stays

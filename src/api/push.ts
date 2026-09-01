@@ -160,7 +160,7 @@ async function storeVersion(
   title: string | null,
   atMs: number,
 ): Promise<boolean> {
-  // The publisher's own bytes, unmodified. Symposium's additions go in when the
+  // The publisher's own bytes, unmodified. OpenArtifacts' additions go in when the
   // document is served, so a byline change — or a plan that removes one —
   // reaches documents already published. `size` is therefore the size of what
   // the publisher sent, not of what a reader receives.

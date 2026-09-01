@@ -1,10 +1,9 @@
 /**
  * Worker bindings and the quota ceilings from the plan (D10).
  *
- * `SERVING_HOST` / `API_HOST` are declared in wrangler.jsonc but left empty in
- * v0, where everything runs on one workers.dev subdomain and the router falls
- * back to path prefixes. Setting them later splits the surfaces across the
- * brand and sacrificial domains without a code change (D3).
+ * The canonical and legacy host vars are declared in wrangler.jsonc. Local
+ * development leaves all four empty, where the router falls back to path
+ * prefixes. Production configures them together so unknown hosts fail closed.
  */
 export interface Env {
   /** R2 bucket holding the served bytes. System of record. */
@@ -12,10 +11,14 @@ export interface Env {
   /** D1 pointer index. Rebuildable from R2; never holds content. */
   DB: D1Database;
 
-  /** Host that serves public docs. Empty in v0. */
+  /** Canonical host that serves public docs. Empty in local development. */
   SERVING_HOST?: string;
-  /** Host that exposes /api/v1. Empty in v0. */
+  /** Canonical host that exposes /api/v1. Empty in local development. */
   API_HOST?: string;
+  /** Previous docs host. Redirects every path and query to SERVING_HOST. */
+  LEGACY_SERVING_HOST?: string;
+  /** Previous API host. Serves the API natively for released clients. */
+  LEGACY_API_HOST?: string;
 
   /**
    * Base url of the Brevilabs license server, e.g. `https://api.brevilabs.com`.

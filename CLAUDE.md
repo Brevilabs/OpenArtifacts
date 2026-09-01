@@ -1,4 +1,4 @@
-# Symposium
+# OpenArtifacts
 
 Push a local md/html file, get a public HTML page on the internet. v0 scope: HTML
 upload → public page, upload API private and programmatic (Obsidian Copilot only).
@@ -50,9 +50,9 @@ in the positioning doc.
 
 These are day-one decisions, not retrofits:
 
-- User content is served from a **sacrificial domain** (`symposium.site`),
+- User content is served from a **sacrificial domain** (`openartifacts.site`),
   separate from the brand domain. Reputation damage must not land on
-  `symposium.md`. `docs/serving-domain.md` is why, and why a subdomain does not
+  `openartifacts.ai`. `docs/serving-domain.md` is why, and why a subdomain does not
   substitute. There is no migration path once links are in the wild.
 - Shared docs are **`noindex` + `nofollow` by default**.
 - **Publisher-gated, reader-open**: publishing requires a key; reading requires
@@ -67,7 +67,7 @@ These are day-one decisions, not retrofits:
   rows only — never content — and must be rebuildable by scanning R2 manifests.
   **This does not hold yet — see below. Do not rely on it.**
 - Every push mints an **immutable version** served with `cache-control: immutable`.
-  R2 stores the publisher's own bytes; Symposium's additions (the robots meta,
+  R2 stores the publisher's own bytes; OpenArtifacts' additions (the robots meta,
   the favicon, the social card and the two bylines) are injected on the way out by
   `renderServedHtml`, so a byline change — or a plan that removes one — reaches
   documents already published.
@@ -100,8 +100,11 @@ treat D1 as a system of record, not as a cache.
 
 ## Owed now that the serving domain has landed
 
-The domains are attached: documents on `symposium.site`, the API on
-`api.symposium.md`. `workers_dev` stays `false` — the router would otherwise
+The serving split is attached today on the legacy hosts: documents on
+`symposium.site`, the API on `api.symposium.md`. The cutover makes
+`openartifacts.site` and `api.openartifacts.ai` canonical while retaining the
+old document host as a redirect and the old API host as a native alias.
+`workers_dev` stays `false` — an unconfigured router would otherwise
 serve `/d/*` on a `workers.dev` hostname, and that domain is on the Public
 Suffix List, so a listing against it would take every Worker on the account's
 subdomain. Two things came due the moment user content moved to a real serving
@@ -119,10 +122,15 @@ domain, and both are easy to miss because nothing fails loudly without them:
   without the second is how a withdrawn doc stays readable. The private-cache
   copies readers already hold are unrecallable by any design, and the README says
   so.
-`SERVING_HOST` and `API_HOST` are already set, which is what makes the router
-resolve surface by host instead of falling back to path prefixes. Leave them
-set: unset on a two-domain deployment, `/api/v1` becomes reachable on the
-sacrificial domain, which is the whole point of splitting them.
+All four canonical and legacy host vars are set in `wrangler.jsonc`, which makes
+the router resolve by an explicit host allowlist and fail closed on everything
+else. Leave them set together. Path-prefix fallback exists only for local
+development when every host var is empty.
+
+The first four-domain cutover is two-stage. Deploy the compatibility mapping in
+`docs/deploying.md`, record its Worker version id as the rollback floor, then
+let CI flip the canonical hosts. Never roll back below that floor while either
+new domain remains attached; older versions route unknown hosts by path.
 
 ## Git hygiene
 

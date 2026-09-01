@@ -481,7 +481,7 @@ describe("the gate is on publishing, not on the publisher", () => {
 
   const call = (method: string, path: string, db: D1Database) =>
     worker.fetch(
-      new Request(`https://symposium.workers.dev/api/v1${path}`, {
+      new Request(`https://openartifacts.workers.dev/api/v1${path}`, {
         method,
         headers: { authorization: `Bearer ${KEY}`, "content-type": "application/json" },
         body: method === "POST" || method === "PUT" ? JSON.stringify({ html: "<p>x</p>" }) : null,
@@ -605,7 +605,7 @@ describe("resolvePublisher — license env not configured", () => {
 
 describe("authenticateRequest", () => {
   const request = (authorization?: string) =>
-    new Request("https://symposium.test/api/v1/docs", {
+    new Request("https://openartifacts.test/api/v1/docs", {
       headers: authorization === undefined ? {} : { authorization },
     });
 
@@ -686,7 +686,7 @@ describe("/api/v1 is gated on a publisher", () => {
   const ctx = {} as ExecutionContext;
   const call = (authorization?: string, db: D1Database = fakeD1()) =>
     worker.fetch(
-      new Request("https://symposium.workers.dev/api/v1/docs", {
+      new Request("https://openartifacts.workers.dev/api/v1/docs", {
         headers: authorization === undefined ? {} : { authorization },
       }),
       env({ DB: db, SERVING_HOST: "", API_HOST: "" }),

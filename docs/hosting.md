@@ -1,6 +1,6 @@
 # Hosting
 
-What Symposium runs on, assuming you know how web apps get deployed but have never
+What OpenArtifacts runs on, assuming you know how web apps get deployed but have never
 used Cloudflare. If your reference point is Vercel and Vercel Postgres, the
 [translation table](#coming-from-vercel) maps most of it in one screen.
 
@@ -26,20 +26,21 @@ why this repo has no Express, no `pg`, and no ORM. See
 where you would expect.
 
 **R2** — object storage. S3's API, with no charge for data leaving it. You `put`
-and `get` blobs by key. Symposium keeps every published version as one immutable
+and `get` blobs by key. OpenArtifacts keeps every published version as one immutable
 object at `docs/{docId}/v{n}.html`; reading a document is one `get`, streamed
 straight back to the reader.
 
 **D1** — a SQL database. It is **SQLite**, not Postgres, and that difference does
-real work — see [D1 in practice](#d1-in-practice). Symposium uses it purely as an
+real work — see [D1 in practice](#d1-in-practice). OpenArtifacts uses it purely as an
 index: who owns a doc, what it is called, which versions exist, whether it was
 deleted. No document content is ever stored in it.
 
 **workers.dev** — a free subdomain Cloudflare gives every account, so a Worker is
 normally reachable the moment you deploy without owning a domain or touching DNS.
-**Symposium does not use it.** `workers_dev` is `false` in `wrangler.jsonc`,
-because the router falls back to path prefixes on any unrecognized host and would
-therefore serve user documents at `/d/*` on a `workers.dev` url. That domain is
+**OpenArtifacts does not use it.** `workers_dev` is `false` in `wrangler.jsonc`.
+The router falls back to path prefixes only when every host var is empty, as it
+is locally; exposing that configuration on `workers.dev` would serve user
+documents at `/d/*` there. That domain is
 on the Public Suffix List, so a Safe Browsing listing would apply to
 `<subdomain>.workers.dev` and take every Worker on the account with it — the
 opposite of what the serving domain is for. It also sits outside Cloudflare's CDN
@@ -62,6 +63,9 @@ credentials in the environment, no pool. `wrangler.jsonc` declares **bindings**:
 "r2_buckets":   [{ "binding": "DOCS", "bucket_name": "symposium-docs" }],
 "d1_databases": [{ "binding": "DB",   "database_name": "symposium", … }]
 ```
+
+Those resource names predate the rebrand and are retained deliberately. Moving
+the data is not part of the domain and product-name cutover.
 
 and Cloudflare hands the code an already-connected client for each, as
 properties of the `env` object every request receives:
@@ -102,9 +106,12 @@ reader → Cloudflare edge → Worker (src/index.ts)
 
 The Worker's first decision is which of two surfaces a request belongs to:
 `/api/v1/*` is the publisher API and needs a key, `/d/*` is public reading. They
-sit on separate domains — user content on `symposium.site`, a domain chosen to be
-disposable, the API on `api.symposium.md` — for reasons in
-[cost-at-scale.md](cost-at-scale.md) §5.
+sit on separate canonical domains — user content on `openartifacts.site`, a
+domain chosen to be disposable, the API on `api.openartifacts.ai` — for reasons
+in [cost-at-scale.md](cost-at-scale.md) §5. The compatibility stage redirects
+`openartifacts.site` to the still-canonical `symposium.site`. The final stage
+reverses that redirect, while `api.symposium.md` remains a native API alias for
+released clients throughout.
 
 **Nothing is cached today**, and attaching the domains did not by itself change
 that: Cloudflare does not cache HTML by default *on any domain*. Eligibility is
@@ -129,7 +136,7 @@ Postgres reflexes to unlearn:
   `wrangler d1 migrations apply`. No Prisma, no Drizzle — queries are written by
   hand in `src/db.ts`.
 - **A database is single-threaded**, processing queries one at a time. Ideal for
-  the small indexed lookups Symposium makes; not where an analytical query goes.
+  the small indexed lookups OpenArtifacts makes; not where an analytical query goes.
 - **Writes go to one region**, reads can be replicated. Barely matters here: a
   read touches D1 once for a pointer, and the document itself comes from R2.
 - **Backups are Time Travel** — restore to any point in the last 30 days by
@@ -137,7 +144,7 @@ Postgres reflexes to unlearn:
 
 Limits and price: 10 GB per database, 50,000 databases per account, 1,000
 queries per Worker invocation. Billing is per row read and written, with 25
-billion reads and 50 million writes included monthly, so at Symposium's shape it is
+billion reads and 50 million writes included monthly, so at OpenArtifacts' shape it is
 effectively free.
 
 ## R2 in practice
@@ -150,7 +157,7 @@ Storage is $0.015/GB-month; writes (Class A) $4.50 per million, reads (Class B)
 $0.36 per million. A push is a couple of writes, a read is one.
 
 Objects are immutable, and serving is a read plus one streaming rewrite: R2
-holds the publisher's document and Symposium's additions go in on the way out.
+holds the publisher's document and OpenArtifacts' additions go in on the way out.
 The pass never buffers, so it costs CPU proportional to bytes already in flight,
 and the CDN keeps repeat readers off the Worker entirely.
 
@@ -162,8 +169,8 @@ edited in Cloudflare's UI are overwritten by the next deploy.
 
 Two kinds of configuration, and the split is enforced:
 
-- **Vars** — plaintext in `wrangler.jsonc`, committed. `SERVING_HOST` and
-  `API_HOST` are vars.
+- **Vars** — plaintext in `wrangler.jsonc`, committed. The canonical and legacy
+  serving/API hosts are vars.
 - **Secrets** — never in any file. `wrangler secret put NAME` prompts and stores
   the value encrypted; code reads it off the same `env` object, indistinguishable
   from a var. `LICENSE_API_KEY` is a secret.
@@ -175,14 +182,18 @@ an identifier, the binding will not resolve without it, and it is committed.
 
 ## Deploys come from CI
 
-Merging to `main` runs `.github/workflows/deploy.yml`, which holds the only
-credential allowed to deploy. `wrangler deploy` still uploads whoever's working
-tree when run by hand, which is how the first deploy happened; it is the
-fallback now, not the practice. Cloudflare's own git integration is a third
-option we have not set up. `docs/deploying.md` has the mechanics.
+Merging to `main` runs `.github/workflows/deploy.yml`, which holds the routine
+deployment credential. The OpenArtifacts cutover has one documented manual
+compatibility deploy from the reviewed `main` SHA so all four domains have a
+safe rollback version before their roles flip. Outside that step,
+`wrangler deploy` uploads whoever's working tree when run by hand and is the
+fallback, not the practice. Cloudflare's own git integration is a third option
+we have not set up. `docs/deploying.md` has the mechanics.
 
 Every deploy is retained as a version, and `wrangler rollback` returns to an
-earlier one. There are no per-PR preview URLs unless we configure them.
+earlier one. While either new domain is attached, never select a version older
+than the recorded OpenArtifacts cutover floor; those versions do not recognize
+all four hosts. There are no per-PR preview URLs unless we configure them.
 
 ## Local development
 
@@ -215,7 +226,7 @@ including the license-server workaround a local push needs.
 
 ## Why this stack, and where it strains
 
-The decisive property is R2's lack of egress fees. Symposium is, at bottom, a service
+The decisive property is R2's lack of egress fees. OpenArtifacts is, at bottom, a service
 that hands the same immutable bytes to many readers, and everywhere else that
 shape is dominated by bandwidth — S3 plus CloudFront is roughly $0.085/GB, which
 at scale *is* the business, and is zero here. The rest follows: immutable version
@@ -225,7 +236,7 @@ priced per user or per seat, which is the other way this category usually gets
 expensive.
 
 The weak link is D1, and it is worth being clear-eyed. One database is capped at
-10 GB, is single-threaded, and takes writes in a single region. Symposium's shape
+10 GB, is single-threaded, and takes writes in a single region. OpenArtifacts' shape
 keeps that comfortable — a push is a handful of small writes, a read is one
 indexed lookup — but a write-heavy future (agents pushing on every edit, then
 comment threads) would eventually reach it. Two escape hatches are already in the
@@ -252,7 +263,7 @@ Two caveats to hold onto:
 
 For a document-sharing service specifically, this is a strong fit, and more so
 the larger it gets. It would be the wrong stack for something transactional,
-relationally complex, or CPU-heavy per request — Symposium is none of those.
+relationally complex, or CPU-heavy per request — OpenArtifacts is none of those.
 
 It also holds for where the product is going. Comments (see
 [comments.md](comments.md)) are the workload Durable Objects exist for: a

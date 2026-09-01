@@ -1,14 +1,14 @@
 ---
-title: symposium.md - Business Feasibility - Cost at Scale
+title: openartifacts.ai - Business Feasibility - Cost at Scale
 date: 2026-07-21
 tags:
-  - symposium
+  - openartifacts
   - feasibility
   - business
 status: draft
 ---
 
-# symposium.md - Business Feasibility - Cost at Scale
+# openartifacts.ai - Business Feasibility - Cost at Scale
 
 Companion to [[Agent-First Docs - Product Positioning]]. That doc argues *why* the product should exist. This one asks a colder question: **what does it cost to serve, and does the cost curve stay sane from 1k to 100k to 1M users?** (Pricing was revised on 2026-07-25: publishing is paid, reading is free. See §8. Sections written against the earlier free-share plan are flagged where it matters.)
 
@@ -24,7 +24,7 @@ Scope of the launch product being costed: **one-click sharing from Copilot for O
 Three properties of the product shape (from the positioning doc) drive the whole cost story:
 
 1. **The artifact is static.** Every push mints an immutable version. Immutable version URLs are perfectly cacheable, so a doc that goes viral costs approximately nothing extra: the CDN absorbs it, origin serves it once. We are closer to Pastebin than to Google Docs.
-2. **No live editor, no realtime sync.** Google Docs' real infrastructure cost is not storage, it is operational-transform sync fanout, presence, and cursors for concurrent editors. Notion carries a heavy block-database and realtime layer. Symposium's model is push-based: the expensive collaborative-editing problem is deliberately not in the architecture. Even comments (phase 3) can be poll-based for a long time before anyone notices.
+2. **No live editor, no realtime sync.** Google Docs' real infrastructure cost is not storage, it is operational-transform sync fanout, presence, and cursors for concurrent editors. Notion carries a heavy block-database and realtime layer. OpenArtifacts' model is push-based: the expensive collaborative-editing problem is deliberately not in the architecture. Even comments (phase 3) can be poll-based for a long time before anyone notices.
 3. **Zero inference COGS.** The agents are the users' own (Claude Code, Copilot, whatever calls our MCP). Unlike Notion AI or any "AI docs" product, we pay for no tokens, ever. Our marginal cost for agent traffic is a JSON API call. This is the quiet structural advantage of the agent-first posture: the intelligence is BYO.
 
 The sanity checks from the market:
@@ -155,7 +155,7 @@ The paid publishing gate (§8) removes the *free* term from that equation, which
 
 Day-one mitigations, all cheap in dollars:
 
-1. **Serve user content from a separate domain** than the product/brand domain (the `notion.site` / `googleusercontent.com` pattern). Reputation damage lands on the sacrificial domain, not on `symposium.md` itself. This is the single highest-leverage decision and it costs $10/yr.
+1. **Serve user content from a separate domain** than the product/brand domain (the `notion.site` / `googleusercontent.com` pattern). Reputation damage lands on the sacrificial domain, not on `openartifacts.ai` itself. This is the single highest-leverage decision and it costs $10/yr.
 2. **`noindex` + `nofollow` by default.** Shared docs are for invited readers, not search engines. This deletes the SEO-spam incentive entirely, which is most of the spam volume. (Publishers can opt into indexing later, as a feature, maybe a paid one.)
 3. **Publisher-gated, reader-open.** Publishing requires a paid plan — active Copilot Plus and lifetime licenses today, with a standalone subscription planned; reading requires nothing. The abuse funnel is throttled at the account layer: new-account rate limits, velocity checks on pushes.
 4. **Automated scanning on push**: outbound links against Google Safe Browsing (free API); if/when image upload ships, CSAM hash-matching via Cloudflare's free tool (also a legal obligation, not a nice-to-have).
@@ -177,7 +177,7 @@ Decision (2026-07-21): the whole stack runs on the Cloudflare bundle - DNS, CDN,
 
 - `docs/{id}/v{n}.html` - immutable versions, content-addressed, `cache-control: immutable`. Dedupe identical chunks across versions so "every push mints a version" doesn't compound into a storage tax. Immutability means the CDN does the serving business for us; a viral doc costs origin one read.
 - `docs/{id}/threads/{tid}.html` - each comment thread is a self-contained HTML fragment with semantic markup: `<article class="thread" data-anchor-quote="...">` containing nested comments carrying `data-author`, `data-state="pending|posted|resolved"`, `data-resolved-by-version`. Agents parse the exact markup humans render. This settles the open design question in [[Agent-First Docs - Product Positioning]] (structured endpoint vs parsing served HTML): the served HTML *is* the API, because the markup is designed to be machine-legible.
-- `docs/{id}/manifest.json` - one small file per doc: version list, thread list, grant list. Each doc is a fully self-describing R2 prefix: delete the prefix and the doc is gone; export it and the doc is portable. R2 holds the publisher's own bytes; Symposium's additions go in at read time, so a byline change - or a paid plan that removes one - reaches documents already published without rewriting a single stored object. The cost is a streaming pass per uncached read, which the CDN makes rare.
+- `docs/{id}/manifest.json` - one small file per doc: version list, thread list, grant list. Each doc is a fully self-describing R2 prefix: delete the prefix and the doc is gone; export it and the doc is portable. R2 holds the publisher's own bytes; OpenArtifacts' additions go in at read time, so a byline change - or a paid plan that removes one - reaches documents already published without rewriting a single stored object. The cost is a streaming pass per uncached read, which the CDN makes rare.
 
 **Durable Objects - one coordinator per doc.** A DO per doc serializes all writes to that doc: append comment, re-anchor threads on push, update manifest, invalidate cache. DOs carry embedded SQLite, so each doc's working index (anchors, thread states) lives inside the doc's own object - ten million tiny databases, one per doc, instead of one big one. Each is rebuildable from its doc's R2 prefix, and per-doc state dies with the doc.
 
@@ -218,7 +218,7 @@ Phase 1 (public share only) could genuinely ship with zero D1: slug uniqueness v
 
 Outline is the nearest existing product ([[Agent-First Docs - Product Positioning#Why nobody serves this today]]), which makes "just build on it" tempting. Decision (2026-07-23): no. The downsides are structural, not cosmetic:
 
-- **License.** Outline is BUSL-1.1, which prohibits offering it as a commercial hosted service - exactly what symposium.md is. Building on it means a commercial agreement with the named incumbent-to-beat.
+- **License.** Outline is BUSL-1.1, which prohibits offering it as a commercial hosted service - exactly what openartifacts.ai is. Building on it means a commercial agreement with the named incumbent-to-beat.
 - **Wrong data model.** Workspace-wiki (teams, collections, members) vs our per-doc unit with its own audience. Per-doc grantees and "my docs" would be surgery on the spine; single-team instances vs hosting a million individuals likewise.
 - **Editor-centric where we are push-centric.** Its heart is a realtime ProseMirror/Yjs editor; anchors are marks in editor state, which is the exact fragility we differentiate against (whole-doc replace destroys anchors). Our quote-based re-anchoring engine doesn't exist there and would be built against a hostile representation, while we inherit the sync tax section 1 designed out.
 - **Not HTML-native, not our stack.** Sanitized ProseMirror/markdown pipeline vs HTML-as-API (section 6); needs Node + Postgres + Redis + websockets, which forfeits the all-Cloudflare cost structure and makes a big Postgres the system of record.
@@ -252,7 +252,7 @@ forever and gated access control at $5-8/mo. That is no longer the plan — see
 
 **The current launch gate includes every paid Copilot license.** Active Plus
 subscriptions and lifetime Supporter/Believer licenses can publish. The
-standalone Symposium subscription above is still planned; until it exists,
+standalone OpenArtifacts subscription above is still planned; until it exists,
 publishing requires a paid Copilot license. The explicit set in `src/auth.ts`
 keeps unknown or future plans closed until their entitlement is deliberate.
 

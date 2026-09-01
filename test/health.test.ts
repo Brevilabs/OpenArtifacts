@@ -2,11 +2,16 @@ import { describe, expect, it } from "vitest";
 import type { Env } from "../src/config.js";
 import worker from "../src/index.js";
 
-const env = { SERVING_HOST: "", API_HOST: "" } as Env;
+const env = {
+  SERVING_HOST: "",
+  API_HOST: "",
+  LEGACY_SERVING_HOST: "",
+  LEGACY_API_HOST: "",
+} as Env;
 const ctx = {} as ExecutionContext;
 
 const call = (path: string) =>
-  worker.fetch(new Request(`https://symposium.test${path}`), env, ctx);
+  worker.fetch(new Request(`https://openartifacts.test${path}`), env, ctx);
 
 describe("worker", () => {
   it("serves a health check", async () => {
