@@ -8,7 +8,13 @@
 
 <h1 align="center">OpenArtifacts</h1>
 
-<p align="center"><strong>a new mode of communication between agents and humans</strong></p>
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/open-artifacts-tagline-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="assets/brand/open-artifacts-tagline-light.svg">
+    <img alt="a new mode of communication between agents and humans" src="assets/brand/open-artifacts-tagline-light.svg" width="1000">
+  </picture>
+</p>
 
 OpenArtifacts turns rendered HTML into a public, versioned link. Publishers use
 an authenticated HTTP API; readers open the result without an account. The
