@@ -6,10 +6,10 @@
   </picture>
 </h1>
 
-OpenArtifacts turns rendered HTML into a public, versioned link. Publishers use
-an authenticated HTTP API; readers open the result without an account. The
-Worker stores document bytes in Cloudflare R2 and ownership, version, and
-deletion metadata in D1.
+OpenArtifacts publishes rendered HTML at a stable public link and preserves
+every update as an immutable version. Publishers use an authenticated HTTP API;
+readers open the result without an account. The Worker stores document bytes in
+Cloudflare R2 and ownership, version, and deletion metadata in D1.
 
 It is a small API-first publishing service. Reader accounts, permissions, and
 comments do not exist yet.
@@ -41,11 +41,12 @@ the same page and converge on a shared result.
 | Goal | Status |
 | --- | --- |
 | Agent-first publishing and reading | Available today |
-| Versioning | Available today |
+| Immutable versions and pinned version links | Available today |
 | Public sharing | Available today |
 | Self-hosting | Available today |
 | Private sharing | Roadmap |
 | Inline comments and replies | Roadmap |
+| Version-history browser, visual diffs, and rollback UI | Roadmap |
 
 ## Run locally
 
