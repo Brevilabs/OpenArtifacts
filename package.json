@@ -1,7 +1,7 @@
 {
   "name": "openartifacts",
   "version": "0.0.0",
-  "description": "Publish rendered HTML as public, versioned links",
+  "description": "Push a local md/html file, get a public HTML page on the internet",
   "type": "module",
   "private": true,
   "engines": {
@@ -15,11 +15,11 @@
     "test:watch": "vitest"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "0.22.0",
-    "@cloudflare/workers-types": "5.20260901.1",
+    "@cloudflare/vitest-pool-workers": "^0.12.21",
+    "@cloudflare/workers-types": "^4.20250726.0",
     "@types/node": "^20",
     "typescript": "^5",
-    "vitest": "4.1.11",
-    "wrangler": "4.127.1"
+    "vitest": "^3",
+    "wrangler": "^4"
   }
 }

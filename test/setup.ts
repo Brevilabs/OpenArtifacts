@@ -1,12 +1,11 @@
-import { applyD1Migrations, env, reset } from "cloudflare:test";
-import { beforeEach } from "vitest";
+import { applyD1Migrations, env } from "cloudflare:test";
+import { beforeAll } from "vitest";
 
 /**
- * Reset every binding before each test, then rebuild D1 from the committed
- * migrations. The current pool's `reset()` clears D1 tables as well as rows,
- * so applying the schema is part of the isolation boundary.
+ * Bring the test D1 up to the committed schema once, before the per-test
+ * storage isolation starts stacking. Everything a test writes afterwards is
+ * rolled back at the end of that test; the schema is not.
  */
-beforeEach(async () => {
-  await reset();
+beforeAll(async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
 });
