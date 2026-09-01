@@ -37,7 +37,7 @@ describe("renderServedHtml — what gets injected", () => {
   it("carries the tab icon inline, in the brand's own colours", () => {
     expect(FAVICON_LINK).toContain('rel="icon"');
     expect(FAVICON_LINK).toContain('href="data:image/svg+xml,');
-    for (const colour of ["#121413", "#46d17f"]) {
+    for (const colour of ["#15161a", "#f2f2f0"]) {
       expect(FAVICON_LINK).toContain(encodeURIComponent(colour));
     }
     // Escaped, so the `"` on every attribute inside the SVG cannot close the
@@ -177,7 +177,7 @@ describe("renderServedHtml — what gets injected", () => {
 
     expect(baked).toContain(">Powered by <");
     expect(baked).toContain(">openartifacts.ai</a>");
-    expect(baked).toContain("where agents and humans get on the same page");
+    expect(baked).toContain("a new mode of communication between agents and humans");
   });
 
   it("links both bylines out, which is the whole point of carrying them", async () => {
