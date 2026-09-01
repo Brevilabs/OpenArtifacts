@@ -45,7 +45,7 @@
  * constants in this file, so the thing that changes them is an edit to this
  * file, and a reviewer can see whether the number moved with it.
  */
-export const RENDER_REVISION = 4;
+export const RENDER_REVISION = 5;
 
 /**
  * Belt to the `X-Robots-Tag` header's braces (D9). The header is the
@@ -75,10 +75,14 @@ export const NOINDEX_META = '<meta name="robots" content="noindex,nofollow">';
 export const FAVICON_LINK =
   '<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,' +
   encodeURIComponent(
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">' +
-      '<rect width="32" height="32" rx="7" fill="#121413"/>' +
-      '<path d="M9 11.5h14M9 16h14M9 20.5h9" stroke="#46d17f" stroke-width="2.4" ' +
-      'stroke-linecap="round"/></svg>',
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200"><rect width="200" height="200" rx="44" fill="#15161a"/>' +
+      '<g transform="translate(0 8)"><path d="M100 16 L100 60 M27.3 142 L65.4 120 M172.7 142 L134.6 120" stroke="#ffffff" stroke-opacity="0.3" stroke-width="2.6" fill="none"/>' +
+      '<path d="M100 16 L27.3 58 L27.3 142 L100 184 L172.7 142 L172.7 58 Z" stroke="#ffffff" stroke-opacity="0.8" stroke-width="2.6" fill="none" stroke-linejoin="miter"/>' +
+      '<path d="M100 60 L65.4 80 L100 100 L134.6 80 Z" fill="#f2f2f0"/>' +
+      '<path d="M65.4 80 L65.4 120 L100 140 L100 100 Z" fill="#6f7175"/>' +
+      '<path d="M100 140 L134.6 120 L134.6 80 L100 100 Z" fill="#3b3d40"/>' +
+      '<path d="M27.3 58 L100 100 M100 184 L100 100 M172.7 58 L100 100" stroke="#ffffff" stroke-opacity="0.72" stroke-width="2.6" fill="none"/>' +
+      '</g></svg>',
   ) +
   '">';
 
@@ -126,7 +130,7 @@ export const SOCIAL_CARD_META =
   `<meta property="og:image" content="${OG_IMAGE_URL}">` +
   '<meta property="og:image:width" content="1200">' +
   '<meta property="og:image:height" content="630">' +
-  '<meta property="og:image:alt" content="Where people and agents get on the same page">' +
+  '<meta property="og:image:alt" content="OpenArtifacts: A new mode of communication between agents and humans.">' +
   '<meta name="twitter:card" content="summary_large_image">';
 
 /** How much of a document's title the card carries. Every unfurler truncates
@@ -185,7 +189,7 @@ export function socialTitleMeta(rawTitle: string): string {
  */
 const BYLINE_BASE =
   "all:initial;display:block;box-sizing:border-box;width:100%;clear:both;" +
-  "font:400 13px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;" +
+  "font:400 13px/1.6 Archivo,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;" +
   "color:#888;text-align:center";
 
 /**
@@ -293,7 +297,7 @@ export const OPENARTIFACTS_FOOTER =
   BYLINE_BASE +
   ";margin:4rem 0 0;padding:1rem 0;border-top:1px solid rgba(128,128,128,0.25)\">" +
   `Powered by <a href="https://openartifacts.ai" ${BYLINE_LINK}>openartifacts.ai</a>, ` +
-  "where agents and humans get on the same page</div>";
+  "a new mode of communication between agents and humans</div>";
 
 /** HTMLRewriter treats injected content as markup, not text, only when asked. */
 const AS_HTML = { html: true } as const;
