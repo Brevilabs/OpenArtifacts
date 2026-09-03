@@ -45,28 +45,42 @@ OPENARTIFACTS_LICENSE_KEY=$KEY scripts/smoke.sh http://127.0.0.1:8787
 Alternatively, copy `.dev.vars.example` to `.dev.vars` and point
 `LICENSE_API_URL` / `LICENSE_API_KEY` at the real license server.
 
-## Exercising the approval page
+## Signing in from a terminal
 
-The approval page needs a pending device code to bind, and minting one belongs to
-the device flow in
-[#57](https://github.com/Brevilabs/OpenArtifacts/issues/57), so insert the row by
-hand until that lands. It also needs an OAuth client;
-register a Google or GitHub app whose callback is
+The device flow needs no license server and no seeding: `POST /device/code`
+mints the code, and the url it returns is the whole of the browser half. It does
+need an OAuth client, so register a Google or GitHub app whose callback is
 `http://127.0.0.1:8787/approve/callback/{provider}` and put its pair in
 `.dev.vars`.
 
 ```bash
-CODE=WDJB-MJHT
+BASE=http://127.0.0.1:8787
 
-npx wrangler d1 execute symposium --local --command \
-  "INSERT OR REPLACE INTO device_codes (user_code, expires_at, created_at)
-   VALUES ('$CODE', $((($(date +%s) + 900) * 1000)), $(($(date +%s) * 1000)))"
+MINT=$(curl -sS -X POST "$BASE/device/code" \
+  -H 'content-type: application/json' -d '{"label":"dev laptop"}')
 
-open "http://127.0.0.1:8787/approve?user_code=$CODE"
+DEVICE_CODE=$(printf '%s' "$MINT" | jq -r .device_code)
+open "$(printf '%s' "$MINT" | jq -r .verification_uri_complete)"
+
+# before approving, and again after
+curl -sS -X POST "$BASE/device/token" -H 'content-type: application/json' \
+  -d "{\"device_code\":\"$DEVICE_CODE\"}"
 ```
 
-Signing in leaves the account proven and the code unapproved; pressing the button
-on the page that follows is what approves it. The row shows both steps:
+The token that poll returns publishes like a license key, and it is the only
+time the value exists outside your terminal:
+
+```bash
+TOKEN=oat_…
+curl -sS -X POST "$BASE/api/v1/docs" -H "authorization: Bearer $TOKEN" \
+  -H 'content-type: application/json' \
+  -d '{"title":"Local","html":"<!doctype html><html><body><p>hi</p></body></html>"}'
+curl -sS "$BASE/api/v1/tokens" -H "authorization: Bearer $TOKEN"
+```
+
+Signing in leaves the account proven and the code unapproved; pressing the
+button on the page that follows is what approves it, and Deny on the same page
+kills the code instead. The row shows both steps:
 
 ```bash
 npx wrangler d1 execute symposium --local --command \

@@ -16,6 +16,7 @@ Two surfaces on two domains:
 | API | `/api/v1/*` | required | Publisher-facing. JSON in, JSON out. |
 | Serving | `/d/*` | none | Reader-facing. Public HTML. Never sets a cookie. |
 | Approval | `/approve/*` | none | Human-facing. HTML pages on the API host. Not a client surface. |
+| Device | `/device/*` | none | How a client with no credential gets one. JSON, on the API host. |
 
 The API is served from `api.openartifacts.ai` and documents from `openartifacts.site`.
 The `url` field a push returns therefore points at a different host than the one
@@ -33,7 +34,10 @@ legacy document host redirects it, and the retired API host returns `410`.
 
 ## Authentication
 
-Every `/api/v1/*` request carries a Brevilabs license key:
+Every `/api/v1/*` request carries a credential in one header. There are two
+kinds and the header is the same for both.
+
+### A Brevilabs license key
 
 ```http
 Authorization: Bearer <license key>
@@ -61,6 +65,53 @@ qualifies keeps `GET /api/v1/docs` and `DELETE /api/v1/docs/{docId}`, so they ca
 always see what they have published and take it down. Losing the ability to
 publish must never mean losing the ability to unshare.
 
+### An OpenArtifacts token
+
+```http
+Authorization: Bearer oat_hy3m…
+```
+
+A token is issued to one machine by [the device flow](#signing-in-from-a-terminal),
+and it is the only credential an agent ever holds. It is an opaque string
+beginning `oat_`, and that prefix is the whole of its format: do not parse the
+rest, and do not put it in a url or a log.
+
+Only the token's SHA-256 is stored, and the raw value is returned exactly once —
+in the response to the poll that collected it. There is no endpoint that shows a
+token again. A lost token is replaced by approving a new one, never recovered.
+
+**Documents belong to the account, exactly as they do for a key.** Every token
+on one account sees one list, shares one daily push allowance and one document
+ceiling, and any of them can push a new version of, or unshare, a document
+another one created. Revoking a token changes nothing about which documents the
+account holds.
+
+**The two credentials never mix.** A key resolves to the Brevilabs account that
+holds it and a token to the OpenArtifacts account it was issued to; the two id
+spaces cannot collide, so neither can ever see the other's documents. A Copilot
+subscriber who wants the documents their plugin published presents the same
+license key the plugin does — this API accepts it from a terminal like any other
+caller.
+
+**Publishing works on a new account.** A token's account is entitled to publish
+under the quotas below from its first approval, so nobody has to buy anything
+before the first document lands. Per-plan limits and a `402` refusal are
+[#60](https://github.com/Brevilabs/OpenArtifacts/issues/60) and are not here yet.
+
+**Revocation is immediate.** A revoked token fails on its very next request,
+where a revoked license key keeps working until its cached validation ages out.
+Nothing about a token is cached, because its owner is a row in this deployment's
+own database rather than an answer from another service.
+
+### `OPENARTIFACTS_TOKEN`
+
+A client reads the credential from `OPENARTIFACTS_TOKEN` when that variable is
+set, and from its own configuration otherwise. It exists so a script or a CI job
+can publish where no browser can be opened. The variable is a client convention
+rather than a server behaviour, and it carries whatever goes in the header — a
+token or a license key alike, since nothing downstream of the header cares which
+it was.
+
 Reading a doc requires nothing. Serving responses never set a cookie.
 
 ## The approval page
@@ -77,6 +128,7 @@ GET  /approve?user_code=…          the page that offers the providers
 POST /approve/start/{provider}     redirects to the provider
 GET  /approve/callback/{provider}  where the provider redirects back
 POST /approve/confirm              the press that approves the code
+POST /approve/deny                 the press that refuses it
 ```
 
 Three consequences worth stating, because all three are promises made elsewhere:
@@ -104,11 +156,17 @@ POST   /api/v1/docs           {title?, html}  → 201 {docId, url, version}
 PUT    /api/v1/docs/{docId}   {title?, html}  → 200 {docId, url, version}
 DELETE /api/v1/docs/{docId}                   → 204
 GET    /api/v1/docs?limit&cursor              → 200 {docs[], cursor?}
+GET    /api/v1/tokens                         → 200 {tokens[]}
+DELETE /api/v1/tokens/{tokenId}               → 200 {tokenId, remaining}
+POST   /device/code           {label?}        → 200 {device_code, user_code, …}
+POST   /device/token          {device_code}   → 200 {access_token, …}
 GET    /d/{docId}                             → 200 latest HTML
 GET    /d/{docId}/v{n}                        → 200 immutable HTML
 ```
 
-Any other method or path under `/api/v1` is `404 not_found`.
+Any other method or path under `/api/v1` is `404 not_found`. The two `/device`
+paths are the only ones outside it that answer a client, and they carry no
+credential — see [Signing in from a terminal](#signing-in-from-a-terminal).
 
 ### `POST /api/v1/docs` — publish a new doc
 
@@ -212,6 +270,55 @@ whichever of its keys published them.
 Paging is keyset, not offset: a doc published while you are walking pages appears
 on no page you have already read, and no doc is ever served twice or skipped.
 
+### `GET /api/v1/tokens` — list my tokens
+
+Every live token the calling account holds, newest first. Values are not
+returned and cannot be: only hashes are stored.
+
+```json
+{"tokens": [
+   {"tokenId": "tok_9f2k4mvq7t0xbz3n",
+    "label": "Claude Code on loganmac",
+    "createdAt": 1785000000000,
+    "lastUsedAt": 1785003600000}
+ ]}
+```
+
+- `label` is what the machine called itself when it asked for its device code,
+  and it is `null` when it named nothing. It is text a client supplied: escape
+  it before displaying it.
+- `lastUsedAt` is the last request this token authenticated, to the nearest
+  hour, and `null` for a token that has never been used. Coarse on purpose —
+  refreshing it exactly would put a database write behind every read, and the
+  question it answers is which machine is still using this.
+- Revoked tokens are not listed. There is no paging: a token exists because a
+  person approved a machine, so an account holds a handful, and at most 100 are
+  returned.
+
+A license key's account holds no tokens, so it gets an empty list rather than a
+refusal.
+
+### `DELETE /api/v1/tokens/{tokenId}` — revoke a token
+
+`200`, with a body — unlike a document delete, because what the caller needs to
+know is what it has left.
+
+```json
+{"tokenId": "tok_9f2k4mvq7t0xbz3n", "remaining": 0}
+```
+
+`remaining` is how many live tokens the account still holds. **Revoking the last
+one is allowed**, and `remaining: 0` is how a client knows to say so: nothing on
+that account can publish until somebody approves a new device. The documents are
+untouched and stay exactly where they are.
+
+Revoking the token making the request succeeds — this request has already
+authenticated, and the next one will not.
+
+`404 not_found` if the token does not exist, belongs to another account, or was
+already revoked, exactly as for a document. A retry after a timeout therefore
+sees `404`, not `200`; treat it as success.
+
 ### `GET /d/{docId}` and `GET /d/{docId}/v{n}` — read
 
 Unauthenticated. `GET` and `HEAD` only; anything else is `404`.
@@ -276,6 +383,118 @@ All three are `no-store` and retain the serving header policy above. `HEAD`
 returns the same status and headers as `GET` without a body. Healthy `200` and
 conditional `304` responses are unchanged.
 
+## Signing in from a terminal
+
+<a id="signing-in-from-a-terminal"></a>
+
+A client with no credential gets one here. It asks for a code, prints a url,
+and polls; a person opens that url on any device, signs in, and approves. The
+client's next poll returns a token it stores and uses from then on. Nobody
+reads a secret aloud and nothing is pasted, which is the point: a token pasted
+into an agent's conversation is a token in a transcript.
+
+**RFC 8628 shaped, not RFC 8628 wire compatible.** The two endpoints, the two
+codes, the polling interval and the four poll conditions are the standard's, so
+a client written against it will recognise them. The differences are that
+requests are JSON like the rest of this API rather than form encoded, and that a
+failure carries this API's own `{"error": {"code", "message"}}` envelope with
+the RFC's code name inside it, so a client still has one error shape to parse.
+Field names in the two success bodies are the RFC's, which is why they are
+`snake_case` where the rest of this document is `camelCase`.
+
+Neither endpoint authenticates, which is why neither is under `/api/v1`.
+
+### `POST /device/code` — ask for a code
+
+`Content-Type: application/json`. The body is optional.
+
+| Field | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `label` | string | no | What this machine and agent are, for the person approving it and for the token afterwards. Control characters are stripped and it is cut at 80 characters. Missing or blank means the page names no machine. |
+
+```json
+{"label": "Claude Code on loganmac"}
+```
+
+```json
+{"device_code": "hy3m…",
+ "user_code": "WDJB-MJHT",
+ "verification_uri": "https://api.openartifacts.ai/approve",
+ "verification_uri_complete": "https://api.openartifacts.ai/approve?user_code=WDJB-MJHT",
+ "expires_in": 900,
+ "interval": 5}
+```
+
+- `device_code` is the secret half and never leaves the client. It is the only
+  thing that can collect the token, so a person who reads the `user_code` off a
+  screen has learned nothing.
+- `user_code` is eight letters from a twenty-consonant alphabet, shown as two
+  groups of four. No digits and no vowels, so nothing in it is confusable when
+  read aloud and no draw can spell a word.
+- `verification_uri_complete` is what a client prints and opens; the bare
+  `verification_uri` is for a person typing it on another device.
+- `expires_in` and `interval` are seconds. Use the `interval` the response gives
+  rather than a number of your own.
+
+`429 quota_exceeded`, with `Retry-After`, when one address asks for too many
+codes. The limit exists because an endpoint that mints approval urls is an
+endpoint somebody would otherwise use to send strangers approval urls. One
+person signing in a machine or two never reaches it.
+
+### `POST /device/token` — collect the token
+
+`Content-Type: application/json`.
+
+| Field | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `device_code` | string | yes | Exactly as `POST /device/code` returned it. |
+
+Poll no faster than the `interval` you were given, until the code expires.
+
+```json
+{"access_token": "oat_hy3m…",
+ "token_type": "Bearer",
+ "token_id": "tok_9f2k4mvq7t0xbz3n",
+ "label": "Claude Code on loganmac"}
+```
+
+**This response is the only time the token exists outside the client.** Store it
+with owner-only permissions and never print it. `token_id` is its public name,
+which `GET /api/v1/tokens` also reports and `DELETE` takes.
+
+Until then, every answer is a `400` carrying one of four codes:
+
+| `code` | Meaning | What a client does |
+| --- | --- | --- |
+| `authorization_pending` | Nobody has approved it yet. | Wait one interval and poll again. |
+| `slow_down` | You polled faster than the interval. | Wait longer, then poll again. |
+| `expired_token` | The code expired, was already collected, or was never issued. | Start again with a new code. |
+| `access_denied` | Someone pressed Deny on the approval page. | Stop. Do not start again on your own. |
+
+A device code is spent by the poll that collects it, so a replayed one is
+`expired_token` — the same answer an unknown code gets, deliberately, because a
+distinguishable reply would confirm which random strings are real.
+
+### A whole sign-in
+
+```bash
+BASE=https://api.openartifacts.ai
+
+MINT=$(curl -sS -X POST "$BASE/device/code" \
+  -H 'content-type: application/json' \
+  -d '{"label":"Claude Code on loganmac"}')
+
+DEVICE_CODE=$(printf '%s' "$MINT" | jq -r .device_code)
+printf '%s' "$MINT" | jq -r .verification_uri_complete   # open this, and approve
+
+# poll every `interval` seconds until it answers with a token
+curl -sS -X POST "$BASE/device/token" \
+  -H 'content-type: application/json' \
+  -d "{\"device_code\":\"$DEVICE_CODE\"}"
+# → {"error":{"code":"authorization_pending", …}}   before the approval
+# → {"access_token":"oat_…","token_type":"Bearer", …}  after it
+```
+
 ## Errors
 
 Every publisher-facing API failure, and every retired-host response, is JSON:
@@ -298,8 +517,21 @@ exposes this API payload to a reader.
 | `too_large` | 413 | `html` over 10MB. |
 | `quota_exceeded` | 429 | Daily push or doc-count ceiling reached. |
 | `internal` | 500 | Our fault, including the license server being unreachable for a key we have never seen. |
+| `authorization_pending` | 400 | `POST /device/token`: nobody has approved the code yet. |
+| `slow_down` | 400 | `POST /device/token`: polled faster than the `interval`. |
+| `expired_token` | 400 | `POST /device/token`: the code expired, was collected, or was never issued. |
+| `access_denied` | 400 | `POST /device/token`: someone pressed Deny on the approval page. |
 
-Two of these are worth handling deliberately in a client:
+The last four appear on `POST /device/token` and nowhere else. They are RFC 8628
+§3.5's names, carried in this envelope so a client parses one error shape.
+
+Three of these are worth handling deliberately in a client:
+
+- **`unauthorized` covers a token too.** A token this deployment never issued,
+  and one that has been revoked, are both refused with `401 unauthorized` and
+  `WWW-Authenticate: Bearer`, exactly like a bad key. Only the human-readable
+  `message` distinguishes them. A client holding a token that starts failing
+  this way should sign in again rather than retry.
 
 - **`internal` is not `unauthorized`.** A license-server outage answers `500
   internal`, never `401`, precisely so the client does not prompt for a new key
@@ -325,6 +557,16 @@ daily allowance and one 500-document ceiling rather than getting two.
 Both `POST` and `PUT` spend one push. A rejected push spends nothing: a `413`,
 a `400`, or a `PUT` at a doc you do not own leaves the day's allowance intact.
 Deleting a doc frees a slot against the 500.
+
+An account that authenticates with tokens is counted the same way and against
+the same numbers: every token it has issued shares one daily allowance and one
+document ceiling, because the ceiling follows the account and not the
+credential.
+
+One further limit sits outside all of this, on `POST /device/code`: a single
+client address may only ask for so many sign-in codes in a ten-minute window,
+and past that the mint answers `429 quota_exceeded` with `Retry-After`. It is
+not a publishing quota and no authenticated call can reach it.
 
 ## The docId round trip
 
