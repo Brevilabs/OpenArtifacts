@@ -12,7 +12,13 @@ import { handleDevice, readDeviceLabel } from "../src/device.js";
 import type { Env } from "../src/config.js";
 import { collectDeviceToken, confirmDeviceApproval, holdProvenIdentity } from "../src/db.js";
 import { sha256Hex } from "../src/hash.js";
-import { newApiToken, TOKEN_ID_PREFIX, TOKEN_PREFIX, USER_CODE_ALPHABET } from "../src/ids.js";
+import {
+  newApiToken,
+  TOKEN_ID_PREFIX,
+  TOKEN_PREFIX,
+  USER_CODE_ALPHABET,
+  USER_CODE_LENGTH,
+} from "../src/ids.js";
 import worker from "../src/index.js";
 
 /**
@@ -55,6 +61,7 @@ const configured = (over: Partial<Env> = {}): Env =>
     OAUTH_GITHUB_CLIENT_ID: "github-client",
     OAUTH_GITHUB_CLIENT_SECRET: "github-secret",
     DEVICE_CODE_LIMITER: undefined,
+    APPROVAL_LOOKUP_LIMITER: undefined,
     ...over,
   }) as Env;
 
@@ -198,9 +205,11 @@ describe("POST /device/code", () => {
     const { user_code } = await mint();
 
     expect(user_code).toMatch(
-      new RegExp(`^[${USER_CODE_ALPHABET}]{4}-[${USER_CODE_ALPHABET}]{4}$`),
+      new RegExp(`^[${USER_CODE_ALPHABET}]{5}-[${USER_CODE_ALPHABET}]{5}$`),
     );
     expect(normalizeUserCode(user_code)).toBe(user_code);
+    // Ten characters of a twenty-letter alphabet, which is 2^43.2.
+    expect(user_code.replace("-", "")).toHaveLength(USER_CODE_LENGTH);
   });
 
   it("stores the device code only as a hash, and the label beside it", async () => {
@@ -297,6 +306,31 @@ describe("POST /device/code", () => {
     expect(refused.status).toBe(429);
     expect(await errorOf(refused)).toBe("quota_exceeded");
     expect(refused.headers.get("retry-after")).toBe("60");
+  });
+
+  /**
+   * The published binding reference documents no ceiling on key length and the
+   * runtime checks only that a key is a string, but a review raised a possible
+   * 32-byte cap, and a key over one would fail every hosted mint
+   * (https://github.com/Brevilabs/OpenArtifacts/pull/62#discussion_r3928334734).
+   */
+  it("hands the limiter a key well inside any length a binding could cap", async () => {
+    const keys: string[] = [];
+    const watching: RateLimit = {
+      limit: async ({ key }) => {
+        keys.push(key);
+        return { success: true };
+      },
+    };
+
+    const url = new URL(`${ORIGIN}/device/code`);
+    await handleDevice(request("/device/code", undefined, { "cf-connecting-ip": "203.0.113.30" }), url, configured(), {
+      now: () => NOW,
+      limiter: watching,
+    });
+
+    expect(keys).toHaveLength(1);
+    expect(new TextEncoder().encode(keys[0]).byteLength).toBeLessThanOrEqual(32);
   });
 
   it("counts each client address separately", async () => {

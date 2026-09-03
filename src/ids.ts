@@ -139,7 +139,7 @@ export function newDeviceCode(): string {
 }
 
 /**
- * The alphabet a user code is drawn from. Shown grouped: `WDJB-MJHT`.
+ * The alphabet a user code is drawn from. Shown grouped: `WDJBM-JHTQR`.
  *
  * Twenty consonants, exactly RFC 8628 §6.1's recommended set. Two properties
  * matter and neither is obvious:
@@ -151,18 +151,28 @@ export function newDeviceCode(): string {
  * - **No vowels.** Without them no draw can spell a word, which is what keeps a
  *   code from being an obscenity or somebody's brand name on screen. That is
  *   worth more than the entropy it costs.
- *
- * Twenty to the eighth is about 2^34.6, which is what the RFC asks for when the
- * endpoint is rate limited — and the code is not a credential in any case,
- * since polling needs the device code and approving needs a sign-in.
  */
 export const USER_CODE_ALPHABET = "BCDFGHJKLMNPQRSTVWXZ";
 
-/** Characters of randomness in a user code, excluding the grouping dash. */
-export const USER_CODE_LENGTH = 8;
+/**
+ * Characters of randomness in a user code, excluding the grouping dash.
+ *
+ * Ten of a twenty-letter alphabet is 20^10, about **2^43.2**. The RFC's own
+ * eight-character example is 2^34.6, and that is enough only where guessing is
+ * throttled hard; guessing here is throttled, but the consequence of a hit is
+ * bad enough to want margin rather than sufficiency. Somebody who finds a live
+ * code can approve it with their own provider account and the terminal waiting
+ * on it collects a token for *their* account, so the person who started the
+ * sign-in ends up publishing into a stranger's shelf. The confirm step is no
+ * defence, because the attacker is the one confirming
+ * (https://github.com/Brevilabs/OpenArtifacts/pull/62#discussion_r3928334751).
+ *
+ * Two extra characters cost one more spoken syllable and buy a factor of 400.
+ */
+export const USER_CODE_LENGTH = 10;
 
-/** Where the dash goes. Two groups of four is what people read back correctly. */
-const USER_CODE_GROUP = 4;
+/** Where the dash goes. Two groups of five stay readable off a screen. */
+const USER_CODE_GROUP = 5;
 
 /**
  * The short code a person reads off their terminal and types into the approval

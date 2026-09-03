@@ -40,6 +40,7 @@ import { claimDevicePoll, collectDeviceToken, insertDeviceCode, sweepExpired } f
 import { errorResponse } from "./errors.js";
 import { sha256Hex } from "./hash.js";
 import { newApiToken, newDeviceCode, newTokenId, newUserCode } from "./ids.js";
+import { withinClientLimit } from "./limits.js";
 import { readBodyWithin } from "./quota.js";
 
 /** Path prefix of the device surface, used by the router on the API host. */
@@ -95,9 +96,6 @@ const USER_CODE_ATTEMPTS = 3;
  * headers is a simple request too.
  */
 const JSON_CONTENT_TYPE = "application/json";
-
-/** Bucket a request with no client address falls into. */
-const ANONYMOUS_CLIENT = "anonymous";
 
 /**
  * Everything a terminal could hide in a label that a terminal would then act
@@ -187,8 +185,7 @@ async function mint(
   if (label === undefined) return badRequest("`label` must be a string.");
 
   const limiter = deps.limiter ?? env.DEVICE_CODE_LIMITER;
-  const key = await deviceClientBucket(request);
-  if (limiter !== undefined && !(await limiter.limit({ key })).success) {
+  if (!(await withinClientLimit(limiter, request))) {
     // `Retry-After` is the limiter's whole window, because the binding reports
     // a verdict and nothing else: no reset time, no remaining count. Telling
     // the caller to wait the full period is the only honest number available,
@@ -405,16 +402,3 @@ async function claimUserCode(
   return null;
 }
 
-/**
- * The key a mint is counted against.
- *
- * The client's address, hashed. Hashed because it is a bucket to count against
- * rather than a record of who visited: nothing here ever needs to read an
- * address back, and the limiter only ever compares keys for equality. Where the
- * platform reports no address — local development, and the tests — every caller
- * shares one key, which is the safe direction for a limit.
- */
-async function deviceClientBucket(request: Request): Promise<string> {
-  const address = request.headers.get("cf-connecting-ip")?.trim();
-  return await sha256Hex(address === undefined || address === "" ? ANONYMOUS_CLIENT : address);
-}

@@ -27,6 +27,22 @@ export interface Env {
    */
   DEVICE_CODE_LIMITER?: RateLimit;
 
+  /**
+   * Rate limiter on the two approval routes that take a user code: the page
+   * that looks one up, and the button that starts a handshake against it.
+   *
+   * A separate namespace from the mint's, and a much larger allowance, because
+   * the two limits are protecting different things. A mint writes a row, so its
+   * limit is about the write budget. These two read a row and conditionally
+   * update one, and their limit is only defence in depth behind the user code's
+   * own entropy. Sharing one bucket would also mean one ordinary sign-in spent
+   * three of it — mint, look up, start — and a person who reloaded the approval
+   * page twice would be told their code had expired.
+   *
+   * Optional for the same reason as the mint's, and absent means no limit.
+   */
+  APPROVAL_LOOKUP_LIMITER?: RateLimit;
+
   /** Canonical host that serves public docs. Empty in local development. */
   SERVING_HOST?: string;
   /** Canonical host that exposes /api/v1. Empty in local development. */

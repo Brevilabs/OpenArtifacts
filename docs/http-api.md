@@ -440,9 +440,9 @@ browser.
 
 ```json
 {"device_code": "hy3m…",
- "user_code": "WDJB-MJHT",
+ "user_code": "WDJBM-JHTQR",
  "verification_uri": "https://api.openartifacts.ai/approve",
- "verification_uri_complete": "https://api.openartifacts.ai/approve?user_code=WDJB-MJHT",
+ "verification_uri_complete": "https://api.openartifacts.ai/approve?user_code=WDJBM-JHTQR",
  "expires_in": 900,
  "interval": 5}
 ```
@@ -450,9 +450,10 @@ browser.
 - `device_code` is the secret half and never leaves the client. It is the only
   thing that can collect the token, so a person who reads the `user_code` off a
   screen has learned nothing.
-- `user_code` is eight letters from a twenty-consonant alphabet, shown as two
-  groups of four. No digits and no vowels, so nothing in it is confusable when
-  read aloud and no draw can spell a word.
+- `user_code` is ten letters from a twenty-consonant alphabet, shown as two
+  groups of five — about 43 bits. No digits and no vowels, so nothing in it is
+  confusable when read aloud and no draw can spell a word. Case and surrounding
+  space do not matter: the approval page folds both.
 - `verification_uri_complete` is what a client prints and opens. The bare
   `verification_uri` is short enough to read off a terminal and type into a
   phone, and it shows a field for entering the `user_code` by hand. Print both:

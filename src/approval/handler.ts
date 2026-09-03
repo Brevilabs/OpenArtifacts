@@ -40,6 +40,7 @@ import {
   startDeviceHandshake,
 } from "../db.js";
 import { newAccountId, newHandshakeToken } from "../ids.js";
+import { withinClientLimit } from "../limits.js";
 import { readBodyWithin } from "../quota.js";
 import { ABOUT_LINK, brandPageHtml, escapeHtml, type BrandPage } from "../page.js";
 import {
@@ -101,6 +102,11 @@ export interface ApprovalDeps {
   now?: () => number;
   /** Injected by tests, since arctic's handshake reaches the network. */
   oauth?: OAuthClient;
+  /**
+   * Injected by tests that need a limiter a deployment has not declared, or a
+   * verdict they choose. Production reads `env.APPROVAL_LOOKUP_LIMITER`.
+   */
+  limiter?: RateLimit;
 }
 
 /**
@@ -150,7 +156,7 @@ export async function handleApproval(
 
   try {
     if (section === undefined && request.method === "GET") {
-      return await chooser(url, env, deps);
+      return await chooser(request, url, env, deps);
     }
     if (section === "confirm" && provider === undefined && request.method === "POST") {
       return await confirm(request, env, deps);
@@ -191,7 +197,12 @@ export async function handleApproval(
  * with the code on the url. The two `POST`s either side of it are the ones that
  * change what a code is worth, and they stay exactly as they are.
  */
-async function chooser(url: URL, env: Env, deps: ApprovalDeps): Promise<Response> {
+async function chooser(
+  request: Request,
+  url: URL,
+  env: Env,
+  deps: ApprovalDeps,
+): Promise<Response> {
   if (!approvalIsConfigured(env)) return page(NOT_CONFIGURED, 503);
 
   const submitted = url.searchParams.get(USER_CODE_PARAM);
@@ -199,6 +210,14 @@ async function chooser(url: URL, env: Env, deps: ApprovalDeps): Promise<Response
 
   const userCode = normalizeUserCode(submitted);
   if (userCode === null) return codeEntry(400, "That does not look like a code.");
+
+  // Counted before the row is read, so a client working through the code space
+  // is stopped by the limit rather than by how many rows it can afford to
+  // read. `CODE_GONE` on refusal, because a throttle and a miss have to look
+  // the same: telling them apart would turn the limit into an oracle for which
+  // codes are real (https://github.com/Brevilabs/OpenArtifacts/pull/62#discussion_r3928334751).
+  const limiter = deps.limiter ?? env.APPROVAL_LOOKUP_LIMITER;
+  if (!(await withinClientLimit(limiter, request))) return page(CODE_GONE, 404);
 
   const now = (deps.now ?? Date.now)();
   // Checked before the providers are offered rather than after the handshake,
@@ -245,6 +264,11 @@ async function begin(
 
   const userCode = normalizeUserCode(submitted.get(USER_CODE_PARAM));
   if (userCode === null) return codeEntry(400, "That does not look like a code.");
+
+  // Counted with the chooser's lookups and for the same reason: this route
+  // also says whether a code is live, and it writes when it is.
+  const limiter = deps.limiter ?? env.APPROVAL_LOOKUP_LIMITER;
+  if (!(await withinClientLimit(limiter, request))) return page(CODE_GONE, 404);
 
   const now = (deps.now ?? Date.now)();
   const state = newHandshakeToken();
@@ -509,7 +533,7 @@ function codeEntry(status: number, note?: string): Response {
 function codeForm(): string {
   return (
     `<form method="get" action="${APPROVAL_PREFIX}">` +
-    `<input type="text" name="${USER_CODE_PARAM}" placeholder="WDJB-MJHT" aria-label="Device code"` +
+    `<input type="text" name="${USER_CODE_PARAM}" placeholder="WDJBM-JHTQR" aria-label="Device code"` +
     ` autocomplete="off" autocapitalize="characters" autocorrect="off" spellcheck="false"` +
     ` autofocus required>` +
     `<button type="submit">Continue</button></form>`

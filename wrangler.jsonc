@@ -39,7 +39,18 @@
   // period, since the Retry-After header is the only place the number is
   // needed in code.
   "ratelimits": [
-    { "name": "DEVICE_CODE_LIMITER", "namespace_id": "1001", "simple": { "limit": 5, "period": 60 } }
+    { "name": "DEVICE_CODE_LIMITER", "namespace_id": "1001", "simple": { "limit": 5, "period": 60 } },
+    // The approval page's own limit, on looking a user code up and on starting
+    // a handshake against one. Separate from the mint's because it protects a
+    // different thing — guessing a user code, rather than the write budget —
+    // and because one ordinary sign-in spends three of a shared bucket.
+    // Twenty a minute is meaningless against the code's own entropy and still
+    // generous for somebody retyping a code off a phone.
+    {
+      "name": "APPROVAL_LOOKUP_LIMITER",
+      "namespace_id": "1002",
+      "simple": { "limit": 20, "period": 60 }
+    }
   ],
 
   // R2 is the system of record: every served byte lives here.

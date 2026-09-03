@@ -71,39 +71,52 @@ two plan values currently allowed to publish. With the Brevilabs license
 variables absent, unknown keys fail closed and seeded keys continue through the
 existing license-outage fallback.
 
-### The device-code limiter
+### The sign-in limiters
 
-`POST /device/code` is unauthenticated, because a terminal asking for a sign-in
-code has no credential yet. It is limited by a Workers rate limiter binding,
-declared in `wrangler.jsonc`:
+Three routes answer without a credential, because the caller has none yet: the
+device-code mint, the approval page's code lookup, and the button that starts a
+handshake. Two Workers rate limiter bindings cover them, declared in
+`wrangler.jsonc`:
 
 ```jsonc
 "ratelimits": [
-  { "name": "DEVICE_CODE_LIMITER", "namespace_id": "1001", "simple": { "limit": 5, "period": 60 } }
+  { "name": "DEVICE_CODE_LIMITER", "namespace_id": "1001", "simple": { "limit": 5, "period": 60 } },
+  { "name": "APPROVAL_LOOKUP_LIMITER", "namespace_id": "1002", "simple": { "limit": 20, "period": 60 } }
 ]
 ```
 
-Five codes a minute per client address, which is far above one person signing in
-a machine or two. `period` accepts only `10` or `60`. **`namespace_id` is unique
-across your whole account, not per Worker**, so if you run another Worker with a
-limiter, give this one a number that Worker does not use. `DEVICE_MINT_PERIOD_SECONDS`
+`DEVICE_CODE_LIMITER` gives five codes a minute per client address, far above
+one person signing in a machine or two. `period` accepts only `10` or `60`.
+**`namespace_id` is unique across your whole account, not per Worker**, so if
+you run another Worker with a limiter, give these numbers that Worker does not
+use. `DEVICE_MINT_PERIOD_SECONDS`
 in `src/config.ts` is the `Retry-After` a refusal carries and has to match
 `period`; nothing else in the code reads these numbers, because the binding
 reports a verdict and no counts.
 
-**Deleting the block is supported.** A deployment that declares no limiter puts
-no limit on that endpoint, which is the right answer for a private deployment
-nobody else can reach. Failing closed instead would mean a Worker that signs
-nobody in until its operator had read this page. Everything else works the same
-either way.
+The second limiter, `APPROVAL_LOOKUP_LIMITER`, covers the two approval routes
+that take a user code: the page that looks one up and the button that starts a
+handshake against it. Twenty a minute per address, and a separate
+`namespace_id`, because the two limits protect different things. A mint writes a
+row, so its limit is about the write budget; these read a row and conditionally
+update one, and their limit is defence in depth behind the code's own 43 bits.
+Sharing one bucket would also mean an ordinary sign-in spent three of it, and a
+person who reloaded the approval page twice would be told their code had
+expired.
+
+**Deleting either block is supported.** A deployment that declares no limiter
+puts no limit on those endpoints, which is the right answer for a private
+deployment nobody else can reach. Failing closed instead would mean a Worker
+that signs nobody in until its operator had read this page. Everything else
+works the same either way.
 
 The limiter is not a D1 counter on purpose. A counter in a row costs a write for
 every attempt including every refused one, so under sustained abuse the limiter
 itself would exhaust the account's daily write budget — see
 [cost at scale](cost-at-scale.md).
 
-For a public deployment, add a WAF rate limiting rule on `POST /device/code` as
-a second layer. The binding runs inside the Worker, so a request it refuses has
+For a public deployment, add a WAF rate limiting rule on `POST /device/code` and
+`/approve` as a second layer. The binding runs inside the Worker, so a request it refuses has
 still been billed as a request; a WAF rule refuses at the edge before that.
 
 The checked-in GitHub Actions workflow is Brevilabs-specific. It names the

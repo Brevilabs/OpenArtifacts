@@ -35,6 +35,11 @@ const configured = (over: Partial<Env> = {}): Env =>
     OAUTH_GOOGLE_CLIENT_SECRET: "google-secret",
     OAUTH_GITHUB_CLIENT_ID: "github-client",
     OAUTH_GITHUB_CLIENT_SECRET: "github-secret",
+    // No limiter unless a case asks for one. The limiter's state lives in the
+    // runtime rather than in storage, so it does not reset between tests, and a
+    // suite that looked codes up through it would start refusing itself. The
+    // cases about the limit reach for `env.APPROVAL_LOOKUP_LIMITER` themselves.
+    APPROVAL_LOOKUP_LIMITER: undefined,
     ...over,
   }) as Env;
 
@@ -47,6 +52,18 @@ async function send(path: string, init: RequestInit = {}, over: Partial<Env> = {
   );
   await waitOnExecutionContext(ctx);
   return response;
+}
+
+/** The allowance declared on `APPROVAL_LOOKUP_LIMITER` in wrangler.jsonc. */
+const LOOKUPS_PER_PERIOD = 20;
+
+/** A lookup from one address on a deployment that declares the limiter. */
+function lookupFrom(address: string, userCode = USER_CODE): Promise<Response> {
+  return send(
+    `/approve?user_code=${userCode}`,
+    { headers: { "cf-connecting-ip": address } },
+    { APPROVAL_LOOKUP_LIMITER: env.APPROVAL_LOOKUP_LIMITER },
+  );
 }
 
 /** A form submission, as the chooser's and the confirm page's buttons make one. */
@@ -307,6 +324,65 @@ describe("GET /approve", () => {
     expect(html).not.toContain("<img src=x>");
     // Nor escaped: what was submitted is not put back in the field at all.
     expect(html).not.toContain("&lt;img");
+  });
+});
+
+/**
+ * A user code is short enough to read aloud, so the page that takes one says
+ * whether it is live. Without a limit that is an enumeration oracle, and a hit
+ * is worth having: whoever finds a pending code can approve it with their own
+ * provider account, and the terminal waiting on it then collects a token for
+ * *their* account (https://github.com/Brevilabs/OpenArtifacts/pull/62#discussion_r3928334751).
+ */
+describe("guessing a user code", () => {
+  it("stops a client working through the code space, and says only that the code is gone", async () => {
+    const address = "198.51.100.5";
+    for (let i = 0; i < LOOKUPS_PER_PERIOD; i += 1) {
+      expect((await lookupFrom(address, "ZZZZZ-ZZZZZ")).status).toBe(404);
+    }
+
+    // A live code from the same address now answers exactly like a miss, so the
+    // limit tells the guesser nothing it did not already have.
+    const refused = await lookupFrom(address);
+    expect(refused.status).toBe(404);
+    expect(await refused.text()).toContain("no longer waiting");
+  });
+
+  it("reads no row once the client is over its allowance", async () => {
+    const address = "198.51.100.6";
+    for (let i = 0; i < LOOKUPS_PER_PERIOD; i += 1) await lookupFrom(address, "ZZZZZ-ZZZZZ");
+
+    // The seeded code is live, so a lookup that reached the database would say
+    // so. Being refused before that read is what makes the limit a real bound.
+    expect((await lookupFrom(address)).status).toBe(404);
+    expect((await readCode())?.state).toBeNull();
+  });
+
+  it("leaves another client's allowance alone", async () => {
+    for (let i = 0; i < LOOKUPS_PER_PERIOD; i += 1) await lookupFrom("198.51.100.7", "ZZZZZ-ZZZZZ");
+
+    const other = await lookupFrom("198.51.100.8");
+    expect(other.status).toBe(200);
+    expect(await other.text()).toContain("Continue with Google");
+  });
+
+  it("counts starting a handshake too, since that also says whether a code is live", async () => {
+    const address = "198.51.100.9";
+    for (let i = 0; i < LOOKUPS_PER_PERIOD; i += 1) await lookupFrom(address, "ZZZZZ-ZZZZZ");
+
+    const refused = await send(
+      "/approve/start/google",
+      {
+        method: "POST",
+        headers: { "cf-connecting-ip": address },
+        body: new URLSearchParams({ user_code: USER_CODE }),
+      },
+      { APPROVAL_LOOKUP_LIMITER: env.APPROVAL_LOOKUP_LIMITER },
+    );
+
+    expect(refused.status).toBe(404);
+    // No handshake was written, so nothing can be completed against it.
+    expect((await readCode())?.state).toBeNull();
   });
 });
 
