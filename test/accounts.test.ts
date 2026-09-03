@@ -508,6 +508,28 @@ describe("resolveAccountForIdentity", () => {
     expect(await accountCount()).toBe(1);
   });
 
+  /**
+   * Two first sign-ins for one subject can overlap while the provider reports
+   * two different addresses, and each picks a different account. Only one
+   * identity row survives, so both callers have to be given the account that
+   * every later sign-in will resolve to — otherwise one device code is approved
+   * onto an account its owner can never reach again.
+   */
+  it("gives both racing sign-ins the account the identity actually names", async () => {
+    const [a, b] = await Promise.all([
+      resolveAccountForIdentity(env.DB, GOOGLE, "sub-moved", "before@example.com", nextId(), NOW),
+      resolveAccountForIdentity(env.DB, GOOGLE, "sub-moved", "after@example.com", nextId(), NOW),
+    ]);
+
+    expect(a?.id).toBe(b?.id);
+    const linked = await env.DB.prepare(
+      "SELECT account_id FROM identities WHERE provider = ? AND subject = ?",
+    )
+      .bind(GOOGLE, "sub-moved")
+      .first<{ account_id: string }>();
+    expect(a?.id).toBe(linked?.account_id);
+  });
+
   it("links one identity row when a subject signs in twice at once", async () => {
     const [a, b] = await Promise.all([
       resolveAccountForIdentity(env.DB, GOOGLE, "sub-race", "race@example.com", nextId(), NOW),

@@ -39,6 +39,7 @@ import {
   startDeviceHandshake,
 } from "../db.js";
 import { newAccountId, newHandshakeToken } from "../ids.js";
+import { readBodyWithin } from "../quota.js";
 import { ABOUT_LINK, brandPageHtml, escapeHtml, type BrandPage } from "../page.js";
 import {
   approvalIsConfigured,
@@ -76,6 +77,20 @@ const CONFIRM_TOKEN_FIELD = "confirm_token";
  * a person reads one off a terminal onto a phone.
  */
 const USER_CODE_PATTERN = /^[A-Z0-9][A-Z0-9-]{0,63}$/;
+
+/**
+ * Ceiling on a submitted form.
+ *
+ * Both `POST` routes are unauthenticated, and `formData()` buffers whatever
+ * arrives before this page can read the one short field it wants — so without a
+ * bound, anyone who can reach the approval host can make the Worker hold an
+ * arbitrary body. A device code and a confirm token are under a hundred bytes
+ * together; a kilobyte is room for a form this page will never grow into.
+ */
+const MAX_FORM_BYTES = 1024;
+
+/** The only encoding this page's own forms ever send. */
+const FORM_CONTENT_TYPE = "application/x-www-form-urlencoded";
 
 export interface ApprovalDeps {
   now?: () => number;
@@ -198,8 +213,10 @@ async function begin(
   const chosen = configuredProviders(env).find((id) => id === provider);
   if (chosen === undefined) return page(NOT_FOUND, 404);
 
-  const submitted = await request.formData();
-  const userCode = normalizeUserCode(asString(submitted.get(USER_CODE_PARAM)));
+  const submitted = await readSmallForm(request);
+  if (submitted === null) return page(NOT_FOUND, 404);
+
+  const userCode = normalizeUserCode(submitted.get(USER_CODE_PARAM));
   if (userCode === null) return page(NO_CODE, 400);
 
   const now = (deps.now ?? Date.now)();
@@ -329,8 +346,10 @@ async function prove(
 async function confirm(request: Request, env: Env, deps: ApprovalDeps): Promise<Response> {
   if (!approvalIsConfigured(env)) return page(NOT_CONFIGURED, 503);
 
-  const submitted = await request.formData();
-  const token = asString(submitted.get(CONFIRM_TOKEN_FIELD));
+  const submitted = await readSmallForm(request);
+  if (submitted === null) return page(NOT_FOUND, 404);
+
+  const token = submitted.get(CONFIRM_TOKEN_FIELD);
   const now = (deps.now ?? Date.now)();
 
   const userCode = token === null ? null : await confirmDeviceApproval(env.DB, token, now);
@@ -349,9 +368,35 @@ function redirectUri(url: URL, provider: ProviderId): string {
   return `${url.origin}${APPROVAL_PREFIX}/callback/${provider}`;
 }
 
-/** `FormData.get` yields a `File` for a file part, which no field here ever is. */
-function asString(value: unknown): string | null {
-  return typeof value === "string" ? value : null;
+/**
+ * Parse a submitted form, or null when the request is not one this page's own
+ * buttons could have sent.
+ *
+ * `readBodyWithin` rather than `formData()`, and the cap is on bytes actually
+ * read rather than on `Content-Length`. The header is the client's own
+ * assertion — a body can under-declare its size, or announce none at all when
+ * it is chunked — so believing it would leave the case it was supposed to close
+ * wide open. Giving up mid-stream is the only bound that holds against a body
+ * that lies, and it is the same reader the push path already uses for the same
+ * reason.
+ *
+ * Parsed as a query string because the content type says it is one. That also
+ * means no field can arrive as a file part, which `formData()` would have
+ * allowed and every caller would have had to guard against.
+ *
+ * One neutral answer for every reason, and the caller gives it the same page a
+ * path that matches nothing gets. The status is not load-bearing — no browser
+ * that submitted one of our forms can land here, so the reader is a probe, and
+ * a distinct status per check would only tell it which one it failed.
+ */
+async function readSmallForm(request: Request): Promise<URLSearchParams | null> {
+  const contentType = request.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase();
+  if (contentType !== FORM_CONTENT_TYPE) return null;
+
+  const body = await readBodyWithin(request, MAX_FORM_BYTES);
+  if (body === null) return null;
+
+  return new URLSearchParams(new TextDecoder().decode(body));
 }
 
 /** A one-button form. Every value is escaped, and none of them is markup. */

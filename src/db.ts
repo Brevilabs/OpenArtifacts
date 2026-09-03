@@ -637,19 +637,41 @@ export async function resolveAccountForIdentity(
 
   const account = byEmail ?? (await findOrCreateAccount(db, newId, email, nowMs));
 
-  // `DO NOTHING` rather than an error: two sign-ins of one subject racing each
-  // other both reach here, and the loser has nothing to add — the row it would
-  // write is the row that already exists.
-  await db
+  const inserted = await db
     .prepare(
       `INSERT INTO identities (provider, subject, account_id, created_at)
        VALUES (?, ?, ?, ?)
-       ON CONFLICT(provider, subject) DO NOTHING`,
+       ON CONFLICT(provider, subject) DO NOTHING
+       RETURNING account_id`,
     )
     .bind(provider, subject, account.id, nowMs)
-    .run();
+    .first<{ account_id: string }>();
+  if (inserted !== null) return account;
 
-  return account;
+  // Losing the insert is not the same as having nothing to add, which is why
+  // the winner's row is read back rather than the local choice returned. Two
+  // first sign-ins for one subject can overlap while the provider reports two
+  // different addresses — a mid-flight email change, or one call to the
+  // provider answered from a stale cache — and each would then pick a different
+  // account. Returning the loser's would approve two device codes onto two
+  // accounts while every later sign-in resolved to only one of them, so the
+  // person would own documents under an account they could never reach again.
+  //
+  // The account the loser created and did not use is left behind. It costs one
+  // row, it is the account the next sign-in on that address will find, and
+  // deleting it here would race the request that is using it.
+  const winner = await db
+    .prepare(
+      `SELECT a.id AS id, a.email AS email, a.created_at AS created_at
+         FROM identities i JOIN accounts a ON a.id = i.account_id
+        WHERE i.provider = ? AND i.subject = ?`,
+    )
+    .bind(provider, subject)
+    .first<AccountRow>();
+  // Only reachable if the row that won the conflict vanished between the two
+  // statements, which nothing deletes.
+  if (winner === null) throw new Error("identity row disappeared after a conflicting insert");
+  return winner;
 }
 
 /** Whether a code is still waiting to be approved, for the page that offers to. */

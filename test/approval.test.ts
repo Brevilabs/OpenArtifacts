@@ -611,6 +611,62 @@ describe("the approval surface inside the router", () => {
     expect(await response.text()).toContain("This document isn’t available.");
   });
 
+  /**
+   * Both `POST` routes are unauthenticated, and reading a body buffers it
+   * before the one short field it carries can be looked at.
+   */
+  it("refuses an oversized form rather than holding it", async () => {
+    const response = await send("/approve/start/google", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: `user_code=${USER_CODE}&padding=${"x".repeat(2048)}`,
+    });
+
+    expect(response.status).toBe(404);
+    // Nothing was started, so no handshake exists to complete.
+    expect((await readCode())?.state).toBeNull();
+  });
+
+  it("refuses an encoding this page's own buttons never send", async () => {
+    const response = await send("/approve/start/google", {
+      method: "POST",
+      headers: { "content-type": "multipart/form-data; boundary=x" },
+      body: new URLSearchParams({ user_code: USER_CODE }),
+    });
+
+    expect(response.status).toBe(404);
+    expect((await readCode())?.state).toBeNull();
+  });
+
+  /**
+   * The case a `Content-Length` check could never catch: a chunked body
+   * declares no size, so the only honest bound is on bytes actually read.
+   */
+  it("gives up on a streamed body that passes the cap mid-read", async () => {
+    await begin();
+    const token = confirmToken(await (await callback()).text());
+
+    const chunked = new Request(`${ORIGIN}/approve/confirm`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new ReadableStream({
+        start(controller) {
+          const encoder = new TextEncoder();
+          controller.enqueue(encoder.encode(`confirm_token=${token}&padding=`));
+          controller.enqueue(encoder.encode("x".repeat(4096)));
+          controller.close();
+        },
+      }),
+    });
+
+    const ctx = createExecutionContext();
+    const response = await worker.fetch(chunked, configured(), ctx);
+    await waitOnExecutionContext(ctx);
+
+    expect(response.status).toBe(404);
+    expect((await readCode())?.approved_at).toBeNull();
+  });
+
   it("answers each route on its own method and nothing else", async () => {
     expect((await post("/approve", { user_code: USER_CODE })).status).toBe(404);
     expect((await send("/approve/confirm")).status).toBe(404);
