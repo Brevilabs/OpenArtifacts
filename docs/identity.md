@@ -53,17 +53,50 @@ is one approval page.
    verifier are written onto the device code's own row, not into the browser.
 4. The provider redirects back to `/approve/callback/{provider}`. The `state`
    finds that row, the authorization code is exchanged, and the provider's
-   **verified** address is read.
-5. That address resolves to an account, creating one if it is new. The account is
-   recorded against the code and the page asks whether to approve it.
+   **verified** address and its permanent **subject** are read.
+5. Those resolve to an account, creating one if the subject is new. The account
+   is recorded against the code and the page asks whether to approve it.
 6. They press Approve, which `POST`s the handshake's `state` back and is the only
    thing that marks the code approved.
 
-The first approval an address makes is the registration. Every one after it finds
-the same account, whichever provider proved it — the address is folded to
-lowercase in one place, so Google and GitHub on one mailbox never become two
-shelves. Nothing about the browser is remembered at any point, because the token
-the CLI holds is the credential from then on.
+The first approval an address makes is the registration. Nothing about the
+browser is remembered at any point, because the token the CLI holds is the
+credential from then on.
+
+### Which account a sign-in resolves to
+
+Two different questions, answered by two different columns, and conflating them
+is the mistake this section exists to prevent.
+
+- **The email creates an account, and links a second provider to it.** Two
+  providers agreeing on a verified address is the only evidence available that
+  they mean one person, so approving with Google and then with GitHub lands on
+  one account with no linking step. The address is folded to lowercase in one
+  place, so one mailbox never becomes two shelves.
+- **The provider's subject returns someone to an account.** `identities` holds
+  `(provider, subject)` against an account id — Google's `sub`, GitHub's numeric
+  user id. Neither is ever reissued.
+
+Resolution asks the subject first:
+
+| Situation | Result |
+| --- | --- |
+| This subject has signed in before | its account, whatever address the provider reports now |
+| A new subject, address free or on an account this provider has never signed in to | that account, and the identity is linked to it |
+| A new subject, address on an account another subject on **this** provider already signs in with | refused |
+
+The third row is the reason the table exists. **A mailbox is recyclable and a
+subject is not.** A corporate or custom-domain address can be reassigned, and
+its new holder can verify it with the same provider entirely honestly. Resolving
+a returning sign-in by address alone would hand them the previous holder's
+documents, and every token issued against that account from then on. Refusing is
+the only safe answer, because the page cannot tell that case from a second
+account someone genuinely owns, and only one of the two is recoverable if it
+guesses wrong.
+
+The first row is what makes an email change harmless: the account keeps the
+address it was created with, the person keeps their documents, and nothing is
+rewritten under them.
 
 **Steps 5 and 6 are deliberately separate**, and it is the one thing about this
 flow that is not obvious. A provider's redirect back is a `GET` that a link can
@@ -144,9 +177,16 @@ and that is only acceptable while there is nothing on it for them to steal.
 
 ## What this does not do
 
-- **It does not follow an email change.** The owner is the account id, which is
-  stable across email changes. Changing the address on an existing account has no
-  path yet; a new address approves into a new account.
+- **It does not follow an email change.** A returning subject keeps its account,
+  so the person is unaffected, but `accounts.email` still holds the address the
+  account was created with. Changing it has no path yet.
+- **It does not close the cross-provider half of the recycled-mailbox case.**
+  The refusal above is per provider. An account whose only identity is GitHub,
+  whose address is later reassigned, can still be reached by the new holder
+  signing in with Google, because that is the same first-sight linking every
+  ordinary second provider relies on. Closing it would mean giving up automatic
+  linking, which is a deliberate trade rather than an oversight. Suggested
+  follow-up: `Link a second provider from the CLI instead of on first sight`.
 - **It does not give a credential its own documents.** Two keys on one account,
   or two machines' tokens on one account, share one list, one daily push
   allowance and one document ceiling. Isolation is per account, and

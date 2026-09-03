@@ -70,8 +70,10 @@ on the page that follows is what approves it. The row shows both steps:
 
 ```bash
 npx wrangler d1 execute symposium --local --command \
-  "SELECT d.user_code, d.account_id, d.approved_at, a.email
-     FROM device_codes d LEFT JOIN accounts a ON a.id = d.account_id"
+  "SELECT d.user_code, d.account_id, d.approved_at, a.email, i.provider, i.subject
+     FROM device_codes d
+     LEFT JOIN accounts a ON a.id = d.account_id
+     LEFT JOIN identities i ON i.account_id = a.id"
 ```
 
 With no OAuth client configured the page answers `503` and says approval is not
