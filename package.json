@@ -21,5 +21,8 @@
     "typescript": "^5",
     "vitest": "^3",
     "wrangler": "^4"
+  },
+  "dependencies": {
+    "arctic": "^3.7.0"
   }
 }

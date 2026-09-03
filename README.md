@@ -150,7 +150,7 @@ Worker becomes reachable only after Cloudflare attaches both custom domains.
 | [HTTP API](docs/http-api.md) | Publish, read, list, version, and delete endpoints. |
 | [Hosting](docs/hosting.md) | How Workers, R2, and D1 fit together. |
 | [Serving domain](docs/serving-domain.md) | Why uploaded HTML uses a separate registrable domain. |
-| [Identity](docs/identity.md) | Why documents belong to an owner rather than a credential. |
+| [Identity](docs/identity.md) | Why documents belong to an owner rather than a credential, and how an account is created. |
 | [Private sharing](docs/private-sharing.md) | Designed reader-identity phases. Not built. |
 | [Comments](docs/comments.md) | Design sketch for the next product step. Not built. |
 

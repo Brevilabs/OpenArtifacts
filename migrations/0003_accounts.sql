@@ -1,0 +1,134 @@
+-- Accounts OpenArtifacts owns, created by the first approval.
+--
+-- Until now the only identity in this repo was a Brevilabs license key, and
+-- `docs.owner` was always an app-sites `User.id` resolved through the license
+-- server. That made an open source project depend on a private service, and it
+-- left anyone without a Copilot license with nothing to publish as. An account
+-- here is the other way in: a verified email, an id of our own, and nothing
+-- else.
+--
+-- The two id spaces are deliberately disjoint rather than merged. A license
+-- key keeps resolving to its app-sites uuid, an account minted here carries the
+-- `oa_` prefix `newAccountId` gives it, and no equality test can ever confuse
+-- one for the other. Merging them would mean trusting an email to name an
+-- app-sites account, which is exactly the claim OAuth cannot make.
+
+CREATE TABLE accounts (
+  id         TEXT    PRIMARY KEY,
+  -- The address a provider asserted *and* said it had verified. Unique, because
+  -- it is the only thing that makes approving with Google and then with GitHub
+  -- land on one account rather than two. Stored lowercased and trimmed
+  -- (`normalizeEmail`), since the uniqueness is only as good as the folding.
+  email      TEXT    NOT NULL UNIQUE,
+  created_at INTEGER NOT NULL
+);
+
+-- The provider identities that resolve to an account on a later sign-in.
+--
+-- `accounts.email` is what *creates* an account and links a second provider to
+-- it, and it must not be what *returns* someone to one. A mailbox is
+-- recyclable: a corporate or custom-domain address can be reassigned, and its
+-- new holder can verify it with the same provider perfectly honestly. Resolving
+-- a returning sign-in by email alone would hand them the previous holder's
+-- documents. A provider's subject is not recyclable — Google's `sub` and
+-- GitHub's numeric user id are permanent and never reissued — so it is what a
+-- returning sign-in is looked up by.
+--
+-- No foreign key onto `accounts`, for the reason `device_codes` has none: D1
+-- leaves `PRAGMA foreign_keys` off, so the constraint would be documentation
+-- that does not run, and the only writer is `resolveAccountForIdentity`, which
+-- has the account row in hand.
+CREATE TABLE identities (
+  -- `google` or `github`, matching `PROVIDER_IDS`.
+  provider   TEXT    NOT NULL,
+  -- The provider's own permanent id for the person: Google's `sub` claim, or
+  -- GitHub's numeric user id as a string. Never an email, never a username —
+  -- both of those can move to somebody else.
+  subject    TEXT    NOT NULL,
+  account_id TEXT    NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (provider, subject),
+  -- One subject per provider per account, enforced here rather than by a check
+  -- the resolver runs first. Two previously unseen subjects on one provider can
+  -- verify the same address at the same moment, and a read followed by a write
+  -- would let both through — permanently giving two people one account and
+  -- undoing the refusal below. A constraint cannot be raced.
+  --
+  -- It does not stand in the way of one account holding a Google identity and a
+  -- GitHub one, which is the ordinary case: the pair is scoped by provider.
+  UNIQUE (provider, account_id)
+);
+
+-- The pending device codes an approval binds an account to, and the OAuth
+-- handshake that proves who is approving one.
+--
+-- **Minimal on purpose: #57 owns the device flow and extends this table.** The
+-- approval page needs somewhere to keep a handshake in flight and somewhere to
+-- record the outcome, so only those columns exist here. The device code the CLI
+-- holds, its token, the machine label and the polling bookkeeping all belong to
+-- #57, which should add columns to this table rather than create a second one.
+--
+-- The handshake lives in this row rather than in a signed cookie because the
+-- browser is not the thing being authorized — the terminal is. Keeping it here
+-- means the Worker sets no cookie on any surface, which is what lets the
+-- serving origin's cookieless promise stay an absolute rather than a
+-- host-by-host argument.
+--
+-- `user_code` is the primary key because it is what the human sees and what the
+-- approval url carries. It is stored uppercase; `normalizeUserCode` folds the
+-- request's copy so a code typed by hand still matches.
+CREATE TABLE device_codes (
+  user_code   TEXT    PRIMARY KEY,
+  -- Which provider the handshake in flight was started with, so a callback
+  -- cannot be replayed at the other provider's endpoint. Null between
+  -- handshakes.
+  provider    TEXT,
+  -- The OAuth `state`, which ties the provider's redirect back to the code it
+  -- belongs to. It is *not* a credential for approving anything: whoever
+  -- started the handshake receives it in the redirect they were sent, so an
+  -- attacker who starts one on their own code knows it. Null between
+  -- handshakes.
+  state       TEXT,
+  -- The token the confirm form carries, minted only once an identity has been
+  -- proved and returned only in the page the returning browser receives.
+  --
+  -- This exists because `state` cannot do the job. An attacker can start a
+  -- handshake on their own code, read the `state` out of the redirect they get,
+  -- and send the provider's url to a victim who is already signed in; the
+  -- victim's callback lands on the attacker's row. If the confirm keyed on
+  -- `state`, the attacker could then approve their own code as the victim,
+  -- without the victim pressing anything. This token never reaches whoever
+  -- started the handshake.
+  --
+  -- Stored as it is rather than hashed. A hash would defend against someone who
+  -- can read this table, and that someone can already read `account_id` and set
+  -- `approved_at` directly, so it would buy nothing for a value that lives
+  -- minutes. Null until an identity is proved, and cleared by the confirm.
+  confirm_token TEXT,
+  -- The PKCE code verifier for the handshake in flight, cleared once spent.
+  verifier    TEXT,
+  -- The account whose email a completed handshake proved. It is written before
+  -- `approved_at` and means nothing on its own: the code is not approved until
+  -- a person presses the button on the confirm page.
+  account_id  TEXT,
+  -- Epoch ms of that press, and null until then. This column alone is what #57
+  -- polls on: an account_id without it is an identity proven and an approval
+  -- not yet given.
+  approved_at INTEGER,
+  -- Epoch ms. Every step of the handshake is refused past it, so a code left on
+  -- a screen overnight cannot be approved by whoever walks past next.
+  expires_at  INTEGER NOT NULL,
+  created_at  INTEGER NOT NULL
+);
+
+-- The callback arrives knowing only the state, and the confirm only the confirm
+-- token, so each is a lookup key and each has to name one row exactly. Partial,
+-- so the many rows between handshakes do not collide on null and cost nothing
+-- to hold.
+CREATE UNIQUE INDEX device_codes_by_state
+  ON device_codes (state)
+  WHERE state IS NOT NULL;
+
+CREATE UNIQUE INDEX device_codes_by_confirm_token
+  ON device_codes (confirm_token)
+  WHERE confirm_token IS NOT NULL;

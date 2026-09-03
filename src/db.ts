@@ -57,6 +57,70 @@ export interface PushQuotaRow {
 }
 
 /**
+ * An account this deployment owns, created by its holder's first approval.
+ *
+ * Distinct from `publishers`, which caches what the license server says about a
+ * credential. This row *is* the identity: nothing outside is asked about it.
+ */
+export interface AccountRow {
+  /** Carries `ACCOUNT_ID_PREFIX`, so it can never collide with a license owner. */
+  id: string;
+  /** Lowercased, provider-verified. Unique, which is what merges the providers. */
+  email: string;
+  created_at: number;
+}
+
+/**
+ * A provider identity that resolves to an account on a later sign-in.
+ *
+ * The email creates an account; this returns someone to one. The two are
+ * different questions because an address can be reassigned to another person
+ * and a provider's subject cannot.
+ */
+export interface IdentityRow {
+  /** `google` or `github`. */
+  provider: string;
+  /** Google's `sub`, or GitHub's numeric user id as a string. */
+  subject: string;
+  account_id: string;
+  created_at: number;
+}
+
+/**
+ * A device code the CLI is polling, and the OAuth handshake proving who is
+ * approving it.
+ *
+ * **#57 owns the device flow and extends this table.** The columns here are
+ * only the ones approval reads and writes; the device code itself, its token
+ * and the machine label belong to that issue.
+ */
+export interface DeviceCodeRow {
+  /** Uppercase, as `normalizeUserCode` folds it. */
+  user_code: string;
+  /** The provider of the handshake in flight, and null between handshakes. */
+  provider: string | null;
+  /**
+   * The OAuth `state` of the handshake in flight; cleared once confirmed. It
+   * identifies a handshake and authorizes nothing — whoever started it was
+   * handed it in their redirect.
+   */
+  state: string | null;
+  /** The token the confirm form carries. Only the returning browser sees it. */
+  confirm_token: string | null;
+  /** The PKCE verifier of the handshake in flight; cleared once spent. */
+  verifier: string | null;
+  /** The account a completed handshake proved, before anyone approved it. */
+  account_id: string | null;
+  /** Epoch ms of the human's approval, and null until it is given. */
+  approved_at: number | null;
+  expires_at: number;
+  created_at: number;
+}
+
+/** The half of a pending handshake the callback needs to finish it. */
+export type PendingHandshake = Pick<DeviceCodeRow, "user_code" | "provider" | "verifier">;
+
+/**
  * The publisher row as auth needs it: read the cached validation, write it back
  * after a fresh one. It is an interface rather than two loose functions so the
  * auth tests can run against an in-memory double instead of a database.
@@ -469,4 +533,315 @@ export async function listPublisherDocs(
           .bind(owner, after.created_at, after.id, limit);
 
   return (await statement.all<DocListRow>()).results;
+}
+
+/**
+ * Resolve a verified email to its account, creating one on first sight.
+ *
+ * This is the whole of "sign up": there is no form, and the first approval is
+ * the registration. `id` is minted by the caller so the row can be inserted and
+ * read back in one statement.
+ *
+ * The insert is the lookup. Reading first and inserting after would let two
+ * approvals racing on one address — the same person clicking Google in one tab
+ * and GitHub in another — both find nothing and both insert, and the unique
+ * index would turn the loser into a 500 in front of a user who did nothing
+ * wrong. `ON CONFLICT DO NOTHING` makes the loser's insert a no-op it can
+ * simply read the winner's row after.
+ *
+ * @param email already normalized; the uniqueness that joins two providers into
+ *   one account is only as good as the folding done before this is called
+ */
+export async function findOrCreateAccount(
+  db: D1Database,
+  id: string,
+  email: string,
+  atMs: number,
+): Promise<AccountRow> {
+  const inserted = await db
+    .prepare(
+      `INSERT INTO accounts (id, email, created_at) VALUES (?, ?, ?)
+       ON CONFLICT(email) DO NOTHING
+       RETURNING id, email, created_at`,
+    )
+    .bind(id, email, atMs)
+    .first<AccountRow>();
+  if (inserted !== null) return inserted;
+
+  const existing = await db
+    .prepare("SELECT id, email, created_at FROM accounts WHERE email = ?")
+    .bind(email)
+    .first<AccountRow>();
+  // Only reachable if the row that won the conflict vanished between the two
+  // statements, which nothing deletes. Throwing beats returning a null account
+  // the approval path would have to invent an owner for.
+  if (existing === null) throw new Error("account row disappeared after a conflicting insert");
+  return existing;
+}
+
+/**
+ * Resolve a provider identity to its account, or null when the address it
+ * presents is already claimed by a different identity on the same provider.
+ *
+ * Three outcomes, in this order:
+ *
+ * 1. **This subject has signed in before.** Its account, whatever email the
+ *    provider reports now — a person who changes their address keeps their
+ *    documents, and the `accounts` row is deliberately left alone.
+ * 2. **A new subject, and the address is free or belongs to an account this
+ *    provider has never signed in to.** The account by email, created if it is
+ *    new, and the identity is linked to it. This is what makes approving with
+ *    Google and then with GitHub land on one account with no linking step.
+ * 3. **A new subject, and the address belongs to an account another subject on
+ *    *this* provider already signs in to.** Null. That is the reassigned
+ *    mailbox: the previous holder's Google account still exists, someone else
+ *    now verifies the same address with Google, and merging them would hand
+ *    over their documents. Refusing is the only safe answer this page can give
+ *    without a way to ask the original owner.
+ *
+ * The third case is decided by `identities`' own `UNIQUE (provider,
+ * account_id)` rather than by a read before the write. Two unseen subjects can
+ * verify one address at the same moment, and a check-then-insert would let both
+ * through — which is worse than not refusing at all, since the account would
+ * then be permanently shared and no later sign-in would notice.
+ *
+ * @param newId an account id to use if one has to be minted, so this stays
+ *   deterministic under test
+ */
+export async function resolveAccountForIdentity(
+  db: D1Database,
+  provider: string,
+  subject: string,
+  email: string,
+  newId: string,
+  nowMs: number,
+): Promise<AccountRow | null> {
+  const linked = await db
+    .prepare(
+      `SELECT a.id AS id, a.email AS email, a.created_at AS created_at
+         FROM identities i JOIN accounts a ON a.id = i.account_id
+        WHERE i.provider = ? AND i.subject = ?`,
+    )
+    .bind(provider, subject)
+    .first<AccountRow>();
+  if (linked !== null) return linked;
+
+  const byEmail = await db
+    .prepare("SELECT id, email, created_at FROM accounts WHERE email = ?")
+    .bind(email)
+    .first<AccountRow>();
+
+  const account = byEmail ?? (await findOrCreateAccount(db, newId, email, nowMs));
+
+  // No conflict target, so *either* constraint refuses the insert quietly. The
+  // two mean opposite things, and the read below is what tells them apart.
+  const inserted = await db
+    .prepare(
+      `INSERT INTO identities (provider, subject, account_id, created_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT DO NOTHING
+       RETURNING account_id`,
+    )
+    .bind(provider, subject, account.id, nowMs)
+    .first<{ account_id: string }>();
+  if (inserted !== null) return account;
+
+  // A row for this subject means the primary key refused: two first sign-ins
+  // for one subject overlapped. That is not a conflict of people, so the winner
+  // is returned — including when the two reported different addresses, as a
+  // mid-flight email change can. Returning the loser's own choice instead would
+  // approve a device code onto an account no later sign-in ever resolves to,
+  // and its owner could never reach the documents under it again.
+  //
+  // No row means `UNIQUE (provider, account_id)` refused: another subject on
+  // this provider holds the account this address named. That is the reassigned
+  // mailbox, and it is the one case that must not be merged.
+  //
+  // An account a refused sign-in happened to create is left behind. It costs
+  // one row, it is the account the next sign-in on that address will find, and
+  // deleting it here would race the request that is using it.
+  return await db
+    .prepare(
+      `SELECT a.id AS id, a.email AS email, a.created_at AS created_at
+         FROM identities i JOIN accounts a ON a.id = i.account_id
+        WHERE i.provider = ? AND i.subject = ?`,
+    )
+    .bind(provider, subject)
+    .first<AccountRow>();
+}
+
+/** Whether a code is still waiting to be approved, for the page that offers to. */
+export async function deviceCodeIsPending(
+  db: D1Database,
+  userCode: string,
+  nowMs: number,
+): Promise<boolean> {
+  const row = await db
+    .prepare(
+      `SELECT 1 FROM device_codes
+        WHERE user_code = ? AND approved_at IS NULL AND expires_at > ?`,
+    )
+    .bind(userCode, nowMs)
+    .first();
+
+  return row !== null;
+}
+
+/**
+ * Record an OAuth handshake against the code it is meant to approve, returning
+ * false when there is no pending code to record it against.
+ *
+ * This is where a signed cookie would otherwise be minted. Keeping the handshake
+ * in the row instead is what lets this Worker set no cookie anywhere, and it
+ * costs nothing: the browser is not the thing being authorized, so it has
+ * nothing to remember between the three requests.
+ *
+ * Starting a second handshake overwrites the first, which is what a person
+ * pressing the other provider's button means. Only one can ever be finished,
+ * because only the surviving `state` can be looked up.
+ *
+ * It also drops any identity the first handshake proved. Confirmation trusts
+ * `account_id` as the person who signed in for *this* `state`; carrying it
+ * across a restart would let anyone who knows the user code start a fresh
+ * handshake, read its state off the provider redirect, and press approve for
+ * an identity they never proved (https://github.com/Brevilabs/OpenArtifacts/pull/61#discussion_r3919988470).
+ */
+export async function startDeviceHandshake(
+  db: D1Database,
+  userCode: string,
+  provider: string,
+  state: string,
+  verifier: string,
+  nowMs: number,
+): Promise<boolean> {
+  const started = await db
+    .prepare(
+      `UPDATE device_codes
+          SET provider = ?, state = ?, verifier = ?,
+              account_id = NULL, confirm_token = NULL
+        WHERE user_code = ? AND approved_at IS NULL AND expires_at > ?
+        RETURNING user_code`,
+    )
+    .bind(provider, state, verifier, userCode, nowMs)
+    .first<{ user_code: string }>();
+
+  return started !== null;
+}
+
+/**
+ * Find the handshake a provider's redirect is answering.
+ *
+ * The `state` is the only thing that request carries, which is why it is the
+ * lookup key rather than a value compared after one: the callback does not know
+ * which device code it belongs to until this row answers. 256 random bits and a
+ * unique index make that a safe key, and the confirm write clears it, so a state
+ * names a handshake for as long as the handshake lasts and no longer.
+ */
+export async function findPendingHandshake(
+  db: D1Database,
+  state: string,
+  nowMs: number,
+): Promise<PendingHandshake | null> {
+  // `return await`: see the note on the router's catch in index.ts.
+  return await db
+    .prepare(
+      `SELECT user_code, provider, verifier FROM device_codes
+        WHERE state = ? AND approved_at IS NULL AND expires_at > ?`,
+    )
+    .bind(state, nowMs)
+    .first<PendingHandshake>();
+}
+
+/**
+ * Record whose email the handshake proved, and mint the token that can approve
+ * it, without approving anything.
+ *
+ * The split between this and `confirmDeviceApproval` is the whole defence
+ * against device-code phishing (RFC 8628 §5.4). A provider's redirect back is a
+ * `GET` a link can cause, and a person already signed in to that provider is
+ * carried through it without a prompt — so if the redirect completed the
+ * approval, a link would be enough to attach somebody else's terminal to their
+ * account. Identity is proved here; the approval is a `POST` a person has to
+ * press, and until they do, `approved_at` is null and #57's poll sees nothing.
+ *
+ * `confirmToken` is what that press must carry, and it is minted here rather
+ * than reusing `state` because `state` is not a secret from the attacker: they
+ * start a handshake on their own code, read it out of the redirect they are
+ * given, and send the provider's url to a victim. The victim's callback lands
+ * here, on the attacker's row — and if the confirm keyed on `state`, the
+ * attacker would then approve their own code as the victim, who pressed
+ * nothing. This token is returned only in the page the victim's browser
+ * receives, so the attacker never has it.
+ *
+ * `verifier IS NOT NULL` is the whole concurrency story. One authorization url
+ * can be completed by two different people, and both callbacks read the
+ * verifier before either exchange finishes; without this predicate the second
+ * would overwrite the first's `account_id` after the confirm page for the first
+ * had already been rendered, and that page would approve the wrong account.
+ * Clearing the verifier in the same statement makes exactly one of them the
+ * winner, and only the winner gets a confirm token.
+ *
+ * `state` survives, because the row still has to be findable while the confirm
+ * page is open.
+ */
+export async function holdProvenIdentity(
+  db: D1Database,
+  state: string,
+  accountId: string,
+  confirmToken: string,
+  nowMs: number,
+): Promise<boolean> {
+  const held = await db
+    .prepare(
+      `UPDATE device_codes
+          SET account_id = ?, confirm_token = ?, verifier = NULL
+        WHERE state = ?
+          AND verifier IS NOT NULL
+          AND approved_at IS NULL
+          AND expires_at > ?
+        RETURNING user_code`,
+    )
+    .bind(accountId, confirmToken, state, nowMs)
+    .first<{ user_code: string }>();
+
+  return held !== null;
+}
+
+/**
+ * Approve the device code a proven handshake belongs to, returning the code
+ * approved or null when there is nothing to approve.
+ *
+ * **This one write is the contract between the approval page and the device
+ * flow (#57).** `approved_at` moving from null is the whole signal that issue
+ * polls for, and it can grow this statement's `SET` list — minting the token,
+ * recording the machine label — without the page changing.
+ *
+ * Keyed on the confirm token rather than on `state`, because only the token is
+ * a secret from whoever started the handshake. `holdProvenIdentity` says why
+ * that distinction is the difference between a press and a link.
+ *
+ * Every reason to refuse is one null: no such token, an expired code, or a
+ * confirm pressed twice. The predicates ride on the write rather than an
+ * earlier read, so two presses produce exactly one approval, and clearing both
+ * tokens is what makes the second find nothing.
+ */
+export async function confirmDeviceApproval(
+  db: D1Database,
+  confirmToken: string,
+  atMs: number,
+): Promise<string | null> {
+  const approved = await db
+    .prepare(
+      `UPDATE device_codes
+          SET approved_at = ?, state = NULL, confirm_token = NULL
+        WHERE confirm_token = ?
+          AND approved_at IS NULL
+          AND account_id IS NOT NULL
+          AND expires_at > ?
+        RETURNING user_code`,
+    )
+    .bind(atMs, confirmToken, atMs)
+    .first<{ user_code: string }>();
+
+  return approved?.user_code ?? null;
 }

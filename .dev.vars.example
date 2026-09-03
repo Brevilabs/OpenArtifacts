@@ -13,3 +13,18 @@ LICENSE_API_URL="https://api.brevilabs.com"
 # Publisher keys arrive per request in the Authorization header and are never
 # stored; only their SHA-256 is.
 LICENSE_API_KEY=""
+
+# OAuth clients for the approval page, where a person proves an email address and
+# an account is created. Both halves of a pair are needed before that provider is
+# offered; a deployment that sets none still serves every document it has, and
+# the approval page says it cannot create accounts.
+#
+# Register the callback with each provider verbatim, on the host the page is
+# reached at:
+#   https://api.openartifacts.ai/approve/callback/google
+#   https://api.openartifacts.ai/approve/callback/github
+# Locally that is http://127.0.0.1:8787/approve/callback/{provider}.
+OAUTH_GOOGLE_CLIENT_ID=""
+OAUTH_GOOGLE_CLIENT_SECRET=""
+OAUTH_GITHUB_CLIENT_ID=""
+OAUTH_GITHUB_CLIENT_SECRET=""

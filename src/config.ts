@@ -32,6 +32,23 @@ export interface Env {
    * publisher's license key, and the two must never be confused.
    */
   LICENSE_API_KEY?: string;
+
+  /**
+   * OAuth client credentials for the approval page, one pair per provider.
+   *
+   * Every one is optional, and a deployment that sets none still starts and
+   * still serves documents — the approval page is the only thing that notices,
+   * and it says so rather than failing. A provider counts as configured only
+   * when both halves of its pair are present, so a half-filled secret store
+   * cannot advertise a button that leads to a broken handshake.
+   *
+   * The redirect uri to register with each provider is the approval callback on
+   * the API host: `https://{API_HOST}/approve/callback/{provider}`.
+   */
+  OAUTH_GOOGLE_CLIENT_ID?: string;
+  OAUTH_GOOGLE_CLIENT_SECRET?: string;
+  OAUTH_GITHUB_CLIENT_ID?: string;
+  OAUTH_GITHUB_CLIENT_SECRET?: string;
 }
 
 /**

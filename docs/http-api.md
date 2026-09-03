@@ -15,6 +15,7 @@ Two surfaces on two domains:
 | --- | --- | --- | --- |
 | API | `/api/v1/*` | required | Publisher-facing. JSON in, JSON out. |
 | Serving | `/d/*` | none | Reader-facing. Public HTML. Never sets a cookie. |
+| Approval | `/approve/*` | none | Human-facing. HTML pages on the API host. Not a client surface. |
 
 The API is served from `api.openartifacts.ai` and documents from `openartifacts.site`.
 The `url` field a push returns therefore points at a different host than the one
@@ -61,6 +62,40 @@ always see what they have published and take it down. Losing the ability to
 publish must never mean losing the ability to unshare.
 
 Reading a doc requires nothing. Serving responses never set a cookie.
+
+## The approval page
+
+`/approve` on the API host is where a person creates an OpenArtifacts account,
+by proving an email address with Google or GitHub and approving a device code
+their terminal is waiting on. **A client never calls it and never parses it**:
+every response is an HTML page for a human, not the JSON envelope below, and its
+paths are not part of the contract a client is written against. It is documented
+here only so nothing mistakes it for an API route.
+
+```http
+GET  /approve?user_code=…          the page that offers the providers
+POST /approve/start/{provider}     redirects to the provider
+GET  /approve/callback/{provider}  where the provider redirects back
+POST /approve/confirm              the press that approves the code
+```
+
+Three consequences worth stating, because all three are promises made elsewhere:
+
+- **Nothing under `/api/v1` changes.** The approval paths are additive and sit
+  outside that prefix, so every response a license-key caller receives is exactly
+  what it was.
+- **This Worker sets no cookie, anywhere.** The OAuth handshake is kept on the
+  device code's own row rather than in the browser, so the serving origin's
+  cookieless guarantee is a property of the whole Worker rather than of one host.
+- **Proving an identity and approving a device are two steps.** The provider's
+  redirect back is a `GET`, and it only ever renders a confirmation; the approval
+  is a `POST` a person presses. RFC 8628 §5.4 is why: a `GET` that completed an
+  approval could be caused by a link, and a visitor already signed in to their
+  provider would pass through it without a prompt.
+
+A deployment that configures no OAuth client answers `/approve` with a page
+saying so. Nothing else about it changes: documents keep serving and license-key
+publishing keeps working.
 
 ## Endpoints
 
