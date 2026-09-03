@@ -1,4 +1,5 @@
 import { deleteDoc, listDocs } from "./api/manage.js";
+import { APPROVAL_PREFIX, handleApproval } from "./approval/handler.js";
 import { createDoc, updateDoc } from "./api/push.js";
 import {
   authenticateRequest,
@@ -82,6 +83,9 @@ export function resolveSurface(hostname: string, pathname: string, config: Surfa
   if (hostsAreConfigured(config)) return "unknown";
 
   if (pathIsUnder(pathname, API_PREFIX)) return "api";
+  // The approval page shares the API host in production; locally it shares the
+  // API surface's path fallback, so `wrangler dev` can serve it too.
+  if (pathIsUnder(pathname, APPROVAL_PREFIX)) return "api";
   if (pathIsUnder(pathname, SERVING_PREFIX)) return "serving";
   return "unknown";
 }
@@ -194,6 +198,13 @@ export default {
       // handle it, which fails the whole test run.
       switch (surface) {
         case "api":
+          // Before `handleApi`, because approval is the one thing on this host
+          // a person reaches with a browser and no credential — authenticating
+          // it would answer a human with `401` JSON. It is not under
+          // `/api/v1`, so nothing in the frozen contract moves.
+          if (pathIsUnder(url.pathname, APPROVAL_PREFIX)) {
+            return await handleApproval(request, url, env);
+          }
           return await handleApi(request, url, env);
         case "serving":
           return await handleServing(request, url, env);
