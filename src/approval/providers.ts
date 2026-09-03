@@ -74,9 +74,9 @@ export function configuredProviders(env: Env): ProviderId[] {
   return PROVIDER_IDS.filter((provider) => credentialsFor(provider, env) !== null);
 }
 
-/** Whether approval can run at all: at least one provider, and a cookie to sign. */
+/** Whether approval can run at all, which is to say: is there a provider. */
 export function approvalIsConfigured(env: Env): boolean {
-  return configuredProviders(env).length > 0 && Boolean(env.APPROVAL_COOKIE_SECRET?.trim());
+  return configuredProviders(env).length > 0;
 }
 
 /**

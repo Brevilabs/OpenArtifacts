@@ -1,12 +1,6 @@
 import { createExecutionContext, env, waitOnExecutionContext } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Env } from "../src/config.js";
-import { APPROVAL_STATE_TTL_MS } from "../src/config.js";
-import {
-  clearApprovalCookie,
-  openApprovalCookie,
-  sealApprovalCookie,
-} from "../src/approval/cookie.js";
 import { handleApproval, normalizeUserCode } from "../src/approval/handler.js";
 import type { OAuthClient, ProviderId } from "../src/approval/providers.js";
 import { ACCOUNT_ID_PREFIX } from "../src/ids.js";
@@ -28,7 +22,6 @@ const NOW = Date.now();
  */
 const ORIGIN = "https://openartifacts.workers.dev";
 
-const SECRET = "cookie-signing-key-for-tests";
 const USER_CODE = "WDJB-MJHT";
 
 const configured = (over: Partial<Env> = {}): Env =>
@@ -42,7 +35,6 @@ const configured = (over: Partial<Env> = {}): Env =>
     OAUTH_GOOGLE_CLIENT_SECRET: "google-secret",
     OAUTH_GITHUB_CLIENT_ID: "github-client",
     OAUTH_GITHUB_CLIENT_SECRET: "github-secret",
-    APPROVAL_COOKIE_SECRET: SECRET,
     ...over,
   }) as Env;
 
@@ -55,6 +47,11 @@ async function send(path: string, init: RequestInit = {}, over: Partial<Env> = {
   );
   await waitOnExecutionContext(ctx);
   return response;
+}
+
+/** A form submission, as the chooser's and the confirm page's buttons make one. */
+function post(path: string, fields: Record<string, string>, over: Partial<Env> = {}) {
+  return send(path, { method: "POST", body: new URLSearchParams(fields) }, over);
 }
 
 /** The callback reaches the network in production, so its client is replaced. */
@@ -80,43 +77,50 @@ async function seedCode(userCode = USER_CODE, expiresAt = NOW + 60_000): Promise
     .run();
 }
 
-async function boundAccount(userCode = USER_CODE): Promise<string | null> {
-  const row = await env.DB.prepare("SELECT account_id FROM device_codes WHERE user_code = ?")
+async function readCode(userCode = USER_CODE) {
+  return await env.DB.prepare(
+    "SELECT provider, state, verifier, account_id, approved_at FROM device_codes WHERE user_code = ?",
+  )
     .bind(userCode)
-    .first<{ account_id: string | null }>();
-  return row?.account_id ?? null;
+    .first<{
+      provider: string | null;
+      state: string | null;
+      verifier: string | null;
+      account_id: string | null;
+      approved_at: number | null;
+    }>();
 }
 
-/** A callback request carrying a handshake this test started. */
+async function accountCount(): Promise<number> {
+  const row = await env.DB.prepare("SELECT COUNT(*) AS n FROM accounts").first<{ n: number }>();
+  return row?.n ?? 0;
+}
+
+/** The `state` a started handshake left on the row, which is what a callback carries. */
+async function startedState(userCode = USER_CODE): Promise<string> {
+  return (await readCode(userCode))?.state ?? "";
+}
+
+/** Start a handshake the way the chooser's button does. */
+function begin(provider: ProviderId = "google", userCode = USER_CODE): Promise<Response> {
+  return post(`/approve/start/${provider}`, { user_code: userCode });
+}
+
+/**
+ * The provider's redirect back, driven through the handler rather than the
+ * router so the token exchange is stubbed instead of reaching Google.
+ */
 async function callback(
   options: {
     provider?: ProviderId;
-    cookieProvider?: ProviderId;
-    userCode?: string;
+    state?: string;
     query?: Record<string, string>;
-    cookie?: string | null;
-    startedAt?: number;
     oauth?: OAuthClient;
     at?: number;
   } = {},
 ): Promise<Response> {
   const provider = options.provider ?? "google";
-  const state = "state-token";
-  const cookie =
-    options.cookie === undefined
-      ? (
-          await sealApprovalCookie(
-            {
-              provider: options.cookieProvider ?? provider,
-              state,
-              verifier: "verifier-token",
-              userCode: options.userCode ?? USER_CODE,
-            },
-            SECRET,
-            options.startedAt ?? NOW,
-          )
-        ).split(";")[0] ?? ""
-      : options.cookie;
+  const state = options.state ?? (await startedState());
 
   // An empty override drops the parameter, which is how the cancel case gets a
   // callback carrying `error` and no `code`.
@@ -125,15 +129,32 @@ async function callback(
     if (value === "") query.delete(key);
     else query.set(key, value);
   }
-  const url = new URL(`${ORIGIN}/approve/callback/${provider}?${query}`);
-  const request = new Request(url, {
-    headers: cookie === null ? {} : { cookie },
-  });
 
-  return await handleApproval(request, url, configured(), {
+  const url = new URL(`${ORIGIN}/approve/callback/${provider}?${query}`);
+  return await handleApproval(new Request(url), url, configured(), {
     now: () => options.at ?? NOW,
     oauth: options.oauth ?? oauthAnswering("ada@example.com"),
   });
+}
+
+/** The `state` the confirm form on a rendered callback page carries. */
+function confirmState(html: string): string {
+  return /name="state" value="([^"]+)"/.exec(html)?.[1] ?? "";
+}
+
+/** The whole flow: start, prove, press. Returns the page the press produced. */
+async function approve(
+  provider: ProviderId = "google",
+  userCode = USER_CODE,
+  email = "ada@example.com",
+): Promise<Response> {
+  await begin(provider, userCode);
+  const proven = await callback({
+    provider,
+    state: await startedState(userCode),
+    oauth: oauthAnswering(email),
+  });
+  return await post("/approve/confirm", { state: confirmState(await proven.text()) });
 }
 
 beforeEach(async () => {
@@ -155,85 +176,6 @@ describe("normalizeUserCode", () => {
   });
 });
 
-describe("the approval state cookie", () => {
-  it("round-trips a handshake it signed itself", async () => {
-    const header = await sealApprovalCookie(
-      { provider: "github", state: "s", verifier: "v", userCode: USER_CODE },
-      SECRET,
-      NOW,
-    );
-    const value = header.split(";")[0] ?? "";
-
-    expect(await openApprovalCookie(value, SECRET, NOW)).toEqual({
-      provider: "github",
-      state: "s",
-      verifier: "v",
-      userCode: USER_CODE,
-      expiresAt: NOW + APPROVAL_STATE_TTL_MS,
-    });
-  });
-
-  it("carries the attributes that keep it off the serving origin and out of scripts", async () => {
-    const header = await sealApprovalCookie(
-      { provider: "google", state: "s", verifier: "v", userCode: USER_CODE },
-      SECRET,
-      NOW,
-    );
-
-    expect(header).toContain("Path=/approve");
-    expect(header).toContain("HttpOnly");
-    expect(header).toContain("Secure");
-    // Lax, never Strict: the provider's redirect back is a cross-site
-    // navigation, and Strict would strip the cookie the callback needs.
-    expect(header).toContain("SameSite=Lax");
-    expect(header).toContain(`Max-Age=${APPROVAL_STATE_TTL_MS / 1000}`);
-  });
-
-  it("refuses a handshake past its own expiry even when the browser kept it", async () => {
-    const header = await sealApprovalCookie(
-      { provider: "google", state: "s", verifier: "v", userCode: USER_CODE },
-      SECRET,
-      NOW,
-    );
-    const value = header.split(";")[0] ?? "";
-
-    expect(await openApprovalCookie(value, SECRET, NOW + APPROVAL_STATE_TTL_MS)).toBeNull();
-  });
-
-  it("refuses a forged or tampered cookie", async () => {
-    const header = await sealApprovalCookie(
-      { provider: "google", state: "s", verifier: "v", userCode: USER_CODE },
-      SECRET,
-      NOW,
-    );
-    const value = header.split(";")[0] ?? "";
-    const [name, sealed = ""] = value.split("=");
-    const [body = "", signature = ""] = sealed.split(".");
-
-    // Another deployment's key, an unsigned payload, and a payload edited to
-    // name a different device code, all with the signature left alone.
-    expect(await openApprovalCookie(value, "another-secret", NOW)).toBeNull();
-    expect(await openApprovalCookie(`${name}=${body}`, SECRET, NOW)).toBeNull();
-    const forged = btoa(JSON.stringify({ p: "google", s: "s", v: "v", u: "OTHER", e: NOW + 1 }))
-      .replace(/\+/g, "-")
-      .replace(/\//g, "_")
-      .replace(/=+$/, "");
-    expect(await openApprovalCookie(`${name}=${forged}.${signature}`, SECRET, NOW)).toBeNull();
-  });
-
-  it("has nothing to open when the request carries other cookies or none", async () => {
-    expect(await openApprovalCookie(null, SECRET, NOW)).toBeNull();
-    expect(await openApprovalCookie("other=1; unrelated=2", SECRET, NOW)).toBeNull();
-    expect(await openApprovalCookie("oa_approval=junk", SECRET, NOW)).toBeNull();
-  });
-
-  it("clears with the same attributes it was set with, so the browser drops it", () => {
-    const header = clearApprovalCookie();
-    expect(header).toContain("Path=/approve");
-    expect(header).toContain("Max-Age=0");
-  });
-});
-
 describe("GET /approve", () => {
   it("offers every configured provider for a code that is waiting", async () => {
     const response = await send(`/approve?user_code=${USER_CODE}`);
@@ -244,9 +186,22 @@ describe("GET /approve", () => {
     expect(html).toContain("Continue with Google");
     expect(html).toContain("Continue with GitHub");
     expect(html).toContain(`>${USER_CODE}</div>`);
-    expect(html).toContain(`/approve/start/google?user_code=${USER_CODE}`);
-    // Nothing is decided yet, so nothing is remembered yet.
     expect(response.headers.has("set-cookie")).toBe(false);
+  });
+
+  /**
+   * A link that starts a handshake carries a visitor already signed in to their
+   * provider through it with no prompt, landing them on a confirmation they
+   * never asked for. That is the first half of RFC 8628 §5.4's phishing case,
+   * so the only way to start one is a form the person submits.
+   */
+  it("starts a handshake from a form, never from a link", async () => {
+    const html = await (await send(`/approve?user_code=${USER_CODE}`)).text();
+
+    expect(html).toContain('<form method="post" action="/approve/start/google">');
+    expect(html).toContain(`name="user_code" value="${USER_CODE}"`);
+    expect(html).not.toContain('href="/approve/start');
+    expect((await send(`/approve/start/google?user_code=${USER_CODE}`)).status).toBe(404);
   });
 
   it("offers only the provider a half-configured deployment can actually finish", async () => {
@@ -286,11 +241,6 @@ describe("GET /approve", () => {
     expect(await response.text()).toContain("no sign-in provider configured");
   });
 
-  it("is unavailable when there is no key to sign the handshake with", async () => {
-    const response = await send(`/approve?user_code=${USER_CODE}`, {}, { APPROVAL_COOKIE_SECRET: "" });
-    expect(response.status).toBe(503);
-  });
-
   it("escapes the code it echoes back rather than reflecting markup", async () => {
     // Shape-refused before it is echoed, which is the property that matters:
     // nothing that reaches the page can carry markup in the first place.
@@ -299,11 +249,11 @@ describe("GET /approve", () => {
   });
 });
 
-describe("GET /approve/start/{provider}", () => {
-  it("sends the browser to Google with PKCE and remembers the handshake", async () => {
-    const response = await send(`/approve/start/google?user_code=${USER_CODE}`);
+describe("POST /approve/start/{provider}", () => {
+  it("sends the browser to Google with PKCE and records the handshake on the code", async () => {
+    const response = await begin("google");
 
-    expect(response.status).toBe(302);
+    expect(response.status).toBe(303);
     const target = new URL(response.headers.get("location") ?? "");
     expect(target.host).toBe("accounts.google.com");
     expect(target.searchParams.get("code_challenge_method")).toBe("S256");
@@ -311,78 +261,93 @@ describe("GET /approve/start/{provider}", () => {
     expect(target.searchParams.get("redirect_uri")).toBe(`${ORIGIN}/approve/callback/google`);
     expect(target.searchParams.get("scope")).toBe("openid email");
 
-    const cookie = response.headers.get("set-cookie") ?? "";
-    const handshake = await openApprovalCookie(cookie.split(";")[0] ?? "", SECRET, NOW);
-    expect(handshake?.provider).toBe("google");
-    expect(handshake?.userCode).toBe(USER_CODE);
-    expect(handshake?.state).toBe(target.searchParams.get("state"));
+    const row = await readCode();
+    expect(row?.provider).toBe("google");
+    expect(row?.state).toBe(target.searchParams.get("state"));
+    expect(row?.verifier).toBeTruthy();
+    // Starting is not approving, and the row must not read as though it were.
+    expect(row?.approved_at).toBeNull();
+    expect(row?.account_id).toBeNull();
+    // Nothing is remembered in the browser, on this response or any other.
+    expect(response.headers.has("set-cookie")).toBe(false);
   });
 
   it("sends the browser to GitHub asking only for its email scope", async () => {
-    const response = await send(`/approve/start/github?user_code=${USER_CODE}`);
-    const target = new URL(response.headers.get("location") ?? "");
+    const target = new URL((await begin("github")).headers.get("location") ?? "");
 
     expect(target.host).toBe("github.com");
     expect(target.searchParams.get("scope")).toBe("user:email");
     expect(target.searchParams.get("redirect_uri")).toBe(`${ORIGIN}/approve/callback/github`);
-    expect(response.headers.get("set-cookie")).toContain("HttpOnly");
+    expect((await readCode())?.provider).toBe("github");
   });
 
   it("mints a different state and verifier for every handshake", async () => {
-    const first = await send(`/approve/start/google?user_code=${USER_CODE}`);
-    const second = await send(`/approve/start/google?user_code=${USER_CODE}`);
+    await begin();
+    const first = await readCode();
+    await begin();
+    const second = await readCode();
 
-    expect(first.headers.get("set-cookie")).not.toBe(second.headers.get("set-cookie"));
+    expect(second?.state).not.toBe(first?.state);
+    expect(second?.verifier).not.toBe(first?.verifier);
   });
 
-  it("has no page for a provider this deployment cannot use", async () => {
-    expect((await send(`/approve/start/gitlab?user_code=${USER_CODE}`)).status).toBe(404);
+  it("has no route for a provider this deployment cannot use", async () => {
+    expect((await post("/approve/start/gitlab", { user_code: USER_CODE })).status).toBe(404);
     expect(
       (
-        await send(`/approve/start/github?user_code=${USER_CODE}`, {}, { OAUTH_GITHUB_CLIENT_ID: "" })
+        await post("/approve/start/github", { user_code: USER_CODE }, { OAUTH_GITHUB_CLIENT_ID: "" })
       ).status,
     ).toBe(404);
   });
 
-  it("starts nothing without a code to approve", async () => {
-    const response = await send("/approve/start/google");
-    expect(response.status).toBe(400);
-    expect(response.headers.has("set-cookie")).toBe(false);
+  it("starts nothing without a code, or with one that is no longer waiting", async () => {
+    expect((await post("/approve/start/google", {})).status).toBe(400);
+
+    await seedCode("EXPIRED-2", NOW - 1);
+    expect((await post("/approve/start/google", { user_code: "EXPIRED-2" })).status).toBe(404);
   });
 });
 
 describe("GET /approve/callback/{provider}", () => {
-  it("creates the account, binds the code, and keeps no session", async () => {
+  beforeEach(async () => {
+    await begin();
+  });
+
+  /**
+   * The whole of RFC 8628 §5.4: the provider's redirect is a `GET` a link can
+   * cause, and a visitor already signed in is carried through it with no
+   * prompt, so it must not be able to finish an approval on its own.
+   */
+  it("approves nothing on its own, however the redirect was caused", async () => {
     const response = await callback();
 
     expect(response.status).toBe(200);
-    expect(await response.text()).toContain("You’re signed in.");
-    // The only cookie this flow ever sets is the one it now removes.
-    expect(response.headers.get("set-cookie")).toContain("Max-Age=0");
+    const html = await response.text();
+    expect(html).toContain("Approve this code?");
+    expect(html).toContain("ada@example.com");
+    expect(html).toContain(`>${USER_CODE}</div>`);
 
-    const owner = await boundAccount();
-    expect(owner?.startsWith(ACCOUNT_ID_PREFIX)).toBe(true);
+    const row = await readCode();
+    expect(row?.account_id?.startsWith(ACCOUNT_ID_PREFIX)).toBe(true);
+    // The identity is proven and the code is not approved. #57 polls the second.
+    expect(row?.approved_at).toBeNull();
+  });
+
+  it("creates the account for the address the provider verified", async () => {
+    await callback();
 
     const account = await env.DB.prepare("SELECT email FROM accounts WHERE id = ?")
-      .bind(owner)
+      .bind((await readCode())?.account_id)
       .first<{ email: string }>();
     expect(account?.email).toBe("ada@example.com");
   });
 
-  it("resolves Google and GitHub on one verified address to a single account", async () => {
-    await callback({ provider: "google" });
-    const first = await boundAccount();
+  it("spends the verifier, so a reloaded callback cannot repeat the exchange", async () => {
+    const state = await startedState();
+    await callback({ state });
+    expect((await readCode())?.verifier).toBeNull();
 
-    await seedCode("SECOND-CODE");
-    await callback({
-      provider: "github",
-      userCode: "SECOND-CODE",
-      oauth: oauthAnswering("Ada@Example.com"),
-    });
-
-    expect(await boundAccount("SECOND-CODE")).toBe(first);
-    const rows = await env.DB.prepare("SELECT COUNT(*) AS n FROM accounts").first<{ n: number }>();
-    expect(rows?.n).toBe(1);
+    expect((await callback({ state })).status).toBe(400);
   });
 
   it("refuses an address the provider will not vouch for, creating nothing", async () => {
@@ -392,75 +357,129 @@ describe("GET /approve/callback/{provider}", () => {
     expect(response.status).toBe(400);
     expect(await response.text()).toContain("did not confirm");
     expect(oauth.calls).toBe(1);
-    expect(await boundAccount()).toBeNull();
-    const rows = await env.DB.prepare("SELECT COUNT(*) AS n FROM accounts").first<{ n: number }>();
-    expect(rows?.n).toBe(0);
+    expect((await readCode())?.account_id).toBeNull();
+    expect(await accountCount()).toBe(0);
   });
 
-  it("refuses a callback whose state does not match the handshake it claims", async () => {
-    const oauth = oauthAnswering("ada@example.com");
-    const response = await callback({ query: { state: "someone-elses-state" }, oauth });
+  it("refuses a state that names no pending handshake", async () => {
+    const oauth = oauthAnswering("mallory@example.com");
+    const response = await callback({ state: "not-a-state-we-issued", oauth });
 
     expect(response.status).toBe(400);
-    // Refused before the code is ever exchanged.
+    // Refused before the authorization code is ever exchanged.
     expect(oauth.calls).toBe(0);
-    expect(await boundAccount()).toBeNull();
+    expect((await readCode())?.account_id).toBeNull();
   });
 
-  it("refuses a callback with no handshake cookie at all", async () => {
-    const response = await callback({ cookie: null });
+  it("refuses a handshake replayed at the other provider's callback", async () => {
+    const response = await callback({ provider: "github" });
 
     expect(response.status).toBe(400);
-    expect(await response.text()).toContain("That took too long.");
-    expect(await boundAccount()).toBeNull();
+    expect((await readCode())?.account_id).toBeNull();
   });
 
-  it("refuses a handshake replayed at another provider's callback", async () => {
-    const response = await callback({ provider: "github", cookieProvider: "google" });
+  it("refuses a handshake whose code expired while the user was signing in", async () => {
+    await env.DB.prepare("UPDATE device_codes SET expires_at = ? WHERE user_code = ?")
+      .bind(NOW - 1, USER_CODE)
+      .run();
 
-    expect(response.status).toBe(400);
-    expect(await boundAccount()).toBeNull();
-  });
-
-  it("refuses a handshake that sat past the state cookie's lifetime", async () => {
-    const response = await callback({ at: NOW + APPROVAL_STATE_TTL_MS + 1 });
-
-    expect(response.status).toBe(400);
-    expect(await boundAccount()).toBeNull();
+    expect((await callback()).status).toBe(400);
   });
 
   it("says nothing was approved when the user cancelled at the provider", async () => {
     const oauth = oauthAnswering("ada@example.com");
-    const response = await callback({
-      query: { code: "", error: "access_denied" },
-      oauth,
-    });
+    const response = await callback({ query: { code: "", error: "access_denied" }, oauth });
 
     expect(response.status).toBe(400);
     expect(await response.text()).toContain("Nothing was approved.");
     expect(oauth.calls).toBe(0);
-    expect(await boundAccount()).toBeNull();
+    expect((await readCode())?.account_id).toBeNull();
+  });
+});
+
+describe("POST /approve/confirm", () => {
+  it("is the step that actually approves the code", async () => {
+    const response = await approve();
+
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain("Approved.");
+    expect(html).toContain(`>${USER_CODE}</div>`);
+
+    const row = await readCode();
+    // Stamped by the Worker's own clock, which the router gives no seam for.
+    expect(row?.approved_at).toBeGreaterThanOrEqual(NOW);
+    expect(row?.account_id?.startsWith(ACCOUNT_ID_PREFIX)).toBe(true);
+    // Cleared, so the press cannot be replayed and no state stays addressable.
+    expect(row?.state).toBeNull();
+    expect(response.headers.has("set-cookie")).toBe(false);
   });
 
-  it("tells the user the code lapsed while they were signing in", async () => {
-    await seedCode(USER_CODE, NOW - 1);
-    const response = await callback();
-
-    expect(response.status).toBe(404);
-    expect(await response.text()).toContain("no longer waiting");
-    // The account is kept: it is the one their next approval will find.
-    const rows = await env.DB.prepare("SELECT COUNT(*) AS n FROM accounts").first<{ n: number }>();
-    expect(rows?.n).toBe(1);
-  });
-
-  it("cannot approve a second time with the same device code", async () => {
+  /**
+   * The hidden `state` is the only thing a cross-site form cannot supply, which
+   * is what stops a page an attacker controls from pressing this button for a
+   * victim who has just proved their identity.
+   */
+  it("refuses a press that cannot name the handshake it is confirming", async () => {
+    await begin();
     await callback();
-    const owner = await boundAccount();
 
-    const again = await callback({ oauth: oauthAnswering("mallory@example.com") });
+    expect((await post("/approve/confirm", {})).status).toBe(400);
+    expect((await post("/approve/confirm", { state: "guessed" })).status).toBe(400);
+    expect((await readCode())?.approved_at).toBeNull();
+  });
 
-    expect(again.status).toBe(404);
-    expect(await boundAccount()).toBe(owner);
+  it("refuses a press for a handshake whose identity was never proved", async () => {
+    await begin();
+
+    const response = await post("/approve/confirm", { state: await startedState() });
+
+    expect(response.status).toBe(400);
+    expect((await readCode())?.approved_at).toBeNull();
+  });
+
+  it("cannot be pressed twice", async () => {
+    await begin();
+    const state = confirmState(await (await callback()).text());
+
+    expect((await post("/approve/confirm", { state })).status).toBe(200);
+    const approvedAt = (await readCode())?.approved_at;
+
+    expect((await post("/approve/confirm", { state })).status).toBe(400);
+    expect((await readCode())?.approved_at).toBe(approvedAt);
+  });
+
+  it("refuses a press for a code that expired while the page was open", async () => {
+    await begin();
+    const state = confirmState(await (await callback()).text());
+    await env.DB.prepare("UPDATE device_codes SET expires_at = ? WHERE user_code = ?")
+      .bind(NOW - 1, USER_CODE)
+      .run();
+
+    expect((await post("/approve/confirm", { state })).status).toBe(400);
+    expect((await readCode())?.approved_at).toBeNull();
+  });
+});
+
+describe("approving more than once", () => {
+  it("resolves Google and GitHub on one verified address to a single account", async () => {
+    await approve("google", USER_CODE, "ada@example.com");
+    const first = (await readCode())?.account_id;
+
+    await seedCode("SECOND-CODE");
+    await approve("github", "SECOND-CODE", "Ada@Example.com");
+
+    expect((await readCode("SECOND-CODE"))?.account_id).toBe(first);
+    expect(await accountCount()).toBe(1);
+  });
+
+  it("cannot reuse a device code once it is approved", async () => {
+    await approve();
+    const owner = (await readCode())?.account_id;
+
+    expect((await post("/approve/start/google", { user_code: USER_CODE })).status).toBe(404);
+    expect((await send(`/approve?user_code=${USER_CODE}`)).status).toBe(404);
+    expect((await readCode())?.account_id).toBe(owner);
   });
 });
 
@@ -488,13 +507,14 @@ describe("the approval surface inside the router", () => {
 
     expect(response.status).toBe(404);
     expect(await response.text()).toContain("This document isn’t available.");
-    expect(response.headers.has("set-cookie")).toBe(false);
   });
 
-  it("has no page for another method or a path under the prefix that no route claims", async () => {
-    expect((await send(`/approve?user_code=${USER_CODE}`, { method: "POST" })).status).toBe(404);
+  it("answers each route on its own method and nothing else", async () => {
+    expect((await post("/approve", { user_code: USER_CODE })).status).toBe(404);
+    expect((await send("/approve/confirm")).status).toBe(404);
+    expect((await post("/approve/callback/google", {})).status).toBe(404);
     expect((await send("/approve/start")).status).toBe(404);
-    expect((await send("/approve/start/google/extra")).status).toBe(404);
+    expect((await post("/approve/start/google/extra", {})).status).toBe(404);
   });
 });
 
@@ -520,10 +540,10 @@ describe("the serving origin", () => {
   });
 
   /**
-   * The property the approval cookie is confined for: publishers' own scripts
-   * run on this origin, and they may only do so while there is nothing on it
-   * for them to steal. `docs/http-api.md` promises it, so it is asserted rather
-   * than assumed now that this Worker sets a cookie anywhere at all.
+   * Publishers' own scripts run on this origin, and they may only do so while
+   * there is nothing on it for them to steal. `docs/http-api.md` promises it,
+   * and approval keeps its handshake in the database rather than a cookie so
+   * the promise stays an absolute rather than a per-host argument.
    */
   it("sets no cookie on any response it gives a reader", async () => {
     const serving = { SERVING_HOST: "openartifacts.workers.dev", API_HOST: "api.openartifacts.ai" };

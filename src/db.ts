@@ -71,22 +71,32 @@ export interface AccountRow {
 }
 
 /**
- * A device code the CLI is polling, as the approval page needs it.
+ * A device code the CLI is polling, and the OAuth handshake proving who is
+ * approving it.
  *
  * **#57 owns the device flow and extends this table.** The columns here are
- * only the ones approval binds; the device code itself, its token and the
- * machine label belong to that issue.
+ * only the ones approval reads and writes; the device code itself, its token
+ * and the machine label belong to that issue.
  */
 export interface DeviceCodeRow {
   /** Uppercase, as `normalizeUserCode` folds it. */
   user_code: string;
-  /** The approving account, and null while the code is pending. */
+  /** The provider of the handshake in flight, and null between handshakes. */
+  provider: string | null;
+  /** The OAuth `state` of the handshake in flight; cleared once confirmed. */
+  state: string | null;
+  /** The PKCE verifier of the handshake in flight; cleared once spent. */
+  verifier: string | null;
+  /** The account a completed handshake proved, before anyone approved it. */
   account_id: string | null;
-  /** Epoch ms of the approval, and null while pending. */
+  /** Epoch ms of the human's approval, and null until it is given. */
   approved_at: number | null;
   expires_at: number;
   created_at: number;
 }
+
+/** The half of a pending handshake the callback needs to finish it. */
+export type PendingHandshake = Pick<DeviceCodeRow, "user_code" | "provider" | "verifier">;
 
 /**
  * The publisher row as auth needs it: read the cached validation, write it back
@@ -565,36 +575,127 @@ export async function deviceCodeIsPending(
 }
 
 /**
- * Bind an account to the device code it approved, returning false when there is
- * no pending code to bind.
+ * Record an OAuth handshake against the code it is meant to approve, returning
+ * false when there is no pending code to record it against.
  *
- * **This one write is the whole contract between the approval page and the
- * device flow (#57).** Everything else about a code — how it is minted, what
- * the CLI polls with, what token the approval eventually mints — is that
- * issue's, and it can grow this statement's `SET` list without the page
- * changing.
+ * This is where a signed cookie would otherwise be minted. Keeping the handshake
+ * in the row instead is what lets this Worker set no cookie anywhere, and it
+ * costs nothing: the browser is not the thing being authorized, so it has
+ * nothing to remember between the three requests.
  *
- * Unknown, expired and already-approved are conflated into one false, and the
- * predicates ride on the write rather than an earlier read: two approvals of
- * one code produce exactly one true, so a code can never be bound to two
- * accounts and the second person is told the code is spent rather than silently
- * taking over the first person's terminal.
+ * Starting a second handshake overwrites the first, which is what a person
+ * pressing the other provider's button means. Only one can ever be finished,
+ * because only the surviving `state` can be looked up.
  */
-export async function approveDeviceCode(
+export async function startDeviceHandshake(
   db: D1Database,
   userCode: string,
-  accountId: string,
-  atMs: number,
+  provider: string,
+  state: string,
+  verifier: string,
+  nowMs: number,
 ): Promise<boolean> {
-  const approved = await db
+  const started = await db
     .prepare(
       `UPDATE device_codes
-          SET account_id = ?, approved_at = ?
+          SET provider = ?, state = ?, verifier = ?
         WHERE user_code = ? AND approved_at IS NULL AND expires_at > ?
         RETURNING user_code`,
     )
-    .bind(accountId, atMs, userCode, atMs)
+    .bind(provider, state, verifier, userCode, nowMs)
     .first<{ user_code: string }>();
 
-  return approved !== null;
+  return started !== null;
+}
+
+/**
+ * Find the handshake a provider's redirect is answering.
+ *
+ * The `state` is the only thing that request carries, which is why it is the
+ * lookup key rather than a value compared after one: the callback does not know
+ * which device code it belongs to until this row answers. 256 random bits and a
+ * unique index make that a safe key, and the confirm write clears it, so a state
+ * names a handshake for as long as the handshake lasts and no longer.
+ */
+export async function findPendingHandshake(
+  db: D1Database,
+  state: string,
+  nowMs: number,
+): Promise<PendingHandshake | null> {
+  // `return await`: see the note on the router's catch in index.ts.
+  return await db
+    .prepare(
+      `SELECT user_code, provider, verifier FROM device_codes
+        WHERE state = ? AND approved_at IS NULL AND expires_at > ?`,
+    )
+    .bind(state, nowMs)
+    .first<PendingHandshake>();
+}
+
+/**
+ * Record whose email the handshake proved, without approving anything.
+ *
+ * The split between this and `confirmDeviceApproval` is the whole defence
+ * against device-code phishing (RFC 8628 §5.4). A provider's redirect back is a
+ * `GET` a link can cause, and a person already signed in to that provider is
+ * carried through it without a prompt — so if the redirect completed the
+ * approval, a link would be enough to attach somebody else's terminal to their
+ * account. Identity is proved here; the approval is a `POST` a person has to
+ * press, and until they do, `approved_at` is null and #57's poll sees nothing.
+ *
+ * The verifier is cleared because it is spent. `state` is not: the confirm form
+ * is about to carry it back.
+ */
+export async function holdProvenIdentity(
+  db: D1Database,
+  state: string,
+  accountId: string,
+  nowMs: number,
+): Promise<boolean> {
+  const held = await db
+    .prepare(
+      `UPDATE device_codes
+          SET account_id = ?, verifier = NULL
+        WHERE state = ? AND approved_at IS NULL AND expires_at > ?
+        RETURNING user_code`,
+    )
+    .bind(accountId, state, nowMs)
+    .first<{ user_code: string }>();
+
+  return held !== null;
+}
+
+/**
+ * Approve the device code a proven handshake belongs to, returning the code
+ * approved or null when there is nothing to approve.
+ *
+ * **This one write is the contract between the approval page and the device
+ * flow (#57).** `approved_at` moving from null is the whole signal that issue
+ * polls for, and it can grow this statement's `SET` list — minting the token,
+ * recording the machine label — without the page changing.
+ *
+ * Every reason to refuse is one null: no such state, an expired code, an
+ * identity never proven, or a confirm pressed twice. The predicates ride on the
+ * write rather than an earlier read, so two presses produce exactly one
+ * approval, and clearing `state` is what makes the second one find nothing.
+ */
+export async function confirmDeviceApproval(
+  db: D1Database,
+  state: string,
+  atMs: number,
+): Promise<string | null> {
+  const approved = await db
+    .prepare(
+      `UPDATE device_codes
+          SET approved_at = ?, state = NULL
+        WHERE state = ?
+          AND approved_at IS NULL
+          AND account_id IS NOT NULL
+          AND expires_at > ?
+        RETURNING user_code`,
+    )
+    .bind(atMs, state, atMs)
+    .first<{ user_code: string }>();
+
+  return approved?.user_code ?? null;
 }

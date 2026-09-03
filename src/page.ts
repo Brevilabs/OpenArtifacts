@@ -21,8 +21,9 @@ export interface BrandPage {
   heading: string;
   message: string;
   /**
-   * Raw HTML for what the reader can do next — a link, the provider buttons, or
-   * nothing. Already-escaped markup, never user input.
+   * Raw HTML for what the reader can do next — a link, or the forms whose
+   * buttons start and confirm an approval. Already-escaped markup, never raw
+   * user input.
    */
   actions?: string;
   /**
@@ -58,8 +59,9 @@ ${FAVICON_LINK}
   a:hover { color: #f9c47f; }
   .code { display: inline-block; margin-top: 1.5rem; padding: 0.75rem 1.25rem; border: 1px solid #20242c; border-radius: 0.75rem; background: #07080b; color: #f4f5f7; font-family: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace; font-size: 1.5rem; letter-spacing: 0.22em; }
   .actions { display: flex; flex-wrap: wrap; gap: 0.75rem; }
-  .actions a { margin-top: 2rem; padding: 0.85rem 1.5rem; border: 1px solid #2c313b; border-radius: 0.75rem; color: #f4f5f7; text-decoration: none; }
-  .actions a:hover { border-color: #f6ae52; color: #f9c47f; }
+  .actions form { display: contents; }
+  .actions a, .actions button { margin-top: 2rem; padding: 0.85rem 1.5rem; border: 1px solid #2c313b; border-radius: 0.75rem; background: none; color: #f4f5f7; font: inherit; font-weight: 600; text-decoration: none; cursor: pointer; }
+  .actions a:hover, .actions button:hover { border-color: #f6ae52; color: #f9c47f; }
 </style>
 </head>
 <body>

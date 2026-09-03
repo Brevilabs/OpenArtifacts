@@ -4,27 +4,42 @@
  *
  * There is no sign-up form, no sign-in page and no session. A CLI prints a url
  * carrying the device code it is waiting on (#57), the person opens it, proves
- * an email with Google or GitHub, and the approval binds that account to the
- * code. The first approval an address makes is the registration; every one
- * after it finds the same account. When the page is done, nothing about the
- * browser is remembered — the token the CLI receives is the credential from
- * then on, which is why there is nothing here for a session to be for.
+ * an email with Google or GitHub, and presses a button to approve. The first
+ * approval an address makes is the registration; every one after it finds the
+ * same account. When the page is done, nothing about the browser is remembered
+ * — the token the CLI receives is the credential from then on, which is why
+ * there is nothing here for a session to be for.
  *
- * It lives on the API host rather than the serving host, and that is a security
- * boundary rather than a routing preference. The serving origin runs
- * publishers' own scripts and must stay cookieless for that to be acceptable
- * (see `serve.ts`), so the one cookie this Worker sets — the signed handshake
- * state — is confined to the brand domain, where no uploaded script runs.
+ * **Proving who you are and approving a terminal are two steps, and the second
+ * is a `POST` a person presses.** RFC 8628 §5.4 is the reason. A provider's
+ * redirect back is a `GET` that a link can cause, and someone already signed in
+ * to that provider is carried straight through it with no prompt — so if the
+ * redirect completed the approval, sending a victim a link would be enough to
+ * attach an attacker's terminal to their account. Nothing this page does on a
+ * `GET` changes what a device code is worth.
+ *
+ * **It sets no cookie, on any surface.** The handshake's `state` and PKCE
+ * verifier live in the device code's own row, because the browser is not the
+ * thing being authorized and has nothing to remember between the three
+ * requests. That keeps the serving origin's cookieless promise an absolute
+ * rather than a host-by-host argument, which matters because publishers' own
+ * scripts run there.
  *
  * Every outcome is an HTML page, including the failures. The caller here is a
  * browser with a person behind it, not a client matching on an error code, so
  * `docs/http-api.md`'s JSON envelope would be the wrong answer to give them.
  */
 import { type Env } from "../config.js";
-import { approveDeviceCode, deviceCodeIsPending, findOrCreateAccount } from "../db.js";
-import { newAccountId } from "../ids.js";
+import {
+  confirmDeviceApproval,
+  deviceCodeIsPending,
+  findOrCreateAccount,
+  findPendingHandshake,
+  holdProvenIdentity,
+  startDeviceHandshake,
+} from "../db.js";
+import { newAccountId, newHandshakeToken } from "../ids.js";
 import { ABOUT_LINK, brandPageHtml, escapeHtml, type BrandPage } from "../page.js";
-import { clearApprovalCookie, openApprovalCookie, sealApprovalCookie } from "./cookie.js";
 import {
   approvalIsConfigured,
   arcticOAuthClient,
@@ -72,9 +87,17 @@ export function normalizeUserCode(raw: string | null): string | null {
 }
 
 /**
- * `GET /approve`, `GET /approve/start/{provider}` and
- * `GET /approve/callback/{provider}`. Anything else under the prefix is a 404
- * page.
+ * The four routes, and the one method each answers to:
+ *
+ * ```
+ * GET  /approve?user_code=…          the page that offers the providers
+ * POST /approve/start/{provider}     redirects to the provider
+ * GET  /approve/callback/{provider}  where the provider redirects back
+ * POST /approve/confirm              the press that approves the code
+ * ```
+ *
+ * The methods are the design rather than a convention. Only the two `POST`s
+ * change what a device code is worth, and neither can be caused by a link.
  *
  * @param url the request url, whose origin is also the redirect uri the
  *   providers are registered against — the router has already refused every
@@ -87,22 +110,25 @@ export async function handleApproval(
   env: Env,
   deps: ApprovalDeps = {},
 ): Promise<Response> {
-  // Nothing here changes state on the way *in* — the state change is the
-  // approval itself, and it happens on the provider's redirect back, which is a
-  // GET. A form POST would need its own CSRF token to protect what the signed
-  // cookie already protects.
-  if (request.method !== "GET") return page(NOT_FOUND, 404);
-
   const [section, provider, ...extra] = url.pathname
     .slice(APPROVAL_PREFIX.length)
     .split("/")
     .filter(Boolean);
 
   try {
-    if (section === undefined) return await chooser(url, env, deps);
+    if (section === undefined && request.method === "GET") {
+      return await chooser(url, env, deps);
+    }
+    if (section === "confirm" && provider === undefined && request.method === "POST") {
+      return await confirm(request, env, deps);
+    }
     if (extra.length === 0 && provider !== undefined) {
-      if (section === "start") return await begin(url, env, provider, deps);
-      if (section === "callback") return await finish(request, url, env, provider, deps);
+      if (section === "start" && request.method === "POST") {
+        return await begin(request, url, env, provider, deps);
+      }
+      if (section === "callback" && request.method === "GET") {
+        return await prove(url, env, provider, deps);
+      }
     }
     return page(NOT_FOUND, 404);
   } catch (error) {
@@ -130,69 +156,26 @@ async function chooser(url: URL, env: Env, deps: ApprovalDeps): Promise<Response
   // approval itself, which no amount of knowing a code performs.
   if (!(await deviceCodeIsPending(env.DB, userCode, now))) return page(CODE_GONE, 404);
 
+  // Forms rather than links, so no url can start a handshake. Starting one
+  // approves nothing by itself, but a link that carries a signed-in visitor
+  // through their provider and lands them on a confirmation they never asked
+  // for is the first half of the attack the confirm step exists to stop, and
+  // there is no reason to leave it lying around.
   const buttons = configuredProviders(env)
-    .map((provider) => {
-      const href = `${APPROVAL_PREFIX}/start/${provider}?${USER_CODE_PARAM}=${encodeURIComponent(userCode)}`;
-      return `<a href="${escapeHtml(href)}">Continue with ${PROVIDER_LABELS[provider]}</a>`;
-    })
+    .map((provider) =>
+      form(
+        `${APPROVAL_PREFIX}/start/${provider}`,
+        { [USER_CODE_PARAM]: userCode },
+        `Continue with ${PROVIDER_LABELS[provider]}`,
+      ),
+    )
     .join("\n    ");
 
-  return page(
-    {
-      ...CHOOSE,
-      detail: codeDetail(userCode),
-      actions: `<div class="actions">\n    ${buttons}\n  </div>`,
-    },
-    200,
-  );
+  return page({ ...CHOOSE, detail: codeDetail(userCode), actions: actions(buttons) }, 200);
 }
 
-/** Start a handshake: mint the state and PKCE verifier, and hand them a cookie. */
+/** Start a handshake: mint its state and verifier, and record them on the code. */
 async function begin(
-  url: URL,
-  env: Env,
-  provider: string,
-  deps: ApprovalDeps,
-): Promise<Response> {
-  if (!approvalIsConfigured(env)) return page(NOT_CONFIGURED, 503);
-
-  const secret = env.APPROVAL_COOKIE_SECRET?.trim();
-  const chosen = configuredProviders(env).find((id) => id === provider);
-  if (chosen === undefined || secret === undefined) return page(NOT_FOUND, 404);
-
-  const userCode = normalizeUserCode(url.searchParams.get(USER_CODE_PARAM));
-  if (userCode === null) return page(NO_CODE, 400);
-
-  const now = (deps.now ?? Date.now)();
-  const state = randomToken();
-  const verifier = randomToken();
-  const oauth = deps.oauth ?? arcticOAuthClient(env);
-  const target = oauth.authorizationUrl(chosen, redirectUri(url, chosen), state, verifier);
-
-  return new Response(null, {
-    status: 302,
-    headers: {
-      location: target.toString(),
-      "set-cookie": await sealApprovalCookie(
-        { provider: chosen, state, verifier, userCode },
-        secret,
-        now,
-      ),
-      "cache-control": "no-store",
-    },
-  });
-}
-
-/**
- * The provider's redirect back, which is where an account is created and a
- * device code is bound.
- *
- * Everything the request carries about the handshake is checked against the
- * cookie, never trusted on its own: the provider in the path, the `state`, and
- * the device code, which comes from the cookie rather than the query string
- * precisely so the code approved is the one the page was opened for.
- */
-async function finish(
   request: Request,
   url: URL,
   env: Env,
@@ -201,32 +184,70 @@ async function finish(
 ): Promise<Response> {
   if (!approvalIsConfigured(env)) return page(NOT_CONFIGURED, 503);
 
-  const secret = env.APPROVAL_COOKIE_SECRET?.trim();
-  if (secret === undefined) return page(NOT_CONFIGURED, 503);
+  const chosen = configuredProviders(env).find((id) => id === provider);
+  if (chosen === undefined) return page(NOT_FOUND, 404);
+
+  const submitted = await request.formData();
+  const userCode = normalizeUserCode(asString(submitted.get(USER_CODE_PARAM)));
+  if (userCode === null) return page(NO_CODE, 400);
 
   const now = (deps.now ?? Date.now)();
-  const handshake = await openApprovalCookie(request.headers.get("cookie"), secret, now);
-  // One page for a missing, forged, expired or mismatched handshake. They are
-  // the same thing to the person in front of it — start again — and separating
-  // them on screen would tell whoever forged one which half was wrong.
-  if (handshake === null || handshake.provider !== provider) {
-    return spent(EXPIRED, 400);
+  const state = newHandshakeToken();
+  const verifier = newHandshakeToken();
+  if (!(await startDeviceHandshake(env.DB, userCode, chosen, state, verifier, now))) {
+    return page(CODE_GONE, 404);
   }
 
+  const oauth = deps.oauth ?? arcticOAuthClient(env);
+  const target = oauth.authorizationUrl(chosen, redirectUri(url, chosen), state, verifier);
+
+  // 303, so the browser follows with a `GET`. After a `POST`, a 302 leaves the
+  // method to the browser, and the provider has no use for a re-posted body.
+  return new Response(null, {
+    status: 303,
+    headers: { location: target.toString(), "cache-control": "no-store" },
+  });
+}
+
+/**
+ * The provider's redirect back, where the email is proved and the account is
+ * created — and where nothing is approved.
+ *
+ * The `state` is the only thing this request carries that this page put there,
+ * so it is what the handshake is looked up by. The device code and the provider
+ * come out of that row rather than off the url, so neither can be swapped by
+ * whoever follows the link.
+ */
+async function prove(
+  url: URL,
+  env: Env,
+  provider: string,
+  deps: ApprovalDeps,
+): Promise<Response> {
+  if (!approvalIsConfigured(env)) return page(NOT_CONFIGURED, 503);
+
+  const now = (deps.now ?? Date.now)();
   const state = url.searchParams.get("state");
-  if (state === null || state !== handshake.state) return spent(EXPIRED, 400);
+  const handshake = state === null ? null : await findPendingHandshake(env.DB, state, now);
+  // One page for a missing, unknown, expired or mismatched handshake. They are
+  // the same thing to the person in front of it — start again — and separating
+  // them on screen would tell whoever guessed at one which half was wrong.
+  if (state === null || handshake === null || handshake.provider !== provider) {
+    return page(EXPIRED, 400);
+  }
 
   // A provider that sends `error` instead of `code` is almost always someone
   // pressing Cancel, and that deserves its own words rather than a failure.
   const code = url.searchParams.get("code");
-  if (code === null) {
-    return spent(url.searchParams.has("error") ? DECLINED : EXPIRED, 400);
-  }
+  if (code === null) return page(url.searchParams.has("error") ? DECLINED : EXPIRED, 400);
+  // Null once the handshake has been through here already, since the verifier is
+  // cleared when it is spent. Reloading a callback cannot repeat an exchange.
+  if (handshake.verifier === null) return page(EXPIRED, 400);
 
   const oauth = deps.oauth ?? arcticOAuthClient(env);
   const asserted = await oauth.verifiedEmail(
-    handshake.provider,
-    redirectUri(url, handshake.provider),
+    handshake.provider as ProviderId,
+    redirectUri(url, handshake.provider as ProviderId),
     code,
     handshake.verifier,
   );
@@ -240,20 +261,48 @@ async function finish(
   // eventually disagree, and disagreeing means one person with two shelves of
   // documents and no way to reunite them.
   const email = asserted === null ? null : normalizeEmail(asserted);
-  if (email === null) return spent(UNVERIFIED, 400);
+  if (email === null) return page(UNVERIFIED, 400);
 
   const account = await findOrCreateAccount(env.DB, newAccountId(), email, now);
 
-  // The binding is the last thing that happens, and it is a single conditional
-  // write. An account created a moment ago whose code has since expired is left
-  // behind on purpose: it costs one row, it is the same account the person's
-  // next approval will find, and undoing it would mean deleting an account that
-  // may already own documents.
-  if (!(await approveDeviceCode(env.DB, handshake.userCode, account.id, now))) {
-    return spent(CODE_GONE, 404);
+  // An account created a moment ago whose code has since expired is left behind
+  // on purpose: it costs one row, it is the same account the person's next
+  // approval will find, and undoing it would mean deleting an account that may
+  // already own documents.
+  if (!(await holdProvenIdentity(env.DB, state, account.id, now))) {
+    return page(CODE_GONE, 404);
   }
 
-  return spent({ ...APPROVED, detail: codeDetail(handshake.userCode) }, 200);
+  return page(
+    {
+      ...CONFIRM,
+      message: `You are signed in as ${escapeHtml(email)}. Approving lets that terminal publish as you until you revoke it. If you did not start this, close the page and nothing happens.`,
+      detail: codeDetail(handshake.user_code),
+      actions: actions(form(`${APPROVAL_PREFIX}/confirm`, { state }, "Approve this device")),
+    },
+    200,
+  );
+}
+
+/**
+ * The press that approves the code.
+ *
+ * The hidden `state` is what makes this safe without a token of its own: 256
+ * random bits that appear only on the page rendered to whoever completed the
+ * handshake, so a cross-site form cannot supply one. The write clears it, so
+ * the same press cannot be replayed.
+ */
+async function confirm(request: Request, env: Env, deps: ApprovalDeps): Promise<Response> {
+  if (!approvalIsConfigured(env)) return page(NOT_CONFIGURED, 503);
+
+  const submitted = await request.formData();
+  const state = asString(submitted.get("state"));
+  const now = (deps.now ?? Date.now)();
+
+  const userCode = state === null ? null : await confirmDeviceApproval(env.DB, state, now);
+  if (userCode === null) return page(EXPIRED, 400);
+
+  return page({ ...APPROVED, detail: codeDetail(userCode) }, 200);
 }
 
 /**
@@ -266,13 +315,24 @@ function redirectUri(url: URL, provider: ProviderId): string {
   return `${url.origin}${APPROVAL_PREFIX}/callback/${provider}`;
 }
 
-/** 256 bits, base64url, for both the CSRF `state` and the PKCE verifier. */
-function randomToken(): string {
-  const bytes = new Uint8Array(32);
-  crypto.getRandomValues(bytes);
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+/** `FormData.get` yields a `File` for a file part, which no field here ever is. */
+function asString(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
+
+/** A one-button form. Every value is escaped, and none of them is markup. */
+function form(action: string, fields: Record<string, string>, label: string): string {
+  const hidden = Object.entries(fields)
+    .map(
+      ([name, value]) =>
+        `<input type="hidden" name="${escapeHtml(name)}" value="${escapeHtml(value)}">`,
+    )
+    .join("");
+  return `<form method="post" action="${escapeHtml(action)}">${hidden}<button type="submit">${label}</button></form>`;
+}
+
+function actions(inner: string): string {
+  return `<div class="actions">\n    ${inner}\n  </div>`;
 }
 
 function codeDetail(userCode: string): string {
@@ -280,36 +340,30 @@ function codeDetail(userCode: string): string {
 }
 
 /** Every page is `no-store`: none of them is the same twice. */
-function page(copy: BrandPage, status: number, extra?: HeadersInit): Response {
+function page(copy: BrandPage, status: number): Response {
   return new Response(brandPageHtml(copy), {
     status,
-    headers: {
-      "content-type": "text/html; charset=utf-8",
-      "cache-control": "no-store",
-      ...extra,
-    },
+    headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
   });
-}
-
-/**
- * A page that also ends the handshake. Every outcome of the callback clears the
- * cookie, failures included — that is the path where someone is about to start
- * over, and carrying the old `state` into the new attempt would fail it.
- */
-function spent(copy: BrandPage, status: number): Response {
-  return page(copy, status, { "set-cookie": clearApprovalCookie() });
 }
 
 const CHOOSE: BrandPage = {
   title: "Approve a device",
   heading: "Approve this device.",
   message:
-    "Your terminal is waiting on the code below. Sign in to approve it. OpenArtifacts keeps only the verified email address your provider returns, and creates your account the first time you do this.",
+    "Your terminal is waiting on the code below. Sign in to continue. OpenArtifacts keeps only the verified email address your provider returns, and creates your account the first time you do this.",
+};
+
+const CONFIRM: BrandPage = {
+  title: "Confirm approval",
+  heading: "Approve this code?",
+  /** Always replaced with the address that was proved; never rendered as it is. */
+  message: "",
 };
 
 const APPROVED: BrandPage = {
   title: "Device approved",
-  heading: "You’re signed in.",
+  heading: "Approved.",
   message:
     "Your terminal is finishing up now, and you can close this page. It keeps the token from here on, so you will not be asked again on this machine.",
   actions: ABOUT_LINK,
@@ -335,7 +389,7 @@ const EXPIRED: BrandPage = {
   title: "Approval expired",
   heading: "That took too long.",
   message:
-    "This approval has to finish within a few minutes of starting. Open the link from your terminal again and sign in.",
+    "This approval has to finish before the code your terminal printed expires. Open the link from your terminal again and sign in.",
   actions: ABOUT_LINK,
 };
 

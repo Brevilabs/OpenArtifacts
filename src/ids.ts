@@ -92,3 +92,28 @@ export function newAccountId(): string {
   crypto.getRandomValues(bytes);
   return `${ACCOUNT_ID_PREFIX}${encodeBase32(bytes)}`;
 }
+
+/**
+ * Bytes of entropy in an approval handshake's `state` and PKCE verifier.
+ *
+ * 256 bits, because `state` is doing more work here than the usual CSRF nonce:
+ * it is the lookup key for the pending handshake *and* the token the confirm
+ * form carries, so guessing one would be enough to confirm somebody else's
+ * approval. It is never a capability that outlives the handshake — the confirm
+ * write clears it — but while it lives it has to be unguessable.
+ */
+export const HANDSHAKE_TOKEN_BYTES = 32;
+
+/**
+ * A token for one approval handshake.
+ *
+ * Base32 rather than base64url so PKCE gets a verifier it can use unchanged:
+ * RFC 7636 admits only unreserved characters, and this alphabet is a subset of
+ * them, where base64url's `-` and `_` would need the encoder this file already
+ * has plus a second one nobody needs.
+ */
+export function newHandshakeToken(): string {
+  const bytes = new Uint8Array(HANDSHAKE_TOKEN_BYTES);
+  crypto.getRandomValues(bytes);
+  return encodeBase32(bytes);
+}
