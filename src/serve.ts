@@ -20,13 +20,8 @@
 import type { Env } from "./config.js";
 import { findServableVersion } from "./db.js";
 import { isDocId } from "./ids.js";
-import {
-  FAVICON_LINK,
-  OPENARTIFACTS_MARK_SVG,
-  NOINDEX_META,
-  RENDER_REVISION,
-  renderServedHtml,
-} from "./render.js";
+import { ABOUT_LINK, brandPageHtml } from "./page.js";
+import { RENDER_REVISION, renderServedHtml } from "./render.js";
 import { STORED_CONTENT_TYPE, versionObjectKey } from "./storage.js";
 
 /** Path prefix of the serving surface, used by the router's path fallback. */
@@ -202,40 +197,6 @@ const SERVING_PAGES: Record<ServingPageKind, ServingPageCopy> = {
   },
 };
 
-function servingPageHtml(copy: ServingPageCopy): string {
-  return `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-${NOINDEX_META}
-${FAVICON_LINK}
-<title>${copy.title} · OpenArtifacts</title>
-<style>
-  :root { color-scheme: dark; font-family: Archivo, "Helvetica Neue", Helvetica, Arial, ui-sans-serif, system-ui, sans-serif; }
-  * { box-sizing: border-box; }
-  body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 2rem; color: #e9ebee; background: #07080b; }
-  main { width: min(100%, 34rem); padding: clamp(2rem, 6vw, 4rem); border: 1px solid #20242c; border-radius: 1.5rem; background: #0d0f14; box-shadow: 0 1.5rem 5rem rgba(0, 0, 0, 0.45); }
-  .brand { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 3.5rem; color: #8d94a0; font-family: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace; font-size: 0.7rem; font-weight: 500; letter-spacing: 0.16em; text-transform: uppercase; }
-  .mark { display: block; width: 2rem; height: 2rem; }
-  .mark svg { display: block; width: 100%; height: 100%; }
-  h1 { max-width: 12ch; margin: 0; color: #f4f5f7; font-size: clamp(2.25rem, 7vw, 4.25rem); font-weight: 700; line-height: 0.98; letter-spacing: -0.035em; }
-  p { max-width: 30rem; margin: 1.5rem 0 0; color: #8d94a0; font-size: 1.05rem; line-height: 1.7; }
-  a { display: inline-flex; margin-top: 2rem; color: #f6ae52; font-weight: 600; text-underline-offset: 0.25em; }
-  a:hover { color: #f9c47f; }
-</style>
-</head>
-<body>
-<main aria-labelledby="page-title">
-  <div class="brand"><span class="mark" aria-hidden="true">${OPENARTIFACTS_MARK_SVG}</span>OpenArtifacts</div>
-  <h1 id="page-title">${copy.heading}</h1>
-  <p>${copy.message}</p>
-  <a href="https://openartifacts.ai">About OpenArtifacts</a>
-</main>
-</body>
-</html>`;
-}
-
 /**
  * Every failure page is `no-store`. A 410 is heuristically cacheable by
  * default, a 404 may later become a document, and a 500 is explicitly
@@ -246,7 +207,7 @@ function servingPageResponse(method: string, kind: ServingPageKind): Response {
   const copy = SERVING_PAGES[kind];
   const headers = servingHeaders("no-store");
   headers.set("content-type", STORED_CONTENT_TYPE);
-  return new Response(method === "HEAD" ? null : servingPageHtml(copy), {
+  return new Response(method === "HEAD" ? null : brandPageHtml({ ...copy, actions: ABOUT_LINK }), {
     status: copy.status,
     headers,
   });
