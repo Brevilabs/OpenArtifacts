@@ -485,6 +485,51 @@ describe("resolveAccountForIdentity", () => {
     expect(rows?.n).toBe(1);
   });
 
+  /**
+   * Two previously unseen subjects on one provider can verify one address at
+   * the same moment. A check before the write would let both through, which is
+   * worse than not refusing at all: the account would be permanently shared and
+   * no later sign-in would notice.
+   */
+  it("lets only one of two racing subjects claim an address on one provider", async () => {
+    const resolved = await Promise.all([
+      resolveAccountForIdentity(env.DB, GOOGLE, "sub-one", "one@example.com", nextId(), NOW),
+      resolveAccountForIdentity(env.DB, GOOGLE, "sub-two", "one@example.com", nextId(), NOW),
+    ]);
+
+    expect(resolved.filter((account) => account !== null)).toHaveLength(1);
+    const rows = await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM identities WHERE provider = ?",
+    )
+      .bind(GOOGLE)
+      .first<{ n: number }>();
+    expect(rows?.n).toBe(1);
+  });
+
+  it("keeps one account to one subject per provider even when asked twice", async () => {
+    const first = await resolveAccountForIdentity(
+      env.DB,
+      GOOGLE,
+      "sub-holder",
+      "held@example.com",
+      nextId(),
+      NOW,
+    );
+
+    // The same account, reached again through its address by another subject.
+    expect(
+      await resolveAccountForIdentity(
+        env.DB,
+        GOOGLE,
+        "sub-other",
+        "held@example.com",
+        nextId(),
+        NOW + 1000,
+      ),
+    ).toBeNull();
+    expect(first).not.toBeNull();
+  });
+
   it("still links a second provider on the same address, with no linking step", async () => {
     const viaGoogle = await resolveAccountForIdentity(
       env.DB,

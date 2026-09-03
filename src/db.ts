@@ -599,6 +599,12 @@ export async function findOrCreateAccount(
  *    over their documents. Refusing is the only safe answer this page can give
  *    without a way to ask the original owner.
  *
+ * The third case is decided by `identities`' own `UNIQUE (provider,
+ * account_id)` rather than by a read before the write. Two unseen subjects can
+ * verify one address at the same moment, and a check-then-insert would let both
+ * through — which is worse than not refusing at all, since the account would
+ * then be permanently shared and no later sign-in would notice.
+ *
  * @param newId an account id to use if one has to be minted, so this stays
  *   deterministic under test
  */
@@ -625,42 +631,36 @@ export async function resolveAccountForIdentity(
     .bind(email)
     .first<AccountRow>();
 
-  if (byEmail !== null) {
-    const claimed = await db
-      .prepare(
-        "SELECT 1 FROM identities WHERE account_id = ? AND provider = ? AND subject <> ?",
-      )
-      .bind(byEmail.id, provider, subject)
-      .first();
-    if (claimed !== null) return null;
-  }
-
   const account = byEmail ?? (await findOrCreateAccount(db, newId, email, nowMs));
 
+  // No conflict target, so *either* constraint refuses the insert quietly. The
+  // two mean opposite things, and the read below is what tells them apart.
   const inserted = await db
     .prepare(
       `INSERT INTO identities (provider, subject, account_id, created_at)
        VALUES (?, ?, ?, ?)
-       ON CONFLICT(provider, subject) DO NOTHING
+       ON CONFLICT DO NOTHING
        RETURNING account_id`,
     )
     .bind(provider, subject, account.id, nowMs)
     .first<{ account_id: string }>();
   if (inserted !== null) return account;
 
-  // Losing the insert is not the same as having nothing to add, which is why
-  // the winner's row is read back rather than the local choice returned. Two
-  // first sign-ins for one subject can overlap while the provider reports two
-  // different addresses — a mid-flight email change, or one call to the
-  // provider answered from a stale cache — and each would then pick a different
-  // account. Returning the loser's would approve two device codes onto two
-  // accounts while every later sign-in resolved to only one of them, so the
-  // person would own documents under an account they could never reach again.
+  // A row for this subject means the primary key refused: two first sign-ins
+  // for one subject overlapped. That is not a conflict of people, so the winner
+  // is returned — including when the two reported different addresses, as a
+  // mid-flight email change can. Returning the loser's own choice instead would
+  // approve a device code onto an account no later sign-in ever resolves to,
+  // and its owner could never reach the documents under it again.
   //
-  // The account the loser created and did not use is left behind. It costs one
-  // row, it is the account the next sign-in on that address will find, and
+  // No row means `UNIQUE (provider, account_id)` refused: another subject on
+  // this provider holds the account this address named. That is the reassigned
+  // mailbox, and it is the one case that must not be merged.
+  //
+  // An account a refused sign-in happened to create is left behind. It costs
+  // one row, it is the account the next sign-in on that address will find, and
   // deleting it here would race the request that is using it.
-  const winner = await db
+  return await db
     .prepare(
       `SELECT a.id AS id, a.email AS email, a.created_at AS created_at
          FROM identities i JOIN accounts a ON a.id = i.account_id
@@ -668,10 +668,6 @@ export async function resolveAccountForIdentity(
     )
     .bind(provider, subject)
     .first<AccountRow>();
-  // Only reachable if the row that won the conflict vanished between the two
-  // statements, which nothing deletes.
-  if (winner === null) throw new Error("identity row disappeared after a conflicting insert");
-  return winner;
 }
 
 /** Whether a code is still waiting to be approved, for the page that offers to. */

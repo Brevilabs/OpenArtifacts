@@ -47,7 +47,16 @@ CREATE TABLE identities (
   subject    TEXT    NOT NULL,
   account_id TEXT    NOT NULL,
   created_at INTEGER NOT NULL,
-  PRIMARY KEY (provider, subject)
+  PRIMARY KEY (provider, subject),
+  -- One subject per provider per account, enforced here rather than by a check
+  -- the resolver runs first. Two previously unseen subjects on one provider can
+  -- verify the same address at the same moment, and a read followed by a write
+  -- would let both through — permanently giving two people one account and
+  -- undoing the refusal below. A constraint cannot be raced.
+  --
+  -- It does not stand in the way of one account holding a Google identity and a
+  -- GitHub one, which is the ordinary case: the pair is scoped by provider.
+  UNIQUE (provider, account_id)
 );
 
 -- The pending device codes an approval binds an account to, and the OAuth

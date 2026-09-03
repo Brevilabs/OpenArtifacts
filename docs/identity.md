@@ -86,7 +86,14 @@ Resolution asks the subject first:
 | A new subject, address free or on an account this provider has never signed in to | that account, and the identity is linked to it |
 | A new subject, address on an account another subject on **this** provider already signs in with | refused |
 
-The third row is the reason the table exists. **A mailbox is recyclable and a
+The third row is enforced by a uniqueness constraint on `identities`, one
+subject per provider per account, rather than by a check the resolver runs
+first. Two previously unseen subjects can verify one address at the same
+moment, and a read followed by a write would let both through — which is worse
+than not refusing at all, because the account would then be shared permanently
+and no later sign-in would notice.
+
+That row is also the reason the table exists. **A mailbox is recyclable and a
 subject is not.** A corporate or custom-domain address can be reassigned, and
 its new holder can verify it with the same provider entirely honestly. Resolving
 a returning sign-in by address alone would hand them the previous holder's
