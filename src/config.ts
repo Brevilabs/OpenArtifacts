@@ -127,10 +127,15 @@ export const DEVICE_MINT_PERIOD_SECONDS = 60;
 export const TOKEN_LAST_USED_RESOLUTION_MS = 60 * 60 * 1000;
 
 /**
- * Tokens `GET /api/v1/tokens` returns.
+ * Live tokens one account may hold, which is also every token the list returns.
  *
- * There is no paging: a token is minted by a human approving a machine, so an
- * account holds a handful. The cap is what stops a pathological account turning
- * one request into an unbounded D1 scan.
+ * One number, not two, and that is the whole design. `GET /api/v1/tokens` has
+ * no cursor, because a token exists only when a human approves a machine and an
+ * account has a handful. A list capped below what an account can hold would
+ * eventually hide a live token behind the cap — and since revoking is the only
+ * way to manage one, a token nobody can see is a token nobody can withdraw
+ * (https://github.com/Brevilabs/OpenArtifacts/pull/62#discussion_r3927574073).
+ * Capping issuance at the same number instead makes the list complete by
+ * construction.
  */
-export const MAX_TOKENS_LISTED = 100;
+export const MAX_TOKENS_PER_ACCOUNT = 100;

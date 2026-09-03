@@ -31,6 +31,7 @@ import {
   DEVICE_CODE_TTL_MS,
   DEVICE_MINT_PERIOD_SECONDS,
   DEVICE_POLL_INTERVAL_SECONDS,
+  MAX_TOKENS_PER_ACCOUNT,
   MIN_DEVICE_POLL_GAP_MS,
   type Env,
 } from "./config.js";
@@ -81,6 +82,25 @@ const MAX_LABEL_LENGTH = 80;
  * request that never returns.
  */
 const USER_CODE_ATTEMPTS = 3;
+
+/**
+ * The only content type either endpoint accepts, and the reason it is required
+ * rather than merely expected.
+ *
+ * Both endpoints are unauthenticated `POST`s, so a page anybody visits can aim
+ * a cross-origin request at them. `application/json` is not one of the three
+ * types a form can send, so a browser has to preflight it — and this host
+ * answers no `Access-Control-Allow-Origin`, so the preflight fails and the
+ * request never leaves the browser. A form-encoded or `text/plain` body, by
+ * contrast, is a simple request that arrives whether the visitor meant it or
+ * not. Refusing those before the mint touches its rate limiter is what stops a
+ * hostile page spending a visitor's sign-in allowance for them
+ * (https://github.com/Brevilabs/OpenArtifacts/pull/62#discussion_r3927574066).
+ *
+ * Required even when the body is empty, since a `fetch` with no body and no
+ * headers is a simple request too.
+ */
+const JSON_CONTENT_TYPE = "application/json";
 
 /** Bucket a request with no client address falls into. */
 const ANONYMOUS_CLIENT = "anonymous";
@@ -142,10 +162,16 @@ interface DeviceAuthorization {
 /**
  * `POST /device/code` — mint a code for a terminal that has no credential.
  *
- * The order is deliberate. The rate limit is asked first, so a refused caller
- * touches no storage at all; the sweep runs next, because a user code cannot be
- * reused until the row holding it is gone and minting is the only thing that
- * needs one free.
+ * The order is deliberate, and the first half of it is a security property
+ * rather than tidiness. **Nothing a browser can send cross-site reaches the
+ * rate limiter**: the content type and the body shape are checked first, so a
+ * page a victim happens to visit cannot burn their sign-in allowance by firing
+ * simple `POST`s at this endpoint. `JSON_CONTENT_TYPE` says why that check is
+ * the one that closes it.
+ *
+ * The limiter comes next, so a refused caller still touches no storage. The
+ * sweep comes after that, because a user code cannot be reused until the row
+ * holding it is gone and minting is the only thing that needs one free.
  *
  * A deployment that declares no limiter mints freely. That is a supported
  * deployment, not a hole to close: see `Env.DEVICE_CODE_LIMITER`.
@@ -157,6 +183,14 @@ async function mint(
   deps: DeviceDeps,
 ): Promise<Response> {
   const now = (deps.now ?? Date.now)();
+
+  const body = await readJsonBody(request);
+  if (body === null) {
+    return badRequest("The request body must be JSON, sent as `content-type: application/json`.");
+  }
+
+  const label = readDeviceLabel(body.label);
+  if (label === undefined) return badRequest("`label` must be a string.");
 
   const limiter = deps.limiter ?? env.DEVICE_CODE_LIMITER;
   const key = await deviceClientBucket(request);
@@ -171,12 +205,6 @@ async function mint(
       { "retry-after": String(DEVICE_MINT_PERIOD_SECONDS), "cache-control": "no-store" },
     );
   }
-
-  const body = await readJsonBody(request);
-  if (body === null) return badRequest("The request body must be a JSON object.");
-
-  const label = readDeviceLabel(body.label);
-  if (label === undefined) return badRequest("`label` must be a string.");
 
   await sweepExpired(env.DB, now);
 
@@ -232,7 +260,9 @@ async function poll(request: Request, env: Env, deps: DeviceDeps): Promise<Respo
   const now = (deps.now ?? Date.now)();
 
   const body = await readJsonBody(request);
-  if (body === null) return badRequest("The request body must be a JSON object.");
+  if (body === null) {
+    return badRequest("The request body must be JSON, sent as `content-type: application/json`.");
+  }
 
   const deviceCode = body.device_code;
   if (typeof deviceCode !== "string" || deviceCode === "") {
@@ -267,15 +297,25 @@ async function poll(request: Request, env: Env, deps: DeviceDeps): Promise<Respo
 
   const token = newApiToken();
   const tokenId = newTokenId();
-  const issued = await collectDeviceToken(env.DB, deviceCodeHash, {
-    id: tokenId,
-    token_hash: await sha256Hex(token),
-    created_at: now,
-  });
-  // Null only when another poll collected between the read above and this
-  // write. The code is gone either way, and the terminal that lost has nothing
-  // to wait for.
-  if (issued === null) {
+  const issued = await collectDeviceToken(
+    env.DB,
+    deviceCodeHash,
+    { id: tokenId, token_hash: await sha256Hex(token), created_at: now },
+    MAX_TOKENS_PER_ACCOUNT,
+  );
+
+  if (issued.status === "at_capacity") {
+    // The code is deliberately still collectable, so revoking a token and
+    // polling again with the same code finishes the sign-in already in flight.
+    return errorResponse(
+      "quota_exceeded",
+      `This account already holds ${MAX_TOKENS_PER_ACCOUNT} tokens. Revoke one, then poll again.`,
+      { "cache-control": "no-store" },
+    );
+  }
+  if (issued.status === "gone") {
+    // Another poll collected between the read above and this write. The code is
+    // spent, and the terminal that lost has nothing left to wait for.
     return device("expired_token", "That sign-in has expired. Start again.");
   }
 
@@ -301,13 +341,22 @@ function badRequest(message: string): Response {
 }
 
 /**
- * The parsed JSON body, or null when it is not an object.
+ * The parsed JSON body, or null when the request is not one a client of this
+ * API could have sent.
  *
- * An absent or empty body is an empty object rather than an error: the mint has
- * nothing it requires, and a CLI that sends no label should not have to send
- * `{}` to say so.
+ * The content type is checked here rather than at each caller so that neither
+ * endpoint can be reached by a request a browser would send without a
+ * preflight — see `JSON_CONTENT_TYPE`. It is required even of a bodyless
+ * request for that reason, and only for that reason.
+ *
+ * An empty body is then an empty object rather than an error: the mint requires
+ * no field, and a client that sends no label should not have to send `{}` to
+ * say so.
  */
 async function readJsonBody(request: Request): Promise<Record<string, unknown> | null> {
+  const contentType = request.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase();
+  if (contentType !== JSON_CONTENT_TYPE) return null;
+
   const bytes = await readBodyWithin(request, MAX_DEVICE_BODY_BYTES);
   if (bytes === null) return null;
   if (bytes.byteLength === 0) return {};

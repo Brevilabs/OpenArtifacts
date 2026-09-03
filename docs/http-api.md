@@ -292,9 +292,11 @@ returned and cannot be: only hashes are stored.
   hour, and `null` for a token that has never been used. Coarse on purpose —
   refreshing it exactly would put a database write behind every read, and the
   question it answers is which machine is still using this.
-- Revoked tokens are not listed. There is no paging: a token exists because a
-  person approved a machine, so an account holds a handful, and at most 100 are
-  returned.
+- Revoked tokens are not listed. **There is no paging and none is needed**: an
+  account may hold at most 100 live tokens, which is also everything this
+  returns, so the list is always complete. Nothing an account holds can be
+  hidden behind a limit, which matters because revoking is the only way to
+  manage a token and a token nobody can see is a token nobody can withdraw.
 
 A license key's account holds no tokens, so it gets an empty list rather than a
 refusal.
@@ -319,6 +321,11 @@ authenticated, and the next one will not.
 `404 not_found` if the token does not exist, belongs to another account, or was
 already revoked, exactly as for a document. A retry after a timeout therefore
 sees `404`, not `200`; treat it as success.
+
+An account is capped at 100 live tokens. Past that, collecting a new one is
+refused with `429 quota_exceeded` and the sign-in waits until something here is
+revoked. Nobody reaches this by signing in machines; it is the bound that lets
+the list above have no cursor.
 
 ### `GET /d/{docId}` and `GET /d/{docId}/v{n}` — read
 
@@ -403,6 +410,15 @@ Field names in the two success bodies are the RFC's, which is why they are
 
 Neither endpoint authenticates, which is why neither is under `/api/v1`.
 
+**Both require `Content-Type: application/json`**, including a mint with no
+body, and anything else is `400 bad_request` before the request is looked at
+further. That is a security check rather than strictness about types: these are
+unauthenticated `POST`s, so a page a person happens to visit could otherwise aim
+a form-encoded request at them from that person's address. `application/json` is
+not a type a form can send, so a browser has to preflight it, and this host
+answers no CORS headers, so the preflight fails and the request never leaves the
+browser.
+
 ### `POST /device/code` — ask for a code
 
 `Content-Type: application/json`. The body is optional.
@@ -474,6 +490,11 @@ Until then, every answer is a `400` carrying one of four codes:
 | `slow_down` | You polled faster than the interval. | Wait longer, then poll again. |
 | `expired_token` | The code expired, was already collected, or was never issued. | Start again with a new code. |
 | `access_denied` | Someone pressed Deny on the approval page. | Stop. Do not start again on your own. |
+
+One further refusal is not a poll condition and carries `429` rather than `400`:
+`quota_exceeded`, when the account already holds the 100 live tokens it is
+allowed. The device code stays collectable, so revoking a token with another
+one and polling again finishes the sign-in already in flight.
 
 A device code is spent by the poll that collects it, so a replayed one is
 `expired_token` — the same answer an unknown code gets, deliberately, because a

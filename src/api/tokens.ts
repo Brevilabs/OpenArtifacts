@@ -18,7 +18,7 @@
  */
 import type { Publisher } from "../auth.js";
 import type { Env } from "../config.js";
-import { MAX_TOKENS_LISTED } from "../config.js";
+import { MAX_TOKENS_PER_ACCOUNT } from "../config.js";
 import { countLiveTokens, listAccountTokens, revokeAccountToken } from "../db.js";
 import { errorResponse } from "../errors.js";
 import { isTokenId } from "../ids.js";
@@ -54,9 +54,15 @@ interface RevokedToken {
   remaining: number;
 }
 
-/** `GET /api/v1/tokens` — the live tokens this account has issued, newest first. */
+/**
+ * `GET /api/v1/tokens` — the live tokens this account has issued, newest first.
+ *
+ * Complete, with no cursor, because issuing is capped at the same number this
+ * reads. The limit is a bound on the query rather than a page: an account
+ * cannot hold more than it returns.
+ */
 export async function listTokens(env: Env, publisher: Publisher): Promise<Response> {
-  const rows = await listAccountTokens(env.DB, publisher.owner, MAX_TOKENS_LISTED);
+  const rows = await listAccountTokens(env.DB, publisher.owner, MAX_TOKENS_PER_ACCOUNT);
 
   const body: TokenListResponse = {
     tokens: rows.map((row) => ({

@@ -2,7 +2,11 @@ import { createExecutionContext, env, waitOnExecutionContext } from "cloudflare:
 import { describe, expect, it } from "vitest";
 import { handleApproval, normalizeUserCode } from "../src/approval/handler.js";
 import type { OAuthClient, ProviderId } from "../src/approval/providers.js";
-import { DEVICE_CODE_TTL_MS, DEVICE_POLL_INTERVAL_SECONDS } from "../src/config.js";
+import {
+  DEVICE_CODE_TTL_MS,
+  DEVICE_POLL_INTERVAL_SECONDS,
+  MAX_TOKENS_PER_ACCOUNT,
+} from "../src/config.js";
 import { handleDevice, readDeviceLabel } from "../src/device.js";
 import type { Env } from "../src/config.js";
 import { confirmDeviceApproval, holdProvenIdentity } from "../src/db.js";
@@ -78,6 +82,20 @@ function device(
 /** A mint from one address through a deployment that declares the limiter. */
 const mintFrom = (address: string) =>
   device("/device/code", undefined, NOW, { "cf-connecting-ip": address }, limited());
+
+/**
+ * A mint whose content type and body are whatever the caller says, which is how
+ * a request a browser would send cross-site without a preflight is reproduced.
+ */
+function crossSiteMint(contentType: string, body: string, address: string): Promise<Response> {
+  const url = new URL(`${ORIGIN}/device/code`);
+  const raw = new Request(url, {
+    method: "POST",
+    headers: { "content-type": contentType, "cf-connecting-ip": address },
+    body,
+  });
+  return handleDevice(raw, url, limited(), { now: () => NOW });
+}
 
 /** Through the router, which is what proves the surface is reachable at all. */
 async function routed(path: string, body?: unknown): Promise<Response> {
@@ -190,6 +208,43 @@ describe("POST /device/code", () => {
     const response = await device("/device/code");
     expect(response.status).toBe(200);
     expect((await codeRow((await response.json<Minted>()).user_code))?.label).toBeNull();
+  });
+
+  /**
+   * A page anybody visits can fire a form-encoded or text/plain POST at an
+   * unauthenticated endpoint without a preflight. If the limiter were charged
+   * before the request was validated, that page would spend a visitor's next
+   * sign-in for them (https://github.com/Brevilabs/OpenArtifacts/pull/62#discussion_r3927574066).
+   */
+  it("refuses a request a browser could send cross-site without spending its bucket", async () => {
+    const address = "203.0.113.20";
+
+    for (let i = 0; i < MINTS_PER_PERIOD + 3; i += 1) {
+      const refused = await crossSiteMint(
+        i % 2 === 0 ? "application/x-www-form-urlencoded" : "text/plain;charset=UTF-8",
+        i % 2 === 0 ? "label=drive-by" : '{"label":"drive-by"}',
+        address,
+      );
+      expect(refused.status).toBe(400);
+      expect(await errorOf(refused)).toBe("bad_request");
+    }
+
+    // The bucket is untouched, so the visitor's own sign-in still works.
+    expect((await mintFrom(address)).status).toBe(200);
+    const { n } = (await env.DB.prepare("SELECT COUNT(*) AS n FROM device_codes").first<{
+      n: number;
+    }>())!;
+    expect(n).toBe(1);
+  });
+
+  it("refuses a malformed JSON body before charging the bucket too", async () => {
+    const address = "203.0.113.21";
+
+    for (let i = 0; i < MINTS_PER_PERIOD + 1; i += 1) {
+      expect((await crossSiteMint("application/json", "not json", address)).status).toBe(400);
+    }
+
+    expect((await mintFrom(address)).status).toBe(200);
   });
 
   it("refuses a label that is not a string, and junk that is not JSON", async () => {
@@ -395,6 +450,79 @@ describe("POST /device/token", () => {
     expect(statuses).toEqual([200, 400]);
     const { n } = (await env.DB.prepare("SELECT COUNT(*) AS n FROM tokens").first<{ n: number }>())!;
     expect(n).toBe(1);
+  });
+});
+
+describe("the ceiling on tokens an account may hold", () => {
+  const ACCOUNT = "oa_crowded_account";
+
+  /** Fill the account to one below the ceiling, cheaply. */
+  async function fillTokens(count: number): Promise<void> {
+    await env.DB.batch(
+      Array.from({ length: count }, (_, i) =>
+        env.DB.prepare(
+          `INSERT INTO tokens (id, token_hash, account_id, label, created_at)
+           VALUES (?, ?, ?, ?, ?)`,
+        ).bind(`tok_seed${String(i).padStart(11, "0")}`, `hash-${i}`, ACCOUNT, null, NOW + i),
+      ),
+    );
+  }
+
+  it("refuses the collection past the ceiling and leaves the code collectable", async () => {
+    await fillTokens(MAX_TOKENS_PER_ACCOUNT);
+    const minted = await mint();
+    await approve(minted.user_code, ACCOUNT);
+
+    const refused = await device("/device/token", { device_code: minted.device_code });
+
+    expect(refused.status).toBe(429);
+    expect(await errorOf(refused)).toBe("quota_exceeded");
+    // Not spent: revoking one token and polling again finishes this same sign-in.
+    expect(await codeRow(minted.user_code)).not.toBeNull();
+    const { n } = (await env.DB.prepare("SELECT COUNT(*) AS n FROM tokens").first<{ n: number }>())!;
+    expect(n).toBe(MAX_TOKENS_PER_ACCOUNT);
+  });
+
+  it("collects on the next poll once room is made", async () => {
+    await fillTokens(MAX_TOKENS_PER_ACCOUNT);
+    const minted = await mint();
+    await approve(minted.user_code, ACCOUNT);
+    await device("/device/token", { device_code: minted.device_code });
+
+    await env.DB.prepare("UPDATE tokens SET revoked_at = ? WHERE id = ?")
+      .bind(NOW, "tok_seed00000000000")
+      .run();
+
+    const collected = await device(
+      "/device/token",
+      { device_code: minted.device_code },
+      NOW + DEVICE_POLL_INTERVAL_SECONDS * 1000,
+    );
+    expect(collected.status).toBe(200);
+  });
+
+  it("returns every token an account can hold, so none is invisible to revoke", async () => {
+    await fillTokens(MAX_TOKENS_PER_ACCOUNT - 1);
+    const minted = await mint();
+    await approve(minted.user_code, ACCOUNT);
+    const issued = await (await device("/device/token", { device_code: minted.device_code }))
+      .json<Issued>();
+
+    const ctx = createExecutionContext();
+    const listed = await worker.fetch(
+      new Request(`${ORIGIN}/api/v1/tokens`, {
+        headers: { authorization: `Bearer ${issued.access_token}` },
+      }),
+      configured(),
+      ctx,
+    );
+    await waitOnExecutionContext(ctx);
+
+    const body = await listed.json<{ tokens: { tokenId: string }[] }>();
+    expect(body.tokens).toHaveLength(MAX_TOKENS_PER_ACCOUNT);
+    expect(body.tokens.map((row) => row.tokenId)).toContain(issued.token_id);
+    // The oldest is still listed, which is what makes it revocable.
+    expect(body.tokens.map((row) => row.tokenId)).toContain("tok_seed00000000000");
   });
 });
 

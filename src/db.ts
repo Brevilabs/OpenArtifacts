@@ -1019,6 +1019,14 @@ export async function recordDevicePoll(
     .run();
 }
 
+/** What became of a poll that arrived at an approved code. */
+export type TokenCollection =
+  | { status: "issued"; label: string | null }
+  /** The account is at `MAX_TOKENS_PER_ACCOUNT`. The code is left collectable. */
+  | { status: "at_capacity" }
+  /** Another poll collected it first, so there is nothing left to collect. */
+  | { status: "gone" };
+
 /**
  * Issue the token an approved code earned, and consume the code doing it.
  *
@@ -1040,14 +1048,30 @@ export async function recordDevicePoll(
  * been collected is gone, and a second poll with it gets exactly what a poll
  * with an expired code gets.
  *
- * @returns the label the token carries, or null when there was nothing to
- *   collect
+ * The account's ceiling is a predicate on the insert rather than a count read
+ * before it, for the reason `insertDocWithinQuota` gives: two approvals
+ * collected at the same moment would otherwise both read the same number and
+ * both insert, and a cap the list depends on being complete has to behave like
+ * a hard number under the concurrency an agent produces.
+ *
+ * The delete keys off the token row the insert left behind rather than
+ * restating that ceiling. Restating it would be wrong in a way that is easy to
+ * miss: the statements run in order inside the batch, so by the time the delete
+ * is evaluated the count already includes the row just inserted, and an
+ * off-by-one there would consume a device code without issuing anything. Keying
+ * off the row means the code survives exactly when nothing was issued, so a
+ * caller refused by the ceiling can revoke a token and poll again with the same
+ * code.
+ *
+ * @param maxTokens live tokens the account may hold, from
+ *   `MAX_TOKENS_PER_ACCOUNT`
  */
 export async function collectDeviceToken(
   db: D1Database,
   deviceCodeHash: string,
   token: Pick<TokenRow, "id" | "token_hash" | "created_at">,
-): Promise<{ label: string | null } | null> {
+  maxTokens: number,
+): Promise<TokenCollection> {
   const [issued] = await db.batch<{ label: string | null }>([
     db
       .prepare(
@@ -1055,19 +1079,31 @@ export async function collectDeviceToken(
          SELECT ?, ?, account_id, label, ?
            FROM device_codes
           WHERE device_code_hash = ? AND approved_at IS NOT NULL AND account_id IS NOT NULL
+            AND (SELECT COUNT(*) FROM tokens
+                  WHERE account_id = device_codes.account_id AND revoked_at IS NULL) < ?
          RETURNING label`,
       )
-      .bind(token.id, token.token_hash, token.created_at, deviceCodeHash),
+      .bind(token.id, token.token_hash, token.created_at, deviceCodeHash, maxTokens),
     db
       .prepare(
         `DELETE FROM device_codes
-          WHERE device_code_hash = ? AND approved_at IS NOT NULL AND account_id IS NOT NULL`,
+          WHERE device_code_hash = ? AND EXISTS (SELECT 1 FROM tokens WHERE id = ?)`,
       )
-      .bind(deviceCodeHash),
+      .bind(deviceCodeHash, token.id),
   ]);
 
   const row = issued?.results[0];
-  return row === undefined ? null : { label: row.label };
+  if (row !== undefined) return { status: "issued", label: row.label };
+
+  // Nothing was issued, and the surviving row is what says why: the delete only
+  // fires when the insert did, so a code still here was refused by the ceiling
+  // and a code that is gone was collected by somebody else.
+  const remaining = await db
+    .prepare("SELECT 1 FROM device_codes WHERE device_code_hash = ? AND approved_at IS NOT NULL")
+    .bind(deviceCodeHash)
+    .first();
+
+  return remaining === null ? { status: "gone" } : { status: "at_capacity" };
 }
 
 /**
