@@ -74,11 +74,28 @@ CREATE TABLE device_codes (
   -- cannot be replayed at the other provider's endpoint. Null between
   -- handshakes.
   provider    TEXT,
-  -- The OAuth `state`, and the only thing that ties three separate requests
-  -- together: the provider's redirect back names it, and the confirm form
-  -- carries it in a hidden field. Unguessable, and the confirm write clears it,
-  -- so it is single-use. Null between handshakes.
+  -- The OAuth `state`, which ties the provider's redirect back to the code it
+  -- belongs to. It is *not* a credential for approving anything: whoever
+  -- started the handshake receives it in the redirect they were sent, so an
+  -- attacker who starts one on their own code knows it. Null between
+  -- handshakes.
   state       TEXT,
+  -- The token the confirm form carries, minted only once an identity has been
+  -- proved and returned only in the page the returning browser receives.
+  --
+  -- This exists because `state` cannot do the job. An attacker can start a
+  -- handshake on their own code, read the `state` out of the redirect they get,
+  -- and send the provider's url to a victim who is already signed in; the
+  -- victim's callback lands on the attacker's row. If the confirm keyed on
+  -- `state`, the attacker could then approve their own code as the victim,
+  -- without the victim pressing anything. This token never reaches whoever
+  -- started the handshake.
+  --
+  -- Stored as it is rather than hashed. A hash would defend against someone who
+  -- can read this table, and that someone can already read `account_id` and set
+  -- `approved_at` directly, so it would buy nothing for a value that lives
+  -- minutes. Null until an identity is proved, and cleared by the confirm.
+  confirm_token TEXT,
   -- The PKCE code verifier for the handshake in flight, cleared once spent.
   verifier    TEXT,
   -- The account whose email a completed handshake proved. It is written before
@@ -95,9 +112,14 @@ CREATE TABLE device_codes (
   created_at  INTEGER NOT NULL
 );
 
--- The callback and the confirm both arrive knowing only the state, so it is the
--- lookup key and has to be one row exactly. Partial, so the many rows between
--- handshakes do not collide on null and cost nothing to hold.
+-- The callback arrives knowing only the state, and the confirm only the confirm
+-- token, so each is a lookup key and each has to name one row exactly. Partial,
+-- so the many rows between handshakes do not collide on null and cost nothing
+-- to hold.
 CREATE UNIQUE INDEX device_codes_by_state
   ON device_codes (state)
   WHERE state IS NOT NULL;
+
+CREATE UNIQUE INDEX device_codes_by_confirm_token
+  ON device_codes (confirm_token)
+  WHERE confirm_token IS NOT NULL;

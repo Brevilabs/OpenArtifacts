@@ -33,12 +33,14 @@ async function seedCode(userCode: string, expiresAt: number): Promise<void> {
 
 async function readCode(userCode: string) {
   return await env.DB.prepare(
-    "SELECT state, verifier, account_id, approved_at FROM device_codes WHERE user_code = ?",
+    `SELECT state, verifier, confirm_token, account_id, approved_at
+       FROM device_codes WHERE user_code = ?`,
   )
     .bind(userCode)
     .first<{
       state: string | null;
       verifier: string | null;
+      confirm_token: string | null;
       account_id: string | null;
       approved_at: number | null;
     }>();
@@ -49,10 +51,15 @@ async function accountCount(): Promise<number> {
   return row?.n ?? 0;
 }
 
-/** Take a code from pending to identity-proven, which is where confirm starts. */
-async function proven(userCode: string, state: string, accountId: string): Promise<void> {
+/**
+ * Take a code from pending to identity-proven, which is where confirm starts,
+ * and hand back the token that press has to carry.
+ */
+async function proven(userCode: string, state: string, accountId: string): Promise<string> {
+  const token = `confirm-${state}`;
   await startDeviceHandshake(env.DB, userCode, "google", state, "verifier", NOW);
-  await holdProvenIdentity(env.DB, state, accountId, NOW);
+  await holdProvenIdentity(env.DB, state, accountId, token, NOW);
+  return token;
 }
 
 describe("newAccountId", () => {
@@ -183,8 +190,7 @@ describe("deviceCodeIsPending", () => {
     expect(await deviceCodeIsPending(env.DB, "STALE-1", NOW)).toBe(false);
     expect(await deviceCodeIsPending(env.DB, "NEVER-EXISTED", NOW)).toBe(false);
 
-    await proven("PENDING-1", "state-1", "oa_account");
-    await confirmDeviceApproval(env.DB, "state-1", NOW);
+    await confirmDeviceApproval(env.DB, await proven("PENDING-1", "state-1", "oa_account"), NOW);
     expect(await deviceCodeIsPending(env.DB, "PENDING-1", NOW)).toBe(false);
   });
 });
@@ -201,6 +207,18 @@ describe("startDeviceHandshake", () => {
     expect(row?.verifier).toBe("verifier-a");
     // Starting a handshake is not approving anything.
     expect(row?.approved_at).toBeNull();
+  });
+
+  it("drops an earlier handshake's identity and confirm token when it restarts", async () => {
+    await seedCode("START-5", NOW + 1000);
+    await proven("START-5", "state-abandoned", "oa_owner");
+
+    await startDeviceHandshake(env.DB, "START-5", "github", "state-new", "verifier-new", NOW);
+
+    const row = await readCode("START-5");
+    // A page from the abandoned attempt must not be able to approve the new one.
+    expect(row?.account_id).toBeNull();
+    expect(row?.confirm_token).toBeNull();
   });
 
   it("replaces an earlier handshake, so only the newest one can be finished", async () => {
@@ -230,8 +248,7 @@ describe("startDeviceHandshake", () => {
   it("refuses an unknown, expired or already-approved code alike", async () => {
     await seedCode("START-3", NOW - 1);
     await seedCode("START-4", NOW + 1000);
-    await proven("START-4", "state-done", "oa_account");
-    await confirmDeviceApproval(env.DB, "state-done", NOW);
+    await confirmDeviceApproval(env.DB, await proven("START-4", "state-done", "oa_account"), NOW);
 
     expect(await startDeviceHandshake(env.DB, "START-3", "google", "s", "v", NOW)).toBe(false);
     expect(await startDeviceHandshake(env.DB, "START-4", "google", "s", "v", NOW)).toBe(false);
@@ -261,69 +278,119 @@ describe("findPendingHandshake", () => {
 });
 
 describe("holdProvenIdentity", () => {
-  it("records the account without approving the code", async () => {
+  it("records the account and the confirm token without approving the code", async () => {
     await seedCode("HOLD-1", NOW + 1000);
     await startDeviceHandshake(env.DB, "HOLD-1", "google", "state-hold", "verifier-hold", NOW);
 
-    expect(await holdProvenIdentity(env.DB, "state-hold", "oa_owner", NOW)).toBe(true);
+    expect(await holdProvenIdentity(env.DB, "state-hold", "oa_owner", "confirm-hold", NOW)).toBe(
+      true,
+    );
     const row = await readCode("HOLD-1");
     expect(row?.account_id).toBe("oa_owner");
+    expect(row?.confirm_token).toBe("confirm-hold");
     // The signal #57 polls for stays null until a person presses the button.
     expect(row?.approved_at).toBeNull();
     // The verifier is spent, so a replayed callback cannot exchange again.
     expect(row?.verifier).toBeNull();
-    // The state survives, because the confirm form is about to carry it back.
+    // The state survives, because the row stays findable while the page is open.
     expect(row?.state).toBe("state-hold");
   });
 
   it("refuses a state that names no pending handshake", async () => {
-    expect(await holdProvenIdentity(env.DB, "never-issued", "oa_owner", NOW)).toBe(false);
+    expect(await holdProvenIdentity(env.DB, "never-issued", "oa_owner", "t", NOW)).toBe(false);
+  });
+
+  /**
+   * One authorization url can be completed by two different people, and both
+   * callbacks read the verifier before either exchange finishes. Unless this
+   * write consumes the verifier, the second would overwrite an account whose
+   * confirmation page had already been rendered, and that page would then
+   * approve the wrong account.
+   */
+  it("lets exactly one of two overlapping callbacks record an identity", async () => {
+    await seedCode("RACE-1", NOW + 1000);
+    await startDeviceHandshake(env.DB, "RACE-1", "google", "state-race", "verifier-race", NOW);
+
+    const held = await Promise.all([
+      holdProvenIdentity(env.DB, "state-race", "oa_first", "confirm-first", NOW),
+      holdProvenIdentity(env.DB, "state-race", "oa_second", "confirm-second", NOW),
+    ]);
+
+    expect(held.filter(Boolean)).toHaveLength(1);
+    // Whichever won, the account and the token that can approve it agree.
+    const winner = held[0] === true ? "first" : "second";
+    const row = await readCode("RACE-1");
+    expect(row?.account_id).toBe(`oa_${winner}`);
+    expect(row?.confirm_token).toBe(`confirm-${winner}`);
   });
 });
 
 describe("confirmDeviceApproval", () => {
   it("approves the code the proven handshake belongs to", async () => {
     await seedCode("OK-1", NOW + 1000);
-    await proven("OK-1", "state-ok", "oa_owner");
+    const token = await proven("OK-1", "state-ok", "oa_owner");
 
-    expect(await confirmDeviceApproval(env.DB, "state-ok", NOW)).toBe("OK-1");
+    expect(await confirmDeviceApproval(env.DB, token, NOW)).toBe("OK-1");
     const row = await readCode("OK-1");
     expect(row).toMatchObject({ account_id: "oa_owner", approved_at: NOW });
-    // Cleared, so the same press cannot be replayed.
+    // Both cleared, so the same press cannot be replayed.
     expect(row?.state).toBeNull();
+    expect(row?.confirm_token).toBeNull();
+  });
+
+  /**
+   * `state` reaches whoever *started* the handshake, in the redirect they were
+   * given. If it could approve, an attacker could start one on their own code,
+   * send the provider's url to a signed-in victim, and approve as them.
+   */
+  it("refuses the handshake's state, which is no secret from its initiator", async () => {
+    await seedCode("STATE-1", NOW + 1000);
+    await proven("STATE-1", "state-known", "oa_owner");
+
+    expect(await confirmDeviceApproval(env.DB, "state-known", NOW)).toBeNull();
+    expect((await readCode("STATE-1"))?.approved_at).toBeNull();
   });
 
   it("refuses a handshake whose identity was never proven", async () => {
     await seedCode("NOID-1", NOW + 1000);
     await startDeviceHandshake(env.DB, "NOID-1", "google", "state-noid", "v", NOW);
 
-    expect(await confirmDeviceApproval(env.DB, "state-noid", NOW)).toBeNull();
+    expect(await confirmDeviceApproval(env.DB, "confirm-state-noid", NOW)).toBeNull();
     expect((await readCode("NOID-1"))?.approved_at).toBeNull();
   });
 
-  it("refuses an unknown state, an expired code and a second press alike", async () => {
+  it("refuses a token left over from a handshake that was restarted", async () => {
+    await seedCode("RESTART-1", NOW + 1000);
+    const stale = await proven("RESTART-1", "state-stale", "oa_owner");
+    await startDeviceHandshake(env.DB, "RESTART-1", "github", "state-fresh", "verifier", NOW);
+
+    expect(await confirmDeviceApproval(env.DB, stale, NOW)).toBeNull();
+    expect((await readCode("RESTART-1"))?.approved_at).toBeNull();
+  });
+
+  it("refuses an unknown token, an expired code and a second press alike", async () => {
     await seedCode("ONCE-1", NOW + 1000);
     await seedCode("OLD-1", NOW - 1);
-    await proven("ONCE-1", "state-once", "oa_first");
-    await confirmDeviceApproval(env.DB, "state-once", NOW);
+    const spent = await proven("ONCE-1", "state-once", "oa_first");
+    await confirmDeviceApproval(env.DB, spent, NOW);
     await env.DB.prepare(
-      "UPDATE device_codes SET state = ?, account_id = ? WHERE user_code = 'OLD-1'",
+      "UPDATE device_codes SET confirm_token = ?, account_id = ? WHERE user_code = 'OLD-1'",
     )
-      .bind("state-old", "oa_owner")
+      .bind("confirm-old", "oa_owner")
       .run();
 
-    expect(await confirmDeviceApproval(env.DB, "state-once", NOW)).toBeNull();
-    expect(await confirmDeviceApproval(env.DB, "state-old", NOW)).toBeNull();
+    expect(await confirmDeviceApproval(env.DB, spent, NOW)).toBeNull();
+    expect(await confirmDeviceApproval(env.DB, "confirm-old", NOW)).toBeNull();
     expect(await confirmDeviceApproval(env.DB, "never-issued", NOW)).toBeNull();
   });
 
   it("leaves an approved code bound to the account that won it", async () => {
     await seedCode("WIN-1", NOW + 1000);
-    await proven("WIN-1", "state-win", "oa_first");
+    const token = await proven("WIN-1", "state-win", "oa_first");
 
     const [first, second] = await Promise.all([
-      confirmDeviceApproval(env.DB, "state-win", NOW),
-      confirmDeviceApproval(env.DB, "state-win", NOW),
+      confirmDeviceApproval(env.DB, token, NOW),
+      confirmDeviceApproval(env.DB, token, NOW),
     ]);
 
     expect([first, second].filter((code) => code !== null)).toEqual(["WIN-1"]);

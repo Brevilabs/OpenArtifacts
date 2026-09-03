@@ -86,13 +86,15 @@ async function seedCode(userCode = USER_CODE, expiresAt = NOW + 60_000): Promise
 
 async function readCode(userCode = USER_CODE) {
   return await env.DB.prepare(
-    "SELECT provider, state, verifier, account_id, approved_at FROM device_codes WHERE user_code = ?",
+    `SELECT provider, state, verifier, confirm_token, account_id, approved_at
+       FROM device_codes WHERE user_code = ?`,
   )
     .bind(userCode)
     .first<{
       provider: string | null;
       state: string | null;
       verifier: string | null;
+      confirm_token: string | null;
       account_id: string | null;
       approved_at: number | null;
     }>();
@@ -144,9 +146,15 @@ async function callback(
   });
 }
 
-/** The `state` the confirm form on a rendered callback page carries. */
-function confirmState(html: string): string {
-  return /name="state" value="([^"]+)"/.exec(html)?.[1] ?? "";
+/**
+ * The confirm token out of a rendered callback page.
+ *
+ * Read from the HTML rather than from the row on purpose: what the tests are
+ * asserting is that the only way to obtain this value is to have received the
+ * page, which is exactly what the initiator of a handshake never does.
+ */
+function confirmToken(html: string): string {
+  return /name="confirm_token" value="([^"]+)"/.exec(html)?.[1] ?? "";
 }
 
 /** The whole flow: start, prove, press. Returns the page the press produced. */
@@ -162,7 +170,7 @@ async function approve(
     state: await startedState(userCode),
     oauth: oauthAnswering(email, subject ?? `sub-${provider}`),
   });
-  return await post("/approve/confirm", { state: confirmState(await proven.text()) });
+  return await post("/approve/confirm", { confirm_token: confirmToken(await proven.text()) });
 }
 
 beforeEach(async () => {
@@ -339,6 +347,30 @@ describe("GET /approve/callback/{provider}", () => {
     expect(row?.account_id?.startsWith(ACCOUNT_ID_PREFIX)).toBe(true);
     // The identity is proven and the code is not approved. #57 polls the second.
     expect(row?.approved_at).toBeNull();
+    // The token that can approve it exists only here and in the page above.
+    expect(confirmToken(html)).toBe(row?.confirm_token);
+    expect(row?.confirm_token).not.toBe(row?.state);
+  });
+
+  /**
+   * Two people can complete one authorization url, and both callbacks read the
+   * verifier before either exchange finishes. Only one may record an identity,
+   * or a confirmation page already rendered for one of them would approve the
+   * other.
+   */
+  it("lets only the first of two overlapping callbacks record an identity", async () => {
+    const state = await startedState();
+
+    const [first, second] = await Promise.all([
+      callback({ state, oauth: oauthAnswering("ada@example.com", "sub-ada") }),
+      callback({ state, oauth: oauthAnswering("mallory@example.com", "sub-mallory") }),
+    ]);
+
+    const statuses = [first.status, second.status].sort();
+    expect(statuses).toEqual([200, 400]);
+    const row = await readCode();
+    const won = first.status === 200 ? first : second;
+    expect(confirmToken(await won.text())).toBe(row?.confirm_token);
   });
 
   it("creates the account for the address the provider verified", async () => {
@@ -424,7 +456,7 @@ describe("POST /approve/confirm", () => {
   });
 
   /**
-   * The hidden `state` is the only thing a cross-site form cannot supply, which
+   * The confirm token is the only thing a cross-site form cannot supply, which
    * is what stops a page an attacker controls from pressing this button for a
    * victim who has just proved their identity.
    */
@@ -433,14 +465,33 @@ describe("POST /approve/confirm", () => {
     await callback();
 
     expect((await post("/approve/confirm", {})).status).toBe(400);
-    expect((await post("/approve/confirm", { state: "guessed" })).status).toBe(400);
+    expect((await post("/approve/confirm", { confirm_token: "guessed" })).status).toBe(400);
+    expect((await readCode())?.approved_at).toBeNull();
+  });
+
+  /**
+   * The attack this token exists for. An attacker starts a handshake on their
+   * own code, reads the `state` out of the redirect they are handed, and sends
+   * the provider's url to a victim already signed in to that provider. The
+   * victim's callback records their account on the attacker's row — and the
+   * attacker must not then be able to approve it with the value they already
+   * have.
+   */
+  it("refuses the handshake's state, which whoever started it already knows", async () => {
+    const started = await begin();
+    const state = new URL(started.headers.get("location") ?? "").searchParams.get("state") ?? "";
+    await callback({ state });
+
+    // The initiator has the state and nothing else.
+    expect((await post("/approve/confirm", { confirm_token: state })).status).toBe(400);
+    expect((await post("/approve/confirm", { state })).status).toBe(400);
     expect((await readCode())?.approved_at).toBeNull();
   });
 
   it("refuses a press for a handshake whose identity was never proved", async () => {
     await begin();
 
-    const response = await post("/approve/confirm", { state: await startedState() });
+    const response = await post("/approve/confirm", { confirm_token: await startedState() });
 
     expect(response.status).toBe(400);
     expect((await readCode())?.approved_at).toBeNull();
@@ -448,23 +499,32 @@ describe("POST /approve/confirm", () => {
 
   it("cannot be pressed twice", async () => {
     await begin();
-    const state = confirmState(await (await callback()).text());
+    const token = confirmToken(await (await callback()).text());
 
-    expect((await post("/approve/confirm", { state })).status).toBe(200);
+    expect((await post("/approve/confirm", { confirm_token: token })).status).toBe(200);
     const approvedAt = (await readCode())?.approved_at;
 
-    expect((await post("/approve/confirm", { state })).status).toBe(400);
+    expect((await post("/approve/confirm", { confirm_token: token })).status).toBe(400);
     expect((await readCode())?.approved_at).toBe(approvedAt);
+  });
+
+  it("refuses a token from a page whose handshake has since been restarted", async () => {
+    await begin();
+    const stale = confirmToken(await (await callback()).text());
+    await begin("github");
+
+    expect((await post("/approve/confirm", { confirm_token: stale })).status).toBe(400);
+    expect((await readCode())?.approved_at).toBeNull();
   });
 
   it("refuses a press for a code that expired while the page was open", async () => {
     await begin();
-    const state = confirmState(await (await callback()).text());
+    const token = confirmToken(await (await callback()).text());
     await env.DB.prepare("UPDATE device_codes SET expires_at = ? WHERE user_code = ?")
       .bind(NOW - 1, USER_CODE)
       .run();
 
-    expect((await post("/approve/confirm", { state })).status).toBe(400);
+    expect((await post("/approve/confirm", { confirm_token: token })).status).toBe(400);
     expect((await readCode())?.approved_at).toBeNull();
   });
 });

@@ -57,6 +57,17 @@ export const APPROVAL_PREFIX = "/approve";
 export const USER_CODE_PARAM = "user_code";
 
 /**
+ * The hidden field on the confirm form.
+ *
+ * Deliberately not `state`. `state` is handed to whoever *starts* a handshake,
+ * so an attacker who starts one on their own code knows it, and could then send
+ * the provider's url to a signed-in victim and approve their own code as them.
+ * This token is minted only once an identity is proved and appears only in the
+ * page the returning browser receives.
+ */
+const CONFIRM_TOKEN_FIELD = "confirm_token";
+
+/**
  * A device code as it may appear in a url.
  *
  * Deliberately a shape rather than a format: **#57 mints these codes** and is
@@ -280,8 +291,13 @@ async function prove(
   // on purpose: it costs one row, it is the same account the person's next
   // approval will find, and undoing it would mean deleting an account that may
   // already own documents.
-  if (!(await holdProvenIdentity(env.DB, state, account.id, now))) {
-    return page(CODE_GONE, 404);
+  // Also the point at which one handshake is settled on one identity: two
+  // people completing the same authorization url race here, and the loser is
+  // told to start again rather than overwriting a confirmation page that has
+  // already been rendered for somebody else.
+  const confirmToken = newHandshakeToken();
+  if (!(await holdProvenIdentity(env.DB, state, account.id, confirmToken, now))) {
+    return page(EXPIRED, 400);
   }
 
   return page(
@@ -289,7 +305,13 @@ async function prove(
       ...CONFIRM,
       message: `You are signed in as ${escapeHtml(email)}. Approving lets that terminal publish as you until you revoke it. If you did not start this, close the page and nothing happens.`,
       detail: codeDetail(handshake.user_code),
-      actions: actions(form(`${APPROVAL_PREFIX}/confirm`, { state }, "Approve this device")),
+      actions: actions(
+        form(
+          `${APPROVAL_PREFIX}/confirm`,
+          { [CONFIRM_TOKEN_FIELD]: confirmToken },
+          "Approve this device",
+        ),
+      ),
     },
     200,
   );
@@ -298,19 +320,20 @@ async function prove(
 /**
  * The press that approves the code.
  *
- * The hidden `state` is what makes this safe without a token of its own: 256
- * random bits that appear only on the page rendered to whoever completed the
- * handshake, so a cross-site form cannot supply one. The write clears it, so
- * the same press cannot be replayed.
+ * The hidden confirm token is what makes this safe without a credential of its
+ * own: 256 random bits that appear only on the page rendered to the browser
+ * that completed the handshake. Neither a cross-site form nor whoever started
+ * the handshake has ever seen it, and the write clears it, so a press cannot be
+ * replayed.
  */
 async function confirm(request: Request, env: Env, deps: ApprovalDeps): Promise<Response> {
   if (!approvalIsConfigured(env)) return page(NOT_CONFIGURED, 503);
 
   const submitted = await request.formData();
-  const state = asString(submitted.get("state"));
+  const token = asString(submitted.get(CONFIRM_TOKEN_FIELD));
   const now = (deps.now ?? Date.now)();
 
-  const userCode = state === null ? null : await confirmDeviceApproval(env.DB, state, now);
+  const userCode = token === null ? null : await confirmDeviceApproval(env.DB, token, now);
   if (userCode === null) return page(EXPIRED, 400);
 
   return page({ ...APPROVED, detail: codeDetail(userCode) }, 200);

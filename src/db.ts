@@ -99,8 +99,14 @@ export interface DeviceCodeRow {
   user_code: string;
   /** The provider of the handshake in flight, and null between handshakes. */
   provider: string | null;
-  /** The OAuth `state` of the handshake in flight; cleared once confirmed. */
+  /**
+   * The OAuth `state` of the handshake in flight; cleared once confirmed. It
+   * identifies a handshake and authorizes nothing — whoever started it was
+   * handed it in their redirect.
+   */
   state: string | null;
+  /** The token the confirm form carries. Only the returning browser sees it. */
+  confirm_token: string | null;
   /** The PKCE verifier of the handshake in flight; cleared once spent. */
   verifier: string | null;
   /** The account a completed handshake proved, before anyone approved it. */
@@ -693,7 +699,8 @@ export async function startDeviceHandshake(
   const started = await db
     .prepare(
       `UPDATE device_codes
-          SET provider = ?, state = ?, verifier = ?, account_id = NULL
+          SET provider = ?, state = ?, verifier = ?,
+              account_id = NULL, confirm_token = NULL
         WHERE user_code = ? AND approved_at IS NULL AND expires_at > ?
         RETURNING user_code`,
     )
@@ -728,7 +735,8 @@ export async function findPendingHandshake(
 }
 
 /**
- * Record whose email the handshake proved, without approving anything.
+ * Record whose email the handshake proved, and mint the token that can approve
+ * it, without approving anything.
  *
  * The split between this and `confirmDeviceApproval` is the whole defence
  * against device-code phishing (RFC 8628 §5.4). A provider's redirect back is a
@@ -738,23 +746,44 @@ export async function findPendingHandshake(
  * account. Identity is proved here; the approval is a `POST` a person has to
  * press, and until they do, `approved_at` is null and #57's poll sees nothing.
  *
- * The verifier is cleared because it is spent. `state` is not: the confirm form
- * is about to carry it back.
+ * `confirmToken` is what that press must carry, and it is minted here rather
+ * than reusing `state` because `state` is not a secret from the attacker: they
+ * start a handshake on their own code, read it out of the redirect they are
+ * given, and send the provider's url to a victim. The victim's callback lands
+ * here, on the attacker's row — and if the confirm keyed on `state`, the
+ * attacker would then approve their own code as the victim, who pressed
+ * nothing. This token is returned only in the page the victim's browser
+ * receives, so the attacker never has it.
+ *
+ * `verifier IS NOT NULL` is the whole concurrency story. One authorization url
+ * can be completed by two different people, and both callbacks read the
+ * verifier before either exchange finishes; without this predicate the second
+ * would overwrite the first's `account_id` after the confirm page for the first
+ * had already been rendered, and that page would approve the wrong account.
+ * Clearing the verifier in the same statement makes exactly one of them the
+ * winner, and only the winner gets a confirm token.
+ *
+ * `state` survives, because the row still has to be findable while the confirm
+ * page is open.
  */
 export async function holdProvenIdentity(
   db: D1Database,
   state: string,
   accountId: string,
+  confirmToken: string,
   nowMs: number,
 ): Promise<boolean> {
   const held = await db
     .prepare(
       `UPDATE device_codes
-          SET account_id = ?, verifier = NULL
-        WHERE state = ? AND approved_at IS NULL AND expires_at > ?
+          SET account_id = ?, confirm_token = ?, verifier = NULL
+        WHERE state = ?
+          AND verifier IS NOT NULL
+          AND approved_at IS NULL
+          AND expires_at > ?
         RETURNING user_code`,
     )
-    .bind(accountId, state, nowMs)
+    .bind(accountId, confirmToken, state, nowMs)
     .first<{ user_code: string }>();
 
   return held !== null;
@@ -769,27 +798,31 @@ export async function holdProvenIdentity(
  * polls for, and it can grow this statement's `SET` list — minting the token,
  * recording the machine label — without the page changing.
  *
- * Every reason to refuse is one null: no such state, an expired code, an
- * identity never proven, or a confirm pressed twice. The predicates ride on the
- * write rather than an earlier read, so two presses produce exactly one
- * approval, and clearing `state` is what makes the second one find nothing.
+ * Keyed on the confirm token rather than on `state`, because only the token is
+ * a secret from whoever started the handshake. `holdProvenIdentity` says why
+ * that distinction is the difference between a press and a link.
+ *
+ * Every reason to refuse is one null: no such token, an expired code, or a
+ * confirm pressed twice. The predicates ride on the write rather than an
+ * earlier read, so two presses produce exactly one approval, and clearing both
+ * tokens is what makes the second find nothing.
  */
 export async function confirmDeviceApproval(
   db: D1Database,
-  state: string,
+  confirmToken: string,
   atMs: number,
 ): Promise<string | null> {
   const approved = await db
     .prepare(
       `UPDATE device_codes
-          SET approved_at = ?, state = NULL
-        WHERE state = ?
+          SET approved_at = ?, state = NULL, confirm_token = NULL
+        WHERE confirm_token = ?
           AND approved_at IS NULL
           AND account_id IS NOT NULL
           AND expires_at > ?
         RETURNING user_code`,
     )
-    .bind(atMs, state, atMs)
+    .bind(atMs, confirmToken, atMs)
     .first<{ user_code: string }>();
 
   return approved?.user_code ?? null;

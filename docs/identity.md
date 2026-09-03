@@ -55,8 +55,9 @@ is one approval page.
    finds that row, the authorization code is exchanged, and the provider's
    **verified** address and its permanent **subject** are read.
 5. Those resolve to an account, creating one if the subject is new. The account
-   is recorded against the code and the page asks whether to approve it.
-6. They press Approve, which `POST`s the handshake's `state` back and is the only
+   is recorded against the code, a fresh confirm token is minted, and the page
+   asks whether to approve it.
+6. They press Approve, which `POST`s that confirm token back and is the only
    thing that marks the code approved.
 
 The first approval an address makes is the registration. Nothing about the
@@ -105,6 +106,22 @@ no prompt at all. If that redirect completed the approval, sending a victim a
 link would be enough to attach an attacker's terminal to their account — the
 device-flow phishing case RFC 8628 §5.4 exists for. So the redirect proves an
 identity and nothing more, and the approval is a `POST` a person has to press.
+
+**The press carries the confirm token, never the `state`**, and the difference
+matters more than it looks. The `state` is handed to whoever *starts* a
+handshake, in the redirect they are sent — so an attacker starts one on their
+own code, reads it, and sends the provider's url to a victim. The victim's
+callback records their account on the attacker's row, which is harmless in
+itself. It stops being harmless if the attacker can then approve that row with
+the value they already hold, so the token the confirm requires is minted at step
+5 and returned only in the page the victim's browser receives. Whoever started
+the handshake never sees it.
+
+Step 5 is also where one handshake settles on one identity. Two people can
+complete the same authorization url, and both callbacks read the PKCE verifier
+before either exchange finishes; the write that records an identity consumes
+that verifier, so exactly one of them wins and only the winner is given a
+confirm token. The other is told to start again.
 
 The device flow either side of that page — minting the code, polling it, and
 issuing the token an approval earns — is
