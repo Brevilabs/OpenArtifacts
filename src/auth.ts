@@ -27,10 +27,22 @@
  * The fallback covers outages only, never rejections. A key the server actively
  * refuses is denied even when it has a warm cache row — otherwise revoking a key
  * would never take effect, since the fallback would re-admit it on every request.
+ *
+ * **A second credential resolves here too.** An OpenArtifacts token, issued by
+ * the device flow to an account this deployment owns, arrives in the same
+ * header and answers the same question. The two are told apart by the token's
+ * `oat_` prefix rather than by trying one path and falling back to the other,
+ * and that is a security property, not a shortcut: without it a token would be
+ * handed to the Brevilabs license server to be identified, which would leak our
+ * own secret to a third party on every request. Neither path can reach the
+ * other's store, so a token can never be validated as a license key and a
+ * license key can never be looked up as a token.
  */
-import { LICENSE_CACHE_TTL_MS, type Env } from "./config.js";
-import { d1PublisherStore, type PublisherStore } from "./db.js";
+import { LICENSE_CACHE_TTL_MS, TOKEN_LAST_USED_RESOLUTION_MS, type Env } from "./config.js";
+import { d1PublisherStore, findLiveToken, touchTokenUse, type PublisherStore } from "./db.js";
 import { errorResponse, type ErrorCode } from "./errors.js";
+import { sha256Hex } from "./hash.js";
+import { TOKEN_PREFIX } from "./ids.js";
 
 /** tRPC endpoint on the license server, appended to `LICENSE_API_URL`. */
 const VALIDATE_PATH = "/api/trpc/license.validateLicenseKey";
@@ -46,6 +58,23 @@ const LICENSE_TIMEOUT_MS = 5_000;
 const UNKNOWN_PLAN = "unknown";
 
 /**
+ * The plan an account authenticated by its own token publishes under.
+ *
+ * A token account holds no license, so it has no plan the license server could
+ * name, and `mayPublish` is the only gate on the push path — a brand-new
+ * account that could not publish would make the whole approval flow end in a
+ * refusal. It therefore has to be a value the license server can never return:
+ * naming it `free` would hand publishing to every FREE license key at the same
+ * time, which is the one mistake this constant exists to make impossible.
+ *
+ * It is a placeholder for `accounts.plan` and the per-plan limits config in
+ * [#60](https://github.com/Brevilabs/OpenArtifacts/issues/60). Until then a
+ * token account publishes under the same ceilings a license key does, since
+ * both are counted per owner.
+ */
+export const ACCOUNT_TOKEN_PLAN = "account";
+
+/**
  * The paid Copilot plans entitled to publish.
  *
  * The license server currently has two paid plans: Plus subscriptions and the
@@ -56,7 +85,7 @@ const UNKNOWN_PLAN = "unknown";
  * Lowercase because `validateLicense` folds the license server's uppercase enum
  * before it gets here, and because `publishers.plan` stores the folded form.
  */
-const PUBLISHING_PLANS: ReadonlySet<string> = new Set(["plus", "believer"]);
+const PUBLISHING_PLANS: ReadonlySet<string> = new Set(["plus", "believer", ACCOUNT_TOKEN_PLAN]);
 
 /**
  * Entitlement is per *operation*, not per identity, so this is deliberately not
@@ -80,11 +109,15 @@ export const INELIGIBLE_PLAN: { reason: PublisherFailure; message: string } = {
 
 export interface Publisher {
   /**
-   * The app-sites `User.id` whose documents these are. Every doc query keys off
-   * it, which is what makes two keys on one account see one shelf and lets a
-   * openartifacts.ai session find the same documents from `session.user.id` alone.
+   * Whose documents these are. Every doc query keys off it, which is what makes
+   * two keys on one account see one shelf.
    *
-   * The license key itself appears nowhere outside this module: it identifies a
+   * It holds an app-sites `User.id` for a license key and an `oa_`-prefixed
+   * account id for a token, and nothing downstream can tell or cares — the two
+   * id spaces cannot collide, so one column carries both safely
+   * (`docs/identity.md`).
+   *
+   * The credential itself appears nowhere outside this module. It identifies a
    * credential, and nothing downstream has any business knowing which one was
    * used.
    */
@@ -97,6 +130,8 @@ export type PublisherFailure =
   | "missing_credentials"
   /** The license server answered, and the answer was no. */
   | "invalid_license"
+  /** The credential looked like one of our tokens, and no live token matches. */
+  | "invalid_token"
   /**
    * The key is real and current, but its plan may not publish. Raised by the
    * router on `POST`/`PUT` only — never by authentication, which would take
@@ -137,7 +172,7 @@ export async function authenticateRequest(
     return {
       ok: false,
       reason: "missing_credentials",
-      message: "Expected an Authorization: Bearer <license key> header.",
+      message: "Expected an Authorization: Bearer <token> header.",
     };
   }
   // `return await`: see the note on the router's catch in index.ts.
@@ -149,6 +184,14 @@ export async function resolvePublisher(
   env: Env,
   deps: AuthDeps = {},
 ): Promise<PublisherResolution> {
+  // Prefix first, and never a fallback between the two paths: a value that
+  // announces itself as one of our tokens is only ever checked against our own
+  // table, so it cannot be sent to the license server by accident.
+  if (token.startsWith(TOKEN_PREFIX)) {
+    // `return await`: see the note on the router's catch in index.ts.
+    return await resolveAccountToken(token, env, deps);
+  }
+
   const now = deps.now ?? Date.now;
   const store = deps.store ?? d1PublisherStore(env.DB);
 
@@ -199,9 +242,46 @@ export async function resolvePublisher(
   }
 }
 
+/**
+ * Resolve one of this deployment's own tokens to the account it publishes as.
+ *
+ * There is no cache and no outage story, because there is nothing to be out:
+ * the token's owner is a row in this database rather than an answer from
+ * another service. That is also why a revoked token stops working on its very
+ * next request, where a revoked license key keeps working until its cached
+ * validation ages out.
+ */
+async function resolveAccountToken(
+  token: string,
+  env: Env,
+  deps: AuthDeps,
+): Promise<PublisherResolution> {
+  const now = deps.now ?? Date.now;
+  const live = await findLiveToken(env.DB, await sha256Hex(token));
+
+  if (live === null) {
+    // The same answer for an unknown token, a revoked one and a typo. Which of
+    // the three it was is not the caller's business, and telling them would
+    // turn a refusal into a probe.
+    return {
+      ok: false,
+      reason: "invalid_token",
+      message: "That token is not valid. Sign in again to get a new one.",
+    };
+  }
+
+  const at = now();
+  if (live.last_used_at === null || live.last_used_at < at - TOKEN_LAST_USED_RESOLUTION_MS) {
+    await touchTokenUse(env.DB, live.id, at, at - TOKEN_LAST_USED_RESOLUTION_MS);
+  }
+
+  return { ok: true, publisher: { owner: live.account_id, plan: ACCOUNT_TOKEN_PLAN } };
+}
+
 const FAILURE_STATUS: Record<PublisherFailure, ErrorCode> = {
   missing_credentials: "unauthorized",
   invalid_license: "unauthorized",
+  invalid_token: "unauthorized",
   // `unauthorized`, not a new code: the contract in docs/http-api.md is frozen,
   // and `message` is the part of it that is free to change. A client matching
   // on `code` keeps working; a human reads why. Only `POST` and `PUT` can
@@ -339,9 +419,4 @@ async function validateLicense(token: string, env: Env, deps: AuthDeps): Promise
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null;
-}
-
-async function sha256Hex(value: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
-  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }

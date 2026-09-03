@@ -87,12 +87,14 @@ export interface IdentityRow {
 }
 
 /**
- * A device code the CLI is polling, and the OAuth handshake proving who is
+ * A device code a terminal is polling, and the OAuth handshake proving who is
  * approving it.
  *
- * **#57 owns the device flow and extends this table.** The columns here are
- * only the ones approval reads and writes; the device code itself, its token
- * and the machine label belong to that issue.
+ * One row carries three lifetimes that overlap: the code itself, which lives
+ * until it is collected or expires; a handshake, which lives from a provider
+ * button to the confirmation page; and the outcome, which is an approval, a
+ * refusal, or neither. Every column that is null between handshakes is null
+ * because the handshake that set it is over.
  */
 export interface DeviceCodeRow {
   /** Uppercase, as `normalizeUserCode` folds it. */
@@ -113,12 +115,46 @@ export interface DeviceCodeRow {
   account_id: string | null;
   /** Epoch ms of the human's approval, and null until it is given. */
   approved_at: number | null;
+  /** SHA-256 of the device code the terminal polls with. Never the raw value. */
+  device_code_hash: string | null;
+  /** What the terminal called itself when it asked for the code. */
+  label: string | null;
+  /** Epoch ms of a refusal on the approval page, and null until one is given. */
+  denied_at: number | null;
+  /** Epoch ms of the terminal's last poll, which `slow_down` is measured from. */
+  last_polled_at: number | null;
   expires_at: number;
   created_at: number;
 }
 
-/** The half of a pending handshake the callback needs to finish it. */
-export type PendingHandshake = Pick<DeviceCodeRow, "user_code" | "provider" | "verifier">;
+/**
+ * The half of a pending handshake the callback needs to finish it. The label
+ * rides along so the confirmation page can name the machine being approved
+ * instead of calling it "that terminal".
+ */
+export type PendingHandshake = Pick<
+  DeviceCodeRow,
+  "user_code" | "provider" | "verifier" | "label"
+>;
+
+/**
+ * A token an approval issued.
+ *
+ * The value itself is not here and cannot be: only `token_hash` is stored, and
+ * the raw token exists once, in the response to the poll that collected it.
+ */
+export interface TokenRow {
+  id: string;
+  token_hash: string;
+  account_id: string;
+  label: string | null;
+  created_at: number;
+  last_used_at: number | null;
+  revoked_at: number | null;
+}
+
+/** A live token as `GET /api/v1/tokens` reports it. The hash never leaves D1. */
+export type ListedTokenRow = Pick<TokenRow, "id" | "label" | "created_at" | "last_used_at">;
 
 /**
  * The publisher row as auth needs it: read the cached validation, write it back
@@ -679,7 +715,7 @@ export async function deviceCodeIsPending(
   const row = await db
     .prepare(
       `SELECT 1 FROM device_codes
-        WHERE user_code = ? AND approved_at IS NULL AND expires_at > ?`,
+        WHERE user_code = ? AND approved_at IS NULL AND denied_at IS NULL AND expires_at > ?`,
     )
     .bind(userCode, nowMs)
     .first();
@@ -719,7 +755,7 @@ export async function startDeviceHandshake(
       `UPDATE device_codes
           SET provider = ?, state = ?, verifier = ?,
               account_id = NULL, confirm_token = NULL
-        WHERE user_code = ? AND approved_at IS NULL AND expires_at > ?
+        WHERE user_code = ? AND approved_at IS NULL AND denied_at IS NULL AND expires_at > ?
         RETURNING user_code`,
     )
     .bind(provider, state, verifier, userCode, nowMs)
@@ -745,8 +781,8 @@ export async function findPendingHandshake(
   // `return await`: see the note on the router's catch in index.ts.
   return await db
     .prepare(
-      `SELECT user_code, provider, verifier FROM device_codes
-        WHERE state = ? AND approved_at IS NULL AND expires_at > ?`,
+      `SELECT user_code, provider, verifier, label FROM device_codes
+        WHERE state = ? AND approved_at IS NULL AND denied_at IS NULL AND expires_at > ?`,
     )
     .bind(state, nowMs)
     .first<PendingHandshake>();
@@ -798,6 +834,7 @@ export async function holdProvenIdentity(
         WHERE state = ?
           AND verifier IS NOT NULL
           AND approved_at IS NULL
+          AND denied_at IS NULL
           AND expires_at > ?
         RETURNING user_code`,
     )
@@ -836,6 +873,7 @@ export async function confirmDeviceApproval(
           SET approved_at = ?, state = NULL, confirm_token = NULL
         WHERE confirm_token = ?
           AND approved_at IS NULL
+          AND denied_at IS NULL
           AND account_id IS NOT NULL
           AND expires_at > ?
         RETURNING user_code`,
@@ -844,4 +882,340 @@ export async function confirmDeviceApproval(
     .first<{ user_code: string }>();
 
   return approved?.user_code ?? null;
+}
+
+/**
+ * Refuse the device code a proven handshake belongs to, returning the code
+ * refused or null when there is nothing to refuse.
+ *
+ * The mirror image of `confirmDeviceApproval`, and it exists for the attack
+ * that split confirmation into two steps in the first place. Someone who lands
+ * on a confirmation page for a terminal that is not theirs — the RFC 8628 §5.4
+ * case — can close the tab and let the code expire, but that leaves the
+ * attacker's code live for the rest of its lifetime. This ends it now, and the
+ * terminal polling it is told `access_denied` rather than waiting out the
+ * expiry for news.
+ *
+ * Keyed on the confirm token for the same reason the approval is: only the
+ * token is a secret from whoever started the handshake, so only the browser
+ * that completed it can press either button.
+ */
+export async function denyDeviceApproval(
+  db: D1Database,
+  confirmToken: string,
+  atMs: number,
+): Promise<string | null> {
+  const denied = await db
+    .prepare(
+      `UPDATE device_codes
+          SET denied_at = ?, state = NULL, confirm_token = NULL, verifier = NULL
+        WHERE confirm_token = ?
+          AND approved_at IS NULL
+          AND denied_at IS NULL
+          AND expires_at > ?
+        RETURNING user_code`,
+    )
+    .bind(atMs, confirmToken, atMs)
+    .first<{ user_code: string }>();
+
+  return denied?.user_code ?? null;
+}
+
+/**
+ * Put a freshly minted code in the table, or answer false when its user code is
+ * already taken.
+ *
+ * `user_code` is the primary key, so a collision is a refused insert rather than
+ * an overwrite — which is the safe direction: overwriting would point a waiting
+ * terminal's code at a different device code, and the approval a person then
+ * gave would land on somebody else's terminal. The caller redraws instead.
+ *
+ * Eight characters of a twenty-letter alphabet against the handful of codes
+ * alive at once makes a collision vanishingly rare; the sweep is what keeps it
+ * that way, since a code that is never deleted is a code that can never be
+ * drawn again.
+ */
+export async function insertDeviceCode(
+  db: D1Database,
+  code: Pick<
+    DeviceCodeRow,
+    "user_code" | "device_code_hash" | "label" | "expires_at" | "created_at"
+  >,
+): Promise<boolean> {
+  const inserted = await db
+    .prepare(
+      `INSERT INTO device_codes (user_code, device_code_hash, label, expires_at, created_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT DO NOTHING
+       RETURNING user_code`,
+    )
+    .bind(code.user_code, code.device_code_hash, code.label, code.expires_at, code.created_at)
+    .first<{ user_code: string }>();
+
+  return inserted !== null;
+}
+
+/**
+ * Delete every device code that has expired, and every rate-limit window that
+ * has closed.
+ *
+ * **`user_code` is the primary key, so this is what makes a code reusable.**
+ * Without it, the twenty-letter alphabet would be drawing against every code
+ * ever issued rather than the few alive right now, and `insertDeviceCode` would
+ * start refusing draws for codes nobody is waiting on.
+ *
+ * It runs on the mint path rather than on a cron trigger, because minting is
+ * the only thing that creates these rows and the only thing that needs a free
+ * code — so the sweep is exactly co-located with the need, and a deployment
+ * that never mints never accumulates anything to sweep. A cron trigger would be
+ * a second deployment concern and a scheduled handler to maintain for work one
+ * indexed delete does in the request that cares about it.
+ *
+ * An expired code that was approved but never collected takes its token with
+ * it. The token was minted for a terminal that never came back for it, so
+ * nobody holds the value and leaving the row would put a live credential in the
+ * account's token list that its owner could not explain.
+ */
+export async function sweepExpired(db: D1Database, nowMs: number, windowMs: number): Promise<void> {
+  await db.batch([
+    db.prepare("DELETE FROM device_codes WHERE expires_at <= ?").bind(nowMs),
+    db
+      .prepare("DELETE FROM device_code_requests WHERE window_start <= ?")
+      .bind(nowMs - windowMs),
+  ]);
+}
+
+/**
+ * Claim one of a client's device-code mints for the current window, returning
+ * false when it has none left.
+ *
+ * Claim rather than check, exactly as `reserveDailyPush` does and for the same
+ * reason: the count is read and incremented by one statement, so a burst of
+ * concurrent requests cannot all see the same number and all proceed. The
+ * `WHERE` on the update branch is the limit; when it fails, `RETURNING` yields
+ * nothing and that is the refusal.
+ *
+ * @param client an opaque bucket for the caller, which `deviceClientBucket`
+ *   makes by hashing the client address — a thing to count against rather than
+ *   a record of who visited
+ * @param windowStart epoch ms of the start of the fixed window being counted
+ */
+export async function claimDeviceMint(
+  db: D1Database,
+  client: string,
+  windowStart: number,
+  limit: number,
+): Promise<boolean> {
+  const claimed = await db
+    .prepare(
+      `INSERT INTO device_code_requests (client, window_start, requests) VALUES (?, ?, 1)
+       ON CONFLICT(client, window_start) DO UPDATE SET requests = device_code_requests.requests + 1
+         WHERE device_code_requests.requests < ?
+       RETURNING requests`,
+    )
+    .bind(client, windowStart, limit)
+    .first<{ requests: number }>();
+
+  return claimed !== null;
+}
+
+/** What a poll needs to decide what to tell the terminal. */
+export type PolledDeviceCode = Pick<
+  DeviceCodeRow,
+  "user_code" | "approved_at" | "denied_at" | "expires_at" | "last_polled_at"
+>;
+
+/**
+ * Find the code a poll is asking about, by the hash of the device code it
+ * presented.
+ *
+ * The device code is the lookup key rather than the user code because it is the
+ * half the terminal keeps to itself. A user code is read aloud and typed into
+ * phones; if it could collect a token, every approval page would be showing the
+ * credential to the room.
+ */
+export async function findPolledDeviceCode(
+  db: D1Database,
+  deviceCodeHash: string,
+): Promise<PolledDeviceCode | null> {
+  // `return await`: see the note on the router's catch in index.ts.
+  return await db
+    .prepare(
+      `SELECT user_code, approved_at, denied_at, expires_at, last_polled_at
+         FROM device_codes WHERE device_code_hash = ?`,
+    )
+    .bind(deviceCodeHash)
+    .first<PolledDeviceCode>();
+}
+
+/** Record that the terminal polled, which is what the next `slow_down` is measured from. */
+export async function recordDevicePoll(
+  db: D1Database,
+  deviceCodeHash: string,
+  atMs: number,
+): Promise<void> {
+  await db
+    .prepare("UPDATE device_codes SET last_polled_at = ? WHERE device_code_hash = ?")
+    .bind(atMs, deviceCodeHash)
+    .run();
+}
+
+/**
+ * Issue the token an approved code earned, and consume the code doing it.
+ *
+ * **The token is minted here rather than when the person presses Approve**, and
+ * that ordering is the whole reason a raw token never touches the database. If
+ * approval issued it, the value would have to sit in a column until the
+ * terminal came back for it — a bearer credential at rest, and one left behind
+ * as a live token nobody holds whenever the terminal never comes back.
+ * Minting on collection means a token exists exactly when someone holds it.
+ *
+ * Both statements are one D1 batch, which is one transaction. The insert is
+ * predicated on the code being approved and the delete on the same condition,
+ * so a poll that arrives before the approval changes nothing, and two polls
+ * that arrive together cannot both collect: the second finds no row and
+ * inserts nothing.
+ *
+ * Deleting the code rather than marking it spent is also what makes a replay
+ * answer honestly. There is no third state to explain — a device code that has
+ * been collected is gone, and a second poll with it gets exactly what a poll
+ * with an expired code gets.
+ *
+ * @returns the label the token carries, or null when there was nothing to
+ *   collect
+ */
+export async function collectDeviceToken(
+  db: D1Database,
+  deviceCodeHash: string,
+  token: Pick<TokenRow, "id" | "token_hash" | "created_at">,
+): Promise<{ label: string | null } | null> {
+  const [issued] = await db.batch<{ label: string | null }>([
+    db
+      .prepare(
+        `INSERT INTO tokens (id, token_hash, account_id, label, created_at)
+         SELECT ?, ?, account_id, label, ?
+           FROM device_codes
+          WHERE device_code_hash = ? AND approved_at IS NOT NULL AND account_id IS NOT NULL
+         RETURNING label`,
+      )
+      .bind(token.id, token.token_hash, token.created_at, deviceCodeHash),
+    db
+      .prepare(
+        `DELETE FROM device_codes
+          WHERE device_code_hash = ? AND approved_at IS NOT NULL AND account_id IS NOT NULL`,
+      )
+      .bind(deviceCodeHash),
+  ]);
+
+  const row = issued?.results[0];
+  return row === undefined ? null : { label: row.label };
+}
+
+/**
+ * The account behind a token, or null when the token is unknown or revoked.
+ *
+ * Looked up by hash, like a license key, so the value the caller sent is never
+ * compared against anything stored — there is nothing stored to compare it to.
+ * A revoked token keeps its row so that its hash stays taken and it goes on
+ * failing; deleting the row would leave nothing for the next request to fail
+ * against, and the same value could in principle be minted again.
+ */
+export async function findLiveToken(
+  db: D1Database,
+  tokenHash: string,
+): Promise<Pick<TokenRow, "id" | "account_id" | "last_used_at"> | null> {
+  // `return await`: see the note on the router's catch in index.ts.
+  return await db
+    .prepare(
+      `SELECT id, account_id, last_used_at FROM tokens
+        WHERE token_hash = ? AND revoked_at IS NULL`,
+    )
+    .bind(tokenHash)
+    .first<Pick<TokenRow, "id" | "account_id" | "last_used_at">>();
+}
+
+/**
+ * Move a token's `last_used_at` forward, but only when it is already stale.
+ *
+ * The predicate is what keeps this off the hot path: without it every
+ * authenticated request — including every read — would carry a D1 write. The
+ * column answers "which of my machines is still using this", and an hour's
+ * resolution answers that as well as a millisecond's would.
+ *
+ * @param staleBefore the timestamp a recorded use has to predate to be worth
+ *   rewriting, which the caller derives from `TOKEN_LAST_USED_RESOLUTION_MS`
+ */
+export async function touchTokenUse(
+  db: D1Database,
+  id: string,
+  atMs: number,
+  staleBefore: number,
+): Promise<void> {
+  await db
+    .prepare(
+      `UPDATE tokens SET last_used_at = ?
+        WHERE id = ? AND (last_used_at IS NULL OR last_used_at < ?)`,
+    )
+    .bind(atMs, id, staleBefore)
+    .run();
+}
+
+/** The live tokens on an account, newest first. Values and hashes stay in D1. */
+export async function listAccountTokens(
+  db: D1Database,
+  accountId: string,
+  limit: number,
+): Promise<ListedTokenRow[]> {
+  const { results } = await db
+    .prepare(
+      `SELECT id, label, created_at, last_used_at FROM tokens
+        WHERE account_id = ? AND revoked_at IS NULL
+        ORDER BY created_at DESC, id DESC
+        LIMIT ?`,
+    )
+    .bind(accountId, limit)
+    .all<ListedTokenRow>();
+
+  return results;
+}
+
+/**
+ * Revoke one of an account's tokens, answering false when it has no such live
+ * token.
+ *
+ * The account is a predicate on the write rather than a check before it, which
+ * is what makes another account's token indistinguishable from one that never
+ * existed — the 404-never-403 rule the doc endpoints follow, applied to the one
+ * other thing this API can name.
+ *
+ * Revoking twice answers false the second time, like deleting a doc twice
+ * answers 404. What repeats safely is the outcome: the token is dead either
+ * way.
+ */
+export async function revokeAccountToken(
+  db: D1Database,
+  id: string,
+  accountId: string,
+  atMs: number,
+): Promise<boolean> {
+  const revoked = await db
+    .prepare(
+      `UPDATE tokens SET revoked_at = ?
+        WHERE id = ? AND account_id = ? AND revoked_at IS NULL
+        RETURNING id`,
+    )
+    .bind(atMs, id, accountId)
+    .first<{ id: string }>();
+
+  return revoked !== null;
+}
+
+/** Live tokens an account still holds, which is what a revoke reports back. */
+export async function countLiveTokens(db: D1Database, accountId: string): Promise<number> {
+  const row = await db
+    .prepare("SELECT COUNT(*) AS n FROM tokens WHERE account_id = ? AND revoked_at IS NULL")
+    .bind(accountId)
+    .first<{ n: number }>();
+
+  return row?.n ?? 0;
 }

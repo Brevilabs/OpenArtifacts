@@ -232,6 +232,7 @@ describe("startDeviceHandshake", () => {
       user_code: "START-2",
       provider: "github",
       verifier: "v2",
+      label: null,
     });
   });
 
@@ -265,6 +266,7 @@ describe("findPendingHandshake", () => {
       user_code: "FIND-1",
       provider: "github",
       verifier: "verifier-find",
+      label: null,
     });
   });
 

@@ -3,7 +3,7 @@
  * and the only way an account comes into existence.
  *
  * There is no sign-up form, no sign-in page and no session. A CLI prints a url
- * carrying the device code it is waiting on (#57), the person opens it, proves
+ * carrying the user code it is waiting on, the person opens it, proves
  * an email with Google or GitHub, and presses a button to approve. The first
  * approval an address makes is the registration; every one after it finds the
  * same account. When the page is done, nothing about the browser is remembered
@@ -32,6 +32,7 @@
 import { type Env } from "../config.js";
 import {
   confirmDeviceApproval,
+  denyDeviceApproval,
   deviceCodeIsPending,
   findPendingHandshake,
   holdProvenIdentity,
@@ -68,13 +69,17 @@ export const USER_CODE_PARAM = "user_code";
  */
 const CONFIRM_TOKEN_FIELD = "confirm_token";
 
+/** The words the confirmation page uses when the terminal named itself nothing. */
+const UNNAMED_DEVICE = "that terminal";
+
 /**
  * A device code as it may appear in a url.
  *
- * Deliberately a shape rather than a format: **#57 mints these codes** and is
- * free to choose their length and grouping, so this only has to exclude what
- * cannot be one. Upper case and dashes are what RFC 8628 codes look like when
- * a person reads one off a terminal onto a phone.
+ * Deliberately a shape rather than a format. `newUserCode` decides the length
+ * and the grouping, and this only has to exclude what cannot be a code at all,
+ * so changing the format there does not strand links already printed. Upper
+ * case and dashes are what RFC 8628 codes look like when a person reads one off
+ * a terminal onto a phone.
  */
 const USER_CODE_PATTERN = /^[A-Z0-9][A-Z0-9-]{0,63}$/;
 
@@ -120,10 +125,11 @@ export function normalizeUserCode(raw: string | null): string | null {
  * POST /approve/start/{provider}     redirects to the provider
  * GET  /approve/callback/{provider}  where the provider redirects back
  * POST /approve/confirm              the press that approves the code
+ * POST /approve/deny                 the press that refuses it
  * ```
  *
- * The methods are the design rather than a convention. Only the two `POST`s
- * change what a device code is worth, and neither can be caused by a link.
+ * The methods are the design rather than a convention. Only the three `POST`s
+ * change what a device code is worth, and none can be caused by a link.
  *
  * @param url the request url, whose origin is also the redirect uri the
  *   providers are registered against — the router has already refused every
@@ -147,6 +153,9 @@ export async function handleApproval(
     }
     if (section === "confirm" && provider === undefined && request.method === "POST") {
       return await confirm(request, env, deps);
+    }
+    if (section === "deny" && provider === undefined && request.method === "POST") {
+      return await deny(request, env, deps);
     }
     if (extra.length === 0 && provider !== undefined) {
       if (section === "start" && request.method === "POST") {
@@ -317,17 +326,26 @@ async function prove(
     return page(EXPIRED, 400);
   }
 
+  // The machine's own name for itself, which is the only thing on this page
+  // that tells someone whether the terminal waiting on this code is theirs. It
+  // is client-supplied text, so it is escaped like the address beside it.
+  const device =
+    handshake.label === null ? UNNAMED_DEVICE : `<b>${escapeHtml(handshake.label)}</b>`;
+
   return page(
     {
       ...CONFIRM,
-      message: `You are signed in as ${escapeHtml(email)}. Approving lets that terminal publish as you until you revoke it. If you did not start this, close the page and nothing happens.`,
+      message: `You are signed in as ${escapeHtml(email)}. Approving lets ${device} publish as you until you revoke it. If you did not start this, choose Deny: nothing is approved and the code stops working immediately.`,
       detail: codeDetail(handshake.user_code),
       actions: actions(
-        form(
-          `${APPROVAL_PREFIX}/confirm`,
-          { [CONFIRM_TOKEN_FIELD]: confirmToken },
-          "Approve this device",
-        ),
+        [
+          form(
+            `${APPROVAL_PREFIX}/confirm`,
+            { [CONFIRM_TOKEN_FIELD]: confirmToken },
+            "Approve this device",
+          ),
+          form(`${APPROVAL_PREFIX}/deny`, { [CONFIRM_TOKEN_FIELD]: confirmToken }, "Deny"),
+        ].join(""),
       ),
     },
     200,
@@ -356,6 +374,34 @@ async function confirm(request: Request, env: Env, deps: ApprovalDeps): Promise<
   if (userCode === null) return page(EXPIRED, 400);
 
   return page({ ...APPROVED, detail: codeDetail(userCode) }, 200);
+}
+
+/**
+ * The press that refuses the code.
+ *
+ * The other half of the defence the confirm token exists for. Closing the tab
+ * already refuses an approval, but it leaves the code live for the rest of its
+ * lifetime — so someone who lands here for a terminal that is not theirs, which
+ * is exactly the RFC 8628 §5.4 case, has no way to end it. This ends it now,
+ * and the terminal polling that code is told it was refused instead of waiting
+ * out the expiry to learn nothing.
+ *
+ * The token is cleared by whichever press lands first, so a code can be
+ * approved or refused but never both, and neither can be replayed.
+ */
+async function deny(request: Request, env: Env, deps: ApprovalDeps): Promise<Response> {
+  if (!approvalIsConfigured(env)) return page(NOT_CONFIGURED, 503);
+
+  const submitted = await readSmallForm(request);
+  if (submitted === null) return page(NOT_FOUND, 404);
+
+  const token = submitted.get(CONFIRM_TOKEN_FIELD);
+  const now = (deps.now ?? Date.now)();
+
+  const userCode = token === null ? null : await denyDeviceApproval(env.DB, token, now);
+  if (userCode === null) return page(EXPIRED, 400);
+
+  return page({ ...DENIED, detail: codeDetail(userCode) }, 200);
 }
 
 /**
@@ -445,6 +491,14 @@ const APPROVED: BrandPage = {
   heading: "Approved.",
   message:
     "Your terminal is finishing up now, and you can close this page. It keeps the token from here on, so you will not be asked again on this machine.",
+  actions: ABOUT_LINK,
+};
+
+const DENIED: BrandPage = {
+  title: "Device denied",
+  heading: "Denied.",
+  message:
+    "That code is now dead and the terminal waiting on it has been told so. Nothing was approved and no token was issued. If the request was not yours, there is nothing else to do.",
   actions: ABOUT_LINK,
 };
 

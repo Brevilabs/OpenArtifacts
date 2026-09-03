@@ -113,7 +113,132 @@ export const HANDSHAKE_TOKEN_BYTES = 32;
  * has plus a second one nobody needs.
  */
 export function newHandshakeToken(): string {
-  const bytes = new Uint8Array(HANDSHAKE_TOKEN_BYTES);
+  return randomBase32(HANDSHAKE_TOKEN_BYTES);
+}
+
+/** CSPRNG bytes as base32, which is the shape of every secret minted here. */
+function randomBase32(byteLength: number): string {
+  const bytes = new Uint8Array(byteLength);
   crypto.getRandomValues(bytes);
   return encodeBase32(bytes);
+}
+
+/**
+ * Bytes in the device code a terminal polls with.
+ *
+ * 256 bits, the same as a handshake token and for the same reason: it is the
+ * only thing that can collect the token an approval earns, so guessing one
+ * would be taking somebody's credential. It is never displayed and never typed,
+ * so its length costs nothing.
+ */
+export const DEVICE_CODE_BYTES = 32;
+
+/** The secret half of a device authorization, held only by the terminal. */
+export function newDeviceCode(): string {
+  return randomBase32(DEVICE_CODE_BYTES);
+}
+
+/**
+ * The alphabet a user code is drawn from. Shown grouped: `WDJB-MJHT`.
+ *
+ * Twenty consonants, exactly RFC 8628 §6.1's recommended set. Two properties
+ * matter and neither is obvious:
+ *
+ * - **No digits.** A code is read off one screen and typed into another, often
+ *   a phone, so `0`/`O` and `1`/`I`/`l` would each be a support request. The
+ *   doc-id alphabet solves the same problem by dropping those letters instead;
+ *   here the digits go, because a code is spoken as letters.
+ * - **No vowels.** Without them no draw can spell a word, which is what keeps a
+ *   code from being an obscenity or somebody's brand name on screen. That is
+ *   worth more than the entropy it costs.
+ *
+ * Twenty to the eighth is about 2^34.6, which is what the RFC asks for when the
+ * endpoint is rate limited — and the code is not a credential in any case,
+ * since polling needs the device code and approving needs a sign-in.
+ */
+export const USER_CODE_ALPHABET = "BCDFGHJKLMNPQRSTVWXZ";
+
+/** Characters of randomness in a user code, excluding the grouping dash. */
+export const USER_CODE_LENGTH = 8;
+
+/** Where the dash goes. Two groups of four is what people read back correctly. */
+const USER_CODE_GROUP = 4;
+
+/**
+ * The short code a person reads off their terminal and types into the approval
+ * page.
+ *
+ * Rejection sampling rather than `byte % 20`: 256 is not a multiple of 20, so a
+ * plain modulo would make the first sixteen letters likelier than the last
+ * four. The bias is small and the fix is one comparison, and an alphabet with
+ * quietly uneven letters is how the entropy claim above stops being true.
+ */
+export function newUserCode(): string {
+  const size = USER_CODE_ALPHABET.length;
+  // Largest multiple of the alphabet size that fits in a byte. A draw at or
+  // above it is discarded rather than folded.
+  const ceiling = Math.floor(256 / size) * size;
+  const draw = new Uint8Array(1);
+
+  let code = "";
+  let drawn = 0;
+  while (drawn < USER_CODE_LENGTH) {
+    crypto.getRandomValues(draw);
+    const byte = draw[0] ?? 0;
+    // Discarded before the dash is placed, so a rejected draw cannot leave two.
+    if (byte >= ceiling) continue;
+    if (drawn === USER_CODE_GROUP) code += "-";
+    code += USER_CODE_ALPHABET[byte % size];
+    drawn += 1;
+  }
+  return code;
+}
+
+/**
+ * The prefix every token this deployment issues carries.
+ *
+ * It is what tells `resolvePublisher` which credential it is holding, and that
+ * matters for more than tidiness: without it a token would be sent to the
+ * Brevilabs license server to be identified, handing our own secret to a third
+ * party on every request. It also makes a leaked token recognisable to a secret
+ * scanner, which a bare random string is not.
+ */
+export const TOKEN_PREFIX = "oat_";
+
+/** Bytes of entropy in a token. It is a bearer credential; treat it as one. */
+export const TOKEN_BYTES = 32;
+
+/** A token an approval earns. Returned once, stored only as a hash. */
+export function newApiToken(): string {
+  return `${TOKEN_PREFIX}${randomBase32(TOKEN_BYTES)}`;
+}
+
+/**
+ * The prefix on a token's public id, so a person reading CLI output can tell it
+ * from the token itself and from a doc id.
+ */
+export const TOKEN_ID_PREFIX = "tok_";
+
+/**
+ * Bytes in a token id. Like an account id it grants nothing and is never
+ * accepted as proof of anything, so it only has to stay unique.
+ */
+export const TOKEN_ID_BYTES = 10;
+
+/** The name a token is listed and revoked by. Never derived from its value. */
+export function newTokenId(): string {
+  return `${TOKEN_ID_PREFIX}${randomBase32(TOKEN_ID_BYTES)}`;
+}
+
+/** 80 / 5 — the characters `TOKEN_ID_BYTES` encodes to, with nothing left over. */
+const TOKEN_ID_LENGTH = 16;
+
+const TOKEN_ID_PATTERN = new RegExp(`^${TOKEN_ID_PREFIX}[${ALPHABET}]{${TOKEN_ID_LENGTH}}$`);
+
+/**
+ * Cheap shape check, so revoking a junk id costs no D1 read. Passing it says
+ * nothing about whether the token exists or whose it is.
+ */
+export function isTokenId(value: string): boolean {
+  return TOKEN_ID_PATTERN.test(value);
 }
