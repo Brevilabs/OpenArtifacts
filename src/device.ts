@@ -401,4 +401,3 @@ async function claimUserCode(
   }
   return null;
 }
-
