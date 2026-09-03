@@ -54,16 +54,23 @@ function post(path: string, fields: Record<string, string>, over: Partial<Env> =
   return send(path, { method: "POST", body: new URLSearchParams(fields) }, over);
 }
 
-/** The callback reaches the network in production, so its client is replaced. */
-function oauthAnswering(email: string | null): OAuthClient & { calls: number } {
+/**
+ * The callback reaches the network in production, so its client is replaced.
+ * The subject defaults to one derived from the address, since most cases care
+ * only that the two travel together; the reassigned-mailbox case sets it.
+ */
+function oauthAnswering(
+  email: string | null,
+  subject = `sub-${email}`,
+): OAuthClient & { calls: number } {
   const client = {
     calls: 0,
     authorizationUrl(provider: ProviderId, redirectUri: string, state: string) {
       return new URL(`https://provider.test/${provider}?state=${state}&r=${redirectUri}`);
     },
-    async verifiedEmail() {
+    async verifiedIdentity() {
       client.calls += 1;
-      return email;
+      return email === null ? null : { subject, email };
     },
   };
   return client;
@@ -147,12 +154,13 @@ async function approve(
   provider: ProviderId = "google",
   userCode = USER_CODE,
   email = "ada@example.com",
+  subject?: string,
 ): Promise<Response> {
   await begin(provider, userCode);
   const proven = await callback({
     provider,
     state: await startedState(userCode),
-    oauth: oauthAnswering(email),
+    oauth: oauthAnswering(email, subject ?? `sub-${provider}`),
   });
   return await post("/approve/confirm", { state: confirmState(await proven.text()) });
 }
@@ -470,6 +478,40 @@ describe("approving more than once", () => {
     await approve("github", "SECOND-CODE", "Ada@Example.com");
 
     expect((await readCode("SECOND-CODE"))?.account_id).toBe(first);
+    expect(await accountCount()).toBe(1);
+  });
+
+  /**
+   * A mailbox handed to a new person must not hand over the previous holder's
+   * documents. The address is the same and the provider subject is not, which
+   * is the only difference that can be told apart here.
+   */
+  it("refuses a new subject on an address the same provider already signs in with", async () => {
+    await approve("google", USER_CODE, "ada@corp.example", "sub-ada");
+    const original = (await readCode())?.account_id;
+
+    await seedCode("THIRD-CODE");
+    await begin("google", "THIRD-CODE");
+    const response = await callback({
+      state: await startedState("THIRD-CODE"),
+      oauth: oauthAnswering("ada@corp.example", "sub-successor"),
+    });
+
+    expect(response.status).toBe(409);
+    expect(await response.text()).toContain("already in use");
+    expect((await readCode("THIRD-CODE"))?.account_id).toBeNull();
+    expect(await accountCount()).toBe(1);
+    expect(original).toBeTruthy();
+  });
+
+  it("returns a known subject to its account after the provider reports a new address", async () => {
+    await approve("google", USER_CODE, "old@example.com", "sub-moved");
+    const first = (await readCode())?.account_id;
+
+    await seedCode("FOURTH-CODE");
+    await approve("google", "FOURTH-CODE", "new@example.com", "sub-moved");
+
+    expect((await readCode("FOURTH-CODE"))?.account_id).toBe(first);
     expect(await accountCount()).toBe(1);
   });
 

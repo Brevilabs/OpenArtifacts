@@ -71,6 +71,22 @@ export interface AccountRow {
 }
 
 /**
+ * A provider identity that resolves to an account on a later sign-in.
+ *
+ * The email creates an account; this returns someone to one. The two are
+ * different questions because an address can be reassigned to another person
+ * and a provider's subject cannot.
+ */
+export interface IdentityRow {
+  /** `google` or `github`. */
+  provider: string;
+  /** Google's `sub`, or GitHub's numeric user id as a string. */
+  subject: string;
+  account_id: string;
+  created_at: number;
+}
+
+/**
  * A device code the CLI is polling, and the OAuth handshake proving who is
  * approving it.
  *
@@ -555,6 +571,79 @@ export async function findOrCreateAccount(
   // the approval path would have to invent an owner for.
   if (existing === null) throw new Error("account row disappeared after a conflicting insert");
   return existing;
+}
+
+/**
+ * Resolve a provider identity to its account, or null when the address it
+ * presents is already claimed by a different identity on the same provider.
+ *
+ * Three outcomes, in this order:
+ *
+ * 1. **This subject has signed in before.** Its account, whatever email the
+ *    provider reports now — a person who changes their address keeps their
+ *    documents, and the `accounts` row is deliberately left alone.
+ * 2. **A new subject, and the address is free or belongs to an account this
+ *    provider has never signed in to.** The account by email, created if it is
+ *    new, and the identity is linked to it. This is what makes approving with
+ *    Google and then with GitHub land on one account with no linking step.
+ * 3. **A new subject, and the address belongs to an account another subject on
+ *    *this* provider already signs in to.** Null. That is the reassigned
+ *    mailbox: the previous holder's Google account still exists, someone else
+ *    now verifies the same address with Google, and merging them would hand
+ *    over their documents. Refusing is the only safe answer this page can give
+ *    without a way to ask the original owner.
+ *
+ * @param newId an account id to use if one has to be minted, so this stays
+ *   deterministic under test
+ */
+export async function resolveAccountForIdentity(
+  db: D1Database,
+  provider: string,
+  subject: string,
+  email: string,
+  newId: string,
+  nowMs: number,
+): Promise<AccountRow | null> {
+  const linked = await db
+    .prepare(
+      `SELECT a.id AS id, a.email AS email, a.created_at AS created_at
+         FROM identities i JOIN accounts a ON a.id = i.account_id
+        WHERE i.provider = ? AND i.subject = ?`,
+    )
+    .bind(provider, subject)
+    .first<AccountRow>();
+  if (linked !== null) return linked;
+
+  const byEmail = await db
+    .prepare("SELECT id, email, created_at FROM accounts WHERE email = ?")
+    .bind(email)
+    .first<AccountRow>();
+
+  if (byEmail !== null) {
+    const claimed = await db
+      .prepare(
+        "SELECT 1 FROM identities WHERE account_id = ? AND provider = ? AND subject <> ?",
+      )
+      .bind(byEmail.id, provider, subject)
+      .first();
+    if (claimed !== null) return null;
+  }
+
+  const account = byEmail ?? (await findOrCreateAccount(db, newId, email, nowMs));
+
+  // `DO NOTHING` rather than an error: two sign-ins of one subject racing each
+  // other both reach here, and the loser has nothing to add — the row it would
+  // write is the row that already exists.
+  await db
+    .prepare(
+      `INSERT INTO identities (provider, subject, account_id, created_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(provider, subject) DO NOTHING`,
+    )
+    .bind(provider, subject, account.id, nowMs)
+    .run();
+
+  return account;
 }
 
 /** Whether a code is still waiting to be approved, for the page that offers to. */

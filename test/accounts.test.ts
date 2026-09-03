@@ -6,12 +6,13 @@ import {
   findOrCreateAccount,
   findPendingHandshake,
   holdProvenIdentity,
+  resolveAccountForIdentity,
   startDeviceHandshake,
   type AccountRow,
 } from "../src/db.js";
 import {
-  githubVerifiedEmail,
-  googleVerifiedEmail,
+  githubVerifiedIdentity,
+  googleVerifiedIdentity,
   normalizeEmail,
 } from "../src/approval/providers.js";
 import { ACCOUNT_ID_PREFIX, newAccountId } from "../src/ids.js";
@@ -41,6 +42,11 @@ async function readCode(userCode: string) {
       account_id: string | null;
       approved_at: number | null;
     }>();
+}
+
+async function accountCount(): Promise<number> {
+  const row = await env.DB.prepare("SELECT COUNT(*) AS n FROM accounts").first<{ n: number }>();
+  return row?.n ?? 0;
 }
 
 /** Take a code from pending to identity-proven, which is where confirm starts. */
@@ -78,39 +84,48 @@ describe("normalizeEmail", () => {
   });
 });
 
-describe("googleVerifiedEmail", () => {
-  it("returns the address as Google wrote it once Google says it verified it", () => {
-    expect(googleVerifiedEmail({ email: "Ada@Example.com", email_verified: true })).toBe(
-      "Ada@Example.com",
-    );
+describe("googleVerifiedIdentity", () => {
+  it("returns the subject and the address as Google wrote it", () => {
+    expect(
+      googleVerifiedIdentity({ sub: "108422", email: "Ada@Example.com", email_verified: true }),
+    ).toEqual({ subject: "108422", email: "Ada@Example.com" });
   });
 
   it("refuses an address Google has not verified", () => {
-    expect(googleVerifiedEmail({ email: "ada@example.com", email_verified: false })).toBeNull();
-    expect(googleVerifiedEmail({ email: "ada@example.com" })).toBeNull();
+    const claims = { sub: "108422", email: "ada@example.com" };
+    expect(googleVerifiedIdentity({ ...claims, email_verified: false })).toBeNull();
+    expect(googleVerifiedIdentity(claims)).toBeNull();
     // A truthy non-boolean must not pass for verification.
-    expect(googleVerifiedEmail({ email: "ada@example.com", email_verified: "true" })).toBeNull();
+    expect(googleVerifiedIdentity({ ...claims, email_verified: "true" })).toBeNull();
   });
 
-  it("refuses a token carrying no address at all", () => {
-    expect(googleVerifiedEmail({ email_verified: true })).toBeNull();
-    expect(googleVerifiedEmail(null)).toBeNull();
+  it("refuses a token with no address or no subject to remember it by", () => {
+    expect(googleVerifiedIdentity({ sub: "108422", email_verified: true })).toBeNull();
+    expect(
+      googleVerifiedIdentity({ email: "ada@example.com", email_verified: true }),
+    ).toBeNull();
+    expect(
+      googleVerifiedIdentity({ sub: "", email: "ada@example.com", email_verified: true }),
+    ).toBeNull();
+    expect(googleVerifiedIdentity(null)).toBeNull();
   });
 });
 
-describe("githubVerifiedEmail", () => {
-  it("takes the primary verified address and ignores the rest", () => {
+describe("githubVerifiedIdentity", () => {
+  const USER = { id: 4207, login: "ada" };
+
+  it("takes the numeric id and the primary verified address", () => {
     expect(
-      githubVerifiedEmail([
+      githubVerifiedIdentity(USER, [
         { email: "old@example.com", primary: false, verified: true },
         { email: "Ada@Example.com", primary: true, verified: true },
       ]),
-    ).toBe("Ada@Example.com");
+    ).toEqual({ subject: "4207", email: "Ada@Example.com" });
   });
 
   it("refuses an unverified primary rather than falling back to another address", () => {
     expect(
-      githubVerifiedEmail([
+      githubVerifiedIdentity(USER, [
         { email: "other@example.com", primary: false, verified: true },
         { email: "ada@example.com", primary: true, verified: false },
       ]),
@@ -118,8 +133,14 @@ describe("githubVerifiedEmail", () => {
   });
 
   it("refuses a payload with no primary verified address", () => {
-    expect(githubVerifiedEmail([])).toBeNull();
-    expect(githubVerifiedEmail({ message: "Bad credentials" })).toBeNull();
+    expect(githubVerifiedIdentity(USER, [])).toBeNull();
+    expect(githubVerifiedIdentity(USER, { message: "Bad credentials" })).toBeNull();
+  });
+
+  it("refuses an account resource with no id to remember the person by", () => {
+    const emails = [{ email: "ada@example.com", primary: true, verified: true }];
+    expect(githubVerifiedIdentity({ login: "ada" }, emails)).toBeNull();
+    expect(githubVerifiedIdentity(null, emails)).toBeNull();
   });
 });
 
@@ -307,5 +328,132 @@ describe("confirmDeviceApproval", () => {
 
     expect([first, second].filter((code) => code !== null)).toEqual(["WIN-1"]);
     expect((await readCode("WIN-1"))?.account_id).toBe("oa_first");
+  });
+});
+
+describe("resolveAccountForIdentity", () => {
+  const GOOGLE = "google";
+  const GITHUB = "github";
+
+  it("creates the account and links the identity on a first sign-in", async () => {
+    const account = await resolveAccountForIdentity(
+      env.DB,
+      GOOGLE,
+      "sub-first",
+      "first@example.com",
+      nextId(),
+      NOW,
+    );
+
+    expect(account?.email).toBe("first@example.com");
+    const linked = await env.DB.prepare(
+      "SELECT account_id, created_at FROM identities WHERE provider = ? AND subject = ?",
+    )
+      .bind(GOOGLE, "sub-first")
+      .first<{ account_id: string; created_at: number }>();
+    expect(linked).toEqual({ account_id: account?.id, created_at: NOW });
+  });
+
+  /**
+   * The whole point of storing a subject: the address on an account can change
+   * under it, and the person keeps their documents.
+   */
+  it("returns a known subject to its account even when the email has changed", async () => {
+    const first = await resolveAccountForIdentity(
+      env.DB,
+      GOOGLE,
+      "sub-stable",
+      "old@example.com",
+      nextId(),
+      NOW,
+    );
+
+    const again = await resolveAccountForIdentity(
+      env.DB,
+      GOOGLE,
+      "sub-stable",
+      "new@example.com",
+      nextId(),
+      NOW + 1000,
+    );
+
+    expect(again?.id).toBe(first?.id);
+    // The account row is left alone; the address it was created with stands.
+    expect(again?.email).toBe("old@example.com");
+    expect(await accountCount()).toBe(1);
+  });
+
+  /**
+   * The reassigned mailbox. The previous holder's Google account still exists,
+   * somebody else now verifies the same address with Google, and merging them
+   * would hand over the previous holder's documents.
+   */
+  it("refuses a new subject presenting an address the same provider already claims", async () => {
+    const original = await resolveAccountForIdentity(
+      env.DB,
+      GOOGLE,
+      "sub-leaver",
+      "shared@example.com",
+      nextId(),
+      NOW,
+    );
+
+    const successor = await resolveAccountForIdentity(
+      env.DB,
+      GOOGLE,
+      "sub-successor",
+      "shared@example.com",
+      nextId(),
+      NOW + 1000,
+    );
+
+    expect(successor).toBeNull();
+    // Nothing was created and nothing was moved.
+    expect(await accountCount()).toBe(1);
+    const rows = await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM identities WHERE account_id = ?",
+    )
+      .bind(original?.id)
+      .first<{ n: number }>();
+    expect(rows?.n).toBe(1);
+  });
+
+  it("still links a second provider on the same address, with no linking step", async () => {
+    const viaGoogle = await resolveAccountForIdentity(
+      env.DB,
+      GOOGLE,
+      "sub-google",
+      "both@example.com",
+      nextId(),
+      NOW,
+    );
+
+    const viaGitHub = await resolveAccountForIdentity(
+      env.DB,
+      GITHUB,
+      "4207",
+      "both@example.com",
+      nextId(),
+      NOW + 1000,
+    );
+
+    expect(viaGitHub?.id).toBe(viaGoogle?.id);
+    expect(await accountCount()).toBe(1);
+  });
+
+  it("links one identity row when a subject signs in twice at once", async () => {
+    const [a, b] = await Promise.all([
+      resolveAccountForIdentity(env.DB, GOOGLE, "sub-race", "race@example.com", nextId(), NOW),
+      resolveAccountForIdentity(env.DB, GOOGLE, "sub-race", "race@example.com", nextId(), NOW),
+    ]);
+
+    expect(a?.id).toBe(b?.id);
+    const rows = await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM identities WHERE provider = ? AND subject = ?",
+    )
+      .bind(GOOGLE, "sub-race")
+      .first<{ n: number }>();
+    expect(rows?.n).toBe(1);
+    expect(await accountCount()).toBe(1);
   });
 });

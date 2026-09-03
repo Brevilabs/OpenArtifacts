@@ -1,11 +1,16 @@
 /**
- * The identity providers an approval can be proved with, and the one thing this
- * repo wants out of either of them: an email address the provider says it has
- * verified.
+ * The identity providers an approval can be proved with, and the two things
+ * this repo wants out of either of them: an email address the provider says it
+ * has verified, and the provider's own permanent id for the person.
  *
- * Nothing else about the person is read, stored, or asked for. No name, no
- * avatar, no provider account id — an account here is an id and an email, and
- * scopes are kept to the minimum that yields one.
+ * Nothing else is read, stored, or asked for. No name, no avatar — scopes stay
+ * at the minimum that yields those two.
+ *
+ * **Both are needed because they answer different questions.** The email is
+ * what creates an account and what links a second provider to it, since two
+ * providers agreeing on a verified address is the only evidence available that
+ * they mean one person. The subject is what *returns* someone to an account,
+ * because an address can be handed to somebody else and a subject cannot.
  *
  * **A verified email is the entire security argument.** `accounts.email` is
  * unique, so an address is a claim on an account and everything that account
@@ -98,21 +103,35 @@ export interface OAuthClient {
   authorizationUrl(provider: ProviderId, redirectUri: string, state: string, verifier: string): URL;
 
   /**
-   * Exchange the authorization code and return the address the provider
-   * verified, or null when it refuses, fails, or names none it stands behind.
+   * Exchange the authorization code and return who the provider says this is,
+   * or null when it refuses, fails, or names no address it stands behind.
    */
-  verifiedEmail(
+  verifiedIdentity(
     provider: ProviderId,
     redirectUri: string,
     code: string,
     verifier: string,
-  ): Promise<string | null>;
+  ): Promise<VerifiedIdentity | null>;
+}
+
+/** Who a completed handshake proved, as this repo needs them. */
+export interface VerifiedIdentity {
+  /** The provider's permanent id: Google's `sub`, GitHub's numeric user id. */
+  subject: string;
+  /** The address the provider said it verified, in the casing it sent. */
+  email: string;
 }
 
 /** GitHub rejects an API request with no user agent, so every call names us. */
 const GITHUB_USER_AGENT = "OpenArtifacts";
 
 const GITHUB_EMAILS_ENDPOINT = "https://api.github.com/user/emails";
+
+/**
+ * GitHub's emails endpoint carries no user id, so the account's own resource is
+ * the only place the subject comes from. Two calls, one token.
+ */
+const GITHUB_USER_ENDPOINT = "https://api.github.com/user";
 
 /**
  * The real client. Throws only what arctic throws; the caller treats any
@@ -138,7 +157,7 @@ export function arcticOAuthClient(env: Env): OAuthClient {
         : client.createAuthorizationURL(state, PROVIDER_SCOPES.github);
     },
 
-    async verifiedEmail(id, redirectUri, code, verifier) {
+    async verifiedIdentity(id, redirectUri, code, verifier) {
       const client = provider(id, redirectUri);
 
       if (client instanceof Google) {
@@ -146,41 +165,70 @@ export function arcticOAuthClient(env: Env): OAuthClient {
         // The id token came straight from Google's token endpoint over TLS on
         // this connection, so its signature adds nothing here — the thing a
         // signature would prove is already proved by where the bytes came from.
-        return googleVerifiedEmail(decodeIdToken(tokens.idToken()));
+        return googleVerifiedIdentity(decodeIdToken(tokens.idToken()));
       }
 
       const tokens = await client.validateAuthorizationCode(code);
-      const response = await fetch(GITHUB_EMAILS_ENDPOINT, {
-        headers: {
-          authorization: `Bearer ${tokens.accessToken()}`,
-          accept: "application/vnd.github+json",
-          "user-agent": GITHUB_USER_AGENT,
-        },
-      });
-      if (!response.ok) return null;
-      return githubVerifiedEmail(await response.json());
+      const read = (endpoint: string) =>
+        fetch(endpoint, {
+          headers: {
+            authorization: `Bearer ${tokens.accessToken()}`,
+            accept: "application/vnd.github+json",
+            "user-agent": GITHUB_USER_AGENT,
+          },
+        });
+
+      const [user, emails] = await Promise.all([
+        read(GITHUB_USER_ENDPOINT),
+        read(GITHUB_EMAILS_ENDPOINT),
+      ]);
+      if (!user.ok || !emails.ok) return null;
+      return githubVerifiedIdentity(await user.json(), await emails.json());
     },
   };
 }
 
 /**
- * The address out of a Google id token, or null unless Google says it verified
- * it.
+ * Who a Google id token names, or null unless Google says it verified the
+ * address.
  *
  * `email_verified` is the load-bearing field, not `email`: a Google Workspace
  * administrator can put any address on an account, and only this flag says the
  * ownership was actually established. Exported so the guard is tested directly
  * rather than through a network handshake.
  *
- * Returned as Google wrote it. Folding it to the form accounts are unique on is
- * the approval page's job, in one place, so a provider added later cannot
- * quietly skip it and mint a second account for one person.
+ * The address is returned as Google wrote it. Folding it to the form accounts
+ * are unique on is the approval page's job, in one place, so a provider added
+ * later cannot quietly skip it and mint a second account for one person.
  */
-export function googleVerifiedEmail(claims: unknown): string | null {
+export function googleVerifiedIdentity(claims: unknown): VerifiedIdentity | null {
   if (typeof claims !== "object" || claims === null) return null;
-  const { email, email_verified: verified } = claims as Record<string, unknown>;
+  const { sub, email, email_verified: verified } = claims as Record<string, unknown>;
   if (verified !== true) return null;
-  return typeof email === "string" ? email : null;
+  if (typeof sub !== "string" || sub.trim() === "") return null;
+  return typeof email === "string" ? { subject: sub, email } : null;
+}
+
+/**
+ * Who a GitHub sign-in names, from the account resource and the address list,
+ * or null when either is unusable.
+ *
+ * The subject is `id`, never `login`: a username can be released and taken by
+ * somebody else, and the numeric id never is.
+ */
+export function githubVerifiedIdentity(
+  user: unknown,
+  emails: unknown,
+): VerifiedIdentity | null {
+  const email = githubVerifiedEmail(emails);
+  if (email === null) return null;
+  if (typeof user !== "object" || user === null) return null;
+
+  const { id } = user as Record<string, unknown>;
+  // A number in every response GitHub sends; accepted as a string too so the
+  // subject is one type by the time it reaches the database.
+  if (typeof id === "number") return { subject: String(id), email };
+  return typeof id === "string" && id.trim() !== "" ? { subject: id, email } : null;
 }
 
 /**
@@ -192,7 +240,7 @@ export function googleVerifiedEmail(claims: unknown): string | null {
  * one address. Taking any verified address would make which account someone
  * lands on depend on the order GitHub happened to list them in.
  */
-export function githubVerifiedEmail(payload: unknown): string | null {
+function githubVerifiedEmail(payload: unknown): string | null {
   if (!Array.isArray(payload)) return null;
 
   for (const entry of payload) {

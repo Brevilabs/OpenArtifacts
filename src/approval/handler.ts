@@ -33,9 +33,9 @@ import { type Env } from "../config.js";
 import {
   confirmDeviceApproval,
   deviceCodeIsPending,
-  findOrCreateAccount,
   findPendingHandshake,
   holdProvenIdentity,
+  resolveAccountForIdentity,
   startDeviceHandshake,
 } from "../db.js";
 import { newAccountId, newHandshakeToken } from "../ids.js";
@@ -245,7 +245,7 @@ async function prove(
   if (handshake.verifier === null) return page(EXPIRED, 400);
 
   const oauth = deps.oauth ?? arcticOAuthClient(env);
-  const asserted = await oauth.verifiedEmail(
+  const asserted = await oauth.verifiedIdentity(
     handshake.provider as ProviderId,
     redirectUri(url, handshake.provider as ProviderId),
     code,
@@ -257,13 +257,24 @@ async function prove(
   // one claim the documents of whoever owns it.
   //
   // The folding happens here rather than per provider so there is exactly one
-  // rule deciding when two approvals are the same person. Two rules would
+  // rule deciding when two sign-ins are the same person. Two rules would
   // eventually disagree, and disagreeing means one person with two shelves of
   // documents and no way to reunite them.
-  const email = asserted === null ? null : normalizeEmail(asserted);
-  if (email === null) return page(UNVERIFIED, 400);
+  const email = asserted === null ? null : normalizeEmail(asserted.email);
+  if (asserted === null || email === null) return page(UNVERIFIED, 400);
 
-  const account = await findOrCreateAccount(env.DB, newAccountId(), email, now);
+  // The subject, not the email, is what brings someone back to an account. An
+  // address can be reassigned to a new person; a provider's subject cannot,
+  // which is why this can refuse rather than merge.
+  const account = await resolveAccountForIdentity(
+    env.DB,
+    handshake.provider,
+    asserted.subject,
+    email,
+    newAccountId(),
+    now,
+  );
+  if (account === null) return page(EMAIL_CLAIMED, 409);
 
   // An account created a moment ago whose code has since expired is left behind
   // on purpose: it costs one row, it is the same account the person's next
@@ -406,6 +417,14 @@ const UNVERIFIED: BrandPage = {
   heading: "We can’t use that address.",
   message:
     "Your provider did not confirm that it verified an email address for you. Verify your address with them and try again, or approve with the other provider.",
+  actions: ABOUT_LINK,
+};
+
+const EMAIL_CLAIMED: BrandPage = {
+  title: "Address already claimed",
+  heading: "That address is already in use.",
+  message:
+    "Another sign-in on this provider already uses this email address, so it cannot be moved to a new one here. If the address was recently reassigned to you, the account behind it belongs to someone else. Approve with your other provider, or ask the operator.",
   actions: ABOUT_LINK,
 };
 

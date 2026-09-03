@@ -23,6 +23,33 @@ CREATE TABLE accounts (
   created_at INTEGER NOT NULL
 );
 
+-- The provider identities that resolve to an account on a later sign-in.
+--
+-- `accounts.email` is what *creates* an account and links a second provider to
+-- it, and it must not be what *returns* someone to one. A mailbox is
+-- recyclable: a corporate or custom-domain address can be reassigned, and its
+-- new holder can verify it with the same provider perfectly honestly. Resolving
+-- a returning sign-in by email alone would hand them the previous holder's
+-- documents. A provider's subject is not recyclable — Google's `sub` and
+-- GitHub's numeric user id are permanent and never reissued — so it is what a
+-- returning sign-in is looked up by.
+--
+-- No foreign key onto `accounts`, for the reason `device_codes` has none: D1
+-- leaves `PRAGMA foreign_keys` off, so the constraint would be documentation
+-- that does not run, and the only writer is `resolveAccountForIdentity`, which
+-- has the account row in hand.
+CREATE TABLE identities (
+  -- `google` or `github`, matching `PROVIDER_IDS`.
+  provider   TEXT    NOT NULL,
+  -- The provider's own permanent id for the person: Google's `sub` claim, or
+  -- GitHub's numeric user id as a string. Never an email, never a username —
+  -- both of those can move to somebody else.
+  subject    TEXT    NOT NULL,
+  account_id TEXT    NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (provider, subject)
+);
+
 -- The pending device codes an approval binds an account to, and the OAuth
 -- handshake that proves who is approving one.
 --
