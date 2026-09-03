@@ -57,6 +57,38 @@ export interface PushQuotaRow {
 }
 
 /**
+ * An account this deployment owns, created by its holder's first approval.
+ *
+ * Distinct from `publishers`, which caches what the license server says about a
+ * credential. This row *is* the identity: nothing outside is asked about it.
+ */
+export interface AccountRow {
+  /** Carries `ACCOUNT_ID_PREFIX`, so it can never collide with a license owner. */
+  id: string;
+  /** Lowercased, provider-verified. Unique, which is what merges the providers. */
+  email: string;
+  created_at: number;
+}
+
+/**
+ * A device code the CLI is polling, as the approval page needs it.
+ *
+ * **#57 owns the device flow and extends this table.** The columns here are
+ * only the ones approval binds; the device code itself, its token and the
+ * machine label belong to that issue.
+ */
+export interface DeviceCodeRow {
+  /** Uppercase, as `normalizeUserCode` folds it. */
+  user_code: string;
+  /** The approving account, and null while the code is pending. */
+  account_id: string | null;
+  /** Epoch ms of the approval, and null while pending. */
+  approved_at: number | null;
+  expires_at: number;
+  created_at: number;
+}
+
+/**
  * The publisher row as auth needs it: read the cached validation, write it back
  * after a fresh one. It is an interface rather than two loose functions so the
  * auth tests can run against an in-memory double instead of a database.
@@ -469,4 +501,100 @@ export async function listPublisherDocs(
           .bind(owner, after.created_at, after.id, limit);
 
   return (await statement.all<DocListRow>()).results;
+}
+
+/**
+ * Resolve a verified email to its account, creating one on first sight.
+ *
+ * This is the whole of "sign up": there is no form, and the first approval is
+ * the registration. `id` is minted by the caller so the row can be inserted and
+ * read back in one statement.
+ *
+ * The insert is the lookup. Reading first and inserting after would let two
+ * approvals racing on one address — the same person clicking Google in one tab
+ * and GitHub in another — both find nothing and both insert, and the unique
+ * index would turn the loser into a 500 in front of a user who did nothing
+ * wrong. `ON CONFLICT DO NOTHING` makes the loser's insert a no-op it can
+ * simply read the winner's row after.
+ *
+ * @param email already normalized; the uniqueness that joins two providers into
+ *   one account is only as good as the folding done before this is called
+ */
+export async function findOrCreateAccount(
+  db: D1Database,
+  id: string,
+  email: string,
+  atMs: number,
+): Promise<AccountRow> {
+  const inserted = await db
+    .prepare(
+      `INSERT INTO accounts (id, email, created_at) VALUES (?, ?, ?)
+       ON CONFLICT(email) DO NOTHING
+       RETURNING id, email, created_at`,
+    )
+    .bind(id, email, atMs)
+    .first<AccountRow>();
+  if (inserted !== null) return inserted;
+
+  const existing = await db
+    .prepare("SELECT id, email, created_at FROM accounts WHERE email = ?")
+    .bind(email)
+    .first<AccountRow>();
+  // Only reachable if the row that won the conflict vanished between the two
+  // statements, which nothing deletes. Throwing beats returning a null account
+  // the approval path would have to invent an owner for.
+  if (existing === null) throw new Error("account row disappeared after a conflicting insert");
+  return existing;
+}
+
+/** Whether a code is still waiting to be approved, for the page that offers to. */
+export async function deviceCodeIsPending(
+  db: D1Database,
+  userCode: string,
+  nowMs: number,
+): Promise<boolean> {
+  const row = await db
+    .prepare(
+      `SELECT 1 FROM device_codes
+        WHERE user_code = ? AND approved_at IS NULL AND expires_at > ?`,
+    )
+    .bind(userCode, nowMs)
+    .first();
+
+  return row !== null;
+}
+
+/**
+ * Bind an account to the device code it approved, returning false when there is
+ * no pending code to bind.
+ *
+ * **This one write is the whole contract between the approval page and the
+ * device flow (#57).** Everything else about a code — how it is minted, what
+ * the CLI polls with, what token the approval eventually mints — is that
+ * issue's, and it can grow this statement's `SET` list without the page
+ * changing.
+ *
+ * Unknown, expired and already-approved are conflated into one false, and the
+ * predicates ride on the write rather than an earlier read: two approvals of
+ * one code produce exactly one true, so a code can never be bound to two
+ * accounts and the second person is told the code is spent rather than silently
+ * taking over the first person's terminal.
+ */
+export async function approveDeviceCode(
+  db: D1Database,
+  userCode: string,
+  accountId: string,
+  atMs: number,
+): Promise<boolean> {
+  const approved = await db
+    .prepare(
+      `UPDATE device_codes
+          SET account_id = ?, approved_at = ?
+        WHERE user_code = ? AND approved_at IS NULL AND expires_at > ?
+        RETURNING user_code`,
+    )
+    .bind(accountId, atMs, userCode, atMs)
+    .first<{ user_code: string }>();
+
+  return approved !== null;
 }
