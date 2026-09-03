@@ -6,10 +6,11 @@ import {
   DEVICE_CODE_TTL_MS,
   DEVICE_POLL_INTERVAL_SECONDS,
   MAX_TOKENS_PER_ACCOUNT,
+  MIN_DEVICE_POLL_GAP_MS,
 } from "../src/config.js";
 import { handleDevice, readDeviceLabel } from "../src/device.js";
 import type { Env } from "../src/config.js";
-import { confirmDeviceApproval, holdProvenIdentity } from "../src/db.js";
+import { collectDeviceToken, confirmDeviceApproval, holdProvenIdentity } from "../src/db.js";
 import { TOKEN_ID_PREFIX, TOKEN_PREFIX, USER_CODE_ALPHABET } from "../src/ids.js";
 import worker from "../src/index.js";
 
@@ -437,19 +438,103 @@ describe("POST /device/token", () => {
     expect(n).toBe(1);
   });
 
-  it("issues one token when two polls collect the same approval at once", async () => {
+  /**
+   * Below the handler, because the interval claim now stops two polls reaching
+   * the collection at once through it. The write still has to be safe on its
+   * own: the interval bounds a well-behaved client, it is not what makes
+   * issuing exclusive.
+   */
+  it("issues one token when two collections race for the same approval", async () => {
     const minted = await mint();
     await approve(minted.user_code);
+    const hash = (await codeRow(minted.user_code))!.device_code_hash!;
 
     const [first, second] = await Promise.all([
-      device("/device/token", { device_code: minted.device_code }),
-      device("/device/token", { device_code: minted.device_code }),
+      collectDeviceToken(
+        env.DB,
+        hash,
+        { id: "tok_race000000000a", token_hash: "hash-a", created_at: NOW },
+        MAX_TOKENS_PER_ACCOUNT,
+      ),
+      collectDeviceToken(
+        env.DB,
+        hash,
+        { id: "tok_race000000000b", token_hash: "hash-b", created_at: NOW },
+        MAX_TOKENS_PER_ACCOUNT,
+      ),
     ]);
 
-    const statuses = [first.status, second.status].sort();
-    expect(statuses).toEqual([200, 400]);
+    expect([first.status, second.status].sort()).toEqual(["gone", "issued"]);
     const { n } = (await env.DB.prepare("SELECT COUNT(*) AS n FROM tokens").first<{ n: number }>())!;
     expect(n).toBe(1);
+    expect(await codeRow(minted.user_code)).toBeNull();
+  });
+});
+
+describe("claiming a polling interval", () => {
+  const lastPolled = async (userCode: string): Promise<number | null> =>
+    (await codeRow(userCode))?.last_polled_at ?? null;
+
+  /**
+   * Overlapping polls all read the same `last_polled_at`, so a check followed
+   * by a write would let every one of them through and every one of them write
+   * — turning the interval that exists to bound this endpoint's writes into the
+   * thing that makes them unbounded
+   * (https://github.com/Brevilabs/OpenArtifacts/pull/62#discussion_r3928181821).
+   */
+  it("serves one poll of a concurrent burst and tells the rest to slow down", async () => {
+    const minted = await mint();
+
+    const burst = await Promise.all(
+      Array.from({ length: 6 }, () => device("/device/token", { device_code: minted.device_code })),
+    );
+
+    const codes = await Promise.all(burst.map(errorOf));
+    expect(codes.filter((code) => code !== "slow_down")).toEqual(["authorization_pending"]);
+    expect(await lastPolled(minted.user_code)).toBe(NOW);
+  });
+
+  it("writes nothing at all for a burst that arrives inside the interval", async () => {
+    const minted = await mint();
+    await device("/device/token", { device_code: minted.device_code }, NOW);
+
+    const burst = await Promise.all(
+      Array.from({ length: 6 }, (_, i) =>
+        device("/device/token", { device_code: minted.device_code }, NOW + 100 + i),
+      ),
+    );
+
+    expect(await Promise.all(burst.map(errorOf))).toEqual(Array(6).fill("slow_down"));
+    // Still the first poll's instant, so not one of the six wrote.
+    expect(await lastPolled(minted.user_code)).toBe(NOW);
+  });
+
+  it("claims again once the interval has elapsed", async () => {
+    const minted = await mint();
+    await device("/device/token", { device_code: minted.device_code }, NOW);
+
+    const later = NOW + MIN_DEVICE_POLL_GAP_MS;
+    expect(await errorOf(await device("/device/token", { device_code: minted.device_code }, later)))
+      .toBe("authorization_pending");
+    expect(await lastPolled(minted.user_code)).toBe(later);
+  });
+
+  it("never writes for a code that has expired or been refused", async () => {
+    const expired = await mint();
+    const denied = await mint();
+    await env.DB.prepare("UPDATE device_codes SET denied_at = ? WHERE user_code = ?")
+      .bind(NOW, denied.user_code)
+      .run();
+
+    const past = NOW + DEVICE_CODE_TTL_MS;
+    expect(await errorOf(await device("/device/token", { device_code: expired.device_code }, past)))
+      .toBe("expired_token");
+    expect(await errorOf(await device("/device/token", { device_code: denied.device_code }))).toBe(
+      "access_denied",
+    );
+
+    expect(await lastPolled(expired.user_code)).toBeNull();
+    expect(await lastPolled(denied.user_code)).toBeNull();
   });
 });
 

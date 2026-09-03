@@ -491,6 +491,10 @@ Until then, every answer is a `400` carrying one of four codes:
 | `expired_token` | The code expired, was already collected, or was never issued. | Start again with a new code. |
 | `access_denied` | Someone pressed Deny on the approval page. | Stop. Do not start again on your own. |
 
+Exactly one poll per interval is served, so concurrent polls for one device
+code get `slow_down` too however they are spaced. Poll from one place, on the
+`interval` the mint returned.
+
 One further refusal is not a poll condition and carries `429` rather than `400`:
 `quota_exceeded`, when the account already holds the 100 live tokens it is
 allowed. The device code stays collectable, so revoking a token with another

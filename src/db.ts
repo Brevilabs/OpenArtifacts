@@ -981,42 +981,77 @@ export async function sweepExpired(db: D1Database, nowMs: number): Promise<void>
 /** What a poll needs to decide what to tell the terminal. */
 export type PolledDeviceCode = Pick<
   DeviceCodeRow,
-  "user_code" | "approved_at" | "denied_at" | "expires_at" | "last_polled_at"
+  "user_code" | "approved_at" | "denied_at" | "expires_at"
 >;
 
+/** The outcome of asking for this interval's poll. */
+export interface DevicePoll {
+  /** The code as it stands, or null when no code answers to that hash. */
+  code: PolledDeviceCode | null;
+  /**
+   * Whether this request is the one poll this interval serves. False means
+   * another already had it, which is what `slow_down` reports.
+   */
+  claimed: boolean;
+}
+
 /**
- * Find the code a poll is asking about, by the hash of the device code it
- * presented.
+ * Claim this interval's poll for one device code, and read the code's state in
+ * the same round trip.
+ *
+ * **Claim rather than check.** Reading `last_polled_at` and then writing it
+ * cannot enforce an interval at all: overlapping polls all read the same value,
+ * none of them sees one too recent, and every one of them proceeds and writes.
+ * A client holding a single legitimately minted code could then fire concurrent
+ * bursts for the whole of that code's lifetime and turn the interval check into
+ * a source of unbounded writes — which is the one thing the interval exists to
+ * bound. The predicate rides on the `UPDATE`, so exactly one poll per interval
+ * wins it and the rest are told to slow down (
+ * https://github.com/Brevilabs/OpenArtifacts/pull/62#discussion_r3928181821).
+ * `holdProvenIdentity` above is the same shape for the same reason.
+ *
+ * An expired or refused code is never claimed, so polling one writes nothing at
+ * all rather than once an interval until the sweep reaches it. The `SELECT`
+ * beside it is what tells those two apart from a hash no row answers to: all
+ * three fail to claim, and only the row says which happened.
  *
  * The device code is the lookup key rather than the user code because it is the
  * half the terminal keeps to itself. A user code is read aloud and typed into
  * phones; if it could collect a token, every approval page would be showing the
  * credential to the room.
+ *
+ * @param minGapMs how close to the previous served poll is too close, from
+ *   `MIN_DEVICE_POLL_GAP_MS`
  */
-export async function findPolledDeviceCode(
+export async function claimDevicePoll(
   db: D1Database,
   deviceCodeHash: string,
-): Promise<PolledDeviceCode | null> {
-  // `return await`: see the note on the router's catch in index.ts.
-  return await db
-    .prepare(
-      `SELECT user_code, approved_at, denied_at, expires_at, last_polled_at
-         FROM device_codes WHERE device_code_hash = ?`,
-    )
-    .bind(deviceCodeHash)
-    .first<PolledDeviceCode>();
-}
+  nowMs: number,
+  minGapMs: number,
+): Promise<DevicePoll> {
+  const [claimed, current] = await db.batch<PolledDeviceCode>([
+    db
+      .prepare(
+        `UPDATE device_codes SET last_polled_at = ?
+          WHERE device_code_hash = ?
+            AND expires_at > ?
+            AND denied_at IS NULL
+            AND (last_polled_at IS NULL OR last_polled_at <= ?)
+         RETURNING user_code, approved_at, denied_at, expires_at`,
+      )
+      .bind(nowMs, deviceCodeHash, nowMs, nowMs - minGapMs),
+    db
+      .prepare(
+        `SELECT user_code, approved_at, denied_at, expires_at
+           FROM device_codes WHERE device_code_hash = ?`,
+      )
+      .bind(deviceCodeHash),
+  ]);
 
-/** Record that the terminal polled, which is what the next `slow_down` is measured from. */
-export async function recordDevicePoll(
-  db: D1Database,
-  deviceCodeHash: string,
-  atMs: number,
-): Promise<void> {
-  await db
-    .prepare("UPDATE device_codes SET last_polled_at = ? WHERE device_code_hash = ?")
-    .bind(atMs, deviceCodeHash)
-    .run();
+  return {
+    code: current?.results[0] ?? null,
+    claimed: (claimed?.results.length ?? 0) > 0,
+  };
 }
 
 /** What became of a poll that arrived at an approved code. */

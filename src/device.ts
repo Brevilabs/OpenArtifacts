@@ -36,13 +36,7 @@ import {
   type Env,
 } from "./config.js";
 import { APPROVAL_PREFIX, USER_CODE_PARAM } from "./approval/handler.js";
-import {
-  collectDeviceToken,
-  findPolledDeviceCode,
-  insertDeviceCode,
-  recordDevicePoll,
-  sweepExpired,
-} from "./db.js";
+import { claimDevicePoll, collectDeviceToken, insertDeviceCode, sweepExpired } from "./db.js";
 import { errorResponse } from "./errors.js";
 import { sha256Hex } from "./hash.js";
 import { newApiToken, newDeviceCode, newTokenId, newUserCode } from "./ids.js";
@@ -255,6 +249,11 @@ interface IssuedToken {
  * caller gets is deliberately not a way to learn anything: an unknown device
  * code answers exactly like an expired one, because the alternative is an
  * endpoint that confirms which random strings are real.
+ *
+ * The interval is claimed rather than checked, so exactly one poll per interval
+ * is served however many arrive at once, and this endpoint writes at most once
+ * per interval per code. `claimDevicePoll` says why a read followed by a write
+ * cannot enforce an interval.
  */
 async function poll(request: Request, env: Env, deps: DeviceDeps): Promise<Response> {
   const now = (deps.now ?? Date.now)();
@@ -270,28 +269,34 @@ async function poll(request: Request, env: Env, deps: DeviceDeps): Promise<Respo
   }
 
   const deviceCodeHash = await sha256Hex(deviceCode);
-  const code = await findPolledDeviceCode(env.DB, deviceCodeHash);
+  const { code, claimed } = await claimDevicePoll(
+    env.DB,
+    deviceCodeHash,
+    now,
+    MIN_DEVICE_POLL_GAP_MS,
+  );
+
+  // The code's own state is read before the claim is consulted, so a code that
+  // is over or refused says so on every poll rather than sometimes answering
+  // `slow_down` about a sign-in that is already finished.
+  //
   // Unknown, already collected, or swept — one answer for all three. A
   // collected code is deleted rather than marked spent, so a replay lands here.
-  if (code === null) return device("expired_token", "That sign-in has expired. Start again.");
-
-  if (code.last_polled_at !== null && now - code.last_polled_at < MIN_DEVICE_POLL_GAP_MS) {
-    return device(
-      "slow_down",
-      `Polling too fast. Wait ${DEVICE_POLL_INTERVAL_SECONDS} seconds between requests.`,
-    );
-  }
-  if (code.expires_at <= now) {
+  if (code === null || code.expires_at <= now) {
     return device("expired_token", "That sign-in has expired. Start again.");
   }
   if (code.denied_at !== null) {
     return device("access_denied", "That sign-in was refused in the browser.");
   }
+  // Nothing else can have refused the claim by this point.
+  if (!claimed) {
+    return device(
+      "slow_down",
+      `Polling too fast. Wait ${DEVICE_POLL_INTERVAL_SECONDS} seconds between requests.`,
+    );
+  }
 
   if (code.approved_at === null) {
-    // Only the waiting path records the poll. The collecting one is about to
-    // delete this row, so writing to it first would be a write for nobody.
-    await recordDevicePoll(env.DB, deviceCodeHash, now);
     return device("authorization_pending", "Waiting for the sign-in to be approved.");
   }
 
