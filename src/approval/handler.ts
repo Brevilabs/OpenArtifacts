@@ -430,7 +430,7 @@ const CHOOSE: BrandPage = {
   title: "Approve a device",
   heading: "Approve this device.",
   message:
-    "Your terminal is waiting on the code below. Sign in to continue. OpenArtifacts keeps only the verified email address your provider returns, and creates your account the first time you do this.",
+    "Your terminal is waiting on the code below. Sign in to continue. The first time creates your account, which stores your verified email address and the id your provider uses for you. Nothing else.",
 };
 
 const CONFIRM: BrandPage = {

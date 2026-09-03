@@ -21,8 +21,10 @@ never mixed:
 | An OpenArtifacts account | `oa_` and 26 base32 characters | `newAccountId`, minted by the first approval |
 
 An account here holds an id, one verified email address, and the time it was
-created. That is the whole `accounts` table, and nothing else about a person is
-read, requested or stored — no name, no avatar, no provider account id.
+created. That is the whole `accounts` table. One further thing about a person is
+stored, and it lives in `identities`: the provider's own permanent id for them,
+which is what returns a later sign-in to the right account. Beyond those,
+nothing is read, requested or stored, so no name and no avatar.
 
 **The prefix is load-bearing.** An app-sites uuid cannot start with `oa_`, so the
 two id spaces cannot collide, and no equality test between them can accidentally
