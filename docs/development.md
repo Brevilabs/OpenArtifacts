@@ -52,8 +52,8 @@ the device flow in
 [#57](https://github.com/Brevilabs/OpenArtifacts/issues/57), so insert the row by
 hand until that lands. It also needs an OAuth client;
 register a Google or GitHub app whose callback is
-`http://127.0.0.1:8787/approve/callback/{provider}` and put its pair, plus any
-`APPROVAL_COOKIE_SECRET`, in `.dev.vars`.
+`http://127.0.0.1:8787/approve/callback/{provider}` and put its pair in
+`.dev.vars`.
 
 ```bash
 CODE=WDJB-MJHT
@@ -65,11 +65,12 @@ npx wrangler d1 execute symposium --local --command \
 open "http://127.0.0.1:8787/approve?user_code=$CODE"
 ```
 
-Approving writes an `accounts` row and stamps the code with its id:
+Signing in leaves the account proven and the code unapproved; pressing the button
+on the page that follows is what approves it. The row shows both steps:
 
 ```bash
 npx wrangler d1 execute symposium --local --command \
-  "SELECT d.user_code, d.account_id, a.email
+  "SELECT d.user_code, d.account_id, d.approved_at, a.email
      FROM device_codes d LEFT JOIN accounts a ON a.id = d.account_id"
 ```
 

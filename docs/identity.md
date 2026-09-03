@@ -49,20 +49,29 @@ is one approval page.
 1. An agent's CLI has no token, so it asks for a device code and prints a url.
 2. The person opens it. `GET /approve?user_code=…` shows the code and one button
    per configured provider.
-3. They pick Google or GitHub. The handshake's OAuth `state` and PKCE verifier
-   go into a signed, HttpOnly cookie that expires in five minutes.
-4. The provider redirects back to `/approve/callback/{provider}`. The state is
-   checked against the cookie, the authorization code is exchanged, and the
-   provider's **verified** address is read.
-5. That address resolves to an account, creating one if it is new, and the
-   account is bound to the device code the CLI is polling.
+3. They press a provider's button. The handshake's OAuth `state` and PKCE
+   verifier are written onto the device code's own row, not into the browser.
+4. The provider redirects back to `/approve/callback/{provider}`. The `state`
+   finds that row, the authorization code is exchanged, and the provider's
+   **verified** address is read.
+5. That address resolves to an account, creating one if it is new. The account is
+   recorded against the code and the page asks whether to approve it.
+6. They press Approve, which `POST`s the handshake's `state` back and is the only
+   thing that marks the code approved.
 
 The first approval an address makes is the registration. Every one after it finds
 the same account, whichever provider proved it — the address is folded to
 lowercase in one place, so Google and GitHub on one mailbox never become two
-shelves. When the page is done the cookie is cleared and nothing about the
-browser is remembered, because the token the CLI holds is the credential from
-then on.
+shelves. Nothing about the browser is remembered at any point, because the token
+the CLI holds is the credential from then on.
+
+**Steps 5 and 6 are deliberately separate**, and it is the one thing about this
+flow that is not obvious. A provider's redirect back is a `GET` that a link can
+cause, and someone already signed in to that provider is carried through it with
+no prompt at all. If that redirect completed the approval, sending a victim a
+link would be enough to attach an attacker's terminal to their account — the
+device-flow phishing case RFC 8628 §5.4 exists for. So the redirect proves an
+identity and nothing more, and the approval is a `POST` a person has to press.
 
 The device flow either side of that page — minting the code, polling it, and
 issuing the token an approval earns — is
@@ -124,11 +133,14 @@ unsharing one, and revoking a token are all CLI commands. Without a dashboard, a
 session buys nothing and costs a store, an expiry policy, and a cookie on a
 browser that has no further business with us.
 
-The one cookie this Worker sets carries a handshake in progress, lives for five
-minutes, and is confined to `/approve` on the API host. **The serving origin sets
-no cookie at all**, which [`http-api.md`](http-api.md) promises and a test now
-asserts on every reader-facing response — publishers' own scripts run there, and
-that is only acceptable while there is nothing on the origin for them to steal.
+**This Worker sets no cookie, on any surface.** Even the OAuth handshake, which
+would be the obvious thing to keep in one, lives on the device code's own row
+instead: the browser is not the thing being authorized, so it has nothing to
+remember between the three requests. That keeps the serving origin's cookieless
+guarantee — which [`http-api.md`](http-api.md) promises and a test asserts on
+every reader-facing response — a property of the whole Worker rather than an
+argument about which host is safe. Publishers' own scripts run on that origin,
+and that is only acceptable while there is nothing on it for them to steal.
 
 ## What this does not do
 

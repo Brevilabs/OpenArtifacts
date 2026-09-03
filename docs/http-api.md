@@ -73,20 +73,25 @@ paths are not part of the contract a client is written against. It is documented
 here only so nothing mistakes it for an API route.
 
 ```http
-GET /approve?user_code=…            the page that offers the providers
-GET /approve/start/{provider}       redirects to the provider
-GET /approve/callback/{provider}    where the provider redirects back
+GET  /approve?user_code=…          the page that offers the providers
+POST /approve/start/{provider}     redirects to the provider
+GET  /approve/callback/{provider}  where the provider redirects back
+POST /approve/confirm              the press that approves the code
 ```
 
-Two consequences worth stating, because both are promises made elsewhere:
+Three consequences worth stating, because all three are promises made elsewhere:
 
 - **Nothing under `/api/v1` changes.** The approval paths are additive and sit
   outside that prefix, so every response a license-key caller receives is exactly
   what it was.
-- **The serving origin still sets no cookie.** Approval uses one short-lived,
-  signed, HttpOnly cookie to carry an OAuth handshake, and it is scoped to
-  `/approve` on the API host. No response on `openartifacts.site` sets a cookie,
-  before or after this page existed.
+- **This Worker sets no cookie, anywhere.** The OAuth handshake is kept on the
+  device code's own row rather than in the browser, so the serving origin's
+  cookieless guarantee is a property of the whole Worker rather than of one host.
+- **Proving an identity and approving a device are two steps.** The provider's
+  redirect back is a `GET`, and it only ever renders a confirmation; the approval
+  is a `POST` a person presses. RFC 8628 §5.4 is why: a `GET` that completed an
+  approval could be caused by a link, and a visitor already signed in to their
+  provider would pass through it without a prompt.
 
 A deployment that configures no OAuth client answers `/approve` with a page
 saying so. Nothing else about it changes: documents keep serving and license-key

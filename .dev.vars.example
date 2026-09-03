@@ -28,9 +28,3 @@ OAUTH_GOOGLE_CLIENT_ID=""
 OAUTH_GOOGLE_CLIENT_SECRET=""
 OAUTH_GITHUB_CLIENT_ID=""
 OAUTH_GITHUB_CLIENT_SECRET=""
-
-# Signs the five-minute cookie that carries an OAuth handshake's state and PKCE
-# verifier. Any long random string; rotating it only invalidates handshakes that
-# are in flight, since nothing else is signed with it. Approval is unavailable
-# while it is unset.
-APPROVAL_COOKIE_SECRET=""
