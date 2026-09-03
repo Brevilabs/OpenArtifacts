@@ -124,6 +124,7 @@ paths are not part of the contract a client is written against. It is documented
 here only so nothing mistakes it for an API route.
 
 ```http
+GET  /approve                      the page that asks for a code
 GET  /approve?user_code=…          the page that offers the providers
 POST /approve/start/{provider}     redirects to the provider
 GET  /approve/callback/{provider}  where the provider redirects back
@@ -429,8 +430,11 @@ Neither endpoint authenticates, which is why neither is under `/api/v1`.
 - `user_code` is eight letters from a twenty-consonant alphabet, shown as two
   groups of four. No digits and no vowels, so nothing in it is confusable when
   read aloud and no draw can spell a word.
-- `verification_uri_complete` is what a client prints and opens; the bare
-  `verification_uri` is for a person typing it on another device.
+- `verification_uri_complete` is what a client prints and opens. The bare
+  `verification_uri` is short enough to read off a terminal and type into a
+  phone, and it shows a field for entering the `user_code` by hand. Print both:
+  the complete one is the fast path and the bare one is the one that works when
+  the terminal cannot be copied from.
 - `expires_in` and `interval` are seconds. Use the `interval` the response gives
   rather than a number of your own.
 

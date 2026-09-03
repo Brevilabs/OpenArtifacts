@@ -121,6 +121,7 @@ export function normalizeUserCode(raw: string | null): string | null {
  * The four routes, and the one method each answers to:
  *
  * ```
+ * GET  /approve                      the page that asks for a code
  * GET  /approve?user_code=…          the page that offers the providers
  * POST /approve/start/{provider}     redirects to the provider
  * GET  /approve/callback/{provider}  where the provider redirects back
@@ -175,12 +176,29 @@ export async function handleApproval(
   }
 }
 
-/** The page that offers the providers, once the code is known to be waiting. */
+/**
+ * The page that offers the providers, once the code is known to be waiting —
+ * and, with no code on the url, the page that asks for one.
+ *
+ * Arriving without a code is the ordinary manual path rather than a mistake.
+ * The mint returns a bare `verification_uri` alongside the one with the code
+ * already in it, precisely so a person can read a short address off a terminal
+ * and type it into a phone; that address has to lead somewhere they can enter
+ * the code they are looking at, or the manual half of RFC 8628 is advertised
+ * and then unusable.
+ *
+ * The form is a `GET`, because submitting it only navigates to this same page
+ * with the code on the url. The two `POST`s either side of it are the ones that
+ * change what a code is worth, and they stay exactly as they are.
+ */
 async function chooser(url: URL, env: Env, deps: ApprovalDeps): Promise<Response> {
   if (!approvalIsConfigured(env)) return page(NOT_CONFIGURED, 503);
 
-  const userCode = normalizeUserCode(url.searchParams.get(USER_CODE_PARAM));
-  if (userCode === null) return page(NO_CODE, 400);
+  const submitted = url.searchParams.get(USER_CODE_PARAM);
+  if (submitted === null || submitted.trim() === "") return codeEntry(200);
+
+  const userCode = normalizeUserCode(submitted);
+  if (userCode === null) return codeEntry(400, "That does not look like a code.");
 
   const now = (deps.now ?? Date.now)();
   // Checked before the providers are offered rather than after the handshake,
@@ -226,7 +244,7 @@ async function begin(
   if (submitted === null) return page(NOT_FOUND, 404);
 
   const userCode = normalizeUserCode(submitted.get(USER_CODE_PARAM));
-  if (userCode === null) return page(NO_CODE, 400);
+  if (userCode === null) return codeEntry(400, "That does not look like a code.");
 
   const now = (deps.now ?? Date.now)();
   const state = newHandshakeToken();
@@ -464,6 +482,40 @@ function codeDetail(userCode: string): string {
   return `  <div class="code">${escapeHtml(userCode)}</div>`;
 }
 
+/**
+ * The page that asks for a code, with an optional line saying why it is being
+ * asked again.
+ *
+ * What was submitted is deliberately not put back in the field. Nothing a
+ * visitor types reaches this page's markup, which makes "the code cannot carry
+ * anything" a property of the page rather than of the escaping being right, and
+ * a nine-character code is not worth weakening that to save retyping.
+ */
+function codeEntry(status: number, note?: string): Response {
+  const message = note === undefined ? ENTER_CODE.message : `${note} ${ENTER_CODE.message}`;
+  return page({ ...ENTER_CODE, message, actions: actions(codeForm()) }, status);
+}
+
+/**
+ * The one field, and nothing else.
+ *
+ * `autocapitalize` and the uppercasing in the stylesheet are for the phone this
+ * is most often typed into; neither is what makes a lowercase code work, since
+ * `normalizeUserCode` folds case and trims whitespace on the way in. `required`
+ * is what stops an empty submission bouncing off the same page with nothing to
+ * say, and it is markup rather than script — this page has no JavaScript and
+ * gains none here.
+ */
+function codeForm(): string {
+  return (
+    `<form method="get" action="${APPROVAL_PREFIX}">` +
+    `<input type="text" name="${USER_CODE_PARAM}" placeholder="WDJB-MJHT" aria-label="Device code"` +
+    ` autocomplete="off" autocapitalize="characters" autocorrect="off" spellcheck="false"` +
+    ` autofocus required>` +
+    `<button type="submit">Continue</button></form>`
+  );
+}
+
 /** Every page is `no-store`: none of them is the same twice. */
 function page(copy: BrandPage, status: number): Response {
   return new Response(brandPageHtml(copy), {
@@ -502,12 +554,12 @@ const DENIED: BrandPage = {
   actions: ABOUT_LINK,
 };
 
-const NO_CODE: BrandPage = {
-  title: "Approval link incomplete",
-  heading: "This link is incomplete.",
+const ENTER_CODE: BrandPage = {
+  title: "Approve a device",
+  heading: "Enter your code.",
+  /** Always rendered with the form as its actions, and sometimes with a note. */
   message:
-    "Open the whole address your terminal printed, code and all. If you typed it by hand, check the code against the one still on screen.",
-  actions: ABOUT_LINK,
+    "Your terminal is waiting on a short code. Type it in exactly as it appears there. Signing in on the next page creates your account the first time, which stores your verified email address and the id your provider uses for you. Nothing else.",
 };
 
 const CODE_GONE: BrandPage = {

@@ -241,9 +241,52 @@ describe("GET /approve", () => {
     expect((await send("/approve?user_code=NOSUCHCODE")).status).toBe(404);
   });
 
-  it("asks for the whole link when the code is missing or malformed", async () => {
-    expect((await send("/approve")).status).toBe(400);
-    expect((await send("/approve?user_code=not%20a%20code")).status).toBe(400);
+  /**
+   * The mint returns a bare `verification_uri` for someone reading the address
+   * off a terminal and typing it into a phone, so that address has to lead to
+   * somewhere the code can be entered rather than to a page telling them to go
+   * back for the whole link.
+   */
+  it("offers a form to type the code into when the url carries none", async () => {
+    const response = await send("/approve");
+    const html = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(html).toContain('<form method="get" action="/approve">');
+    expect(html).toContain('name="user_code"');
+    // A GET, because submitting it only navigates. The two presses that change
+    // what a code is worth stay POSTs.
+    expect(html).not.toContain('<form method="post" action="/approve">');
+  });
+
+  it("reaches the provider page when that form is submitted with a waiting code", async () => {
+    const response = await send(`/approve?user_code=${USER_CODE.toLowerCase()}`);
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("Continue with Google");
+  });
+
+  it("asks again rather than dead-ending when the code is malformed", async () => {
+    const response = await send("/approve?user_code=not%20a%20code");
+    const html = await response.text();
+
+    expect(response.status).toBe(400);
+    expect(html).toContain('<form method="get" action="/approve">');
+    expect(html).toContain("does not look like a code");
+  });
+
+  it("treats a blank submission as no code at all", async () => {
+    const response = await send("/approve?user_code=%20");
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain('<form method="get" action="/approve">');
+  });
+
+  it("still says a well-formed code is gone rather than offering the form again", async () => {
+    const response = await send("/approve?user_code=NOSUCHCODE");
+
+    expect(response.status).toBe(404);
+    expect(await response.text()).not.toContain('<form method="get"');
   });
 
   it("says so plainly on a deployment with no provider configured", async () => {
@@ -262,6 +305,8 @@ describe("GET /approve", () => {
     // nothing that reaches the page can carry markup in the first place.
     const html = await (await send("/approve?user_code=%3Cimg%20src%3Dx%3E")).text();
     expect(html).not.toContain("<img src=x>");
+    // Nor escaped: what was submitted is not put back in the field at all.
+    expect(html).not.toContain("&lt;img");
   });
 });
 
