@@ -15,6 +15,7 @@ Two surfaces on two domains:
 | --- | --- | --- | --- |
 | API | `/api/v1/*` | required | Publisher-facing. JSON in, JSON out. |
 | Serving | `/d/*` | none | Reader-facing. Public HTML. Never sets a cookie. |
+| Approval | `/approve/*` | none | Human-facing. HTML pages on the API host. Not a client surface. |
 
 The API is served from `api.openartifacts.ai` and documents from `openartifacts.site`.
 The `url` field a push returns therefore points at a different host than the one
@@ -61,6 +62,35 @@ always see what they have published and take it down. Losing the ability to
 publish must never mean losing the ability to unshare.
 
 Reading a doc requires nothing. Serving responses never set a cookie.
+
+## The approval page
+
+`/approve` on the API host is where a person creates an OpenArtifacts account,
+by proving an email address with Google or GitHub and approving a device code
+their terminal is waiting on. **A client never calls it and never parses it**:
+every response is an HTML page for a human, not the JSON envelope below, and its
+paths are not part of the contract a client is written against. It is documented
+here only so nothing mistakes it for an API route.
+
+```http
+GET /approve?user_code=…            the page that offers the providers
+GET /approve/start/{provider}       redirects to the provider
+GET /approve/callback/{provider}    where the provider redirects back
+```
+
+Two consequences worth stating, because both are promises made elsewhere:
+
+- **Nothing under `/api/v1` changes.** The approval paths are additive and sit
+  outside that prefix, so every response a license-key caller receives is exactly
+  what it was.
+- **The serving origin still sets no cookie.** Approval uses one short-lived,
+  signed, HttpOnly cookie to carry an OAuth handshake, and it is scoped to
+  `/approve` on the API host. No response on `openartifacts.site` sets a cookie,
+  before or after this page existed.
+
+A deployment that configures no OAuth client answers `/approve` with a page
+saying so. Nothing else about it changes: documents keep serving and license-key
+publishing keeps working.
 
 ## Endpoints
 

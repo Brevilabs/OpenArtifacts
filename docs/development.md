@@ -44,3 +44,34 @@ OPENARTIFACTS_LICENSE_KEY=$KEY scripts/smoke.sh http://127.0.0.1:8787
 
 Alternatively, copy `.dev.vars.example` to `.dev.vars` and point
 `LICENSE_API_URL` / `LICENSE_API_KEY` at the real license server.
+
+## Exercising the approval page
+
+The approval page needs a pending device code to bind, and minting one belongs to
+the device flow in
+[#57](https://github.com/Brevilabs/OpenArtifacts/issues/57), so insert the row by
+hand until that lands. It also needs an OAuth client;
+register a Google or GitHub app whose callback is
+`http://127.0.0.1:8787/approve/callback/{provider}` and put its pair, plus any
+`APPROVAL_COOKIE_SECRET`, in `.dev.vars`.
+
+```bash
+CODE=WDJB-MJHT
+
+npx wrangler d1 execute symposium --local --command \
+  "INSERT OR REPLACE INTO device_codes (user_code, expires_at, created_at)
+   VALUES ('$CODE', $((($(date +%s) + 900) * 1000)), $(($(date +%s) * 1000)))"
+
+open "http://127.0.0.1:8787/approve?user_code=$CODE"
+```
+
+Approving writes an `accounts` row and stamps the code with its id:
+
+```bash
+npx wrangler d1 execute symposium --local --command \
+  "SELECT d.user_code, d.account_id, a.email
+     FROM device_codes d LEFT JOIN accounts a ON a.id = d.account_id"
+```
+
+With no OAuth client configured the page answers `503` and says approval is not
+set up, which is the same thing a self-hosted deployment without one does.
