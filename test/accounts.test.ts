@@ -196,6 +196,16 @@ describe("startDeviceHandshake", () => {
     });
   });
 
+  it("drops the identity an earlier handshake proved, so a restart cannot be approved for it (https://github.com/Brevilabs/OpenArtifacts/pull/61#discussion_r3919988470)", async () => {
+    await seedCode("START-5", NOW + 1000);
+    await proven("START-5", "state-proved", "oa_victim");
+
+    await startDeviceHandshake(env.DB, "START-5", "google", "state-restarted", "v2", NOW);
+
+    expect((await readCode("START-5"))?.account_id).toBeNull();
+    expect(await confirmDeviceApproval(env.DB, "state-restarted", NOW)).toBeNull();
+  });
+
   it("refuses an unknown, expired or already-approved code alike", async () => {
     await seedCode("START-3", NOW - 1);
     await seedCode("START-4", NOW + 1000);
