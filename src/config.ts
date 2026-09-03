@@ -127,15 +127,20 @@ export const DEVICE_MINT_PERIOD_SECONDS = 60;
 export const TOKEN_LAST_USED_RESOLUTION_MS = 60 * 60 * 1000;
 
 /**
- * Live tokens one account may hold, which is also every token the list returns.
+ * Live tokens one account holds at once, which is also every token the list
+ * returns.
  *
  * One number, not two, and that is the whole design. `GET /api/v1/tokens` has
  * no cursor, because a token exists only when a human approves a machine and an
  * account has a handful. A list capped below what an account can hold would
  * eventually hide a live token behind the cap — and since revoking is the only
- * way to manage one, a token nobody can see is a token nobody can withdraw
- * (https://github.com/Brevilabs/OpenArtifacts/pull/62#discussion_r3927574073).
- * Capping issuance at the same number instead makes the list complete by
+ * way to manage one, a token nobody can see is a token nobody can withdraw.
+ * Holding the count at this number instead makes the list complete by
  * construction.
+ *
+ * It is a rolling window rather than a ceiling that refuses: the hundred and
+ * first collection evicts the account's least recently used token. Refusing
+ * would strand an owner who no longer holds any of the hundred values, because
+ * revoking needs one of them — see `collectDeviceToken`.
  */
 export const MAX_TOKENS_PER_ACCOUNT = 100;

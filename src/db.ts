@@ -1054,14 +1054,6 @@ export async function claimDevicePoll(
   };
 }
 
-/** What became of a poll that arrived at an approved code. */
-export type TokenCollection =
-  | { status: "issued"; label: string | null }
-  /** The account is at `MAX_TOKENS_PER_ACCOUNT`. The code is left collectable. */
-  | { status: "at_capacity" }
-  /** Another poll collected it first, so there is nothing left to collect. */
-  | { status: "gone" };
-
 /**
  * Issue the token an approved code earned, and consume the code doing it.
  *
@@ -1083,31 +1075,65 @@ export type TokenCollection =
  * been collected is gone, and a second poll with it gets exactly what a poll
  * with an expired code gets.
  *
- * The account's ceiling is a predicate on the insert rather than a count read
- * before it, for the reason `insertDocWithinQuota` gives: two approvals
- * collected at the same moment would otherwise both read the same number and
- * both insert, and a cap the list depends on being complete has to behave like
- * a hard number under the concurrency an agent produces.
+ * **An account at its ceiling loses its least recently used token rather than
+ * being refused a new one.** Refusing looks safer and is not: tokens never
+ * expire, so an account fills up through ordinary device loss over years, and
+ * an owner who no longer holds any of those hundred values could then neither
+ * revoke one (revoking needs a token) nor collect one. That is a permanent
+ * lockout produced entirely by the cap
+ * (https://github.com/Brevilabs/OpenArtifacts/pull/62#discussion_r3928231361).
+ * Evicting is safe because whoever is collecting has just proved the account's
+ * identity through an OAuth approval, which is a stronger claim than any token
+ * they might have lost, and it is self-healing: the token that ages out is the
+ * one belonging to the machine nobody uses any more.
+ *
+ * Least recently used means never used first — a token issued to a machine that
+ * never came back is the emptiest thing to drop — then oldest use, then oldest
+ * issue. SQLite orders nulls first under `ASC` anyway; the clause says so
+ * explicitly because the tie-break is the rule rather than an accident of the
+ * engine.
+ *
+ * The eviction carries the same predicates as the insert, so a poll at a code
+ * nobody has approved revokes nothing. The ceiling stays a predicate on the
+ * insert as well, which is what makes it hold under concurrent collections:
+ * two approvals collected at the same moment cannot both read the same count
+ * and both insert.
  *
  * The delete keys off the token row the insert left behind rather than
  * restating that ceiling. Restating it would be wrong in a way that is easy to
  * miss: the statements run in order inside the batch, so by the time the delete
- * is evaluated the count already includes the row just inserted, and an
- * off-by-one there would consume a device code without issuing anything. Keying
- * off the row means the code survives exactly when nothing was issued, so a
- * caller refused by the ceiling can revoke a token and poll again with the same
- * code.
+ * is evaluated the count already includes the row just inserted. Keying off the
+ * row means the code survives exactly when nothing was issued.
  *
  * @param maxTokens live tokens the account may hold, from
  *   `MAX_TOKENS_PER_ACCOUNT`
+ * @returns the label the new token carries, or null when there was nothing left
+ *   to collect
  */
 export async function collectDeviceToken(
   db: D1Database,
   deviceCodeHash: string,
   token: Pick<TokenRow, "id" | "token_hash" | "created_at">,
   maxTokens: number,
-): Promise<TokenCollection> {
-  const [issued] = await db.batch<{ label: string | null }>([
+): Promise<{ label: string | null } | null> {
+  const [, issued] = await db.batch<{ label: string | null }>([
+    db
+      .prepare(
+        `UPDATE tokens SET revoked_at = ?
+          WHERE id = (
+            SELECT victim.id
+              FROM tokens victim
+              JOIN device_codes code ON code.account_id = victim.account_id
+             WHERE code.device_code_hash = ?
+               AND code.approved_at IS NOT NULL
+               AND victim.revoked_at IS NULL
+               AND (SELECT COUNT(*) FROM tokens live
+                     WHERE live.account_id = code.account_id AND live.revoked_at IS NULL) >= ?
+             ORDER BY victim.last_used_at ASC NULLS FIRST, victim.created_at ASC, victim.id ASC
+             LIMIT 1
+          )`,
+      )
+      .bind(token.created_at, deviceCodeHash, maxTokens),
     db
       .prepare(
         `INSERT INTO tokens (id, token_hash, account_id, label, created_at)
@@ -1128,17 +1154,7 @@ export async function collectDeviceToken(
   ]);
 
   const row = issued?.results[0];
-  if (row !== undefined) return { status: "issued", label: row.label };
-
-  // Nothing was issued, and the surviving row is what says why: the delete only
-  // fires when the insert did, so a code still here was refused by the ceiling
-  // and a code that is gone was collected by somebody else.
-  const remaining = await db
-    .prepare("SELECT 1 FROM device_codes WHERE device_code_hash = ? AND approved_at IS NOT NULL")
-    .bind(deviceCodeHash)
-    .first();
-
-  return remaining === null ? { status: "gone" } : { status: "at_capacity" };
+  return row === undefined ? null : { label: row.label };
 }
 
 /**

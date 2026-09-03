@@ -293,10 +293,17 @@ returned and cannot be: only hashes are stored.
   refreshing it exactly would put a database write behind every read, and the
   question it answers is which machine is still using this.
 - Revoked tokens are not listed. **There is no paging and none is needed**: an
-  account may hold at most 100 live tokens, which is also everything this
-  returns, so the list is always complete. Nothing an account holds can be
-  hidden behind a limit, which matters because revoking is the only way to
-  manage a token and a token nobody can see is a token nobody can withdraw.
+  account holds at most 100 live tokens, which is also everything this returns,
+  so the list is always complete. Nothing an account holds can hide behind a
+  limit, which matters because revoking is the only way to manage a token and a
+  token nobody can see is a token nobody can withdraw.
+- **The hundred and first token replaces the least recently used one**, which is
+  revoked as the new one is issued. Never-used goes first, then oldest use. This
+  is a rolling window rather than a wall, so signing in a new machine always
+  works — an account that filled up over years of replaced laptops is never
+  locked out by tokens nobody holds any more. Approving a device proves the
+  account's identity, which is a stronger claim than any token, so it is safe
+  for that approval to displace one.
 
 A license key's account holds no tokens, so it gets an empty list rather than a
 refusal.
@@ -322,10 +329,10 @@ authenticated, and the next one will not.
 already revoked, exactly as for a document. A retry after a timeout therefore
 sees `404`, not `200`; treat it as success.
 
-An account is capped at 100 live tokens. Past that, collecting a new one is
-refused with `429 quota_exceeded` and the sign-in waits until something here is
-revoked. Nobody reaches this by signing in machines; it is the bound that lets
-the list above have no cursor.
+An account holds at most 100 live tokens. Signing in a new machine past that
+revokes the least recently used one rather than failing, so revoking is never
+the only way back in. Nobody reaches this by signing in machines; it is the
+bound that lets the list above have no cursor.
 
 ### `GET /d/{docId}` and `GET /d/{docId}/v{n}` — read
 
@@ -494,11 +501,6 @@ Until then, every answer is a `400` carrying one of four codes:
 Exactly one poll per interval is served, so concurrent polls for one device
 code get `slow_down` too however they are spaced. Poll from one place, on the
 `interval` the mint returned.
-
-One further refusal is not a poll condition and carries `429` rather than `400`:
-`quota_exceeded`, when the account already holds the 100 live tokens it is
-allowed. The device code stays collectable, so revoking a token with another
-one and polling again finishes the sign-in already in flight.
 
 A device code is spent by the poll that collects it, so a replayed one is
 `expired_token` — the same answer an unknown code gets, deliberately, because a

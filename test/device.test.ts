@@ -11,7 +11,8 @@ import {
 import { handleDevice, readDeviceLabel } from "../src/device.js";
 import type { Env } from "../src/config.js";
 import { collectDeviceToken, confirmDeviceApproval, holdProvenIdentity } from "../src/db.js";
-import { TOKEN_ID_PREFIX, TOKEN_PREFIX, USER_CODE_ALPHABET } from "../src/ids.js";
+import { sha256Hex } from "../src/hash.js";
+import { newApiToken, TOKEN_ID_PREFIX, TOKEN_PREFIX, USER_CODE_ALPHABET } from "../src/ids.js";
 import worker from "../src/index.js";
 
 /**
@@ -130,6 +131,13 @@ async function mint(body?: unknown, now = NOW): Promise<Minted> {
 
 const errorOf = async (response: Response): Promise<string> =>
   (await response.json<{ error: { code: string } }>()).error.code;
+
+const revokedAt = async (id: string): Promise<number | null> =>
+  (
+    await env.DB.prepare("SELECT revoked_at FROM tokens WHERE id = ?")
+      .bind(id)
+      .first<{ revoked_at: number | null }>()
+  )?.revoked_at ?? null;
 
 async function codeRow(userCode: string) {
   return await env.DB.prepare(
@@ -464,7 +472,7 @@ describe("POST /device/token", () => {
       ),
     ]);
 
-    expect([first.status, second.status].sort()).toEqual(["gone", "issued"]);
+    expect([first, second].filter((outcome) => outcome !== null)).toHaveLength(1);
     const { n } = (await env.DB.prepare("SELECT COUNT(*) AS n FROM tokens").first<{ n: number }>())!;
     expect(n).toBe(1);
     expect(await codeRow(minted.user_code)).toBeNull();
@@ -538,60 +546,148 @@ describe("claiming a polling interval", () => {
   });
 });
 
-describe("the ceiling on tokens an account may hold", () => {
+describe("the rolling window of tokens an account holds", () => {
   const ACCOUNT = "oa_crowded_account";
 
-  /** Fill the account to one below the ceiling, cheaply. */
-  async function fillTokens(count: number): Promise<void> {
+  /** One seeded token, with the use history the eviction order reads. */
+  async function seedToken(id: string, lastUsed: number | null, value?: string): Promise<void> {
+    await env.DB.prepare(
+      `INSERT INTO tokens (id, token_hash, account_id, label, created_at, last_used_at)
+       VALUES (?, ?, ?, NULL, ?, ?)`,
+    )
+      .bind(id, value === undefined ? `hash-${id}` : await sha256Hex(value), ACCOUNT, NOW, lastUsed)
+      .run();
+  }
+
+  /** Pad the account out to the window, all used more recently than the victim. */
+  async function padTo(count: number, from: number): Promise<void> {
     await env.DB.batch(
-      Array.from({ length: count }, (_, i) =>
+      Array.from({ length: count - from }, (_, i) =>
         env.DB.prepare(
-          `INSERT INTO tokens (id, token_hash, account_id, label, created_at)
-           VALUES (?, ?, ?, ?, ?)`,
-        ).bind(`tok_seed${String(i).padStart(11, "0")}`, `hash-${i}`, ACCOUNT, null, NOW + i),
+          `INSERT INTO tokens (id, token_hash, account_id, label, created_at, last_used_at)
+           VALUES (?, ?, ?, NULL, ?, ?)`,
+        ).bind(
+          `tok_pad${String(i + from).padStart(13, "0")}`,
+          `hash-pad-${i + from}`,
+          ACCOUNT,
+          NOW,
+          NOW + i + from,
+        ),
       ),
     );
   }
 
-  it("refuses the collection past the ceiling and leaves the code collectable", async () => {
-    await fillTokens(MAX_TOKENS_PER_ACCOUNT);
+  const liveTokens = async (): Promise<number> =>
+    (await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM tokens WHERE account_id = ? AND revoked_at IS NULL",
+    )
+      .bind(ACCOUNT)
+      .first<{ n: number }>())!.n;
+
+  /** Mint, approve and collect on this account, returning the new token. */
+  async function signIn(): Promise<Issued> {
     const minted = await mint();
     await approve(minted.user_code, ACCOUNT);
+    const response = await device("/device/token", { device_code: minted.device_code });
+    expect(response.status).toBe(200);
+    return await response.json<Issued>();
+  }
 
-    const refused = await device("/device/token", { device_code: minted.device_code });
-
-    expect(refused.status).toBe(429);
-    expect(await errorOf(refused)).toBe("quota_exceeded");
-    // Not spent: revoking one token and polling again finishes this same sign-in.
-    expect(await codeRow(minted.user_code)).not.toBeNull();
-    const { n } = (await env.DB.prepare("SELECT COUNT(*) AS n FROM tokens").first<{ n: number }>())!;
-    expect(n).toBe(MAX_TOKENS_PER_ACCOUNT);
-  });
-
-  it("collects on the next poll once room is made", async () => {
-    await fillTokens(MAX_TOKENS_PER_ACCOUNT);
-    const minted = await mint();
-    await approve(minted.user_code, ACCOUNT);
-    await device("/device/token", { device_code: minted.device_code });
-
-    await env.DB.prepare("UPDATE tokens SET revoked_at = ? WHERE id = ?")
-      .bind(NOW, "tok_seed00000000000")
-      .run();
-
-    const collected = await device(
-      "/device/token",
-      { device_code: minted.device_code },
-      NOW + DEVICE_POLL_INTERVAL_SECONDS * 1000,
+  const asks = async (credential: string): Promise<number> => {
+    const ctx = createExecutionContext();
+    const response = await worker.fetch(
+      new Request(`${ORIGIN}/api/v1/docs`, { headers: { authorization: `Bearer ${credential}` } }),
+      configured(),
+      ctx,
     );
-    expect(collected.status).toBe(200);
+    await waitOnExecutionContext(ctx);
+    return response.status;
+  };
+
+  /**
+   * Refusing at the ceiling would strand an owner who no longer holds any of
+   * the hundred values: revoking needs one of them, so neither revoking nor
+   * collecting would ever work again
+   * (https://github.com/Brevilabs/OpenArtifacts/pull/62#discussion_r3928231361).
+   */
+  it("evicts the least recently used token and refuses it on its next request", async () => {
+    const victim = newApiToken();
+    await seedToken("tok_victim000000000", NOW - 5_000, victim);
+    await seedToken("tok_keeper000000000", NOW - 4_000);
+    await padTo(MAX_TOKENS_PER_ACCOUNT, 2);
+
+    const issued = await signIn();
+
+    expect(await liveTokens()).toBe(MAX_TOKENS_PER_ACCOUNT);
+    expect(await revokedAt("tok_victim000000000")).toBe(NOW);
+    expect(await revokedAt("tok_keeper000000000")).toBeNull();
+    expect(await asks(victim)).toBe(401);
+    expect(await asks(issued.access_token)).toBe(200);
   });
 
-  it("returns every token an account can hold, so none is invisible to revoke", async () => {
-    await fillTokens(MAX_TOKENS_PER_ACCOUNT - 1);
+  it("drops a token that was never used before one that was used long ago", async () => {
+    await seedToken("tok_neverused000000", null);
+    await seedToken("tok_ancient00000000", 1);
+    await padTo(MAX_TOKENS_PER_ACCOUNT, 2);
+
+    await signIn();
+
+    expect(await revokedAt("tok_neverused000000")).toBe(NOW);
+    expect(await revokedAt("tok_ancient00000000")).toBeNull();
+  });
+
+  it("evicts nothing while the account is under the window", async () => {
+    await seedToken("tok_lonely000000000", null);
+
+    await signIn();
+
+    expect(await revokedAt("tok_lonely000000000")).toBeNull();
+    expect(await liveTokens()).toBe(2);
+  });
+
+  it("evicts nothing for a poll at a code nobody has approved", async () => {
+    await seedToken("tok_untouched000000", null);
+    await padTo(MAX_TOKENS_PER_ACCOUNT, 1);
+    const minted = await mint();
+
+    expect(await errorOf(await device("/device/token", { device_code: minted.device_code }))).toBe(
+      "authorization_pending",
+    );
+
+    expect(await revokedAt("tok_untouched000000")).toBeNull();
+    expect(await liveTokens()).toBe(MAX_TOKENS_PER_ACCOUNT);
+  });
+
+  it("issues one token when two collections race at the window", async () => {
+    await seedToken("tok_victim000000000", NOW - 5_000);
+    await padTo(MAX_TOKENS_PER_ACCOUNT, 1);
     const minted = await mint();
     await approve(minted.user_code, ACCOUNT);
-    const issued = await (await device("/device/token", { device_code: minted.device_code }))
-      .json<Issued>();
+    const hash = (await codeRow(minted.user_code))!.device_code_hash!;
+
+    const [first, second] = await Promise.all([
+      collectDeviceToken(
+        env.DB,
+        hash,
+        { id: "tok_race000000000a", token_hash: "hash-a", created_at: NOW },
+        MAX_TOKENS_PER_ACCOUNT,
+      ),
+      collectDeviceToken(
+        env.DB,
+        hash,
+        { id: "tok_race000000000b", token_hash: "hash-b", created_at: NOW },
+        MAX_TOKENS_PER_ACCOUNT,
+      ),
+    ]);
+
+    expect([first, second].filter((outcome) => outcome !== null)).toHaveLength(1);
+    expect(await liveTokens()).toBe(MAX_TOKENS_PER_ACCOUNT);
+    expect(await codeRow(minted.user_code)).toBeNull();
+  });
+
+  it("returns every token an account holds, so none is invisible to revoke", async () => {
+    await padTo(MAX_TOKENS_PER_ACCOUNT - 1, 0);
+    const issued = await signIn();
 
     const ctx = createExecutionContext();
     const listed = await worker.fetch(
@@ -606,8 +702,7 @@ describe("the ceiling on tokens an account may hold", () => {
     const body = await listed.json<{ tokens: { tokenId: string }[] }>();
     expect(body.tokens).toHaveLength(MAX_TOKENS_PER_ACCOUNT);
     expect(body.tokens.map((row) => row.tokenId)).toContain(issued.token_id);
-    // The oldest is still listed, which is what makes it revocable.
-    expect(body.tokens.map((row) => row.tokenId)).toContain("tok_seed00000000000");
+    expect(body.tokens.map((row) => row.tokenId)).toContain("tok_pad0000000000000");
   });
 });
 

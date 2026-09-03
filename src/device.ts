@@ -309,18 +309,11 @@ async function poll(request: Request, env: Env, deps: DeviceDeps): Promise<Respo
     MAX_TOKENS_PER_ACCOUNT,
   );
 
-  if (issued.status === "at_capacity") {
-    // The code is deliberately still collectable, so revoking a token and
-    // polling again with the same code finishes the sign-in already in flight.
-    return errorResponse(
-      "quota_exceeded",
-      `This account already holds ${MAX_TOKENS_PER_ACCOUNT} tokens. Revoke one, then poll again.`,
-      { "cache-control": "no-store" },
-    );
-  }
-  if (issued.status === "gone") {
-    // Another poll collected between the read above and this write. The code is
-    // spent, and the terminal that lost has nothing left to wait for.
+  // Null only when another poll collected between the claim above and this
+  // write. The code is spent, and the terminal that lost has nothing left to
+  // wait for. An account at its ceiling is not a refusal: the collection
+  // evicts that account's least recently used token instead.
+  if (issued === null) {
     return device("expired_token", "That sign-in has expired. Start again.");
   }
 
