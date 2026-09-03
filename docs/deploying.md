@@ -71,6 +71,41 @@ two plan values currently allowed to publish. With the Brevilabs license
 variables absent, unknown keys fail closed and seeded keys continue through the
 existing license-outage fallback.
 
+### The device-code limiter
+
+`POST /device/code` is unauthenticated, because a terminal asking for a sign-in
+code has no credential yet. It is limited by a Workers rate limiter binding,
+declared in `wrangler.jsonc`:
+
+```jsonc
+"ratelimits": [
+  { "name": "DEVICE_CODE_LIMITER", "namespace_id": "1001", "simple": { "limit": 5, "period": 60 } }
+]
+```
+
+Five codes a minute per client address, which is far above one person signing in
+a machine or two. `period` accepts only `10` or `60`. **`namespace_id` is unique
+across your whole account, not per Worker**, so if you run another Worker with a
+limiter, give this one a number that Worker does not use. `DEVICE_MINT_PERIOD_SECONDS`
+in `src/config.ts` is the `Retry-After` a refusal carries and has to match
+`period`; nothing else in the code reads these numbers, because the binding
+reports a verdict and no counts.
+
+**Deleting the block is supported.** A deployment that declares no limiter puts
+no limit on that endpoint, which is the right answer for a private deployment
+nobody else can reach. Failing closed instead would mean a Worker that signs
+nobody in until its operator had read this page. Everything else works the same
+either way.
+
+The limiter is not a D1 counter on purpose. A counter in a row costs a write for
+every attempt including every refused one, so under sustained abuse the limiter
+itself would exhaust the account's daily write budget — see
+[cost at scale](cost-at-scale.md).
+
+For a public deployment, add a WAF rate limiting rule on `POST /device/code` as
+a second layer. The binding runs inside the Worker, so a request it refuses has
+still been billed as a request; a WAF rule refuses at the edge before that.
+
 The checked-in GitHub Actions workflow is Brevilabs-specific. It names the
 production database, domains, repository environment, and deployment records.
 Deploy manually until you have adapted all of those values for your account.

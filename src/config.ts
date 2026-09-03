@@ -11,6 +11,22 @@ export interface Env {
   /** D1 pointer index. Rebuildable from R2; never holds content. */
   DB: D1Database;
 
+  /**
+   * Rate limiter on `POST /device/code`, declared in wrangler.jsonc.
+   *
+   * **Optional, and its absence is a supported deployment rather than a
+   * misconfiguration.** A self-hoster who declares no limiter gets no limit on
+   * that endpoint, which is the right default for a private deployment nobody
+   * else can reach and a deliberate choice for a public one. The alternative —
+   * failing closed when it is undefined — would mean a Worker that refuses to
+   * sign anybody in until an operator has read a configuration reference.
+   *
+   * The hosted deployment declares it, and should carry a WAF rate limiting
+   * rule on the same path as a second layer, since the binding runs inside the
+   * Worker and a request that reaches it has already been paid for.
+   */
+  DEVICE_CODE_LIMITER?: RateLimit;
+
   /** Canonical host that serves public docs. Empty in local development. */
   SERVING_HOST?: string;
   /** Canonical host that exposes /api/v1. Empty in local development. */
@@ -89,18 +105,16 @@ export const DEVICE_POLL_INTERVAL_SECONDS = 5;
  */
 export const MIN_DEVICE_POLL_GAP_MS = (DEVICE_POLL_INTERVAL_SECONDS - 1) * 1000;
 
-/** Window the device-code mint limit is counted over. */
-export const DEVICE_MINT_WINDOW_MS = 10 * 60 * 1000;
-
 /**
- * Device codes one client address may mint per window.
+ * The window the device-code limiter counts over, in seconds.
  *
- * Minting is unauthenticated by necessity, so the address is the only thing to
- * count against. Twenty in ten minutes is far above one person signing in a
- * machine or two and leaves room for an office behind one address, while
- * capping what a script can produce to spam people with approval pages.
+ * The limit itself lives in wrangler.jsonc, where the binding is declared, and
+ * is not readable from here — a rate limiter binding reports no numbers, only a
+ * verdict. This copy exists solely so a refusal can carry a `Retry-After` the
+ * caller can act on, and **it has to match the `period` on the binding**. The
+ * binding accepts 10 or 60 and nothing else.
  */
-export const MAX_DEVICE_MINTS_PER_WINDOW = 20;
+export const DEVICE_MINT_PERIOD_SECONDS = 60;
 
 /**
  * How stale a token's `last_used_at` may get before a request refreshes it.

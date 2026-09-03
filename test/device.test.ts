@@ -2,11 +2,7 @@ import { createExecutionContext, env, waitOnExecutionContext } from "cloudflare:
 import { describe, expect, it } from "vitest";
 import { handleApproval, normalizeUserCode } from "../src/approval/handler.js";
 import type { OAuthClient, ProviderId } from "../src/approval/providers.js";
-import {
-  DEVICE_CODE_TTL_MS,
-  DEVICE_POLL_INTERVAL_SECONDS,
-  MAX_DEVICE_MINTS_PER_WINDOW,
-} from "../src/config.js";
+import { DEVICE_CODE_TTL_MS, DEVICE_POLL_INTERVAL_SECONDS } from "../src/config.js";
 import { handleDevice, readDeviceLabel } from "../src/device.js";
 import type { Env } from "../src/config.js";
 import { confirmDeviceApproval, holdProvenIdentity } from "../src/db.js";
@@ -26,6 +22,21 @@ const ORIGIN = "https://openartifacts.workers.dev";
  */
 const NOW = 1_800_000_000_000;
 
+/**
+ * The limit declared on the binding in wrangler.jsonc. Not readable from the
+ * binding itself, which reports a verdict and no numbers, so a change there has
+ * to be made here too.
+ */
+const MINTS_PER_PERIOD = 5;
+
+/**
+ * A deployment with no limiter declared, which is the supported self-hosted
+ * shape and the one almost every case here wants: the limiter's state lives in
+ * the runtime rather than in storage, so it does *not* reset between tests, and
+ * a suite that minted through it would start refusing itself. The cases that
+ * are about the limit reach for `env.DEVICE_CODE_LIMITER` explicitly, each with
+ * an address of its own.
+ */
 const configured = (over: Partial<Env> = {}): Env =>
   ({
     ...env,
@@ -37,8 +48,12 @@ const configured = (over: Partial<Env> = {}): Env =>
     OAUTH_GOOGLE_CLIENT_SECRET: "google-secret",
     OAUTH_GITHUB_CLIENT_ID: "github-client",
     OAUTH_GITHUB_CLIENT_SECRET: "github-secret",
+    DEVICE_CODE_LIMITER: undefined,
     ...over,
   }) as Env;
+
+/** The same deployment with the limiter the hosted one declares. */
+const limited = (): Env => configured({ DEVICE_CODE_LIMITER: env.DEVICE_CODE_LIMITER });
 
 function request(path: string, body?: unknown, headers: Record<string, string> = {}): Request {
   return new Request(`${ORIGIN}${path}`, {
@@ -49,10 +64,20 @@ function request(path: string, body?: unknown, headers: Record<string, string> =
 }
 
 /** Straight at the handler, where the clock is injectable. */
-function device(path: string, body?: unknown, now = NOW, headers: Record<string, string> = {}) {
+function device(
+  path: string,
+  body?: unknown,
+  now = NOW,
+  headers: Record<string, string> = {},
+  over: Env = configured(),
+) {
   const url = new URL(`${ORIGIN}${path}`);
-  return handleDevice(request(path, body, headers), url, configured(), { now: () => now });
+  return handleDevice(request(path, body, headers), url, over, { now: () => now });
 }
+
+/** A mint from one address through a deployment that declares the limiter. */
+const mintFrom = (address: string) =>
+  device("/device/code", undefined, NOW, { "cf-connecting-ip": address }, limited());
 
 /** Through the router, which is what proves the surface is reachable at all. */
 async function routed(path: string, body?: unknown): Promise<Response> {
@@ -199,28 +224,49 @@ describe("POST /device/code", () => {
     expect(await codeRow(first.user_code)).not.toBeNull();
   });
 
-  it("refuses a client that has spent its window's worth of codes", async () => {
-    for (let i = 0; i < MAX_DEVICE_MINTS_PER_WINDOW; i += 1) {
-      expect((await device("/device/code")).status).toBe(200);
+  it("refuses a client that has spent its period's worth of codes", async () => {
+    for (let i = 0; i < MINTS_PER_PERIOD; i += 1) {
+      expect((await mintFrom("203.0.113.7")).status).toBe(200);
     }
 
-    const refused = await device("/device/code");
+    const refused = await mintFrom("203.0.113.7");
     expect(refused.status).toBe(429);
     expect(await errorOf(refused)).toBe("quota_exceeded");
-    expect(refused.headers.get("retry-after")).toMatch(/^[0-9]+$/);
+    expect(refused.headers.get("retry-after")).toBe("60");
   });
 
   it("counts each client address separately", async () => {
-    for (let i = 0; i < MAX_DEVICE_MINTS_PER_WINDOW; i += 1) {
-      await device("/device/code", undefined, NOW, { "cf-connecting-ip": "203.0.113.7" });
-    }
+    for (let i = 0; i < MINTS_PER_PERIOD; i += 1) await mintFrom("203.0.113.9");
 
-    expect(
-      (await device("/device/code", undefined, NOW, { "cf-connecting-ip": "203.0.113.8" })).status,
-    ).toBe(200);
-    expect(
-      (await device("/device/code", undefined, NOW, { "cf-connecting-ip": "203.0.113.7" })).status,
-    ).toBe(429);
+    expect((await mintFrom("203.0.113.10")).status).toBe(200);
+    expect((await mintFrom("203.0.113.9")).status).toBe(429);
+  });
+
+  /**
+   * A self-hoster who declares no limiter gets no limit, deliberately. Failing
+   * closed instead would mean a Worker that signs nobody in until an operator
+   * has read a configuration reference.
+   */
+  it("mints freely on a deployment that declares no limiter", async () => {
+    expect(configured().DEVICE_CODE_LIMITER).toBeUndefined();
+
+    for (let i = 0; i < MINTS_PER_PERIOD + 2; i += 1) {
+      expect((await device("/device/code")).status).toBe(200);
+    }
+  });
+
+  it("writes nothing when the limiter refuses, so abuse costs no storage", async () => {
+    for (let i = 0; i < MINTS_PER_PERIOD; i += 1) await mintFrom("203.0.113.11");
+    const { n: before } = (await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM device_codes",
+    ).first<{ n: number }>())!;
+
+    expect((await mintFrom("203.0.113.11")).status).toBe(429);
+
+    const { n: after } = (await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM device_codes",
+    ).first<{ n: number }>())!;
+    expect(after).toBe(before);
   });
 
   it("is reachable through the router and answers 404 on any other device path or method", async () => {

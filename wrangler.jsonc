@@ -23,6 +23,25 @@
     { "pattern": "api.symposium.md", "custom_domain": true }
   ],
 
+  // The limiter on POST /device/code, which is unauthenticated by necessity —
+  // the caller has no credential yet, which is the entire reason it is asking.
+  //
+  // The binding rather than a D1 counter, because a counter in a row costs a
+  // write per attempt including every refused one, so the limiter itself would
+  // be the thing that exhausts a self-hoster's daily write budget under exactly
+  // the abuse it exists to stop. docs/cost-at-scale.md says counters go here or
+  // in a Durable Object, never in D1 rows. A refused request here costs
+  // nothing.
+  //
+  // `namespace_id` is unique per account, not per Worker: an operator running
+  // more than one Worker has to give each limiter its own. `period` accepts
+  // only 10 or 60. `DEVICE_MINT_PERIOD_SECONDS` in src/config.ts must match the
+  // period, since the Retry-After header is the only place the number is
+  // needed in code.
+  "ratelimits": [
+    { "name": "DEVICE_CODE_LIMITER", "namespace_id": "1001", "simple": { "limit": 5, "period": 60 } }
+  ],
+
   // R2 is the system of record: every served byte lives here.
   "r2_buckets": [{ "binding": "DOCS", "bucket_name": "symposium-docs" }],
 

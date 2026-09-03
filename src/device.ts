@@ -21,18 +21,21 @@
  * carries one. The mint is rate limited per client address instead, because an
  * endpoint that produces approval urls is an endpoint someone would otherwise
  * use to send people approval urls.
+ *
+ * That limit is a Workers rate limiter binding rather than a counter in D1. A
+ * counter in a row costs a write for every attempt including the refused ones,
+ * so under sustained abuse the limiter would be what exhausts a self-hoster's
+ * daily write budget — the endpoint's own defence paying the attacker's bill.
  */
 import {
   DEVICE_CODE_TTL_MS,
-  DEVICE_MINT_WINDOW_MS,
+  DEVICE_MINT_PERIOD_SECONDS,
   DEVICE_POLL_INTERVAL_SECONDS,
-  MAX_DEVICE_MINTS_PER_WINDOW,
   MIN_DEVICE_POLL_GAP_MS,
   type Env,
 } from "./config.js";
 import { APPROVAL_PREFIX, USER_CODE_PARAM } from "./approval/handler.js";
 import {
-  claimDeviceMint,
   collectDeviceToken,
   findPolledDeviceCode,
   insertDeviceCode,
@@ -90,6 +93,11 @@ const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/gu;
 
 export interface DeviceDeps {
   now?: () => number;
+  /**
+   * Injected by tests that need a limiter a deployment has not declared, or a
+   * verdict they choose. Production always reads `env.DEVICE_CODE_LIMITER`.
+   */
+  limiter?: RateLimit;
 }
 
 /**
@@ -134,10 +142,13 @@ interface DeviceAuthorization {
 /**
  * `POST /device/code` — mint a code for a terminal that has no credential.
  *
- * The order is deliberate. The rate limit is claimed before anything else, so a
- * refused caller costs one write and never reaches the sweep or a draw; the
- * sweep runs next, because a user code cannot be reused until the row holding
- * it is gone and minting is the only thing that needs one free.
+ * The order is deliberate. The rate limit is asked first, so a refused caller
+ * touches no storage at all; the sweep runs next, because a user code cannot be
+ * reused until the row holding it is gone and minting is the only thing that
+ * needs one free.
+ *
+ * A deployment that declares no limiter mints freely. That is a supported
+ * deployment, not a hole to close: see `Env.DEVICE_CODE_LIMITER`.
  */
 async function mint(
   request: Request,
@@ -147,14 +158,17 @@ async function mint(
 ): Promise<Response> {
   const now = (deps.now ?? Date.now)();
 
-  const client = await deviceClientBucket(request);
-  const windowStart = Math.floor(now / DEVICE_MINT_WINDOW_MS) * DEVICE_MINT_WINDOW_MS;
-  if (!(await claimDeviceMint(env.DB, client, windowStart, MAX_DEVICE_MINTS_PER_WINDOW))) {
-    const retryAfter = Math.ceil((windowStart + DEVICE_MINT_WINDOW_MS - now) / 1000);
+  const limiter = deps.limiter ?? env.DEVICE_CODE_LIMITER;
+  const key = await deviceClientBucket(request);
+  if (limiter !== undefined && !(await limiter.limit({ key })).success) {
+    // `Retry-After` is the limiter's whole window, because the binding reports
+    // a verdict and nothing else: no reset time, no remaining count. Telling
+    // the caller to wait the full period is the only honest number available,
+    // and it is never an underestimate.
     return errorResponse(
       "quota_exceeded",
       "Too many sign-in codes from this address. Try again shortly.",
-      { "retry-after": String(retryAfter), "cache-control": "no-store" },
+      { "retry-after": String(DEVICE_MINT_PERIOD_SECONDS), "cache-control": "no-store" },
     );
   }
 
@@ -164,7 +178,7 @@ async function mint(
   const label = readDeviceLabel(body.label);
   if (label === undefined) return badRequest("`label` must be a string.");
 
-  await sweepExpired(env.DB, now, DEVICE_MINT_WINDOW_MS);
+  await sweepExpired(env.DB, now);
 
   const deviceCode = newDeviceCode();
   const deviceCodeHash = await sha256Hex(deviceCode);
@@ -345,13 +359,13 @@ async function claimUserCode(
 }
 
 /**
- * The bucket a mint is counted against.
+ * The key a mint is counted against.
  *
- * The client's address, hashed. Hashed because it is a counter key rather than
- * a record of who visited: nothing here ever needs to read an address back, and
- * a table of them is a table someone would eventually be right to ask about.
- * Where the platform reports no address — local development, and the tests —
- * every caller shares one bucket, which is the safe direction for a limit.
+ * The client's address, hashed. Hashed because it is a bucket to count against
+ * rather than a record of who visited: nothing here ever needs to read an
+ * address back, and the limiter only ever compares keys for equality. Where the
+ * platform reports no address — local development, and the tests — every caller
+ * shares one key, which is the safe direction for a limit.
  */
 async function deviceClientBucket(request: Request): Promise<string> {
   const address = request.headers.get("cf-connecting-ip")?.trim();

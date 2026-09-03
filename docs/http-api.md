@@ -438,10 +438,12 @@ Neither endpoint authenticates, which is why neither is under `/api/v1`.
 - `expires_in` and `interval` are seconds. Use the `interval` the response gives
   rather than a number of your own.
 
-`429 quota_exceeded`, with `Retry-After`, when one address asks for too many
-codes. The limit exists because an endpoint that mints approval urls is an
-endpoint somebody would otherwise use to send strangers approval urls. One
-person signing in a machine or two never reaches it.
+`429 quota_exceeded`, with `Retry-After: 60`, when one address asks for more
+than five codes in a minute. The limit exists because an endpoint that mints
+approval urls is an endpoint somebody would otherwise use to send strangers
+approval urls. One person signing in a machine or two never reaches it, and a
+self-hosted deployment may switch it off entirely — see
+[Deploying](deploying.md).
 
 ### `POST /device/token` — collect the token
 
@@ -566,9 +568,9 @@ document ceiling, because the ceiling follows the account and not the
 credential.
 
 One further limit sits outside all of this, on `POST /device/code`: a single
-client address may only ask for so many sign-in codes in a ten-minute window,
-and past that the mint answers `429 quota_exceeded` with `Retry-After`. It is
-not a publishing quota and no authenticated call can reach it.
+client address may ask for five sign-in codes a minute, and past that the mint
+answers `429 quota_exceeded` with `Retry-After`. It is not a publishing quota,
+no authenticated call can reach it, and a self-hosted deployment can remove it.
 
 ## The docId round trip
 

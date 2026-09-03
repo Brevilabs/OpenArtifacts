@@ -956,8 +956,7 @@ export async function insertDeviceCode(
 }
 
 /**
- * Delete every device code that has expired, and every rate-limit window that
- * has closed.
+ * Delete every device code that has expired.
  *
  * **`user_code` is the primary key, so this is what makes a code reusable.**
  * Without it, the twenty-letter alphabet would be drawing against every code
@@ -971,52 +970,12 @@ export async function insertDeviceCode(
  * a second deployment concern and a scheduled handler to maintain for work one
  * indexed delete does in the request that cares about it.
  *
- * An expired code that was approved but never collected takes its token with
- * it. The token was minted for a terminal that never came back for it, so
- * nobody holds the value and leaving the row would put a live credential in the
- * account's token list that its owner could not explain.
+ * An approved code that is never collected takes nothing with it, because a
+ * token is minted by the poll that collects one. There is no such thing here as
+ * a credential nobody holds.
  */
-export async function sweepExpired(db: D1Database, nowMs: number, windowMs: number): Promise<void> {
-  await db.batch([
-    db.prepare("DELETE FROM device_codes WHERE expires_at <= ?").bind(nowMs),
-    db
-      .prepare("DELETE FROM device_code_requests WHERE window_start <= ?")
-      .bind(nowMs - windowMs),
-  ]);
-}
-
-/**
- * Claim one of a client's device-code mints for the current window, returning
- * false when it has none left.
- *
- * Claim rather than check, exactly as `reserveDailyPush` does and for the same
- * reason: the count is read and incremented by one statement, so a burst of
- * concurrent requests cannot all see the same number and all proceed. The
- * `WHERE` on the update branch is the limit; when it fails, `RETURNING` yields
- * nothing and that is the refusal.
- *
- * @param client an opaque bucket for the caller, which `deviceClientBucket`
- *   makes by hashing the client address — a thing to count against rather than
- *   a record of who visited
- * @param windowStart epoch ms of the start of the fixed window being counted
- */
-export async function claimDeviceMint(
-  db: D1Database,
-  client: string,
-  windowStart: number,
-  limit: number,
-): Promise<boolean> {
-  const claimed = await db
-    .prepare(
-      `INSERT INTO device_code_requests (client, window_start, requests) VALUES (?, ?, 1)
-       ON CONFLICT(client, window_start) DO UPDATE SET requests = device_code_requests.requests + 1
-         WHERE device_code_requests.requests < ?
-       RETURNING requests`,
-    )
-    .bind(client, windowStart, limit)
-    .first<{ requests: number }>();
-
-  return claimed !== null;
+export async function sweepExpired(db: D1Database, nowMs: number): Promise<void> {
+  await db.prepare("DELETE FROM device_codes WHERE expires_at <= ?").bind(nowMs).run();
 }
 
 /** What a poll needs to decide what to tell the terminal. */

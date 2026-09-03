@@ -92,21 +92,3 @@ CREATE TABLE tokens (
 CREATE INDEX tokens_by_account
   ON tokens (account_id, created_at DESC)
   WHERE revoked_at IS NULL;
-
--- Fixed-window counter for the device-code mint endpoint.
---
--- Minting is unauthenticated by necessity — the whole point is that the caller
--- has no credential yet — so without a limit anyone could mint codes in bulk
--- and use the verification urls they produce to spam people with approval
--- pages that look like ours because they are ours. The counter is per client
--- address per window, and the address is stored hashed: it is a bucket to
--- count against, not a record of who visited.
-CREATE TABLE device_code_requests (
-  -- SHA-256 of the client address, or of a fixed placeholder where the platform
-  -- reports none.
-  client       TEXT    NOT NULL,
-  -- Epoch ms of the start of the window this count belongs to.
-  window_start INTEGER NOT NULL,
-  requests     INTEGER NOT NULL,
-  PRIMARY KEY (client, window_start)
-);
