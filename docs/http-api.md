@@ -385,8 +385,6 @@ conditional `304` responses are unchanged.
 
 ## Signing in from a terminal
 
-<a id="signing-in-from-a-terminal"></a>
-
 A client with no credential gets one here. It asks for a code, prints a url,
 and polls; a person opens that url on any device, signs in, and approves. The
 client's next poll returns a token it stores and uses from then on. Nobody

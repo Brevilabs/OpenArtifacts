@@ -244,9 +244,10 @@ async function poll(request: Request, env: Env, deps: DeviceDeps): Promise<Respo
     return device("access_denied", "That sign-in was refused in the browser.");
   }
 
-  await recordDevicePoll(env.DB, deviceCodeHash, now);
-
   if (code.approved_at === null) {
+    // Only the waiting path records the poll. The collecting one is about to
+    // delete this row, so writing to it first would be a write for nobody.
+    await recordDevicePoll(env.DB, deviceCodeHash, now);
     return device("authorization_pending", "Waiting for the sign-in to be approved.");
   }
 
