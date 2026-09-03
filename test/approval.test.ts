@@ -58,10 +58,14 @@ async function send(path: string, init: RequestInit = {}, over: Partial<Env> = {
 const LOOKUPS_PER_PERIOD = 20;
 
 /** A lookup from one address on a deployment that declares the limiter. */
-function lookupFrom(address: string, userCode = USER_CODE): Promise<Response> {
+function lookupFrom(
+  address: string,
+  userCode = USER_CODE,
+  headers: Record<string, string> = {},
+): Promise<Response> {
   return send(
     `/approve?user_code=${userCode}`,
-    { headers: { "cf-connecting-ip": address } },
+    { headers: { "cf-connecting-ip": address, ...headers } },
     { APPROVAL_LOOKUP_LIMITER: env.APPROVAL_LOOKUP_LIMITER },
   );
 }
@@ -382,6 +386,73 @@ describe("guessing a user code", () => {
 
     expect(refused.status).toBe(404);
     // No handshake was written, so nothing can be completed against it.
+    expect((await readCode())?.state).toBeNull();
+  });
+});
+
+/**
+ * A `GET` needs no preflight, so a hostile page can make any visitor's browser
+ * fetch this route from their address with an `<img>` or an iframe. If those
+ * were counted, twenty of them would spend that visitor's allowance and their
+ * own approval would come back as an expired code
+ * (https://github.com/Brevilabs/OpenArtifacts/pull/62#discussion_r3928455536).
+ */
+describe("a lookup a page made rather than a person", () => {
+  it("refuses a subresource fetch and charges its client nothing", async () => {
+    const address = "198.51.100.20";
+
+    for (let i = 0; i < LOOKUPS_PER_PERIOD + 4; i += 1) {
+      const refused = await lookupFrom(address, USER_CODE, {
+        "sec-fetch-dest": i % 2 === 0 ? "image" : "iframe",
+        "sec-fetch-site": "cross-site",
+      });
+      // The code is live, so a request that got as far as the lookup would say
+      // so. It is refused before that, and told nothing a miss would not tell.
+      expect(refused.status).toBe(404);
+    }
+
+    // The visitor's own approval still works, which is what proves the bucket
+    // was never charged on their behalf.
+    const mine = await lookupFrom(address);
+    expect(mine.status).toBe(200);
+    expect(await mine.text()).toContain("Continue with Google");
+  });
+
+  it("lets a person opening the link through, and counts that", async () => {
+    const address = "198.51.100.21";
+
+    const opened = await lookupFrom(address, USER_CODE, {
+      "sec-fetch-dest": "document",
+      "sec-fetch-mode": "navigate",
+    });
+    expect(opened.status).toBe(200);
+
+    // Charged: the rest of the allowance is what is left after that one.
+    for (let i = 0; i < LOOKUPS_PER_PERIOD - 1; i += 1) await lookupFrom(address, "ZZZZZ-ZZZZZ");
+    expect((await lookupFrom(address)).status).toBe(404);
+  });
+
+  it("lets a client that sends no fetch metadata through, and counts it", async () => {
+    const address = "198.51.100.22";
+
+    expect((await lookupFrom(address)).status).toBe(200);
+
+    for (let i = 0; i < LOOKUPS_PER_PERIOD - 1; i += 1) await lookupFrom(address, "ZZZZZ-ZZZZZ");
+    expect((await lookupFrom(address)).status).toBe(404);
+  });
+
+  it("refuses a handshake a page tried to start, and writes nothing", async () => {
+    const refused = await send(
+      "/approve/start/google",
+      {
+        method: "POST",
+        headers: { "cf-connecting-ip": "198.51.100.23", "sec-fetch-dest": "iframe" },
+        body: new URLSearchParams({ user_code: USER_CODE }),
+      },
+      { APPROVAL_LOOKUP_LIMITER: env.APPROVAL_LOOKUP_LIMITER },
+    );
+
+    expect(refused.status).toBe(404);
     expect((await readCode())?.state).toBeNull();
   });
 });

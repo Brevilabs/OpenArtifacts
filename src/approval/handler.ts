@@ -40,7 +40,7 @@ import {
   startDeviceHandshake,
 } from "../db.js";
 import { newAccountId, newHandshakeToken } from "../ids.js";
-import { withinClientLimit } from "../limits.js";
+import { isTopLevelRequest, withinClientLimit } from "../limits.js";
 import { readBodyWithin } from "../quota.js";
 import { ABOUT_LINK, brandPageHtml, escapeHtml, type BrandPage } from "../page.js";
 import {
@@ -211,6 +211,14 @@ async function chooser(
   const userCode = normalizeUserCode(submitted);
   if (userCode === null) return codeEntry(400, "That does not look like a code.");
 
+  // Gated before the limiter, not after. This route is a plain `GET`, so a
+  // hostile page can make a visitor's browser send it from their address with
+  // an `<img>` — and if that were counted, twenty of them would spend the
+  // visitor's allowance and their own approval would come back as `CODE_GONE`.
+  // Refusing a subresource first means only requests the visitor made are
+  // charged to them.
+  if (!isTopLevelRequest(request)) return page(CODE_GONE, 404);
+
   // Counted before the row is read, so a client working through the code space
   // is stopped by the limit rather than by how many rows it can afford to
   // read. `CODE_GONE` on refusal, because a throttle and a miss have to look
@@ -265,8 +273,10 @@ async function begin(
   const userCode = normalizeUserCode(submitted.get(USER_CODE_PARAM));
   if (userCode === null) return codeEntry(400, "That does not look like a code.");
 
-  // Counted with the chooser's lookups and for the same reason: this route
-  // also says whether a code is live, and it writes when it is.
+  // Gated and counted with the chooser's lookups, for the same two reasons:
+  // this route also says whether a code is live, and it writes when it is.
+  if (!isTopLevelRequest(request)) return page(CODE_GONE, 404);
+
   const limiter = deps.limiter ?? env.APPROVAL_LOOKUP_LIMITER;
   if (!(await withinClientLimit(limiter, request))) return page(CODE_GONE, 404);
 
