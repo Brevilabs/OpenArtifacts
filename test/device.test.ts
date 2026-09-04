@@ -404,6 +404,18 @@ describe("POST /device/token", () => {
     ).toBe("slow_down");
   });
 
+  it("uses the hosted poll binding declared in wrangler.jsonc", async () => {
+    const { device_code } = await mint();
+    const deployment = configured({ DEVICE_POLL_LIMITER: env.DEVICE_POLL_LIMITER });
+
+    expect(
+      await errorOf(await device("/device/token", { device_code }, NOW, {}, deployment)),
+    ).toBe("authorization_pending");
+    expect(
+      await errorOf(await device("/device/token", { device_code }, NOW, {}, deployment)),
+    ).toBe("slow_down");
+  });
+
   it("answers an unknown device code exactly as it answers an expired one", async () => {
     const { device_code } = await mint();
     const unknown = "zzzz".repeat(13);
