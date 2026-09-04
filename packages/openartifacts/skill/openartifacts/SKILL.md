@@ -1,6 +1,10 @@
 ---
 name: openartifacts
 description: Publish, update, list, fetch, or unshare public OpenArtifacts documents and manage this machine's OpenArtifacts access.
+metadata:
+  hermes:
+    category: productivity
+    tags: [publishing, markdown, artifacts]
 ---
 
 # OpenArtifacts

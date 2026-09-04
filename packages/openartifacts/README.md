@@ -6,6 +6,17 @@ Install the CLI and the shared OpenArtifacts skill into detected Claude Code, Co
 npx openartifacts install
 ```
 
+Hermes Agent is the primary Python-side consumer. Install the PyPI launcher,
+then let Hermes install this package's same canonical skill through its native
+skill manager:
+
+```bash
+pipx install openartifacts
+hermes skills install https://raw.githubusercontent.com/Brevilabs/OpenArtifacts/main/packages/openartifacts/skill/openartifacts/SKILL.md
+```
+
+Run `hermes skills update` to refresh the skill from that source.
+
 The `openartifacts` binary can then publish Markdown or HTML, update the same document on repeat publishes, list and fetch documents, unshare them, and list or revoke machine tokens. The first authenticated command opens the browser device flow and stores the resulting token with owner-only permissions.
 
 Set `OPENARTIFACTS_TOKEN` to supply a credential without browser sign-in. Set `OPENARTIFACTS_API_HOST` to target a self-hosted deployment.

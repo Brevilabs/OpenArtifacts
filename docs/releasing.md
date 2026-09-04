@@ -51,3 +51,8 @@ so the missing registry can finish without a version bump.
 
 Prereleases are intentionally unsupported because npm SemVer and PyPI PEP 440
 do not preserve every prerelease string identically.
+
+The OpenArtifacts skill has no separate PyPI release. npm packages the
+canonical `packages/openartifacts/skill/openartifacts/SKILL.md`, while Hermes
+installs that same file directly from this repository through its native skill
+manager. Maintainers do not copy or publish a second skill.

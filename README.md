@@ -41,16 +41,18 @@ and pi installations:
 npx openartifacts install
 ```
 
-Python users may instead install the same CLI through a thin bridge. Node.js
-20+ and npm are still required:
+Hermes Agent is the primary Python-side consumer. Install the thin PyPI bridge,
+then install the same canonical skill through Hermes's native skill manager:
 
 ```bash
 pipx install openartifacts
-openartifacts install
+hermes skills install https://raw.githubusercontent.com/Brevilabs/OpenArtifacts/main/packages/openartifacts/skill/openartifacts/SKILL.md
 ```
 
-This optional bridge does not change the Node.js and Cloudflare requirements
-for self-hosted deployments.
+Hermes security-scans the skill and can refresh it later with
+`hermes skills update`. Node.js 20+ and npm are still required. This optional
+bridge does not change the Node.js and Cloudflare requirements for self-hosted
+deployments.
 
 The first publish opens a browser approval and stores the resulting token
 without printing it. Later publishes of the same local file update its existing
