@@ -175,19 +175,35 @@ async function credential(host, directory) {
   return stored.hosts?.[host]?.token ?? login(host, directory);
 }
 
+/** @param {string} npm */
+async function npmGlobalRoot(npm) {
+  return new Promise((resolvePromise, reject) => {
+    let output = "";
+    const child = spawn(npm, ["root", "--global"], { stdio: ["ignore", "pipe", "inherit"] });
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => { output += chunk; });
+    child.on("error", reject);
+    child.on("exit", (code) => code === 0
+      ? resolvePromise(output.trim())
+      : reject(new Error(`Could not locate the global npm package directory (npm exit ${code}).`)));
+  });
+}
+
 async function install() {
   const manifest = JSON.parse(await readFile(join(PACKAGE_ROOT, "package.json"), "utf8"));
   const npm = platform() === "win32" ? "npm.cmd" : "npm";
   await new Promise((resolvePromise, reject) => {
-    const child = spawn(npm, ["install", "--global", `${manifest.name}@${manifest.version}`], { stdio: "inherit" });
+    const child = spawn(npm, ["install", "--global", `${manifest.name}@latest`], { stdio: "inherit" });
     child.on("error", reject);
     child.on("exit", (code) => code === 0
       ? resolvePromise(undefined)
       : reject(new Error(`Global CLI install failed (npm exit ${code}). Fix the npm error above; for EACCES, use a Node version manager or a user-writable npm prefix, then rerun.`)));
   });
-  console.log(`CLI: installed ${manifest.name}@${manifest.version}`);
+  const installedRoot = join(await npmGlobalRoot(npm), ...manifest.name.split("/"));
+  const installedManifest = JSON.parse(await readFile(join(installedRoot, "package.json"), "utf8"));
+  console.log(`CLI: installed ${installedManifest.name}@${installedManifest.version}`);
   const agents = await detectAgents();
-  await installSkills(agents);
+  await installSkills(agents, join(installedRoot, "skill", "openartifacts", "SKILL.md"));
   for (const agent of agents) {
     console.log(`${agent.name}: ${agent.detected ? `installed ${agent.target}` : "not detected"}`);
   }

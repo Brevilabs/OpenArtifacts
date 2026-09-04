@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
@@ -52,6 +52,51 @@ test("honours agent-specific config roots", async () => {
   assert.equal(targets.Codex, join(home, "codex-home", "skills", "openartifacts", "SKILL.md"));
   assert.equal(targets.OpenCode, join(home, "xdg", "opencode", "skills", "openartifacts", "SKILL.md"));
   assert.equal(targets.pi, join(home, "pi-home", "skills", "openartifacts", "SKILL.md"));
+});
+
+test("installer fetches latest and copies its newly installed skill", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openartifacts-install-"));
+  const bin = join(directory, "bin");
+  const globalRoot = join(directory, "global", "node_modules");
+  const installedRoot = join(globalRoot, "@brevilabs", "openartifacts");
+  const calls = join(directory, "npm-calls.jsonl");
+  await mkdir(bin, { recursive: true });
+  await mkdir(join(installedRoot, "skill", "openartifacts"), { recursive: true });
+  await writeFile(join(installedRoot, "package.json"), JSON.stringify({
+    name: "@brevilabs/openartifacts",
+    version: "0.2.0",
+  }));
+  await writeFile(join(installedRoot, "skill", "openartifacts", "SKILL.md"), "latest skill\n");
+  const fakeNpm = join(bin, "npm");
+  await writeFile(fakeNpm, `#!${process.execPath}\nimport { appendFileSync } from "node:fs";\nconst args = process.argv.slice(2);\nappendFileSync(${JSON.stringify(calls)}, JSON.stringify(args) + "\\n");\nif (args[0] === "root") console.log(${JSON.stringify(globalRoot)});\n`);
+  await chmod(fakeNpm, 0o755);
+
+  const variables = ["PATH", "CLAUDE_CONFIG_DIR", "CODEX_HOME", "PI_CODING_AGENT_DIR", "XDG_CONFIG_HOME"];
+  const previous = Object.fromEntries(variables.map((name) => [name, process.env[name]]));
+  process.env.PATH = bin;
+  process.env.CLAUDE_CONFIG_DIR = join(directory, "claude");
+  process.env.CODEX_HOME = join(directory, "codex");
+  process.env.PI_CODING_AGENT_DIR = join(directory, "pi");
+  process.env.XDG_CONFIG_HOME = join(directory, "xdg");
+  const originalLog = console.log;
+  console.log = () => {};
+  try {
+    await main(["install"]);
+  } finally {
+    console.log = originalLog;
+    for (const [name, value] of Object.entries(previous)) {
+      value === undefined ? delete process.env[name] : process.env[name] = value;
+    }
+  }
+
+  const npmCalls = (await readFile(calls, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+  assert.deepEqual(npmCalls, [
+    ["install", "--global", "@brevilabs/openartifacts@latest"],
+    ["root", "--global"],
+  ]);
+  for (const root of ["claude", "codex", "pi"]) {
+    assert.equal(await readFile(join(directory, root, "skills", "openartifacts", "SKILL.md"), "utf8"), "latest skill\n");
+  }
 });
 
 test("keeps HTML verbatim and renders plain Markdown locally", async () => {
