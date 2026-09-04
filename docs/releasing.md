@@ -49,14 +49,3 @@ with provenance, and verifies the registry. An already-published version exits
 successfully, so a rerun after publication is safe. Every merged PR whose title
 is not exactly `vX.Y.Z` stops at the release gate and never requests
 protected-environment approval.
-
-PyPI is not part of this release process. The OpenArtifacts skill ships in the
-npm package and is also available directly to Hermes from its canonical
-repository path.
-
-## One-time PyPI namespace package
-
-`pypi/openartifacts` is a small functional compatibility launcher for the
-official npm CLI. Its `0.0.1` version is intentionally independent from npm and
-was published manually once to establish the official PyPI namespace. Do not
-add it to the npm release workflow or keep its version in sync with npm.
