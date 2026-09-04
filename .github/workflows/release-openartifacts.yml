@@ -118,19 +118,6 @@ jobs:
       - name: Test
         run: npm test
 
-      - name: Pack tested CLI
-        run: |
-          mkdir -p "$RUNNER_TEMP/npm-package"
-          npm pack --workspace packages/openartifacts --ignore-scripts \
-            --pack-destination "$RUNNER_TEMP/npm-package"
-
-      - name: Upload release tarball
-        uses: actions/upload-artifact@v4
-        with:
-          name: npm-package
-          path: ${{ runner.temp }}/npm-package/*.tgz
-          if-no-files-found: error
-
   publish:
     needs: [gate, prepare]
     runs-on: ubuntu-latest
@@ -149,11 +136,11 @@ jobs:
       - name: Use an npm version with Trusted Publishing support
         run: npm install --global npm@11.5.1 --ignore-scripts
 
-      - name: Download tested tarball
-        uses: actions/download-artifact@v4
+      - name: Check out pristine merge commit
+        uses: actions/checkout@v4
         with:
-          name: npm-package
-          path: package
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          persist-credentials: false
 
       - name: Recheck version before publishing
         id: recheck
@@ -199,11 +186,9 @@ jobs:
           }
           NODE
 
-      - name: Publish
+      - name: Pack and publish pristine CLI
         if: steps.recheck.outputs.exists != 'true'
-        env:
-          VERSION: ${{ needs.gate.outputs.version }}
-        run: npm publish "./package/openartifacts-$VERSION.tgz" --ignore-scripts --access public --provenance
+        run: npm publish --workspace packages/openartifacts --ignore-scripts --access public --provenance
 
       - name: Verify published version
         env:
