@@ -41,6 +41,16 @@ and pi installations:
 npx openartifacts install
 ```
 
+Hermes Agent needs only its native skill install:
+
+```bash
+hermes skills install https://raw.githubusercontent.com/Brevilabs/OpenArtifacts/main/packages/openartifacts/skill/openartifacts/SKILL.md
+```
+
+Hermes security-scans the skill and can refresh it later with
+`hermes skills update`. The skill uses an installed `openartifacts` command when
+available and falls back to `npx` otherwise. Node.js 20+ and npm are required.
+
 The first publish opens a browser approval and stores the resulting token
 without printing it. Later publishes of the same local file update its existing
 document. Set `OPENARTIFACTS_API_HOST` for a self-hosted deployment, or provide
@@ -167,6 +177,13 @@ Worker becomes reachable only after Cloudflare attaches both custom domains.
 | [Identity](docs/identity.md) | Why documents belong to an owner rather than a credential, and how an account is created. |
 | [Private sharing](docs/private-sharing.md) | Designed reader-identity phases. Not built. |
 | [Comments](docs/comments.md) | Design sketch for the next product step. Not built. |
+
+## Maintainer npm release
+
+Brevilabs maintainers publish the official npm package by merging a `vX.Y.Z`
+release PR whose title matches its version bump; the protected workflow is
+described in [the release runbook](docs/releasing.md). This process does not
+apply to self-hosted deployments.
 
 ## License
 

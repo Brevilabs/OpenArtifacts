@@ -1,0 +1,202 @@
+name: Publish OpenArtifacts npm package
+
+on:
+  pull_request:
+    types: [closed]
+    branches:
+      - main
+
+concurrency:
+  group: publish-openartifacts-npm
+  queue: max
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  gate:
+    if: >-
+      github.repository == 'Brevilabs/OpenArtifacts' &&
+      github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      exists: ${{ steps.registry.outputs.exists }}
+      is_release: ${{ steps.release.outputs.is_release }}
+      version: ${{ steps.release.outputs.version }}
+
+    steps:
+      - name: Validate release PR title
+        id: release
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -euo pipefail
+          if [[ "$PR_TITLE" =~ ^v((0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*))$ ]]; then
+            echo "is_release=true" >> "$GITHUB_OUTPUT"
+            echo "version=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+            echo "Release PR $PR_TITLE merged; validating npm package"
+          else
+            echo "is_release=false" >> "$GITHUB_OUTPUT"
+            echo "PR title is not vX.Y.Z; skipping npm publication"
+          fi
+
+      - name: Check out merge commit
+        if: steps.release.outputs.is_release == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+
+      - name: Set up Node.js
+        if: steps.release.outputs.is_release == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Validate package version
+        if: steps.release.outputs.is_release == 'true'
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          package_version="$(node -p "require('./packages/openartifacts/package.json').version")"
+          lock_version="$(node -p "require('./package-lock.json').packages['packages/openartifacts'].version")"
+          if [[ "$VERSION" != "$package_version" ]]; then
+            echo "::error::PR title is v$VERSION but package.json is $package_version"
+            exit 1
+          fi
+          if [[ "$VERSION" != "$lock_version" ]]; then
+            echo "::error::PR title is v$VERSION but package-lock.json is $lock_version"
+            exit 1
+          fi
+
+      - name: Check whether this version is already published
+        if: steps.release.outputs.is_release == 'true'
+        id: registry
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          code="$(curl --silent --show-error --location --retry 3 \
+            --output /tmp/npm-version.json --write-out '%{http_code}' \
+            "https://registry.npmjs.org/openartifacts/$VERSION")"
+          case "$code" in
+            200)
+              echo "exists=true" >> "$GITHUB_OUTPUT"
+              echo "openartifacts $VERSION is already published; nothing to do"
+              ;;
+            404) echo "exists=false" >> "$GITHUB_OUTPUT" ;;
+            *) echo "::error::npm registry returned HTTP $code"; exit 1 ;;
+          esac
+
+  prepare:
+    needs: gate
+    if: >-
+      needs.gate.outputs.is_release == 'true' &&
+      needs.gate.outputs.exists != 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out merge commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install JavaScript dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+  publish:
+    needs: [gate, prepare]
+    runs-on: ubuntu-latest
+    environment: package-release
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - name: Use an npm version with Trusted Publishing support
+        run: npm install --global npm@11.5.1 --ignore-scripts
+
+      - name: Check out pristine merge commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          persist-credentials: false
+
+      - name: Recheck version before publishing
+        id: recheck
+        env:
+          VERSION: ${{ needs.gate.outputs.version }}
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --location --retry 3 \
+            "https://registry.npmjs.org/openartifacts" \
+            --output /tmp/npm-package.json
+          node <<'NODE'
+          const fs = require("node:fs");
+          const metadata = JSON.parse(fs.readFileSync("/tmp/npm-package.json", "utf8"));
+          const requested = process.env.VERSION;
+          const exists = Boolean(metadata.versions?.[requested]);
+
+          if (exists) {
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, "exists=true\n");
+            console.log(`openartifacts ${requested} appeared during this run; skipping publish`);
+          } else {
+            const latest = metadata["dist-tags"]?.latest;
+            const parse = (value) => {
+              const match = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.exec(value ?? "");
+              if (!match) {
+                console.error(`::error::npm latest tag is not a stable version: ${value ?? "missing"}`);
+                process.exit(1);
+              }
+              return match.slice(1).map(Number);
+            };
+            const compare = (left, right) => {
+              for (let index = 0; index < left.length; index += 1) {
+                if (left[index] !== right[index]) return left[index] - right[index];
+              }
+              return 0;
+            };
+
+            if (compare(parse(requested), parse(latest)) <= 0) {
+              console.error(`::error::openartifacts ${requested} must be newer than npm latest ${latest}`);
+              process.exit(1);
+            }
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, "exists=false\n");
+            console.log(`openartifacts ${requested} is newer than npm latest ${latest}`);
+          }
+          NODE
+
+      - name: Pack and publish pristine CLI
+        if: steps.recheck.outputs.exists != 'true'
+        run: npm publish --workspace packages/openartifacts --ignore-scripts --access public --provenance
+
+      - name: Verify published version
+        env:
+          VERSION: ${{ needs.gate.outputs.version }}
+        run: |
+          curl --fail --silent --show-error --location --retry 10 \
+            --retry-all-errors --retry-delay 3 \
+            "https://registry.npmjs.org/openartifacts/$VERSION" \
+            --output /dev/null
+          echo "openartifacts $VERSION is available from npm"
