@@ -8,6 +8,7 @@ on:
 
 concurrency:
   group: publish-openartifacts-npm
+  queue: max
   cancel-in-progress: false
 
 permissions: {}

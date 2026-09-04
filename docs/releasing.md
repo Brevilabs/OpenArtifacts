@@ -40,6 +40,11 @@ version. When that PR merges to `main`, **Publish OpenArtifacts npm package**
 starts automatically. Approve the `package-release` environment prompt; there
 is no separate workflow dispatch or version input.
 
+Runs queue in arrival order rather than replacing a pending release. GitHub
+allows up to 100 pending runs in this queue; keep release PR versions increasing.
+For predictable version order, finish one release before merging the next:
+GitHub orders by queue arrival, not by PR merge time.
+
 The workflow strips the title's `v`, checks that both package files have that
 stable `X.Y.Z` version, and looks it up on npm. An unpublished version must be
 newer than npm's current `latest` version, preventing an out-of-order release

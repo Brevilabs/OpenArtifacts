@@ -11,6 +11,10 @@ const jobs = Object.fromEntries(
     .map(([, name, body]) => [name, body]),
 );
 
+test("release runs queue instead of replacing a pending release", () => {
+  assert.match(workflow, /^concurrency:\n  group: publish-openartifacts-npm\n  queue: max\n  cancel-in-progress: false$/m);
+});
+
 test("dependency scripts run only before the publishing boundary", () => {
   assert.match(workflow, /^permissions: \{\}$/m);
   assert.match(jobs.prepare, /needs: gate/);
