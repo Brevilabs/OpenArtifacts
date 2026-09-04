@@ -43,9 +43,12 @@ is no separate workflow dispatch or version input.
 The workflow strips the title's `v`, checks that both package files have that
 stable `X.Y.Z` version, and looks it up on npm. An unpublished version must be
 newer than npm's current `latest` version, preventing an out-of-order release
-from downgrading installs. A valid new version runs the JavaScript checks,
-inspects the tarball, rechecks both the exact version and `latest`, publishes
-with provenance, and verifies the registry. An already-published version exits
+from downgrading installs. A job without publishing permission installs dependencies,
+runs the JavaScript checks, and packs the CLI. After approval, a separate job
+downloads that tarball, rechecks both the exact version and `latest`, publishes
+with provenance, and verifies the registry. The publishing job never runs project
+code or installs project dependencies; npm lifecycle scripts are disabled.
+An already-published version exits
 successfully, so a rerun after publication is safe. Every merged PR whose title
 is not exactly `vX.Y.Z` stops at the release gate and never requests
 protected-environment approval.

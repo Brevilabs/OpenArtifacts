@@ -26,5 +26,8 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Check release permission boundary
+        run: node --test test/release-workflow.node.cjs
+
       - name: Test
         run: npm test
