@@ -691,6 +691,30 @@ describe("the rolling window of tokens an account holds", () => {
     expect(await liveTokens()).toBe(MAX_TOKENS_PER_ACCOUNT);
   });
 
+  it("evicts and issues nothing when an approved code expires before collection", async () => {
+    await seedToken("tok_untouched000000", null);
+    await padTo(MAX_TOKENS_PER_ACCOUNT, 1);
+    const minted = await mint();
+    await approve(minted.user_code, ACCOUNT);
+    const hash = (await codeRow(minted.user_code))!.device_code_hash!;
+
+    const issued = await collectDeviceToken(
+      env.DB,
+      hash,
+      {
+        id: "tok_expired00000000",
+        token_hash: "hash-expired-collection",
+        created_at: NOW + DEVICE_CODE_TTL_MS,
+      },
+      MAX_TOKENS_PER_ACCOUNT,
+    );
+
+    expect(issued).toBeNull();
+    expect(await tokenExists("tok_untouched000000")).toBe(true);
+    expect(await tokenExists("tok_expired00000000")).toBe(false);
+    expect(await liveTokens()).toBe(MAX_TOKENS_PER_ACCOUNT);
+  });
+
   it("issues one token when two collections race at the window", async () => {
     await seedToken("tok_victim000000000", NOW - 5_000);
     await padTo(MAX_TOKENS_PER_ACCOUNT, 1);

@@ -255,7 +255,7 @@ interface IssuedToken {
  * transactional collection below still makes token issue exclusive.
  */
 async function poll(request: Request, env: Env, deps: DeviceDeps): Promise<Response> {
-  const now = (deps.now ?? Date.now)();
+  const clock = deps.now ?? Date.now;
 
   const body = await readJsonBody(request);
   if (body === null) {
@@ -276,11 +276,15 @@ async function poll(request: Request, env: Env, deps: DeviceDeps): Promise<Respo
     );
   }
 
+  // Read the clock after the streaming body and limiter have completed. A
+  // caller that begins before expiry but delays its body must not preserve the
+  // earlier request-start time and redeem a code after its deadline.
+  const checkedAt = clock();
   const code = await findPolledDeviceCode(env.DB, deviceCodeHash);
 
   // Unknown, already collected, or swept — one answer for all three. A
   // collected code is deleted rather than marked spent, so a replay lands here.
-  if (code === null || code.expires_at <= now) {
+  if (code === null || code.expires_at <= checkedAt) {
     return device("expired_token", "That sign-in has expired. Start again.");
   }
   if (code.denied_at !== null) {
@@ -292,10 +296,15 @@ async function poll(request: Request, env: Env, deps: DeviceDeps): Promise<Respo
 
   const token = newApiToken();
   const tokenId = newTokenId();
+  const tokenHash = await sha256Hex(token);
+  // Fresh again immediately before the transaction. The transaction repeats
+  // the expiry predicate with this timestamp, so expiry after the read above
+  // cannot issue a token or evict an existing one.
+  const collectedAt = clock();
   const issued = await collectDeviceToken(
     env.DB,
     deviceCodeHash,
-    { id: tokenId, token_hash: await sha256Hex(token), created_at: now },
+    { id: tokenId, token_hash: tokenHash, created_at: collectedAt },
     MAX_TOKENS_PER_ACCOUNT,
   );
 

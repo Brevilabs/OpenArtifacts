@@ -1048,10 +1048,12 @@ export async function findPolledDeviceCode(
  * engine.
  *
  * The eviction carries the same predicates as the insert, so a poll at a code
- * nobody has approved revokes nothing. The ceiling stays a predicate on the
- * insert as well, which is what makes it hold under concurrent collections:
- * two approvals collected at the same moment cannot both read the same count
- * and both insert.
+ * nobody has approved or whose deadline passed deletes nothing. Expiry is
+ * checked against the token's fresh creation time inside both statements, so a
+ * request delayed between its state read and this batch cannot redeem a stale
+ * code. The ceiling stays a predicate on the insert as well, which is what makes
+ * it hold under concurrent collections: two approvals collected at the same
+ * moment cannot both read the same count and both insert.
  *
  * The delete keys off the token row the insert left behind rather than
  * restating that ceiling. Restating it would be wrong in a way that is easy to
@@ -1080,24 +1082,33 @@ export async function collectDeviceToken(
               JOIN device_codes code ON code.account_id = victim.account_id
              WHERE code.device_code_hash = ?
                AND code.approved_at IS NOT NULL
+               AND code.expires_at > ?
                AND (SELECT COUNT(*) FROM tokens live
                      WHERE live.account_id = code.account_id) >= ?
              ORDER BY victim.last_used_at ASC NULLS FIRST, victim.created_at ASC, victim.id ASC
              LIMIT 1
           )`,
       )
-      .bind(deviceCodeHash, maxTokens),
+      .bind(deviceCodeHash, token.created_at, maxTokens),
     db
       .prepare(
         `INSERT INTO tokens (id, token_hash, account_id, label, created_at)
          SELECT ?, ?, account_id, label, ?
            FROM device_codes
           WHERE device_code_hash = ? AND approved_at IS NOT NULL AND account_id IS NOT NULL
+            AND expires_at > ?
             AND (SELECT COUNT(*) FROM tokens
                   WHERE account_id = device_codes.account_id) < ?
          RETURNING label`,
       )
-      .bind(token.id, token.token_hash, token.created_at, deviceCodeHash, maxTokens),
+      .bind(
+        token.id,
+        token.token_hash,
+        token.created_at,
+        deviceCodeHash,
+        token.created_at,
+        maxTokens,
+      ),
     db
       .prepare(
         `DELETE FROM device_codes
