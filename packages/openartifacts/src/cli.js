@@ -332,7 +332,7 @@ export function presentError(error) {
     console.error(error.message);
     if (error.status === 401) console.error("Run `openartifacts login` to sign in again.");
     if (error.code === "quota_exceeded") {
-      console.error("Wait for the current quota window to reset, or remove an unused document if the live-document ceiling was reached.");
+      console.error("Wait for the current quota window to reset before retrying.");
     }
     if (error.code === "limit_reached") {
       if (error.detail.limit) console.error(`Limit: ${error.detail.limit}`);
