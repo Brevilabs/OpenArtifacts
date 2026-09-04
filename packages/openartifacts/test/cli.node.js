@@ -63,12 +63,12 @@ test("installer fetches latest and copies its newly installed skill", async () =
   const directory = await mkdtemp(join(tmpdir(), "openartifacts-install-"));
   const bin = join(directory, "bin");
   const globalRoot = join(directory, "global", "node_modules");
-  const installedRoot = join(globalRoot, "@brevilabs", "openartifacts");
+  const installedRoot = join(globalRoot, "openartifacts");
   const calls = join(directory, "npm-calls.jsonl");
   await mkdir(bin, { recursive: true });
   await mkdir(join(installedRoot, "skill", "openartifacts"), { recursive: true });
   await writeFile(join(installedRoot, "package.json"), JSON.stringify({
-    name: "@brevilabs/openartifacts",
+    name: "openartifacts",
     version: "0.2.0",
   }));
   await writeFile(join(installedRoot, "skill", "openartifacts", "SKILL.md"), "latest skill\n");
@@ -96,7 +96,7 @@ test("installer fetches latest and copies its newly installed skill", async () =
 
   const npmCalls = (await readFile(calls, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
   assert.deepEqual(npmCalls, [
-    ["install", "--global", "@brevilabs/openartifacts@latest"],
+    ["install", "--global", "openartifacts@latest"],
     ["root", "--global"],
   ]);
   for (const root of ["claude", "codex", "pi"]) {

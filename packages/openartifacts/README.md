@@ -3,7 +3,7 @@
 Install the CLI and the shared OpenArtifacts skill into detected Claude Code, Codex, OpenCode, and pi installations:
 
 ```bash
-npx @brevilabs/openartifacts install
+npx openartifacts install
 ```
 
 The `openartifacts` binary can then publish Markdown or HTML, update the same document on repeat publishes, list and fetch documents, unshare them, and list or revoke machine tokens. The first authenticated command opens the browser device flow and stores the resulting token with owner-only permissions.

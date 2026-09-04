@@ -38,7 +38,7 @@ Install the CLI and shared skill into detected Claude Code, Codex, OpenCode,
 and pi installations:
 
 ```bash
-npx @brevilabs/openartifacts install
+npx openartifacts install
 ```
 
 The first publish opens a browser approval and stores the resulting token

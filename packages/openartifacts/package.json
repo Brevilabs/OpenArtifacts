@@ -1,9 +1,21 @@
 {
-  "name": "@brevilabs/openartifacts",
-  "version": "0.1.0",
+  "name": "openartifacts",
+  "version": "0.2.0",
   "description": "Install the OpenArtifacts agent skill and publish files from the terminal",
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Brevilabs/OpenArtifacts.git",
+    "directory": "packages/openartifacts"
+  },
+  "bugs": {
+    "url": "https://github.com/Brevilabs/OpenArtifacts/issues"
+  },
+  "homepage": "https://github.com/Brevilabs/OpenArtifacts#readme",
+  "publishConfig": {
+    "access": "public"
+  },
   "bin": {
     "openartifacts": "./bin/openartifacts.js"
   },
