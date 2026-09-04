@@ -72,6 +72,7 @@ async function send(
   path: string,
   credential: string | null,
   body?: unknown,
+  overrides: Partial<Env> = {},
 ): Promise<Response> {
   const headers = new Headers();
   if (credential !== null) headers.set("authorization", `Bearer ${credential}`);
@@ -82,7 +83,7 @@ async function send(
   }
 
   const ctx = createExecutionContext();
-  const response = await worker.fetch(new Request(`${ORIGIN}${path}`, init), local(), ctx);
+  const response = await worker.fetch(new Request(`${ORIGIN}${path}`, init), local(overrides), ctx);
   await waitOnExecutionContext(ctx);
   return response;
 }
@@ -219,6 +220,124 @@ async function tokensSeeDoc(credential: string): Promise<string[]> {
   const body = await listed.json<{ docs: { docId: string }[] }>();
   return body.docs.map((doc) => doc.docId);
 }
+
+describe("free account document limit", () => {
+  const create = (token: string, overrides?: Partial<Env>) =>
+    send("POST", "/api/v1/docs", token, { html: page("new") }, overrides);
+
+  const storage = async () => ({
+    docs: (await env.DB.prepare("SELECT * FROM docs ORDER BY id").all()).results,
+    versions: (await env.DB.prepare("SELECT * FROM versions ORDER BY doc_id, n").all()).results,
+    pushes: (await env.DB.prepare("SELECT * FROM push_quota ORDER BY owner, day").all()).results,
+    objects: (await env.DOCS.list()).objects.map((object) => object.key),
+  });
+
+  it("allows three across tokens, rejects the fourth without writes, and isolates other accounts", async () => {
+    const first = await issueToken(ACCOUNT_A);
+    const second = await issueToken(ACCOUNT_A);
+    for (const token of [first.token, second.token, first.token]) {
+      expect((await create(token)).status).toBe(201);
+    }
+
+    const before = await storage();
+    const refused = await create(second.token);
+    expect(refused.status).toBe(402);
+    expect(await refused.json()).toEqual({
+      error: {
+        code: "limit_reached",
+        message: expect.stringContaining("3 published documents"),
+        limit: "documents",
+        plan: "account",
+      },
+    });
+    expect(await storage()).toEqual(before);
+
+    const other = await issueToken(ACCOUNT_B);
+    expect((await create(other.token)).status).toBe(201);
+  });
+
+  it("does not reset document capacity when yesterday's push allowance rolls over", async () => {
+    const { token } = await issueToken(ACCOUNT_A);
+    for (let i = 0; i < 3; i++) await publish(token, `Doc ${i}`);
+    await env.DB.prepare("UPDATE push_quota SET day = '2000-01-01'").run();
+    const before = await storage();
+    expect((await create(token)).status).toBe(402);
+    expect(await storage()).toEqual(before);
+  });
+
+  it("keeps updates and public reads working at the limit, and unshare frees one slot", async () => {
+    const { token } = await issueToken(ACCOUNT_A);
+    const first = await publish(token, "First");
+    await publish(token, "Second");
+    await publish(token, "Third");
+    expect((await send("PUT", `/api/v1/docs/${first.docId}`, token, { html: page("v2") })).status)
+      .toBe(200);
+    expect((await send("GET", `/d/${first.docId}`, null)).status).toBe(200);
+    expect((await create(token)).status).toBe(402);
+
+    expect((await send("DELETE", `/api/v1/docs/${first.docId}`, token)).status).toBe(204);
+    expect((await create(token)).status).toBe(201);
+    expect((await create(token)).status).toBe(402);
+  });
+
+  it("atomically gives concurrent tokens only the remaining slot", async () => {
+    const first = await issueToken(ACCOUNT_A);
+    const second = await issueToken(ACCOUNT_A);
+    await publish(first.token, "First");
+    await publish(first.token, "Second");
+    const replies = await Promise.all([create(first.token), create(second.token)]);
+    expect(replies.map((response) => response.status).sort()).toEqual([201, 402]);
+    expect(await tokensSeeDoc(first.token)).toHaveLength(3);
+    expect((await env.DOCS.list()).objects).toHaveLength(3);
+    expect((await storage()).pushes).toMatchObject([{ pushes: 3 }]);
+  });
+
+  it("preserves existing over-cap documents and blocks creates until below the cap", async () => {
+    const { token } = await issueToken(ACCOUNT_A);
+    const docs: PushResponse[] = [];
+    for (let i = 0; i < 4; i++) {
+      const response = await create(token, { ACCOUNT_MAX_DOCS: "4" });
+      expect(response.status).toBe(201);
+      docs.push(await response.json<PushResponse>());
+    }
+    expect((await create(token)).status).toBe(402);
+    expect(await tokensSeeDoc(token)).toHaveLength(4);
+    for (const doc of docs) {
+      expect((await send("GET", `/d/${doc.docId}`, null)).status).toBe(200);
+    }
+    expect((await send("PUT", `/api/v1/docs/${docs[0]!.docId}`, token, { html: page("v2") })).status)
+      .toBe(200);
+    await send("DELETE", `/api/v1/docs/${docs[0]!.docId}`, token);
+    expect((await create(token)).status).toBe(402);
+    await send("DELETE", `/api/v1/docs/${docs[1]!.docId}`, token);
+    expect((await create(token)).status).toBe(201);
+  });
+
+  it("honors a self-hosted account cap without changing paid license limits", async () => {
+    const { token } = await issueToken(ACCOUNT_A);
+    expect((await create(token, { ACCOUNT_MAX_DOCS: "1" })).status).toBe(201);
+    expect((await create(token, { ACCOUNT_MAX_DOCS: "1" })).status).toBe(402);
+    for (let i = 0; i < 4; i++) {
+      expect((await create(LICENSE_KEY, { ACCOUNT_MAX_DOCS: "1" })).status).toBe(201);
+    }
+  });
+
+  it.each(["", "0", "-1", "3.5", "Infinity", "oops", "9007199254740992"])(
+    "fails closed before document writes for invalid account cap %j",
+    async (value) => {
+      const { token } = await issueToken(ACCOUNT_A);
+      const before = await storage();
+      const response = await create(token, { ACCOUNT_MAX_DOCS: value });
+      expect(response.status).toBe(500);
+      expect(await errorOf(response)).toBe("internal");
+      expect(await storage()).toEqual(before);
+      // A typo must not disable existing readers, management, or paid access.
+      expect((await send("GET", "/api/v1/docs", token, undefined, { ACCOUNT_MAX_DOCS: value })).status)
+        .toBe(200);
+      expect((await create(LICENSE_KEY, { ACCOUNT_MAX_DOCS: value })).status).toBe(201);
+    },
+  );
+});
 
 describe("recording when a token was last used", () => {
   const lastUsed = async (id: string): Promise<number | null> =>

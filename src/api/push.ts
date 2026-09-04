@@ -12,14 +12,14 @@
  * On the create path the `docs` insert *is* the reservation, so the same crash
  * burns a doc slot rather than a version number: a doc row with no versions and
  * no bytes, unreachable because its id was never returned, still counting
- * against the 500-doc ceiling. Only an R2 or D1 failure produces one, and the
+ * against the account's doc ceiling. Only an R2 or D1 failure produces one, and the
  * alternative — inserting the row after the write — would hand out a url before
  * anything pointed at it. Rolling the row back is deliberately not attempted:
  * the failure may equally be the version insert *after* a successful write, and
  * a rollback there would strand the object it names.
  */
-import type { Publisher } from "../auth.js";
-import { MAX_DOCS_PER_PUBLISHER, MAX_DOC_BYTES, MAX_PUSHES_PER_DAY } from "../config.js";
+import { ACCOUNT_TOKEN_PLAN, type Publisher } from "../auth.js";
+import { accountMaxDocs, MAX_DOCS_PER_PUBLISHER, MAX_DOC_BYTES, MAX_PUSHES_PER_DAY } from "../config.js";
 import type { Env } from "../config.js";
 import {
   deleteDocRow,
@@ -214,6 +214,8 @@ export async function createDoc(
   const parsed = await parsePushBody(request);
   if (!parsed.ok) return parsed.response;
 
+  const isAccount = publisher.plan === ACCOUNT_TOKEN_PLAN;
+  const maxDocs = isAccount ? accountMaxDocs(env) : MAX_DOCS_PER_PUBLISHER;
   const now = Date.now();
   // A create always names the doc something: absent and blank alike land on the
   // default rather than leaving it nameless in the list.
@@ -234,9 +236,17 @@ export async function createDoc(
       created_at: now,
       updated_at: now,
     },
-    MAX_DOCS_PER_PUBLISHER,
+    maxDocs,
   );
   if (!inserted) {
+    if (isAccount) {
+      return errorResponse(
+        "limit_reached",
+        `Your free account can hold ${maxDocs} published documents. Unshare one to publish another.`,
+        undefined,
+        { limit: "documents", plan: ACCOUNT_TOKEN_PLAN },
+      );
+    }
     return errorResponse(
       "quota_exceeded",
       `You are holding ${MAX_DOCS_PER_PUBLISHER} docs. Delete one to publish another.`,
