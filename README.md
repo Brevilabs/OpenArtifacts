@@ -49,17 +49,7 @@ hermes skills install https://raw.githubusercontent.com/Brevilabs/OpenArtifacts/
 
 Hermes security-scans the skill and can refresh it later with
 `hermes skills update`. The skill uses an installed `openartifacts` command when
-available and falls back to `npx` otherwise, so PyPI is not a prerequisite.
-
-Python users who prefer `pipx` can install the same CLI through the optional
-thin bridge:
-
-```bash
-pipx install openartifacts
-```
-
-Both routes still require Node.js 20+ and npm. The PyPI bridge does not change
-the Node.js and Cloudflare requirements for self-hosted deployments.
+available and falls back to `npx` otherwise. Node.js 20+ and npm are required.
 
 The first publish opens a browser approval and stores the resulting token
 without printing it. Later publishes of the same local file update its existing
@@ -188,11 +178,12 @@ Worker becomes reachable only after Cloudflare attaches both custom domains.
 | [Private sharing](docs/private-sharing.md) | Designed reader-identity phases. Not built. |
 | [Comments](docs/comments.md) | Design sketch for the next product step. Not built. |
 
-## Maintainer package release
+## Maintainer npm release
 
-Brevilabs maintainers publish the official npm and PyPI packages together using
-the protected workflow in [the release runbook](docs/releasing.md). This process
-does not apply to self-hosted deployments.
+Brevilabs maintainers publish the official npm package by merging a version bump
+to `main`; the protected workflow is described in [the release
+runbook](docs/releasing.md). This process does not apply to self-hosted
+deployments.
 
 ## License
 

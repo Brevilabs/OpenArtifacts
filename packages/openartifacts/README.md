@@ -13,8 +13,8 @@ hermes skills install https://raw.githubusercontent.com/Brevilabs/OpenArtifacts/
 ```
 
 The skill uses an installed `openartifacts` command when available and falls
-back to `npx --yes openartifacts@latest`, so installing the PyPI bridge first is
-not required. Run `hermes skills update` to refresh the skill from that source.
+back to `npx --yes openartifacts@latest`, so no separate CLI installation is
+required. Run `hermes skills update` to refresh the skill from that source.
 
 The `openartifacts` binary can then publish Markdown or HTML, update the same document on repeat publishes, list and fetch documents, unshare them, and list or revoke machine tokens. The first authenticated command opens the browser device flow and stores the resulting token with owner-only permissions.
 

@@ -1,9 +1,8 @@
 node_modules
 dist/
-build/
-__pycache__/
-*.egg-info/
-.venv/
+pypi/openartifacts/build/
+pypi/openartifacts/*.egg-info/
+pypi/openartifacts/__pycache__/
 .env
 .env.*
 .dev.vars

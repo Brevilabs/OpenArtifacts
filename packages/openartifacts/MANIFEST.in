@@ -1,6 +1,0 @@
-include LICENSE
-include pyproject.toml
-include python/README.md
-recursive-include python/openartifacts_launcher *.py
-exclude README.md
-prune test
