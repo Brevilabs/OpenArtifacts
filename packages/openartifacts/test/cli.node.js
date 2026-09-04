@@ -73,7 +73,7 @@ test("installer fetches latest and copies its newly installed skill", async () =
   }));
   await writeFile(join(installedRoot, "skill", "openartifacts", "SKILL.md"), "latest skill\n");
   const fakeNpm = join(bin, "npm");
-  await writeFile(fakeNpm, `#!${process.execPath}\nimport { appendFileSync } from "node:fs";\nconst args = process.argv.slice(2);\nappendFileSync(${JSON.stringify(calls)}, JSON.stringify(args) + "\\n");\nif (args[0] === "root") console.log(${JSON.stringify(globalRoot)});\n`);
+  await writeFile(fakeNpm, `#!${process.execPath}\nconst { appendFileSync } = require("node:fs");\nconst args = process.argv.slice(2);\nappendFileSync(${JSON.stringify(calls)}, JSON.stringify(args) + "\\n");\nif (args[0] === "root") console.log(${JSON.stringify(globalRoot)});\n`);
   await chmod(fakeNpm, 0o755);
 
   const variables = ["PATH", "CLAUDE_CONFIG_DIR", "CODEX_HOME", "PI_CODING_AGENT_DIR", "XDG_CONFIG_HOME"];
