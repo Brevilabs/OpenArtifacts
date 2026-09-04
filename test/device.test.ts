@@ -812,8 +812,9 @@ describe("readDeviceLabel()", () => {
     expect(readDeviceLabel("   ")).toBeNull();
   });
 
-  it("strips control characters, so a terminal cannot draw over the page it is named on", () => {
+  it("strips C0 and C1 controls, so a terminal cannot draw over the page it is named on", () => {
     expect(readDeviceLabel("Claude[31m Code\nrm -rf")).toBe("Claude [31m Code rm -rf");
+    expect(readDeviceLabel("Claude\u009b31m Code")).toBe("Claude 31m Code");
   });
 
   it("strips bidi controls without stripping ordinary right-to-left text", () => {

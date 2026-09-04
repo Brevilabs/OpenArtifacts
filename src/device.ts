@@ -101,7 +101,7 @@ const JSON_CONTENT_TYPE = "application/json";
  * person sees: terminal controls, and Unicode bidirectional controls that HTML
  * escaping does not neutralize.
  */
-const TERMINAL_CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/gu;
+const TERMINAL_CONTROL_CHARACTERS = /\p{Cc}/gu;
 const BIDI_CONTROL_CHARACTERS = /\p{Bidi_Control}/gu;
 
 export interface DeviceDeps {
