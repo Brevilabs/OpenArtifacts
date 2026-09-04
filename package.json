@@ -5,7 +5,7 @@
   "type": "module",
   "private": true,
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "scripts": {
     "dev": "wrangler dev --var SERVING_HOST: --var API_HOST: --var LEGACY_SERVING_HOST: --var RETIRED_API_HOST: --local-upstream 127.0.0.1:8787",
@@ -17,7 +17,7 @@
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.12.21",
     "@cloudflare/workers-types": "^4.20250726.0",
-    "@types/node": "^20",
+    "@types/node": "^22",
     "typescript": "^5",
     "vitest": "^3",
     "wrangler": "^4"
