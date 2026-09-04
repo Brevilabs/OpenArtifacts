@@ -127,7 +127,52 @@ jobs:
       - name: Inspect package contents
         run: npm pack --workspace packages/openartifacts --dry-run
 
+      - name: Recheck version before publishing
+        id: recheck
+        env:
+          VERSION: ${{ needs.gate.outputs.version }}
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --location --retry 3 \
+            "https://registry.npmjs.org/openartifacts" \
+            --output /tmp/npm-package.json
+          node <<'NODE'
+          const fs = require("node:fs");
+          const metadata = JSON.parse(fs.readFileSync("/tmp/npm-package.json", "utf8"));
+          const requested = process.env.VERSION;
+          const exists = Boolean(metadata.versions?.[requested]);
+
+          if (exists) {
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, "exists=true\n");
+            console.log(`openartifacts ${requested} appeared during this run; skipping publish`);
+          } else {
+            const latest = metadata["dist-tags"]?.latest;
+            const parse = (value) => {
+              const match = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.exec(value ?? "");
+              if (!match) {
+                console.error(`::error::npm latest tag is not a stable version: ${value ?? "missing"}`);
+                process.exit(1);
+              }
+              return match.slice(1).map(Number);
+            };
+            const compare = (left, right) => {
+              for (let index = 0; index < left.length; index += 1) {
+                if (left[index] !== right[index]) return left[index] - right[index];
+              }
+              return 0;
+            };
+
+            if (compare(parse(requested), parse(latest)) <= 0) {
+              console.error(`::error::openartifacts ${requested} must be newer than npm latest ${latest}`);
+              process.exit(1);
+            }
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, "exists=false\n");
+            console.log(`openartifacts ${requested} is newer than npm latest ${latest}`);
+          }
+          NODE
+
       - name: Publish
+        if: steps.recheck.outputs.exists != 'true'
         run: npm publish --workspace packages/openartifacts --access public --provenance
 
       - name: Verify published version
