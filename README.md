@@ -180,10 +180,10 @@ Worker becomes reachable only after Cloudflare attaches both custom domains.
 
 ## Maintainer npm release
 
-Brevilabs maintainers publish the official npm package by merging a version bump
-to `main`; the protected workflow is described in [the release
-runbook](docs/releasing.md). This process does not apply to self-hosted
-deployments.
+Brevilabs maintainers publish the official npm package by merging a `vX.Y.Z`
+release PR whose title matches its version bump; the protected workflow is
+described in [the release runbook](docs/releasing.md). This process does not
+apply to self-hosted deployments.
 
 ## License
 

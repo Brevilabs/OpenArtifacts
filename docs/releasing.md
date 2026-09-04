@@ -34,15 +34,18 @@ npm version X.Y.Z --workspace packages/openartifacts --no-git-tag-version
 ```
 
 Open and merge the version-bump PR. A change to
-`packages/openartifacts/package.json` on `main` automatically starts **Publish
-OpenArtifacts npm package**. Approve the `package-release` environment prompt;
-there is no separate workflow dispatch or version input.
+`packages/openartifacts/package.json` and `package-lock.json` must be the only
+release-specific work, and the PR title must be exactly `vX.Y.Z` for the same
+version. When that PR merges to `main`, **Publish OpenArtifacts npm package**
+starts automatically. Approve the `package-release` environment prompt; there
+is no separate workflow dispatch or version input.
 
-The workflow requires a stable `X.Y.Z` version, checks that the lockfile agrees,
-and looks up that version on npm. A new version runs the JavaScript checks,
-inspects the tarball, publishes with provenance, and verifies the registry. An
-already-published version exits successfully, so a rerun after publication is
-safe and a package-manifest edit without a version bump is a no-op.
+The workflow strips the title's `v`, checks that both package files have that
+stable `X.Y.Z` version, and looks it up on npm. A new version runs the JavaScript
+checks, inspects the tarball, publishes with provenance, and verifies the
+registry. An already-published version exits successfully, so a rerun after
+publication is safe. Every merged PR whose title is not exactly `vX.Y.Z` stops
+at the release gate and never requests protected-environment approval.
 
 PyPI is not part of this release process. The OpenArtifacts skill ships in the
 npm package and is also available directly to Hermes from its canonical
@@ -52,5 +55,5 @@ repository path.
 
 `pypi/openartifacts` is a small functional compatibility launcher for the
 official npm CLI. Its `0.0.1` version is intentionally independent from npm and
-is published manually once to establish the official PyPI namespace. Do not add
-it to the npm release workflow or keep its version in sync with npm.
+was published manually once to establish the official PyPI namespace. Do not
+add it to the npm release workflow or keep its version in sync with npm.
