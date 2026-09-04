@@ -1,0 +1,27 @@
+{
+  "name": "@brevilabs/openartifacts",
+  "version": "0.1.0",
+  "description": "Install the OpenArtifacts agent skill and publish files from the terminal",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "openartifacts": "./bin/openartifacts.js"
+  },
+  "files": [
+    "bin",
+    "src",
+    "skill",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test test/cli.node.js",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "marked": "^18.0.11"
+  }
+}

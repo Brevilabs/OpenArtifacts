@@ -32,6 +32,20 @@ comments do not exist yet.
 - **Bound abuse.** The current limits are 10 MB per document, 100 pushes per UTC
   day, and 500 live documents per owner.
 
+## Use from an agent
+
+Install the CLI and shared skill into detected Claude Code, Codex, OpenCode,
+and pi installations:
+
+```bash
+npx @brevilabs/openartifacts install
+```
+
+The first publish opens a browser approval and stores the resulting token
+without printing it. Later publishes of the same local file update its existing
+document. Set `OPENARTIFACTS_API_HOST` for a self-hosted deployment, or provide
+an opaque credential through `OPENARTIFACTS_TOKEN` in a non-interactive session.
+
 ## Vision
 
 OpenArtifacts is an agent-first medium for publishing and reading webpages and
