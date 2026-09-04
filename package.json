@@ -4,14 +4,17 @@
   "description": "Push a local md/html file, get a public HTML page on the internet",
   "type": "module",
   "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
   "engines": {
     "node": ">=20"
   },
   "scripts": {
     "dev": "wrangler dev --var SERVING_HOST: --var API_HOST: --var LEGACY_SERVING_HOST: --var RETIRED_API_HOST: --local-upstream 127.0.0.1:8787",
     "deploy": "wrangler deploy",
-    "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "typecheck": "tsc --noEmit && npm run typecheck -w packages/openartifacts",
+    "test": "vitest run && npm test -w packages/openartifacts",
     "test:watch": "vitest"
   },
   "devDependencies": {
