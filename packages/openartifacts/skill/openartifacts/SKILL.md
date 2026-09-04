@@ -17,4 +17,10 @@ Use the `openartifacts` CLI for every operation. Do not read OpenArtifacts confi
 
 The first authenticated command may wait for approval. Relay both sign-in URLs and the user code printed by the CLI, then keep waiting; never ask the user to copy a token. Return the public URL printed by `publish`.
 
-Publishing the same local file again updates its existing document. If an update returns `not_found`, stop and report it; do not create a replacement. If publishing returns `limit_reached`, show its limit and upgrade link when present, and retry only after the user confirms the limit was changed.
+Publishing the same local file again updates its existing document. If an update returns `not_found`, stop and report it; do not create a replacement.
+
+Markdown files use ordinary Markdown rendering. Obsidian wikilinks, embeds, and callouts are not expanded and will appear as literal text.
+
+If the user explicitly wants a new link after an update returns `not_found`, ask for confirmation, run `openartifacts unshare <oldDocId>` to forget the stale local mapping, then publish the file again. Never take that recovery path automatically.
+
+If publishing returns `quota_exceeded`, show the error and advise the user to wait for the current quota window or remove an unused document, as appropriate. Do not blindly retry. If publishing returns `limit_reached`, show its limit and upgrade link when present, and retry only after the user confirms the limit was changed.

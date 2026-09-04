@@ -119,40 +119,50 @@ function openBrowser(url) {
 /** @param {number} milliseconds */
 const sleep = (milliseconds) => new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds));
 
+/**
+ * Poll a device code until it yields a token or expires.
+ * @param {ReturnType<typeof createClient>} client
+ * @param {{device_code: string, interval: number, expires_in: number}} minted
+ * @param {{wait?: (milliseconds: number) => Promise<unknown>, now?: () => number}} [options]
+ */
+export async function collectToken(client, minted, { wait = sleep, now = Date.now } = {}) {
+  let delay = minted.interval * 1000;
+  const expiresAt = now() + minted.expires_in * 1000;
+  while (now() < expiresAt) {
+    try {
+      return await client.deviceToken(minted.device_code);
+    } catch (error) {
+      if (!(error instanceof APIError)) throw error;
+      if (error.code === "authorization_pending") await wait(delay);
+      else if (error.code === "slow_down") {
+        delay += 5000;
+        await wait(delay);
+      } else throw error;
+    }
+  }
+  throw new Error("The approval code expired. Run the command again to start a new sign-in.");
+}
+
 /** Sign in, store the credential owner-only, and return it without printing it. */
 /** @param {string} host @param {string} directory @returns {Promise<string>} */
 async function login(host, directory) {
   const anonymous = createClient({ host });
   const minted = await anonymous.deviceCode(`OpenArtifacts CLI on ${hostname()}`);
-  console.log(`Approve OpenArtifacts: ${minted.verification_uri_complete}`);
-  console.log(`Or open ${minted.verification_uri} and enter ${minted.user_code}.`);
+  console.error(`Approve OpenArtifacts: ${minted.verification_uri_complete}`);
+  console.error(`Or open ${minted.verification_uri} and enter ${minted.user_code}.`);
   openBrowser(minted.verification_uri_complete);
 
-  let delay = minted.interval * 1000;
-  const expiresAt = Date.now() + minted.expires_in * 1000;
-  while (Date.now() < expiresAt) {
-    try {
-      const issued = await anonymous.deviceToken(minted.device_code);
-      const credentialsPath = join(directory, "credentials.json");
-      const credentials = await readJson(
-        credentialsPath,
-        /** @type {Credentials} */ ({ hosts: {} }),
-      );
-      credentials.hosts ??= {};
-      credentials.hosts[host] = { token: issued.access_token, tokenId: issued.token_id };
-      await writePrivateJson(credentialsPath, credentials);
-      console.log(`Signed in (${issued.token_id}).`);
-      return issued.access_token;
-    } catch (error) {
-      if (!(error instanceof APIError)) throw error;
-      if (error.code === "authorization_pending") await sleep(delay);
-      else if (error.code === "slow_down") {
-        delay += 5000;
-        await sleep(delay);
-      } else throw error;
-    }
-  }
-  throw new Error("The approval code expired. Run the command again to start a new sign-in.");
+  const issued = await collectToken(anonymous, minted);
+  const credentialsPath = join(directory, "credentials.json");
+  const credentials = await readJson(
+    credentialsPath,
+    /** @type {Credentials} */ ({ hosts: {} }),
+  );
+  credentials.hosts ??= {};
+  credentials.hosts[host] = { token: issued.access_token, tokenId: issued.token_id };
+  await writePrivateJson(credentialsPath, credentials);
+  console.error(`Signed in (${issued.token_id}).`);
+  return issued.access_token;
 }
 
 /** @param {string} host @param {string} directory */
@@ -171,7 +181,9 @@ async function install() {
   await new Promise((resolvePromise, reject) => {
     const child = spawn(npm, ["install", "--global", `${manifest.name}@${manifest.version}`], { stdio: "inherit" });
     child.on("error", reject);
-    child.on("exit", (code) => code === 0 ? resolvePromise(undefined) : reject(new Error(`npm install exited with ${code}.`)));
+    child.on("exit", (code) => code === 0
+      ? resolvePromise(undefined)
+      : reject(new Error(`Global CLI install failed (npm exit ${code}). Fix the npm error above; for EACCES, use a Node version manager or a user-writable npm prefix, then rerun.`)));
   });
   console.log(`CLI: installed ${manifest.name}@${manifest.version}`);
   const agents = await detectAgents();
@@ -217,17 +229,36 @@ export async function main(args) {
     await login(host, directory);
     return;
   }
+
+  /** @type {{file: string, body: {title: string, html: string}} | undefined} */
+  let preparedPublish;
+  if (command === "publish") {
+    const file = await realpath(resolve(value));
+    preparedPublish = {
+      file,
+      body: { title: basename(file, extname(file)), html: await renderFile(file) },
+    };
+  }
+
   const token = await credential(host, directory);
   const client = createClient({ host, token });
 
   if (command === "publish") {
-    const file = await realpath(resolve(value));
+    if (!preparedPublish) throw new Error("Publish input was not prepared.");
+    const { file, body } = preparedPublish;
     const fileKey = `${host}\n${file}`;
     const statePath = join(directory, "state.json");
     const state = await readJson(statePath, /** @type {PublishState} */ ({ files: {} }));
     const previous = state.files[fileKey];
-    const body = { title: basename(file, extname(file)), html: await renderFile(file) };
-    const published = previous ? await client.updateDoc(previous.docId, body) : await client.createDoc(body);
+    let published;
+    try {
+      published = previous ? await client.updateDoc(previous.docId, body) : await client.createDoc(body);
+    } catch (error) {
+      if (previous && error instanceof APIError && error.status === 404) {
+        error.message += ` To intentionally replace it, run \`openartifacts unshare ${previous.docId}\`, then publish again.`;
+      }
+      throw error;
+    }
     state.files[fileKey] = { docId: published.docId, url: published.url };
     await writePrivateJson(statePath, state);
     console.log(published.url);
@@ -269,6 +300,9 @@ export function presentError(error) {
   if (error instanceof APIError) {
     console.error(error.message);
     if (error.status === 401) console.error("Run `openartifacts login` to sign in again.");
+    if (error.code === "quota_exceeded") {
+      console.error("Wait for the current quota window to reset, or remove an unused document if the live-document ceiling was reached.");
+    }
     if (error.code === "limit_reached") {
       if (error.detail.limit) console.error(`Limit: ${error.detail.limit}`);
       if (error.detail.upgrade_url) console.error(`Upgrade: ${error.detail.upgrade_url}`);

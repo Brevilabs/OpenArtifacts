@@ -5,7 +5,8 @@ import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { configDir, detectAgents, installSkills, main, renderFile } from "../src/cli.js";
+import { collectToken, configDir, detectAgents, installSkills, main, presentError, renderFile } from "../src/cli.js";
+import { APIError } from "../src/client.js";
 
 test("uses each platform's user config directory", () => {
   assert.equal(configDir("darwin", "/home/me", {}), "/home/me/Library/Application Support/openartifacts");
@@ -64,11 +65,119 @@ test("keeps HTML verbatim and renders plain Markdown locally", async () => {
   await assert.rejects(renderFile(join(directory, "notes.txt")), /Markdown.*or HTML/);
 });
 
+test("validates a publish file before authentication", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openartifacts-invalid-"));
+  const text = join(directory, "notes.txt");
+  await writeFile(text, "not publishable");
+  const previous = {
+    config: process.env.OPENARTIFACTS_CONFIG_DIR,
+    host: process.env.OPENARTIFACTS_API_HOST,
+    token: process.env.OPENARTIFACTS_TOKEN,
+  };
+  process.env.OPENARTIFACTS_CONFIG_DIR = join(directory, "config");
+  process.env.OPENARTIFACTS_API_HOST = "http://127.0.0.1:1";
+  delete process.env.OPENARTIFACTS_TOKEN;
+  try {
+    await assert.rejects(main(["publish", text]), /Markdown.*or HTML/);
+  } finally {
+    for (const [name, value] of [
+      ["OPENARTIFACTS_CONFIG_DIR", previous.config],
+      ["OPENARTIFACTS_API_HOST", previous.host],
+      ["OPENARTIFACTS_TOKEN", previous.token],
+    ]) value === undefined ? delete process.env[name] : process.env[name] = value;
+  }
+});
+
+test("device polling handles pending, slow down, denial, and expiry", async () => {
+  const minted = { device_code: "device", interval: 1, expires_in: 60 };
+  const pendingWaits = [];
+  let pendingCalls = 0;
+  const pendingResult = await collectToken(
+    {
+      deviceToken: async () => {
+        pendingCalls += 1;
+        if (pendingCalls === 1) throw new APIError(400, { error: { code: "authorization_pending" } });
+        return { access_token: "opaque", token_id: "token" };
+      },
+    },
+    minted,
+    { wait: async (milliseconds) => pendingWaits.push(milliseconds) },
+  );
+  assert.equal(pendingResult.access_token, "opaque");
+  assert.deepEqual(pendingWaits, [1000]);
+
+  const slowWaits = [];
+  let slowCalls = 0;
+  await collectToken(
+    {
+      deviceToken: async () => {
+        slowCalls += 1;
+        if (slowCalls === 1) throw new APIError(400, { error: { code: "slow_down" } });
+        return { access_token: "opaque", token_id: "token" };
+      },
+    },
+    minted,
+    { wait: async (milliseconds) => slowWaits.push(milliseconds) },
+  );
+  assert.deepEqual(slowWaits, [6000]);
+
+  await assert.rejects(
+    collectToken(
+      { deviceToken: async () => { throw new APIError(400, { error: { code: "access_denied" } }); } },
+      minted,
+    ),
+    (error) => error instanceof APIError && error.code === "access_denied",
+  );
+
+  const times = [0, 0, 1000];
+  await assert.rejects(
+    collectToken(
+      { deviceToken: async () => { throw new APIError(400, { error: { code: "authorization_pending" } }); } },
+      { ...minted, expires_in: 1 },
+      { wait: async () => {}, now: () => times.shift() ?? 1000 },
+    ),
+    /approval code expired/,
+  );
+});
+
+test("prints guidance for current quota and future plan limits", () => {
+  const lines = [];
+  const previous = console.error;
+  console.error = (...parts) => lines.push(parts.join(" "));
+  try {
+    presentError(new APIError(429, { error: { code: "quota_exceeded", message: "Quota reached." } }));
+    presentError(new APIError(402, {
+      error: {
+        code: "limit_reached",
+        message: "Plan limit reached.",
+        limit: "10 documents",
+        upgrade_url: "https://example.test/upgrade",
+      },
+    }));
+  } finally {
+    console.error = previous;
+  }
+  assert(lines.some((line) => line.includes("quota window")));
+  assert(lines.includes("Limit: 10 documents"));
+  assert(lines.includes("Upgrade: https://example.test/upgrade"));
+});
+
 async function publishingServer() {
   const methods = [];
+  const control = { staleUpdates: false, missingDeletes: false };
   const server = createServer((request, response) => {
     methods.push(request.method);
     response.setHeader("content-type", "application/json");
+    if (request.method === "PUT" && control.staleUpdates) {
+      response.statusCode = 404;
+      response.end(JSON.stringify({ error: { code: "not_found", message: "Document not found." } }));
+      return;
+    }
+    if (request.method === "DELETE" && control.missingDeletes) {
+      response.statusCode = 404;
+      response.end(JSON.stringify({ error: { code: "not_found", message: "Document not found." } }));
+      return;
+    }
     response.end(JSON.stringify({
       docId: "9f2k4mvq7t0xbz3n",
       url: `http://${request.headers.host}/d/9f2k4mvq7t0xbz3n`,
@@ -79,7 +188,7 @@ async function publishingServer() {
   await once(server, "listening");
   const address = server.address();
   assert(address && typeof address !== "string");
-  return { server, methods, host: `http://127.0.0.1:${address.port}` };
+  return { server, methods, control, host: `http://127.0.0.1:${address.port}` };
 }
 
 test("repeat publish updates per API host", async () => {
@@ -115,4 +224,42 @@ test("repeat publish updates per API host", async () => {
   }
   assert.deepEqual(first.methods, ["POST", "PUT"]);
   assert.deepEqual(second.methods, ["POST"]);
+});
+
+test("a stale publish mapping requires explicit replacement", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openartifacts-stale-"));
+  const markdown = join(directory, "notes.md");
+  await writeFile(markdown, "# One");
+  const remote = await publishingServer();
+  const previous = {
+    config: process.env.OPENARTIFACTS_CONFIG_DIR,
+    host: process.env.OPENARTIFACTS_API_HOST,
+    token: process.env.OPENARTIFACTS_TOKEN,
+    log: console.log,
+  };
+  process.env.OPENARTIFACTS_CONFIG_DIR = join(directory, "config");
+  process.env.OPENARTIFACTS_API_HOST = remote.host;
+  process.env.OPENARTIFACTS_TOKEN = "opaque-test-token";
+  console.log = () => {};
+  try {
+    await main(["publish", markdown]);
+    remote.control.staleUpdates = true;
+    await assert.rejects(
+      main(["publish", markdown]),
+      /openartifacts unshare 9f2k4mvq7t0xbz3n/,
+    );
+    remote.control.missingDeletes = true;
+    await main(["unshare", "9f2k4mvq7t0xbz3n"]);
+    remote.control.staleUpdates = false;
+    await main(["publish", markdown]);
+  } finally {
+    console.log = previous.log;
+    for (const [name, value] of [
+      ["OPENARTIFACTS_CONFIG_DIR", previous.config],
+      ["OPENARTIFACTS_API_HOST", previous.host],
+      ["OPENARTIFACTS_TOKEN", previous.token],
+    ]) value === undefined ? delete process.env[name] : process.env[name] = value;
+    remote.server.close();
+  }
+  assert.deepEqual(remote.methods, ["POST", "PUT", "DELETE", "POST"]);
 });
