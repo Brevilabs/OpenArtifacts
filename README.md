@@ -64,7 +64,7 @@ the same page and converge on a shared result.
 
 ## Run locally
 
-Requires Node.js 20 or newer. Local development uses the real Workers runtime
+Requires Node.js 22 or newer. Local development uses the real Workers runtime
 with local R2 and D1 data, but needs no Cloudflare account.
 
 ```bash
