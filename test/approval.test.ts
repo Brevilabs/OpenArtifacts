@@ -700,13 +700,13 @@ describe("POST /approve/confirm", () => {
     expect((await readCode())?.approved_at).toBe(approvedAt);
   });
 
-  it("refuses a token from a page whose handshake has since been restarted", async () => {
+  it("refuses to restart after rendering confirmation and keeps that page usable", async () => {
     await begin();
-    const stale = confirmToken(await (await callback()).text());
-    await begin("github");
+    const confirmation = confirmToken(await (await callback()).text());
 
-    expect((await post("/approve/confirm", { confirm_token: stale })).status).toBe(400);
-    expect((await readCode())?.approved_at).toBeNull();
+    expect((await begin("github")).status).toBe(404);
+    expect((await post("/approve/confirm", { confirm_token: confirmation })).status).toBe(200);
+    expect((await readCode())?.approved_at).toBeGreaterThanOrEqual(NOW);
   });
 
   it("refuses a press for a code that expired while the page was open", async () => {

@@ -113,6 +113,8 @@ export interface DeviceDeps {
   mintLimiter?: RateLimit;
   /** Injected poll limiter; production reads `env.DEVICE_POLL_LIMITER`. */
   pollLimiter?: RateLimit;
+  /** Injected aggregate poll limiter; production reads `env.DEVICE_POLL_CLIENT_LIMITER`. */
+  pollClientLimiter?: RateLimit;
 }
 
 /**
@@ -177,8 +179,6 @@ async function mint(
   env: Env,
   deps: DeviceDeps,
 ): Promise<Response> {
-  const now = (deps.now ?? Date.now)();
-
   const body = await readJsonBody(request);
   if (body === null) {
     return badRequest("The request body must be JSON, sent as `content-type: application/json`.");
@@ -200,6 +200,10 @@ async function mint(
     );
   }
 
+  // Read the clock after the streaming body and limiter have completed. A
+  // delayed body must still receive the full advertised lifetime from the
+  // moment its code is actually persisted.
+  const now = (deps.now ?? Date.now)();
   await sweepExpired(env.DB, now);
 
   const deviceCode = newDeviceCode();
@@ -250,8 +254,9 @@ interface IssuedToken {
  * code answers exactly like an expired one, because the alternative is an
  * endpoint that confirms which random strings are real.
  *
- * The interval is enforced by a Workers rate limiter keyed by the device-code
- * hash. Pending polls are therefore reads, never timestamp writes, while the
+ * An address-keyed ceiling bounds random misses before D1, then the interval is
+ * enforced by a separate Workers rate limiter keyed by the device-code hash.
+ * Pending polls are therefore reads, never timestamp writes, while the
  * transactional collection below still makes token issue exclusive.
  */
 async function poll(request: Request, env: Env, deps: DeviceDeps): Promise<Response> {
@@ -265,6 +270,14 @@ async function poll(request: Request, env: Env, deps: DeviceDeps): Promise<Respo
   const deviceCode = body.device_code;
   if (typeof deviceCode !== "string" || deviceCode === "") {
     return badRequest("`device_code` must be the device code from POST /device/code.");
+  }
+
+  const pollClientLimiter = deps.pollClientLimiter ?? env.DEVICE_POLL_CLIENT_LIMITER;
+  if (!(await withinClientLimit(pollClientLimiter, request))) {
+    return device(
+      "slow_down",
+      `Too many polling attempts from this address. Wait ${DEVICE_POLL_INTERVAL_SECONDS} seconds.`,
+    );
   }
 
   const deviceCodeHash = await sha256Hex(deviceCode);

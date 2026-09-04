@@ -75,14 +75,16 @@ existing license-outage fallback.
 
 Four request shapes answer without a credential, because the caller has none
 yet: the device-code mint and poll, the approval page's code lookup, and the
-button that starts a handshake. Three Workers rate limiter bindings cover them,
-declared in `wrangler.jsonc`:
+button that starts a handshake. Four Workers rate limiter bindings cover them,
+declared in `wrangler.jsonc`; polling needs both its per-code interval and an
+aggregate ceiling on random misses:
 
 ```jsonc
 "ratelimits": [
   { "name": "DEVICE_CODE_LIMITER", "namespace_id": "1001", "simple": { "limit": 5, "period": 60 } },
   { "name": "APPROVAL_LOOKUP_LIMITER", "namespace_id": "1002", "simple": { "limit": 20, "period": 60 } },
-  { "name": "DEVICE_POLL_LIMITER", "namespace_id": "1003", "simple": { "limit": 1, "period": 10 } }
+  { "name": "DEVICE_POLL_LIMITER", "namespace_id": "1003", "simple": { "limit": 1, "period": 10 } },
+  { "name": "DEVICE_POLL_CLIENT_LIMITER", "namespace_id": "1004", "simple": { "limit": 20, "period": 10 } }
 ]
 ```
 
@@ -112,19 +114,27 @@ the interval in the binding makes a pending poll a D1 read rather than a write.
 `DEVICE_POLL_INTERVAL_SECONDS` is advertised to clients and has to match this
 binding's `period`.
 
+`DEVICE_POLL_CLIENT_LIMITER` runs first and allows twenty total polls per client
+address every ten seconds. The per-code limiter cannot bound an attacker who
+invents a fresh random code for every request; this aggregate bucket keeps those
+D1 misses finite while remaining generous to devices behind a shared address.
+
 **Deleting any block is supported.** A deployment that declares no limiter puts
-no limit on that endpoint, which is the right answer for a private deployment
-nobody else can reach. Without `DEVICE_POLL_LIMITER`, the returned polling
-interval is advisory. Everything else works the same either way.
+no corresponding limit on that endpoint, which is the right answer for a
+private deployment nobody else can reach. Without `DEVICE_POLL_LIMITER`, the
+returned polling interval is advisory; without `DEVICE_POLL_CLIENT_LIMITER`,
+random misses have no aggregate ceiling. Everything else works the same either
+way.
 
 The limiter is not a D1 counter on purpose. A counter in a row costs a write for
 every attempt including every refused one, so under sustained abuse the limiter
 itself would exhaust the account's daily write budget — see
 [cost at scale](cost-at-scale.md).
 
-For a public deployment, add a WAF rate limiting rule on `POST /device/code` and
-`/approve` as a second layer. The binding runs inside the Worker, so a request it refuses has
-still been billed as a request; a WAF rule refuses at the edge before that.
+For a public deployment, add WAF rate limiting rules on `POST /device/code`,
+`POST /device/token`, and `/approve` as a second layer. The binding runs inside
+the Worker, so a request it refuses has still been billed as a request; a WAF
+rule refuses at the edge before that.
 
 The checked-in GitHub Actions workflow is Brevilabs-specific. It names the
 production database, domains, repository environment, and deployment records.

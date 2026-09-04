@@ -62,6 +62,7 @@ const configured = (over: Partial<Env> = {}): Env =>
     DEVICE_CODE_LIMITER: undefined,
     APPROVAL_LOOKUP_LIMITER: undefined,
     DEVICE_POLL_LIMITER: undefined,
+    DEVICE_POLL_CLIENT_LIMITER: undefined,
     ...over,
   }) as Env;
 
@@ -402,6 +403,31 @@ describe("POST /device/token", () => {
         ),
       ),
     ).toBe("slow_down");
+  });
+
+  it("bounds random code misses in one client bucket before the per-code limit", async () => {
+    const keys: string[] = [];
+    const aggregate: RateLimit = {
+      limit: async ({ key }) => {
+        keys.push(key);
+        return { success: keys.length === 1 };
+      },
+    };
+    const deployment = configured({ DEVICE_POLL_CLIENT_LIMITER: aggregate });
+    const headers = { "cf-connecting-ip": "198.51.100.72" };
+
+    expect(
+      await errorOf(
+        await device("/device/token", { device_code: "random-a" }, NOW, headers, deployment),
+      ),
+    ).toBe("expired_token");
+    expect(
+      await errorOf(
+        await device("/device/token", { device_code: "random-b" }, NOW, headers, deployment),
+      ),
+    ).toBe("slow_down");
+    expect(keys).toHaveLength(2);
+    expect(keys[0]).toBe(keys[1]);
   });
 
   it("uses the hosted poll binding declared in wrangler.jsonc", async () => {

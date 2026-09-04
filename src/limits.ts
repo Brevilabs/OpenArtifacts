@@ -4,9 +4,10 @@
  * Minting a device code, looking one up on the approval page, and starting a
  * handshake all have to work for somebody who has nothing to present, so the
  * caller's address is the only thing there is to count against. Device polling
- * is counted against the hash of the secret device code instead, so one machine
- * cannot make another wait. This module is how those become limiter keys, and it
- * lives apart from both callers
+ * uses both: an address bucket bounds random misses, while the secret device
+ * code's hash enforces the advertised interval without making one machine wait
+ * for another behind the same NAT. This module is how those become limiter
+ * keys, and it lives apart from both callers
  * because `src/device.ts` and `src/approval/handler.ts` already point at each
  * other and neither should import the other for this.
  *

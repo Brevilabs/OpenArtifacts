@@ -59,6 +59,15 @@
       "name": "DEVICE_POLL_LIMITER",
       "namespace_id": "1003",
       "simple": { "limit": 1, "period": 10 }
+    },
+    // A separate address bucket runs before the D1 lookup. Per-code buckets
+    // alone can be bypassed with a fresh random code on every request. Twenty
+    // polls per ten seconds leaves ample room for shared networks while
+    // bounding misses from one caller.
+    {
+      "name": "DEVICE_POLL_CLIENT_LIMITER",
+      "namespace_id": "1004",
+      "simple": { "limit": 20, "period": 10 }
     }
   ],
 

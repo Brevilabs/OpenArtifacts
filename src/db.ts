@@ -729,15 +729,17 @@ export async function deviceCodeIsPending(
  * costs nothing: the browser is not the thing being authorized, so it has
  * nothing to remember between the three requests.
  *
- * Starting a second handshake overwrites the first, which is what a person
- * pressing the other provider's button means. Only one can ever be finished,
- * because only the surviving `state` can be looked up.
+ * Starting a second handshake overwrites the first while neither provider has
+ * proved an identity, which is what a person pressing the other provider's
+ * button means. Once a callback has rendered a confirmation page,
+ * `confirm_token` is non-null and that page remains authoritative: somebody
+ * who merely knows the short user code cannot invalidate its Approve and Deny
+ * controls by starting again.
  *
- * It also drops any identity the first handshake proved. Confirmation trusts
- * `account_id` as the person who signed in for *this* `state`; carrying it
- * across a restart would let anyone who knows the user code start a fresh
- * handshake, read its state off the provider redirect, and press approve for
- * an identity they never proved (https://github.com/Brevilabs/OpenArtifacts/pull/61#discussion_r3919988470).
+ * The update still clears identity fields defensively. Confirmation trusts
+ * `account_id` as the person who signed in for *this* `state`, so a malformed
+ * partial row must never carry an identity across a restart
+ * (https://github.com/Brevilabs/OpenArtifacts/pull/61#discussion_r3919988470).
  */
 export async function startDeviceHandshake(
   db: D1Database,
@@ -752,7 +754,8 @@ export async function startDeviceHandshake(
       `UPDATE device_codes
           SET provider = ?, state = ?, verifier = ?,
               account_id = NULL, confirm_token = NULL
-        WHERE user_code = ? AND approved_at IS NULL AND denied_at IS NULL AND expires_at > ?
+        WHERE user_code = ? AND confirm_token IS NULL
+          AND approved_at IS NULL AND denied_at IS NULL AND expires_at > ?
         RETURNING user_code`,
     )
     .bind(provider, state, verifier, userCode, nowMs)

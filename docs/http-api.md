@@ -500,10 +500,12 @@ Until then, every answer is a `400` carrying one of four codes:
 | `access_denied` | Someone pressed Deny on the approval page. | Stop. Do not start again on your own. |
 
 The hosted deployment rate-limits each device code to one poll per interval, so
-concurrent polls normally get `slow_down`. The limiter is deliberately not part
-of token-issue correctness: collection is transactional, so even permissive
-distributed counters or a self-hosted deployment without the limiter cannot
-issue twice. Poll from one place, on the `interval` the mint returned.
+concurrent polls normally get `slow_down`. It also caps aggregate polls from one
+client address, so inventing fresh random codes cannot create unbounded database
+misses. The limiters are deliberately not part of token-issue correctness:
+collection is transactional, so even permissive distributed counters or a
+self-hosted deployment without them cannot issue twice. Poll from one place, on
+the `interval` the mint returned.
 
 A device code is spent by the poll that collects it, so a replayed one is
 `expired_token` — the same answer an unknown code gets, deliberately, because a
@@ -600,9 +602,10 @@ credential.
 Two further limits sit outside all of this. On `POST /device/code`, a single
 client address may ask for five sign-in codes a minute, and past that the mint
 answers `429 quota_exceeded` with `Retry-After`. On `POST /device/token`, one
-poll per device code is served every ten seconds and faster requests answer
+poll per device code is served every ten seconds, with a separate ceiling of
+twenty polls per client address in that window; faster requests answer
 `slow_down`. Neither is a publishing quota, no authenticated call can reach
-them, and a self-hosted deployment can remove either limiter.
+them, and a self-hosted deployment can remove the corresponding bindings.
 
 ## The docId round trip
 

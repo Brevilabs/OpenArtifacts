@@ -53,6 +53,17 @@ export interface Env {
    */
   DEVICE_POLL_LIMITER?: RateLimit;
 
+  /**
+   * Aggregate limiter on `POST /device/token`, keyed by client address.
+   *
+   * The per-code limiter above enforces the advertised interval, but an
+   * attacker can otherwise invent a fresh code for every request and force a
+   * D1 miss each time. This second bucket bounds those misses without making
+   * ordinary device codes behind one address share the one-per-interval rule.
+   * Optional like the other limiters; absent means no aggregate ceiling.
+   */
+  DEVICE_POLL_CLIENT_LIMITER?: RateLimit;
+
   /** Canonical host that serves public docs. Empty in local development. */
   SERVING_HOST?: string;
   /** Canonical host that exposes /api/v1. Empty in local development. */
