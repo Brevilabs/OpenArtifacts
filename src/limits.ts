@@ -1,10 +1,12 @@
 /**
- * The per-client limits on the three routes that answer without a credential.
+ * The limits on routes that answer without a credential.
  *
  * Minting a device code, looking one up on the approval page, and starting a
  * handshake all have to work for somebody who has nothing to present, so the
- * caller's address is the only thing there is to count against. This module is
- * how that address becomes a limiter key, and it lives apart from both callers
+ * caller's address is the only thing there is to count against. Device polling
+ * is counted against the hash of the secret device code instead, so one machine
+ * cannot make another wait. This module is how those become limiter keys, and it
+ * lives apart from both callers
  * because `src/device.ts` and `src/approval/handler.ts` already point at each
  * other and neither should import the other for this.
  *
@@ -33,7 +35,7 @@ const ANONYMOUS_CLIENT = "anonymous";
  * and staying under a limit that may or may not exist costs one `slice` where
  * being wrong about it costs every hosted sign-in.
  */
-const CLIENT_KEY_LENGTH = 32;
+const LIMITER_KEY_LENGTH = 32;
 
 /**
  * The key a request is counted against.
@@ -47,7 +49,7 @@ const CLIENT_KEY_LENGTH = 32;
 export async function clientBucket(request: Request): Promise<string> {
   const address = request.headers.get("cf-connecting-ip")?.trim();
   const bucket = address === undefined || address === "" ? ANONYMOUS_CLIENT : address;
-  return (await sha256Hex(bucket)).slice(0, CLIENT_KEY_LENGTH);
+  return (await sha256Hex(bucket)).slice(0, LIMITER_KEY_LENGTH);
 }
 
 /**
@@ -90,6 +92,20 @@ export async function withinClientLimit(
   limiter: RateLimit | undefined,
   request: Request,
 ): Promise<boolean> {
+  return await withinLimit(limiter, await clientBucket(request));
+}
+
+/**
+ * Whether a key is within an optional limiter's allowance.
+ *
+ * Keys are truncated to 128 bits. Callers pass hashes, never raw credentials,
+ * and 128 bits is ample collision resistance for an equality-only bucket while
+ * staying inside any undocumented key-size ceiling.
+ */
+export async function withinLimit(
+  limiter: RateLimit | undefined,
+  key: string,
+): Promise<boolean> {
   if (limiter === undefined) return true;
-  return (await limiter.limit({ key: await clientBucket(request) })).success;
+  return (await limiter.limit({ key: key.slice(0, LIMITER_KEY_LENGTH) })).success;
 }

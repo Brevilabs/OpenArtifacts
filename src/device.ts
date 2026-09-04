@@ -32,15 +32,14 @@ import {
   DEVICE_MINT_PERIOD_SECONDS,
   DEVICE_POLL_INTERVAL_SECONDS,
   MAX_TOKENS_PER_ACCOUNT,
-  MIN_DEVICE_POLL_GAP_MS,
   type Env,
 } from "./config.js";
 import { APPROVAL_PREFIX, USER_CODE_PARAM } from "./approval/handler.js";
-import { claimDevicePoll, collectDeviceToken, insertDeviceCode, sweepExpired } from "./db.js";
+import { collectDeviceToken, findPolledDeviceCode, insertDeviceCode, sweepExpired } from "./db.js";
 import { errorResponse } from "./errors.js";
 import { sha256Hex } from "./hash.js";
 import { newApiToken, newDeviceCode, newTokenId, newUserCode } from "./ids.js";
-import { withinClientLimit } from "./limits.js";
+import { withinClientLimit, withinLimit } from "./limits.js";
 import { readBodyWithin } from "./quota.js";
 
 /** Path prefix of the device surface, used by the router on the API host. */
@@ -109,7 +108,9 @@ export interface DeviceDeps {
    * Injected by tests that need a limiter a deployment has not declared, or a
    * verdict they choose. Production always reads `env.DEVICE_CODE_LIMITER`.
    */
-  limiter?: RateLimit;
+  mintLimiter?: RateLimit;
+  /** Injected poll limiter; production reads `env.DEVICE_POLL_LIMITER`. */
+  pollLimiter?: RateLimit;
 }
 
 /**
@@ -184,7 +185,7 @@ async function mint(
   const label = readDeviceLabel(body.label);
   if (label === undefined) return badRequest("`label` must be a string.");
 
-  const limiter = deps.limiter ?? env.DEVICE_CODE_LIMITER;
+  const limiter = deps.mintLimiter ?? env.DEVICE_CODE_LIMITER;
   if (!(await withinClientLimit(limiter, request))) {
     // `Retry-After` is the limiter's whole window, because the binding reports
     // a verdict and nothing else: no reset time, no remaining count. Telling
@@ -247,10 +248,9 @@ interface IssuedToken {
  * code answers exactly like an expired one, because the alternative is an
  * endpoint that confirms which random strings are real.
  *
- * The interval is claimed rather than checked, so exactly one poll per interval
- * is served however many arrive at once, and this endpoint writes at most once
- * per interval per code. `claimDevicePoll` says why a read followed by a write
- * cannot enforce an interval.
+ * The interval is enforced by a Workers rate limiter keyed by the device-code
+ * hash. Pending polls are therefore reads, never timestamp writes, while the
+ * transactional collection below still makes token issue exclusive.
  */
 async function poll(request: Request, env: Env, deps: DeviceDeps): Promise<Response> {
   const now = (deps.now ?? Date.now)();
@@ -266,17 +266,16 @@ async function poll(request: Request, env: Env, deps: DeviceDeps): Promise<Respo
   }
 
   const deviceCodeHash = await sha256Hex(deviceCode);
-  const { code, claimed } = await claimDevicePoll(
-    env.DB,
-    deviceCodeHash,
-    now,
-    MIN_DEVICE_POLL_GAP_MS,
-  );
+  const pollLimiter = deps.pollLimiter ?? env.DEVICE_POLL_LIMITER;
+  if (!(await withinLimit(pollLimiter, deviceCodeHash))) {
+    return device(
+      "slow_down",
+      `Polling too fast. Wait ${DEVICE_POLL_INTERVAL_SECONDS} seconds between requests.`,
+    );
+  }
 
-  // The code's own state is read before the claim is consulted, so a code that
-  // is over or refused says so on every poll rather than sometimes answering
-  // `slow_down` about a sign-in that is already finished.
-  //
+  const code = await findPolledDeviceCode(env.DB, deviceCodeHash);
+
   // Unknown, already collected, or swept — one answer for all three. A
   // collected code is deleted rather than marked spent, so a replay lands here.
   if (code === null || code.expires_at <= now) {
@@ -285,14 +284,6 @@ async function poll(request: Request, env: Env, deps: DeviceDeps): Promise<Respo
   if (code.denied_at !== null) {
     return device("access_denied", "That sign-in was refused in the browser.");
   }
-  // Nothing else can have refused the claim by this point.
-  if (!claimed) {
-    return device(
-      "slow_down",
-      `Polling too fast. Wait ${DEVICE_POLL_INTERVAL_SECONDS} seconds between requests.`,
-    );
-  }
-
   if (code.approved_at === null) {
     return device("authorization_pending", "Waiting for the sign-in to be approved.");
   }
@@ -306,7 +297,7 @@ async function poll(request: Request, env: Env, deps: DeviceDeps): Promise<Respo
     MAX_TOKENS_PER_ACCOUNT,
   );
 
-  // Null only when another poll collected between the claim above and this
+  // Null only when another poll collected between the read above and this
   // write. The code is spent, and the terminal that lost has nothing left to
   // wait for. An account at its ceiling is not a refusal: the collection
   // evicts that account's least recently used token instead.

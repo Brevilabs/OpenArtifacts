@@ -34,11 +34,6 @@ ALTER TABLE device_codes ADD COLUMN label TEXT;
 -- lands on a confirmation for a terminal that is not theirs.
 ALTER TABLE device_codes ADD COLUMN denied_at INTEGER;
 
--- Epoch ms of the terminal's last poll, which is what `slow_down` is measured
--- against. RFC 8628 §3.5 lets the server tell a client polling faster than the
--- interval it was given to back off, and that needs the previous poll's time.
-ALTER TABLE device_codes ADD COLUMN last_polled_at INTEGER;
-
 -- The poll arrives knowing only the device code, so its hash has to name one
 -- row exactly. Partial, so hand-inserted rows and rows from before this
 -- migration do not collide on null.
@@ -79,16 +74,13 @@ CREATE TABLE tokens (
   label        TEXT,
   created_at   INTEGER NOT NULL,
   -- Epoch ms, refreshed at most once an hour rather than on every request —
-  -- see `touchTokenUse`. Null until the token's first use.
-  last_used_at INTEGER,
-  -- Epoch ms of revocation, and null while the token is live. The row is kept
-  -- rather than deleted so its hash stays taken: a revoked token must go on
-  -- failing, and a deleted row would leave nothing to fail against.
-  revoked_at   INTEGER
+  -- see `touchTokenUse`. Null until the token's first use. Revocation deletes
+  -- the row: a random value cannot realistically be minted twice, and keeping
+  -- tombstones would let this table grow forever.
+  last_used_at INTEGER
 );
 
 -- Listing a token's account, newest first, is the only query this table serves
 -- besides the hash lookup the unique constraint already covers.
 CREATE INDEX tokens_by_account
-  ON tokens (account_id, created_at DESC)
-  WHERE revoked_at IS NULL;
+  ON tokens (account_id, created_at DESC);

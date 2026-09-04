@@ -36,13 +36,13 @@ const local = (over: Partial<Env> = {}): Env =>
  */
 async function issueToken(
   accountId: string,
-  over: { label?: string | null; createdAt?: number; revokedAt?: number | null } = {},
+  over: { label?: string | null; createdAt?: number } = {},
 ): Promise<{ token: string; id: string }> {
   const token = newApiToken();
   const id = newTokenId();
   await env.DB.prepare(
-    `INSERT INTO tokens (id, token_hash, account_id, label, created_at, revoked_at)
-     VALUES (?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO tokens (id, token_hash, account_id, label, created_at)
+     VALUES (?, ?, ?, ?, ?)`,
   )
     .bind(
       id,
@@ -50,7 +50,6 @@ async function issueToken(
       accountId,
       over.label ?? null,
       over.createdAt ?? NOW,
-      over.revokedAt ?? null,
     )
     .run();
   return { token, id };
@@ -280,9 +279,10 @@ describe("GET /api/v1/tokens", () => {
     expect(listed.find((row) => row.tokenId === id)?.lastUsedAt).toBeGreaterThan(0);
   });
 
-  it("hides revoked tokens and every other account's", async () => {
+  it("omits deleted tokens and every other account's", async () => {
     const mine = await issueToken(ACCOUNT_A);
-    await issueToken(ACCOUNT_A, { revokedAt: NOW });
+    const removed = await issueToken(ACCOUNT_A);
+    await env.DB.prepare("DELETE FROM tokens WHERE id = ?").bind(removed.id).run();
     await issueToken(ACCOUNT_B);
 
     const listed = await tokensOf(await send("GET", "/api/v1/tokens", mine.token));
@@ -336,7 +336,8 @@ describe("DELETE /api/v1/tokens/{tokenId}", () => {
   it("answers 404 for another account's token, a revoked one, and a malformed id alike", async () => {
     const mine = await issueToken(ACCOUNT_A);
     const theirs = await issueToken(ACCOUNT_B);
-    const already = await issueToken(ACCOUNT_A, { revokedAt: NOW });
+    const already = await issueToken(ACCOUNT_A);
+    expect((await send("DELETE", `/api/v1/tokens/${already.id}`, mine.token)).status).toBe(200);
 
     for (const id of [theirs.id, already.id, newTokenId(), "not-a-token-id"]) {
       const response = await send("DELETE", `/api/v1/tokens/${id}`, mine.token);

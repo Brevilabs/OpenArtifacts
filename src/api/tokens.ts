@@ -93,7 +93,7 @@ export async function revokeToken(
   // An id that cannot exist is answered without touching D1.
   if (!isTokenId(tokenId)) return tokenNotFound(tokenId);
 
-  if (!(await revokeAccountToken(env.DB, tokenId, publisher.owner, Date.now()))) {
+  if (!(await revokeAccountToken(env.DB, tokenId, publisher.owner))) {
     return tokenNotFound(tokenId);
   }
 

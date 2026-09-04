@@ -444,7 +444,7 @@ browser.
  "verification_uri": "https://api.openartifacts.ai/approve",
  "verification_uri_complete": "https://api.openartifacts.ai/approve?user_code=WDJBM-JHTQR",
  "expires_in": 900,
- "interval": 5}
+ "interval": 10}
 ```
 
 - `device_code` is the secret half and never leaves the client. It is the only
@@ -499,9 +499,11 @@ Until then, every answer is a `400` carrying one of four codes:
 | `expired_token` | The code expired, was already collected, or was never issued. | Start again with a new code. |
 | `access_denied` | Someone pressed Deny on the approval page. | Stop. Do not start again on your own. |
 
-Exactly one poll per interval is served, so concurrent polls for one device
-code get `slow_down` too however they are spaced. Poll from one place, on the
-`interval` the mint returned.
+The hosted deployment rate-limits each device code to one poll per interval, so
+concurrent polls normally get `slow_down`. The limiter is deliberately not part
+of token-issue correctness: collection is transactional, so even permissive
+distributed counters or a self-hosted deployment without the limiter cannot
+issue twice. Poll from one place, on the `interval` the mint returned.
 
 A device code is spent by the poll that collects it, so a replayed one is
 `expired_token` — the same answer an unknown code gets, deliberately, because a
@@ -595,10 +597,12 @@ the same numbers: every token it has issued shares one daily allowance and one
 document ceiling, because the ceiling follows the account and not the
 credential.
 
-One further limit sits outside all of this, on `POST /device/code`: a single
+Two further limits sit outside all of this. On `POST /device/code`, a single
 client address may ask for five sign-in codes a minute, and past that the mint
-answers `429 quota_exceeded` with `Retry-After`. It is not a publishing quota,
-no authenticated call can reach it, and a self-hosted deployment can remove it.
+answers `429 quota_exceeded` with `Retry-After`. On `POST /device/token`, one
+poll per device code is served every ten seconds and faster requests answer
+`slow_down`. Neither is a publishing quota, no authenticated call can reach
+them, and a self-hosted deployment can remove either limiter.
 
 ## The docId round trip
 

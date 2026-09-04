@@ -6,7 +6,6 @@ import {
   DEVICE_CODE_TTL_MS,
   DEVICE_POLL_INTERVAL_SECONDS,
   MAX_TOKENS_PER_ACCOUNT,
-  MIN_DEVICE_POLL_GAP_MS,
 } from "../src/config.js";
 import { handleDevice, readDeviceLabel } from "../src/device.js";
 import type { Env } from "../src/config.js";
@@ -62,6 +61,7 @@ const configured = (over: Partial<Env> = {}): Env =>
     OAUTH_GITHUB_CLIENT_SECRET: "github-secret",
     DEVICE_CODE_LIMITER: undefined,
     APPROVAL_LOOKUP_LIMITER: undefined,
+    DEVICE_POLL_LIMITER: undefined,
     ...over,
   }) as Env;
 
@@ -139,16 +139,13 @@ async function mint(body?: unknown, now = NOW): Promise<Minted> {
 const errorOf = async (response: Response): Promise<string> =>
   (await response.json<{ error: { code: string } }>()).error.code;
 
-const revokedAt = async (id: string): Promise<number | null> =>
-  (
-    await env.DB.prepare("SELECT revoked_at FROM tokens WHERE id = ?")
-      .bind(id)
-      .first<{ revoked_at: number | null }>()
-  )?.revoked_at ?? null;
+const tokenExists = async (id: string): Promise<boolean> =>
+  (await env.DB.prepare("SELECT id FROM tokens WHERE id = ?").bind(id).first<{ id: string }>()) !==
+  null;
 
 async function codeRow(userCode: string) {
   return await env.DB.prepare(
-    `SELECT device_code_hash, label, approved_at, denied_at, last_polled_at, expires_at
+    `SELECT device_code_hash, label, approved_at, denied_at, expires_at
        FROM device_codes WHERE user_code = ?`,
   )
     .bind(userCode)
@@ -157,7 +154,6 @@ async function codeRow(userCode: string) {
       label: string | null;
       approved_at: number | null;
       denied_at: number | null;
-      last_polled_at: number | null;
       expires_at: number;
     }>();
 }
@@ -326,7 +322,7 @@ describe("POST /device/code", () => {
     const url = new URL(`${ORIGIN}/device/code`);
     await handleDevice(request("/device/code", undefined, { "cf-connecting-ip": "203.0.113.30" }), url, configured(), {
       now: () => NOW,
-      limiter: watching,
+      mintLimiter: watching,
     });
 
     expect(keys).toHaveLength(1);
@@ -391,22 +387,21 @@ describe("POST /device/token", () => {
     );
   });
 
-  it("says slow down when the terminal polls faster than the interval it was given", async () => {
+  it("says slow down when the polling limiter refuses the request", async () => {
     const { device_code } = await mint();
-    await device("/device/token", { device_code }, NOW);
+    const refusing: RateLimit = { limit: async () => ({ success: false }) };
 
-    expect(await errorOf(await device("/device/token", { device_code }, NOW + 1_000))).toBe(
-      "slow_down",
-    );
     expect(
       await errorOf(
         await device(
           "/device/token",
           { device_code },
-          NOW + DEVICE_POLL_INTERVAL_SECONDS * 1000,
+          NOW,
+          {},
+          configured({ DEVICE_POLL_LIMITER: refusing }),
         ),
       ),
-    ).toBe("authorization_pending");
+    ).toBe("slow_down");
   });
 
   it("answers an unknown device code exactly as it answers an expired one", async () => {
@@ -449,7 +444,7 @@ describe("POST /device/token", () => {
       .json<Issued>();
 
     const row = await env.DB.prepare(
-      "SELECT token_hash, account_id, label, last_used_at, revoked_at FROM tokens WHERE id = ?",
+      "SELECT token_hash, account_id, label, last_used_at FROM tokens WHERE id = ?",
     )
       .bind(issued.token_id)
       .first<{
@@ -457,14 +452,12 @@ describe("POST /device/token", () => {
         account_id: string;
         label: string | null;
         last_used_at: number | null;
-        revoked_at: number | null;
       }>();
 
     expect(row?.account_id).toBe("oa_holder");
     expect(row?.token_hash).toMatch(/^[0-9a-f]{64}$/);
     expect(row?.token_hash).not.toContain(issued.access_token);
     expect(row?.last_used_at).toBeNull();
-    expect(row?.revoked_at).toBeNull();
   });
 
   it("consumes the code, so replaying a collected device code gets nothing", async () => {
@@ -481,10 +474,8 @@ describe("POST /device/token", () => {
   });
 
   /**
-   * Below the handler, because the interval claim now stops two polls reaching
-   * the collection at once through it. The write still has to be safe on its
-   * own: the interval bounds a well-behaved client, it is not what makes
-   * issuing exclusive.
+   * Below the handler because the write has to be safe independently of the
+   * best-effort polling limiter.
    */
   it("issues one token when two collections race for the same approval", async () => {
     const minted = await mint();
@@ -513,70 +504,66 @@ describe("POST /device/token", () => {
   });
 });
 
-describe("claiming a polling interval", () => {
-  const lastPolled = async (userCode: string): Promise<number | null> =>
-    (await codeRow(userCode))?.last_polled_at ?? null;
-
-  /**
-   * Overlapping polls all read the same `last_polled_at`, so a check followed
-   * by a write would let every one of them through and every one of them write
-   * — turning the interval that exists to bound this endpoint's writes into the
-   * thing that makes them unbounded
-   * (https://github.com/Brevilabs/OpenArtifacts/pull/62#discussion_r3928181821).
-   */
+describe("limiting polls without database writes", () => {
   it("serves one poll of a concurrent burst and tells the rest to slow down", async () => {
     const minted = await mint();
+    let first = true;
+    const limiter: RateLimit = {
+      limit: async () => {
+        const success = first;
+        first = false;
+        return { success };
+      },
+    };
+    const deployment = configured({ DEVICE_POLL_LIMITER: limiter });
 
     const burst = await Promise.all(
-      Array.from({ length: 6 }, () => device("/device/token", { device_code: minted.device_code })),
+      Array.from({ length: 6 }, () =>
+        device("/device/token", { device_code: minted.device_code }, NOW, {}, deployment),
+      ),
     );
 
     const codes = await Promise.all(burst.map(errorOf));
     expect(codes.filter((code) => code !== "slow_down")).toEqual(["authorization_pending"]);
-    expect(await lastPolled(minted.user_code)).toBe(NOW);
   });
 
-  it("writes nothing at all for a burst that arrives inside the interval", async () => {
+  it("leaves the device row unchanged however many pending polls are served", async () => {
     const minted = await mint();
-    await device("/device/token", { device_code: minted.device_code }, NOW);
+    const before = await codeRow(minted.user_code);
+    const allowing: RateLimit = { limit: async () => ({ success: true }) };
+    const deployment = configured({ DEVICE_POLL_LIMITER: allowing });
 
     const burst = await Promise.all(
       Array.from({ length: 6 }, (_, i) =>
-        device("/device/token", { device_code: minted.device_code }, NOW + 100 + i),
+        device("/device/token", { device_code: minted.device_code }, NOW + i, {}, deployment),
       ),
     );
 
-    expect(await Promise.all(burst.map(errorOf))).toEqual(Array(6).fill("slow_down"));
-    // Still the first poll's instant, so not one of the six wrote.
-    expect(await lastPolled(minted.user_code)).toBe(NOW);
+    expect(await Promise.all(burst.map(errorOf))).toEqual(Array(6).fill("authorization_pending"));
+    expect(await codeRow(minted.user_code)).toEqual(before);
   });
 
-  it("claims again once the interval has elapsed", async () => {
+  it("keys the limiter by a hash rather than the raw device code", async () => {
     const minted = await mint();
-    await device("/device/token", { device_code: minted.device_code }, NOW);
+    const keys: string[] = [];
+    const watching: RateLimit = {
+      limit: async ({ key }) => {
+        keys.push(key);
+        return { success: true };
+      },
+    };
 
-    const later = NOW + MIN_DEVICE_POLL_GAP_MS;
-    expect(await errorOf(await device("/device/token", { device_code: minted.device_code }, later)))
-      .toBe("authorization_pending");
-    expect(await lastPolled(minted.user_code)).toBe(later);
-  });
-
-  it("never writes for a code that has expired or been refused", async () => {
-    const expired = await mint();
-    const denied = await mint();
-    await env.DB.prepare("UPDATE device_codes SET denied_at = ? WHERE user_code = ?")
-      .bind(NOW, denied.user_code)
-      .run();
-
-    const past = NOW + DEVICE_CODE_TTL_MS;
-    expect(await errorOf(await device("/device/token", { device_code: expired.device_code }, past)))
-      .toBe("expired_token");
-    expect(await errorOf(await device("/device/token", { device_code: denied.device_code }))).toBe(
-      "access_denied",
+    await device(
+      "/device/token",
+      { device_code: minted.device_code },
+      NOW,
+      {},
+      configured({ DEVICE_POLL_LIMITER: watching }),
     );
 
-    expect(await lastPolled(expired.user_code)).toBeNull();
-    expect(await lastPolled(denied.user_code)).toBeNull();
+    expect(keys).toHaveLength(1);
+    expect(keys[0]).not.toContain(minted.device_code);
+    expect(keys[0]).toMatch(/^[0-9a-f]{32}$/);
   });
 });
 
@@ -613,7 +600,7 @@ describe("the rolling window of tokens an account holds", () => {
 
   const liveTokens = async (): Promise<number> =>
     (await env.DB.prepare(
-      "SELECT COUNT(*) AS n FROM tokens WHERE account_id = ? AND revoked_at IS NULL",
+      "SELECT COUNT(*) AS n FROM tokens WHERE account_id = ?",
     )
       .bind(ACCOUNT)
       .first<{ n: number }>())!.n;
@@ -653,8 +640,8 @@ describe("the rolling window of tokens an account holds", () => {
     const issued = await signIn();
 
     expect(await liveTokens()).toBe(MAX_TOKENS_PER_ACCOUNT);
-    expect(await revokedAt("tok_victim000000000")).toBe(NOW);
-    expect(await revokedAt("tok_keeper000000000")).toBeNull();
+    expect(await tokenExists("tok_victim000000000")).toBe(false);
+    expect(await tokenExists("tok_keeper000000000")).toBe(true);
     expect(await asks(victim)).toBe(401);
     expect(await asks(issued.access_token)).toBe(200);
   });
@@ -666,8 +653,8 @@ describe("the rolling window of tokens an account holds", () => {
 
     await signIn();
 
-    expect(await revokedAt("tok_neverused000000")).toBe(NOW);
-    expect(await revokedAt("tok_ancient00000000")).toBeNull();
+    expect(await tokenExists("tok_neverused000000")).toBe(false);
+    expect(await tokenExists("tok_ancient00000000")).toBe(true);
   });
 
   it("evicts nothing while the account is under the window", async () => {
@@ -675,7 +662,7 @@ describe("the rolling window of tokens an account holds", () => {
 
     await signIn();
 
-    expect(await revokedAt("tok_lonely000000000")).toBeNull();
+    expect(await tokenExists("tok_lonely000000000")).toBe(true);
     expect(await liveTokens()).toBe(2);
   });
 
@@ -688,7 +675,7 @@ describe("the rolling window of tokens an account holds", () => {
       "authorization_pending",
     );
 
-    expect(await revokedAt("tok_untouched000000")).toBeNull();
+    expect(await tokenExists("tok_untouched000000")).toBe(true);
     expect(await liveTokens()).toBe(MAX_TOKENS_PER_ACCOUNT);
   });
 

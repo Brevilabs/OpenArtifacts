@@ -50,6 +50,15 @@
       "name": "APPROVAL_LOOKUP_LIMITER",
       "namespace_id": "1002",
       "simple": { "limit": 20, "period": 60 }
+    },
+    // Polling is keyed by the hash of the secret device code, not by address:
+    // one machine cannot make another wait behind the same NAT. Keeping this in
+    // a binding also makes every pending poll a D1 read instead of a timestamp
+    // write. The advertised DEVICE_POLL_INTERVAL_SECONDS must match the period.
+    {
+      "name": "DEVICE_POLL_LIMITER",
+      "namespace_id": "1003",
+      "simple": { "limit": 1, "period": 10 }
     }
   ],
 

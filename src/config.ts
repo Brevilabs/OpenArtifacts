@@ -43,6 +43,16 @@ export interface Env {
    */
   APPROVAL_LOOKUP_LIMITER?: RateLimit;
 
+  /**
+   * Rate limiter on `POST /device/token`, keyed by the device-code hash.
+   *
+   * Keeping the poll interval here makes a pending poll read-only in D1. A
+   * timestamp in the device row would turn every well-behaved poll into a write
+   * and exhaust the hosted database allowance under ordinary sustained use.
+   * Optional like the other two limiters; absent means the interval is advisory.
+   */
+  DEVICE_POLL_LIMITER?: RateLimit;
+
   /** Canonical host that serves public docs. Empty in local development. */
   SERVING_HOST?: string;
   /** Canonical host that exposes /api/v1. Empty in local development. */
@@ -108,18 +118,13 @@ export const MAX_DOCS_PER_PUBLISHER = 500;
  */
 export const DEVICE_CODE_TTL_MS = 15 * 60 * 1000;
 
-/** The polling interval the mint response tells the terminal to use. */
-export const DEVICE_POLL_INTERVAL_SECONDS = 5;
-
 /**
- * The gap below which a poll is answered `slow_down` instead of being served.
+ * The polling interval the mint response tells the terminal to use.
  *
- * A second under the advertised interval rather than the interval itself: a
- * client that sleeps exactly five seconds still arrives a little early or late
- * depending on the network, and refusing a well-behaved client for jitter would
- * make the flow flaky for the one thing it exists to keep orderly.
+ * It matches `DEVICE_POLL_LIMITER`'s period. Workers rate limiter bindings only
+ * accept periods of 10 or 60 seconds.
  */
-export const MIN_DEVICE_POLL_GAP_MS = (DEVICE_POLL_INTERVAL_SECONDS - 1) * 1000;
+export const DEVICE_POLL_INTERVAL_SECONDS = 10;
 
 /**
  * The window the device-code limiter counts over, in seconds.

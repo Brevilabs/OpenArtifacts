@@ -523,7 +523,7 @@ function codeDetail(userCode: string): string {
  * What was submitted is deliberately not put back in the field. Nothing a
  * visitor types reaches this page's markup, which makes "the code cannot carry
  * anything" a property of the page rather than of the escaping being right, and
- * a nine-character code is not worth weakening that to save retyping.
+ * a ten-letter code is not worth weakening that to save retyping.
  */
 function codeEntry(status: number, note?: string): Response {
   const message = note === undefined ? ENTER_CODE.message : `${note} ${ENTER_CODE.message}`;

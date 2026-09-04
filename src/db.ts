@@ -121,8 +121,6 @@ export interface DeviceCodeRow {
   label: string | null;
   /** Epoch ms of a refusal on the approval page, and null until one is given. */
   denied_at: number | null;
-  /** Epoch ms of the terminal's last poll, which `slow_down` is measured from. */
-  last_polled_at: number | null;
   expires_at: number;
   created_at: number;
 }
@@ -150,7 +148,6 @@ export interface TokenRow {
   label: string | null;
   created_at: number;
   last_used_at: number | null;
-  revoked_at: number | null;
 }
 
 /** A live token as `GET /api/v1/tokens` reports it. The hash never leaves D1. */
@@ -930,7 +927,7 @@ export async function denyDeviceApproval(
  * terminal's code at a different device code, and the approval a person then
  * gave would land on somebody else's terminal. The caller redraws instead.
  *
- * Eight characters of a twenty-letter alphabet against the handful of codes
+ * Ten characters of a twenty-letter alphabet against the handful of codes
  * alive at once makes a collision vanishingly rare; the sweep is what keeps it
  * that way, since a code that is never deleted is a code that can never be
  * drawn again.
@@ -984,74 +981,31 @@ export type PolledDeviceCode = Pick<
   "user_code" | "approved_at" | "denied_at" | "expires_at"
 >;
 
-/** The outcome of asking for this interval's poll. */
-export interface DevicePoll {
-  /** The code as it stands, or null when no code answers to that hash. */
-  code: PolledDeviceCode | null;
-  /**
-   * Whether this request is the one poll this interval serves. False means
-   * another already had it, which is what `slow_down` reports.
-   */
-  claimed: boolean;
-}
-
 /**
- * Claim this interval's poll for one device code, and read the code's state in
- * the same round trip.
+ * Read the state a device-code poll needs.
  *
- * **Claim rather than check.** Reading `last_polled_at` and then writing it
- * cannot enforce an interval at all: overlapping polls all read the same value,
- * none of them sees one too recent, and every one of them proceeds and writes.
- * A client holding a single legitimately minted code could then fire concurrent
- * bursts for the whole of that code's lifetime and turn the interval check into
- * a source of unbounded writes — which is the one thing the interval exists to
- * bound. The predicate rides on the `UPDATE`, so exactly one poll per interval
- * wins it and the rest are told to slow down (
- * https://github.com/Brevilabs/OpenArtifacts/pull/62#discussion_r3928181821).
- * `holdProvenIdentity` above is the same shape for the same reason.
- *
- * An expired or refused code is never claimed, so polling one writes nothing at
- * all rather than once an interval until the sweep reaches it. The `SELECT`
- * beside it is what tells those two apart from a hash no row answers to: all
- * three fail to claim, and only the row says which happened.
+ * The polling interval lives in the Workers rate limiter rather than this row.
+ * That makes every pending poll a read instead of a D1 write while the binding
+ * still tells a fast client to slow down. Token collection remains transactional
+ * below, so correctness does not depend on the limiter being exact.
  *
  * The device code is the lookup key rather than the user code because it is the
  * half the terminal keeps to itself. A user code is read aloud and typed into
  * phones; if it could collect a token, every approval page would be showing the
  * credential to the room.
  *
- * @param minGapMs how close to the previous served poll is too close, from
- *   `MIN_DEVICE_POLL_GAP_MS`
  */
-export async function claimDevicePoll(
+export async function findPolledDeviceCode(
   db: D1Database,
   deviceCodeHash: string,
-  nowMs: number,
-  minGapMs: number,
-): Promise<DevicePoll> {
-  const [claimed, current] = await db.batch<PolledDeviceCode>([
-    db
-      .prepare(
-        `UPDATE device_codes SET last_polled_at = ?
-          WHERE device_code_hash = ?
-            AND expires_at > ?
-            AND denied_at IS NULL
-            AND (last_polled_at IS NULL OR last_polled_at <= ?)
-         RETURNING user_code, approved_at, denied_at, expires_at`,
-      )
-      .bind(nowMs, deviceCodeHash, nowMs, nowMs - minGapMs),
-    db
-      .prepare(
-        `SELECT user_code, approved_at, denied_at, expires_at
-           FROM device_codes WHERE device_code_hash = ?`,
-      )
-      .bind(deviceCodeHash),
-  ]);
-
-  return {
-    code: current?.results[0] ?? null,
-    claimed: (claimed?.results.length ?? 0) > 0,
-  };
+): Promise<PolledDeviceCode | null> {
+  return await db
+    .prepare(
+      `SELECT user_code, approved_at, denied_at, expires_at
+         FROM device_codes WHERE device_code_hash = ?`,
+    )
+    .bind(deviceCodeHash)
+    .first<PolledDeviceCode>();
 }
 
 /**
@@ -1119,21 +1073,20 @@ export async function collectDeviceToken(
   const [, issued] = await db.batch<{ label: string | null }>([
     db
       .prepare(
-        `UPDATE tokens SET revoked_at = ?
+        `DELETE FROM tokens
           WHERE id = (
             SELECT victim.id
               FROM tokens victim
               JOIN device_codes code ON code.account_id = victim.account_id
              WHERE code.device_code_hash = ?
                AND code.approved_at IS NOT NULL
-               AND victim.revoked_at IS NULL
                AND (SELECT COUNT(*) FROM tokens live
-                     WHERE live.account_id = code.account_id AND live.revoked_at IS NULL) >= ?
+                     WHERE live.account_id = code.account_id) >= ?
              ORDER BY victim.last_used_at ASC NULLS FIRST, victim.created_at ASC, victim.id ASC
              LIMIT 1
           )`,
       )
-      .bind(token.created_at, deviceCodeHash, maxTokens),
+      .bind(deviceCodeHash, maxTokens),
     db
       .prepare(
         `INSERT INTO tokens (id, token_hash, account_id, label, created_at)
@@ -1141,7 +1094,7 @@ export async function collectDeviceToken(
            FROM device_codes
           WHERE device_code_hash = ? AND approved_at IS NOT NULL AND account_id IS NOT NULL
             AND (SELECT COUNT(*) FROM tokens
-                  WHERE account_id = device_codes.account_id AND revoked_at IS NULL) < ?
+                  WHERE account_id = device_codes.account_id) < ?
          RETURNING label`,
       )
       .bind(token.id, token.token_hash, token.created_at, deviceCodeHash, maxTokens),
@@ -1162,9 +1115,9 @@ export async function collectDeviceToken(
  *
  * Looked up by hash, like a license key, so the value the caller sent is never
  * compared against anything stored — there is nothing stored to compare it to.
- * A revoked token keeps its row so that its hash stays taken and it goes on
- * failing; deleting the row would leave nothing for the next request to fail
- * against, and the same value could in principle be minted again.
+ * Revocation deletes the row, so an unknown and a revoked value take the same
+ * path. Tokens carry enough entropy that minting the same value again is not a
+ * storage concern worth an unbounded tombstone table.
  */
 export async function findLiveToken(
   db: D1Database,
@@ -1173,8 +1126,7 @@ export async function findLiveToken(
   // `return await`: see the note on the router's catch in index.ts.
   return await db
     .prepare(
-      `SELECT id, account_id, last_used_at FROM tokens
-        WHERE token_hash = ? AND revoked_at IS NULL`,
+      `SELECT id, account_id, last_used_at FROM tokens WHERE token_hash = ?`,
     )
     .bind(tokenHash)
     .first<Pick<TokenRow, "id" | "account_id" | "last_used_at">>();
@@ -1215,7 +1167,7 @@ export async function listAccountTokens(
   const { results } = await db
     .prepare(
       `SELECT id, label, created_at, last_used_at FROM tokens
-        WHERE account_id = ? AND revoked_at IS NULL
+        WHERE account_id = ?
         ORDER BY created_at DESC, id DESC
         LIMIT ?`,
     )
@@ -1242,15 +1194,14 @@ export async function revokeAccountToken(
   db: D1Database,
   id: string,
   accountId: string,
-  atMs: number,
 ): Promise<boolean> {
   const revoked = await db
     .prepare(
-      `UPDATE tokens SET revoked_at = ?
-        WHERE id = ? AND account_id = ? AND revoked_at IS NULL
+      `DELETE FROM tokens
+        WHERE id = ? AND account_id = ?
         RETURNING id`,
     )
-    .bind(atMs, id, accountId)
+    .bind(id, accountId)
     .first<{ id: string }>();
 
   return revoked !== null;
@@ -1259,7 +1210,7 @@ export async function revokeAccountToken(
 /** Live tokens an account still holds, which is what a revoke reports back. */
 export async function countLiveTokens(db: D1Database, accountId: string): Promise<number> {
   const row = await db
-    .prepare("SELECT COUNT(*) AS n FROM tokens WHERE account_id = ? AND revoked_at IS NULL")
+    .prepare("SELECT COUNT(*) AS n FROM tokens WHERE account_id = ?")
     .bind(accountId)
     .first<{ n: number }>();
 

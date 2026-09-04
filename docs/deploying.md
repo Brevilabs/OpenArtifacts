@@ -73,15 +73,16 @@ existing license-outage fallback.
 
 ### The sign-in limiters
 
-Three routes answer without a credential, because the caller has none yet: the
-device-code mint, the approval page's code lookup, and the button that starts a
-handshake. Two Workers rate limiter bindings cover them, declared in
-`wrangler.jsonc`:
+Four request shapes answer without a credential, because the caller has none
+yet: the device-code mint and poll, the approval page's code lookup, and the
+button that starts a handshake. Three Workers rate limiter bindings cover them,
+declared in `wrangler.jsonc`:
 
 ```jsonc
 "ratelimits": [
   { "name": "DEVICE_CODE_LIMITER", "namespace_id": "1001", "simple": { "limit": 5, "period": 60 } },
-  { "name": "APPROVAL_LOOKUP_LIMITER", "namespace_id": "1002", "simple": { "limit": 20, "period": 60 } }
+  { "name": "APPROVAL_LOOKUP_LIMITER", "namespace_id": "1002", "simple": { "limit": 20, "period": 60 } },
+  { "name": "DEVICE_POLL_LIMITER", "namespace_id": "1003", "simple": { "limit": 1, "period": 10 } }
 ]
 ```
 
@@ -104,11 +105,17 @@ Sharing one bucket would also mean an ordinary sign-in spent three of it, and a
 person who reloaded the approval page twice would be told their code had
 expired.
 
-**Deleting either block is supported.** A deployment that declares no limiter
-puts no limit on those endpoints, which is the right answer for a private
-deployment nobody else can reach. Failing closed instead would mean a Worker
-that signs nobody in until its operator had read this page. Everything else
-works the same either way.
+`DEVICE_POLL_LIMITER` allows one poll per device code every ten seconds. It is
+keyed by the hash of the secret code, so two machines behind one address do not
+share a bucket and the raw credential never becomes limiter metadata. Keeping
+the interval in the binding makes a pending poll a D1 read rather than a write.
+`DEVICE_POLL_INTERVAL_SECONDS` is advertised to clients and has to match this
+binding's `period`.
+
+**Deleting any block is supported.** A deployment that declares no limiter puts
+no limit on that endpoint, which is the right answer for a private deployment
+nobody else can reach. Without `DEVICE_POLL_LIMITER`, the returned polling
+interval is advisory. Everything else works the same either way.
 
 The limiter is not a D1 counter on purpose. A counter in a row costs a write for
 every attempt including every refused one, so under sustained abuse the limiter
