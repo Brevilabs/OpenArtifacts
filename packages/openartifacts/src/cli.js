@@ -175,11 +175,21 @@ async function credential(host, directory) {
   return stored.hosts?.[host]?.token ?? login(host, directory);
 }
 
-/** @param {string} npm */
+/** @param {NodeJS.Platform} os */
+export function npmProcess(os = platform()) {
+  return os === "win32"
+    ? { command: "npm.cmd", shell: true }
+    : { command: "npm", shell: false };
+}
+
+/** @param {{command: string, shell: boolean}} npm */
 async function npmGlobalRoot(npm) {
   return new Promise((resolvePromise, reject) => {
     let output = "";
-    const child = spawn(npm, ["root", "--global"], { stdio: ["ignore", "pipe", "inherit"] });
+    const child = spawn(npm.command, ["root", "--global"], {
+      shell: npm.shell,
+      stdio: ["ignore", "pipe", "inherit"],
+    });
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", (chunk) => { output += chunk; });
     child.on("error", reject);
@@ -191,9 +201,12 @@ async function npmGlobalRoot(npm) {
 
 async function install() {
   const manifest = JSON.parse(await readFile(join(PACKAGE_ROOT, "package.json"), "utf8"));
-  const npm = platform() === "win32" ? "npm.cmd" : "npm";
+  const npm = npmProcess();
   await new Promise((resolvePromise, reject) => {
-    const child = spawn(npm, ["install", "--global", `${manifest.name}@latest`], { stdio: "inherit" });
+    const child = spawn(npm.command, ["install", "--global", `${manifest.name}@latest`], {
+      shell: npm.shell,
+      stdio: "inherit",
+    });
     child.on("error", reject);
     child.on("exit", (code) => code === 0
       ? resolvePromise(undefined)
@@ -288,7 +301,9 @@ export async function main(args) {
     await client.unshare(value);
     const statePath = join(directory, "state.json");
     const state = await readJson(statePath, /** @type {PublishState} */ ({ files: {} }));
-    for (const [file, entry] of Object.entries(state.files)) if (entry.docId === value) delete state.files[file];
+    for (const [fileKey, entry] of Object.entries(state.files)) {
+      if (fileKey.startsWith(`${host}\n`) && entry.docId === value) delete state.files[fileKey];
+    }
     await writePrivateJson(statePath, state);
     console.log(`Unshared ${value}.`);
   } else if (command === "tokens") {

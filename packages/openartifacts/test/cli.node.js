@@ -5,7 +5,7 @@ import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { collectToken, configDir, detectAgents, installSkills, main, presentError, renderFile } from "../src/cli.js";
+import { collectToken, configDir, detectAgents, installSkills, main, npmProcess, presentError, renderFile } from "../src/cli.js";
 import { APIError } from "../src/client.js";
 
 test("uses each platform's user config directory", () => {
@@ -13,6 +13,11 @@ test("uses each platform's user config directory", () => {
   assert.equal(configDir("linux", "/home/me", {}), "/home/me/.config/openartifacts");
   assert.equal(configDir("linux", "/home/me", { XDG_CONFIG_HOME: "/xdg" }), "/xdg/openartifacts");
   assert.equal(configDir("win32", "C:\\Users\\me", { APPDATA: "C:\\AppData" }), "C:\\AppData/openartifacts");
+});
+
+test("runs npm.cmd through the Windows command processor", () => {
+  assert.deepEqual(npmProcess("win32"), { command: "npm.cmd", shell: true });
+  assert.deepEqual(npmProcess("linux"), { command: "npm", shell: false });
 });
 
 test("rejects an unknown command before authentication", async () => {
@@ -257,6 +262,10 @@ test("repeat publish updates per API host", async () => {
     await main(["publish", markdown]);
     process.env.OPENARTIFACTS_API_HOST = second.host;
     await main(["publish", markdown]);
+    process.env.OPENARTIFACTS_API_HOST = first.host;
+    await main(["unshare", "9f2k4mvq7t0xbz3n"]);
+    process.env.OPENARTIFACTS_API_HOST = second.host;
+    await main(["publish", markdown]);
   } finally {
     console.log = previous.log;
     for (const [name, value] of [
@@ -267,8 +276,8 @@ test("repeat publish updates per API host", async () => {
     first.server.close();
     second.server.close();
   }
-  assert.deepEqual(first.methods, ["POST", "PUT"]);
-  assert.deepEqual(second.methods, ["POST"]);
+  assert.deepEqual(first.methods, ["POST", "PUT", "DELETE"]);
+  assert.deepEqual(second.methods, ["POST", "PUT"]);
 });
 
 test("a stale publish mapping requires explicit replacement", async () => {
