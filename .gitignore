@@ -1,5 +1,9 @@
 node_modules
 dist/
+build/
+__pycache__/
+*.egg-info/
+.venv/
 .env
 .env.*
 .dev.vars

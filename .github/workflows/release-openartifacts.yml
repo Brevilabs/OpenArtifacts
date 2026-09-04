@@ -1,0 +1,130 @@
+name: Release OpenArtifacts packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Stable X.Y.Z version in both package manifests
+        required: true
+        type: string
+
+concurrency:
+  group: release-openartifacts-packages
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    environment: package-release
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Refuse to release anything but main
+        if: github.ref != 'refs/heads/main'
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          echo "::error::Refusing to release $REF. Packages release from main."
+          exit 1
+
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Validate requested version and package parity
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: python packages/openartifacts/scripts/check_version_parity.py --expect "$RELEASE_VERSION"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - name: Use an npm version with Trusted Publishing support
+        run: npm install --global npm@11.5.1
+
+      - name: Install JavaScript dependencies
+        run: npm ci
+
+      - name: Typecheck JavaScript
+        run: npm run typecheck
+
+      - name: Test JavaScript
+        run: npm test
+
+      - name: Test Python launcher
+        run: python -m unittest discover -s packages/openartifacts/test -p 'test_*.py'
+
+      - name: Verify npm distribution contents
+        run: node packages/openartifacts/test/verify-npm-dist.js
+
+      - name: Build Python distributions
+        run: |
+          python -m pip install build==1.3.0
+          python -m build --outdir dist/python packages/openartifacts
+
+      - name: Verify Python distribution contents
+        run: python packages/openartifacts/test/verify_python_dist.py dist/python
+
+      - name: Check registry versions
+        id: registry
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+
+          npm_code="$(curl --silent --show-error --location --retry 3 \
+            --output /tmp/npm-version.json --write-out '%{http_code}' \
+            "https://registry.npmjs.org/openartifacts/$RELEASE_VERSION")"
+          case "$npm_code" in
+            200) npm_exists=true ;;
+            404) npm_exists=false ;;
+            *) echo "::error::npm registry returned HTTP $npm_code"; exit 1 ;;
+          esac
+
+          pypi_code="$(curl --silent --show-error --location --retry 3 \
+            --output /tmp/pypi-version.json --write-out '%{http_code}' \
+            "https://pypi.org/pypi/openartifacts/$RELEASE_VERSION/json")"
+          case "$pypi_code" in
+            200) pypi_exists=true ;;
+            404) pypi_exists=false ;;
+            *) echo "::error::PyPI returned HTTP $pypi_code"; exit 1 ;;
+          esac
+
+          echo "npm_exists=$npm_exists" >> "$GITHUB_OUTPUT"
+          echo "pypi_exists=$pypi_exists" >> "$GITHUB_OUTPUT"
+
+      - name: Publish npm
+        if: steps.registry.outputs.npm_exists != 'true'
+        run: npm publish --workspace packages/openartifacts --access public --provenance
+
+      - name: Publish PyPI
+        if: steps.registry.outputs.pypi_exists != 'true'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/python/
+
+      - name: Verify both registry versions
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --location --retry 10 \
+            --retry-all-errors --retry-delay 3 \
+            "https://registry.npmjs.org/openartifacts/$RELEASE_VERSION" \
+            --output /dev/null
+          curl --fail --silent --show-error --location --retry 10 \
+            --retry-all-errors --retry-delay 3 \
+            "https://pypi.org/pypi/openartifacts/$RELEASE_VERSION/json" \
+            --output /dev/null
+          echo "openartifacts $RELEASE_VERSION is available from npm and PyPI"

@@ -41,6 +41,17 @@ and pi installations:
 npx openartifacts install
 ```
 
+Python users may instead install the same CLI through a thin bridge. Node.js
+20+ and npm are still required:
+
+```bash
+pipx install openartifacts
+openartifacts install
+```
+
+This optional bridge does not change the Node.js and Cloudflare requirements
+for self-hosted deployments.
+
 The first publish opens a browser approval and stores the resulting token
 without printing it. Later publishes of the same local file update its existing
 document. Set `OPENARTIFACTS_API_HOST` for a self-hosted deployment, or provide
@@ -167,6 +178,12 @@ Worker becomes reachable only after Cloudflare attaches both custom domains.
 | [Identity](docs/identity.md) | Why documents belong to an owner rather than a credential, and how an account is created. |
 | [Private sharing](docs/private-sharing.md) | Designed reader-identity phases. Not built. |
 | [Comments](docs/comments.md) | Design sketch for the next product step. Not built. |
+
+## Maintainer package release
+
+Brevilabs maintainers publish the official npm and PyPI packages together using
+the protected workflow in [the release runbook](docs/releasing.md). This process
+does not apply to self-hosted deployments.
 
 ## License
 
