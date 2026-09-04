@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "openartifacts"
-version = "0.2.0"
-description = "Thin OpenArtifacts CLI launcher for Hermes Agent and Python environments"
+version = "0.2.1"
+description = "Thin Python launcher for the OpenArtifacts npm CLI"
 readme = "python/README.md"
 requires-python = ">=3.9"
 license = "MIT"
@@ -13,7 +13,7 @@ license-files = ["LICENSE"]
 authors = [
   { name = "Brevilabs" },
 ]
-keywords = ["agents", "artifacts", "cli", "hermes-agent", "markdown", "publishing"]
+keywords = ["agents", "artifacts", "cli", "markdown", "publishing"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Environment :: Console",

@@ -9,7 +9,10 @@ metadata:
 
 # OpenArtifacts
 
-Use the `openartifacts` CLI for every operation. Do not read OpenArtifacts config files, look for credentials, or print `OPENARTIFACTS_TOKEN`.
+Use `openartifacts` as the command prefix when it is installed. Otherwise use
+`npx --yes openartifacts@latest`; do not require another package install first.
+Do not read OpenArtifacts config files, look for credentials, or print
+`OPENARTIFACTS_TOKEN`.
 
 - Publish Markdown or HTML: `openartifacts publish <file>`
 - List documents: `openartifacts list`
