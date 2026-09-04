@@ -382,7 +382,7 @@ async function prove(
   // that tells someone whether the terminal waiting on this code is theirs. It
   // is client-supplied text, so it is escaped like the address beside it.
   const device =
-    handshake.label === null ? UNNAMED_DEVICE : `<b>${escapeHtml(handshake.label)}</b>`;
+    handshake.label === null ? UNNAMED_DEVICE : `<b><bdi>${escapeHtml(handshake.label)}</bdi></b>`;
 
   return page(
     {

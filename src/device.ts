@@ -97,10 +97,12 @@ const USER_CODE_ATTEMPTS = 3;
 const JSON_CONTENT_TYPE = "application/json";
 
 /**
- * Everything a terminal could hide in a label that a terminal would then act
- * on: newlines, and the escape that starts an ANSI sequence.
+ * Everything a terminal could hide in a label that could alter the question a
+ * person sees: terminal controls, and Unicode bidirectional controls that HTML
+ * escaping does not neutralize.
  */
-const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/gu;
+const TERMINAL_CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/gu;
+const BIDI_CONTROL_CHARACTERS = /\p{Bidi_Control}/gu;
 
 export interface DeviceDeps {
   now?: () => number;
@@ -363,10 +365,10 @@ async function readJsonBody(request: Request): Promise<Record<string, unknown> |
  * one.
  *
  * Control characters go before anything else, because this string is rendered
- * on the approval page and printed in CLI output: a newline or an escape
- * sequence in it would let a terminal's chosen name draw over the question the
- * person is being asked. Blank after that means the caller effectively sent
- * none, and the page falls back to its own words.
+ * on the approval page and printed in CLI output. Newlines and escape sequences
+ * can draw over the question; Unicode bidi controls can reorder it even after
+ * HTML escaping. Natural RTL letters remain intact and the page isolates them
+ * when rendered. Blank after cleaning means the caller effectively sent none.
  *
  * @param raw the `label` field exactly as it arrived, which may be anything
  */
@@ -374,7 +376,11 @@ export function readDeviceLabel(raw: unknown): string | null | undefined {
   if (raw === undefined || raw === null) return null;
   if (typeof raw !== "string") return undefined;
 
-  const cleaned = raw.replace(CONTROL_CHARACTERS, " ").trim().slice(0, MAX_LABEL_LENGTH);
+  const cleaned = raw
+    .replace(TERMINAL_CONTROL_CHARACTERS, " ")
+    .replace(BIDI_CONTROL_CHARACTERS, "")
+    .trim()
+    .slice(0, MAX_LABEL_LENGTH);
   return cleaned === "" ? null : cleaned;
 }
 

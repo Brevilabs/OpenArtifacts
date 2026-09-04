@@ -432,7 +432,7 @@ browser.
 
 | Field | Type | Required | Notes |
 | --- | --- | --- | --- |
-| `label` | string | no | What this machine and agent are, for the person approving it and for the token afterwards. Control characters are stripped and it is cut at 80 characters. Missing or blank means the page names no machine. |
+| `label` | string | no | What this machine and agent are, for the person approving it and for the token afterwards. Terminal and bidirectional controls are stripped, ordinary RTL text is isolated when rendered, and the result is cut at 80 characters. Missing or blank means the page names no machine. |
 
 ```json
 {"label": "Claude Code on loganmac"}

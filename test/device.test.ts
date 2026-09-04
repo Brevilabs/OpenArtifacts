@@ -766,6 +766,10 @@ describe("readDeviceLabel()", () => {
     expect(readDeviceLabel("Claude[31m Code\nrm -rf")).toBe("Claude [31m Code rm -rf");
   });
 
+  it("strips bidi controls without stripping ordinary right-to-left text", () => {
+    expect(readDeviceLabel("Trusted\u202Etxt.exe\u202C جهاز")).toBe("Trustedtxt.exe جهاز");
+  });
+
   it("cuts a label that would not fit on the approval page", () => {
     expect(readDeviceLabel("x".repeat(200))).toHaveLength(80);
   });
@@ -819,8 +823,9 @@ describe("the whole flow, from an empty terminal to a token", () => {
     const confirmPage = await approval(`/approve/callback/google?state=${state}&code=auth-code`);
     const html = await confirmPage.text();
     // The machine's own name for itself is what tells the person whether the
-    // terminal waiting on this code is theirs.
-    expect(html).toContain("Claude Code on loganmac");
+    // terminal waiting on this code is theirs. `bdi` keeps natural RTL labels
+    // from changing the direction of the surrounding warning.
+    expect(html).toContain("<b><bdi>Claude Code on loganmac</bdi></b>");
     expect(html).toContain("Deny");
 
     const confirmToken = /name="confirm_token" value="([^"]+)"/.exec(html)?.[1] ?? "";
