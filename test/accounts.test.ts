@@ -209,16 +209,18 @@ describe("startDeviceHandshake", () => {
     expect(row?.approved_at).toBeNull();
   });
 
-  it("drops an earlier handshake's identity and confirm token when it restarts", async () => {
+  it("keeps a rendered confirmation authoritative and refuses a restart", async () => {
     await seedCode("START-5", NOW + 1000);
-    await proven("START-5", "state-abandoned", "oa_owner");
+    const confirmToken = await proven("START-5", "state-proved", "oa_owner");
 
-    await startDeviceHandshake(env.DB, "START-5", "github", "state-new", "verifier-new", NOW);
+    expect(
+      await startDeviceHandshake(env.DB, "START-5", "github", "state-new", "verifier-new", NOW),
+    ).toBe(false);
 
     const row = await readCode("START-5");
-    // A page from the abandoned attempt must not be able to approve the new one.
-    expect(row?.account_id).toBeNull();
-    expect(row?.confirm_token).toBeNull();
+    expect(row?.account_id).toBe("oa_owner");
+    expect(row?.confirm_token).toBe(confirmToken);
+    expect(row?.state).toBe("state-proved");
   });
 
   it("replaces an earlier handshake, so only the newest one can be finished", async () => {
@@ -232,16 +234,19 @@ describe("startDeviceHandshake", () => {
       user_code: "START-2",
       provider: "github",
       verifier: "v2",
+      label: null,
     });
   });
 
-  it("drops the identity an earlier handshake proved, so a restart cannot be approved for it (https://github.com/Brevilabs/OpenArtifacts/pull/61#discussion_r3919988470)", async () => {
+  it("does not let a restart transfer a proven identity to a new state", async () => {
     await seedCode("START-5", NOW + 1000);
     await proven("START-5", "state-proved", "oa_victim");
 
-    await startDeviceHandshake(env.DB, "START-5", "google", "state-restarted", "v2", NOW);
+    expect(
+      await startDeviceHandshake(env.DB, "START-5", "google", "state-restarted", "v2", NOW),
+    ).toBe(false);
 
-    expect((await readCode("START-5"))?.account_id).toBeNull();
+    expect((await readCode("START-5"))?.account_id).toBe("oa_victim");
     expect(await confirmDeviceApproval(env.DB, "state-restarted", NOW)).toBeNull();
   });
 
@@ -265,6 +270,7 @@ describe("findPendingHandshake", () => {
       user_code: "FIND-1",
       provider: "github",
       verifier: "verifier-find",
+      label: null,
     });
   });
 
@@ -359,13 +365,15 @@ describe("confirmDeviceApproval", () => {
     expect((await readCode("NOID-1"))?.approved_at).toBeNull();
   });
 
-  it("refuses a token left over from a handshake that was restarted", async () => {
+  it("keeps a rendered confirmation usable when someone tries to restart", async () => {
     await seedCode("RESTART-1", NOW + 1000);
-    const stale = await proven("RESTART-1", "state-stale", "oa_owner");
-    await startDeviceHandshake(env.DB, "RESTART-1", "github", "state-fresh", "verifier", NOW);
+    const confirmation = await proven("RESTART-1", "state-proved", "oa_owner");
+    expect(
+      await startDeviceHandshake(env.DB, "RESTART-1", "github", "state-fresh", "verifier", NOW),
+    ).toBe(false);
 
-    expect(await confirmDeviceApproval(env.DB, stale, NOW)).toBeNull();
-    expect((await readCode("RESTART-1"))?.approved_at).toBeNull();
+    expect(await confirmDeviceApproval(env.DB, confirmation, NOW)).toBe("RESTART-1");
+    expect((await readCode("RESTART-1"))?.approved_at).toBe(NOW);
   });
 
   it("refuses an unknown token, an expired code and a second press alike", async () => {

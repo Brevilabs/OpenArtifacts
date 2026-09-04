@@ -23,6 +23,54 @@
     { "pattern": "api.symposium.md", "custom_domain": true }
   ],
 
+  // The limiter on POST /device/code, which is unauthenticated by necessity —
+  // the caller has no credential yet, which is the entire reason it is asking.
+  //
+  // The binding rather than a D1 counter, because a counter in a row costs a
+  // write per attempt including every refused one, so the limiter itself would
+  // be the thing that exhausts a self-hoster's daily write budget under exactly
+  // the abuse it exists to stop. docs/cost-at-scale.md says counters go here or
+  // in a Durable Object, never in D1 rows. A refused request here costs
+  // nothing.
+  //
+  // `namespace_id` is unique per account, not per Worker: an operator running
+  // more than one Worker has to give each limiter its own. `period` accepts
+  // only 10 or 60. `DEVICE_MINT_PERIOD_SECONDS` in src/config.ts must match the
+  // period, since the Retry-After header is the only place the number is
+  // needed in code.
+  "ratelimits": [
+    { "name": "DEVICE_CODE_LIMITER", "namespace_id": "1001", "simple": { "limit": 5, "period": 60 } },
+    // The approval page's own limit, on looking a user code up and on starting
+    // a handshake against one. Separate from the mint's because it protects a
+    // different thing — guessing a user code, rather than the write budget —
+    // and because one ordinary sign-in spends three of a shared bucket.
+    // Twenty a minute is meaningless against the code's own entropy and still
+    // generous for somebody retyping a code off a phone.
+    {
+      "name": "APPROVAL_LOOKUP_LIMITER",
+      "namespace_id": "1002",
+      "simple": { "limit": 20, "period": 60 }
+    },
+    // Polling is keyed by the hash of the secret device code, not by address:
+    // one machine cannot make another wait behind the same NAT. Keeping this in
+    // a binding also makes every pending poll a D1 read instead of a timestamp
+    // write. The advertised DEVICE_POLL_INTERVAL_SECONDS must match the period.
+    {
+      "name": "DEVICE_POLL_LIMITER",
+      "namespace_id": "1003",
+      "simple": { "limit": 1, "period": 10 }
+    },
+    // A separate address bucket runs before the D1 lookup. Per-code buckets
+    // alone can be bypassed with a fresh random code on every request. Twenty
+    // polls per ten seconds leaves ample room for shared networks while
+    // bounding misses from one caller.
+    {
+      "name": "DEVICE_POLL_CLIENT_LIMITER",
+      "namespace_id": "1004",
+      "simple": { "limit": 20, "period": 10 }
+    }
+  ],
+
   // R2 is the system of record: every served byte lives here.
   "r2_buckets": [{ "binding": "DOCS", "bucket_name": "symposium-docs" }],
 

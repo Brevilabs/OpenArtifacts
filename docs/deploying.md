@@ -71,6 +71,71 @@ two plan values currently allowed to publish. With the Brevilabs license
 variables absent, unknown keys fail closed and seeded keys continue through the
 existing license-outage fallback.
 
+### The sign-in limiters
+
+Four request shapes answer without a credential, because the caller has none
+yet: the device-code mint and poll, the approval page's code lookup, and the
+button that starts a handshake. Four Workers rate limiter bindings cover them,
+declared in `wrangler.jsonc`; polling needs both its per-code interval and an
+aggregate ceiling on random misses:
+
+```jsonc
+"ratelimits": [
+  { "name": "DEVICE_CODE_LIMITER", "namespace_id": "1001", "simple": { "limit": 5, "period": 60 } },
+  { "name": "APPROVAL_LOOKUP_LIMITER", "namespace_id": "1002", "simple": { "limit": 20, "period": 60 } },
+  { "name": "DEVICE_POLL_LIMITER", "namespace_id": "1003", "simple": { "limit": 1, "period": 10 } },
+  { "name": "DEVICE_POLL_CLIENT_LIMITER", "namespace_id": "1004", "simple": { "limit": 20, "period": 10 } }
+]
+```
+
+`DEVICE_CODE_LIMITER` gives five codes a minute per client address, far above
+one person signing in a machine or two. `period` accepts only `10` or `60`.
+**`namespace_id` is unique across your whole account, not per Worker**, so if
+you run another Worker with a limiter, give these numbers that Worker does not
+use. `DEVICE_MINT_PERIOD_SECONDS`
+in `src/config.ts` is the `Retry-After` a refusal carries and has to match
+`period`; nothing else in the code reads these numbers, because the binding
+reports a verdict and no counts.
+
+The second limiter, `APPROVAL_LOOKUP_LIMITER`, covers the two approval routes
+that take a user code: the page that looks one up and the button that starts a
+handshake against it. Twenty a minute per address, and a separate
+`namespace_id`, because the two limits protect different things. A mint writes a
+row, so its limit is about the write budget; these read a row and conditionally
+update one, and their limit is defence in depth behind the code's own 43 bits.
+Sharing one bucket would also mean an ordinary sign-in spent three of it, and a
+person who reloaded the approval page twice would be told their code had
+expired.
+
+`DEVICE_POLL_LIMITER` allows one poll per device code every ten seconds. It is
+keyed by the hash of the secret code, so two machines behind one address do not
+share a bucket and the raw credential never becomes limiter metadata. Keeping
+the interval in the binding makes a pending poll a D1 read rather than a write.
+`DEVICE_POLL_INTERVAL_SECONDS` is advertised to clients and has to match this
+binding's `period`.
+
+`DEVICE_POLL_CLIENT_LIMITER` runs first and allows twenty total polls per client
+address every ten seconds. The per-code limiter cannot bound an attacker who
+invents a fresh random code for every request; this aggregate bucket keeps those
+D1 misses finite while remaining generous to devices behind a shared address.
+
+**Deleting any block is supported.** A deployment that declares no limiter puts
+no corresponding limit on that endpoint, which is the right answer for a
+private deployment nobody else can reach. Without `DEVICE_POLL_LIMITER`, the
+returned polling interval is advisory; without `DEVICE_POLL_CLIENT_LIMITER`,
+random misses have no aggregate ceiling. Everything else works the same either
+way.
+
+The limiter is not a D1 counter on purpose. A counter in a row costs a write for
+every attempt including every refused one, so under sustained abuse the limiter
+itself would exhaust the account's daily write budget — see
+[cost at scale](cost-at-scale.md).
+
+For a public deployment, add WAF rate limiting rules on `POST /device/code`,
+`POST /device/token`, and `/approve` as a second layer. The binding runs inside
+the Worker, so a request it refuses has still been billed as a request; a WAF
+rule refuses at the edge before that.
+
 The checked-in GitHub Actions workflow is Brevilabs-specific. It names the
 production database, domains, repository environment, and deployment records.
 Deploy manually until you have adapted all of those values for your account.

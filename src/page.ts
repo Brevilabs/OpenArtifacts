@@ -62,6 +62,9 @@ ${FAVICON_LINK}
   .actions form { display: contents; }
   .actions a, .actions button { margin-top: 2rem; padding: 0.85rem 1.5rem; border: 1px solid #2c313b; border-radius: 0.75rem; background: none; color: #f4f5f7; font: inherit; font-weight: 600; text-decoration: none; cursor: pointer; }
   .actions a:hover, .actions button:hover { border-color: #f6ae52; color: #f9c47f; }
+  .actions input { margin-top: 2rem; padding: 0.85rem 1.25rem; min-width: 11rem; border: 1px solid #2c313b; border-radius: 0.75rem; background: #07080b; color: #f4f5f7; font-family: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace; font-size: 1rem; letter-spacing: 0.16em; text-transform: uppercase; }
+  .actions input::placeholder { color: #5b626e; }
+  .actions input:focus { outline: none; border-color: #f6ae52; }
 </style>
 </head>
 <body>

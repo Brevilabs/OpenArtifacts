@@ -9,7 +9,16 @@ export type ErrorCode =
   | "gone"
   | "too_large"
   | "quota_exceeded"
-  | "internal";
+  | "internal"
+  // The four conditions RFC 8628 §3.5 defines for a device-flow poll. They keep
+  // the RFC's names so a client written against the standard recognises them,
+  // and they travel in this API's own error envelope rather than OAuth's, so a
+  // client still has exactly one error shape to parse. Only `/device/token`
+  // emits them.
+  | "authorization_pending"
+  | "slow_down"
+  | "expired_token"
+  | "access_denied";
 
 const ERROR_STATUS: Record<ErrorCode, number> = {
   bad_request: 400,
@@ -19,6 +28,14 @@ const ERROR_STATUS: Record<ErrorCode, number> = {
   too_large: 413,
   quota_exceeded: 429,
   internal: 500,
+  // 400 for all four, as RFC 6749 §5.2 requires of a token endpoint. None of
+  // them is a failure of the request: three are the state of an approval nobody
+  // has finished yet, and the fourth is a client polling too eagerly. A client
+  // reads the code, never the status.
+  authorization_pending: 400,
+  slow_down: 400,
+  expired_token: 400,
+  access_denied: 400,
 };
 
 /** The wire shape. Clients match on `code`; `message` is human-facing only. */

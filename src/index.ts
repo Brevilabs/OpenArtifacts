@@ -8,7 +8,9 @@ import {
   publisherErrorResponse,
 } from "./auth.js";
 import type { Env } from "./config.js";
+import { DEVICE_PREFIX, handleDevice } from "./device.js";
 import { errorResponse } from "./errors.js";
+import { listTokens, revokeToken } from "./api/tokens.js";
 import {
   handleServing,
   servingError,
@@ -83,9 +85,11 @@ export function resolveSurface(hostname: string, pathname: string, config: Surfa
   if (hostsAreConfigured(config)) return "unknown";
 
   if (pathIsUnder(pathname, API_PREFIX)) return "api";
-  // The approval page shares the API host in production; locally it shares the
-  // API surface's path fallback, so `wrangler dev` can serve it too.
+  // The approval page and the device flow share the API host in production;
+  // locally they share the API surface's path fallback, so `wrangler dev` can
+  // serve them too.
   if (pathIsUnder(pathname, APPROVAL_PREFIX)) return "api";
+  if (pathIsUnder(pathname, DEVICE_PREFIX)) return "api";
   if (pathIsUnder(pathname, SERVING_PREFIX)) return "serving";
   return "unknown";
 }
@@ -98,9 +102,9 @@ async function handleApi(request: Request, url: URL, env: Env): Promise<Response
   const auth = await authenticateRequest(request, env);
   if (!auth.ok) return publisherErrorResponse(auth);
 
-  // `/api/v1/docs` and `/api/v1/docs/{docId}` are the whole surface. Anything
-  // the host matched into the API but that no route claims is a 404, never a
-  // fall-through to the serving surface.
+  // `/api/v1/docs`, `/api/v1/docs/{docId}` and `/api/v1/tokens/{tokenId}` are
+  // the whole surface. Anything the host matched into the API but that no route
+  // claims is a 404, never a fall-through to the serving surface.
   const [collection, docId, ...extra] = url.pathname
     .slice(API_PREFIX.length)
     .split("/")
@@ -137,6 +141,18 @@ async function handleApi(request: Request, url: URL, env: Env): Promise<Response
     }
     if (docId !== undefined && request.method === "DELETE") {
       return await deleteDoc(env, auth.publisher, docId);
+    }
+  }
+
+  // `docId` here is a token id: the same two path segments, named for the
+  // collection they follow. Managing tokens is not gated on a plan — losing the
+  // ability to publish must never cost someone the ability to revoke a machine.
+  if (collection === "tokens" && extra.length === 0) {
+    if (docId === undefined && request.method === "GET") {
+      return await listTokens(env, auth.publisher);
+    }
+    if (docId !== undefined && request.method === "DELETE") {
+      return await revokeToken(env, auth.publisher, docId);
     }
   }
 
@@ -204,6 +220,13 @@ export default {
           // `/api/v1`, so nothing in the frozen contract moves.
           if (pathIsUnder(url.pathname, APPROVAL_PREFIX)) {
             return await handleApproval(request, url, env);
+          }
+          // Likewise before `handleApi`: a terminal asking for a device code
+          // has no credential yet, which is the entire reason it is asking.
+          // Outside `/api/v1`, so the promise that every request under that
+          // prefix authenticates stays exactly true.
+          if (pathIsUnder(url.pathname, DEVICE_PREFIX)) {
+            return await handleDevice(request, url, env);
           }
           return await handleApi(request, url, env);
         case "serving":

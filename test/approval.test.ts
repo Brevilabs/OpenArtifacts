@@ -35,6 +35,11 @@ const configured = (over: Partial<Env> = {}): Env =>
     OAUTH_GOOGLE_CLIENT_SECRET: "google-secret",
     OAUTH_GITHUB_CLIENT_ID: "github-client",
     OAUTH_GITHUB_CLIENT_SECRET: "github-secret",
+    // No limiter unless a case asks for one. The limiter's state lives in the
+    // runtime rather than in storage, so it does not reset between tests, and a
+    // suite that looked codes up through it would start refusing itself. The
+    // cases about the limit reach for `env.APPROVAL_LOOKUP_LIMITER` themselves.
+    APPROVAL_LOOKUP_LIMITER: undefined,
     ...over,
   }) as Env;
 
@@ -47,6 +52,22 @@ async function send(path: string, init: RequestInit = {}, over: Partial<Env> = {
   );
   await waitOnExecutionContext(ctx);
   return response;
+}
+
+/** The allowance declared on `APPROVAL_LOOKUP_LIMITER` in wrangler.jsonc. */
+const LOOKUPS_PER_PERIOD = 20;
+
+/** A lookup from one address on a deployment that declares the limiter. */
+function lookupFrom(
+  address: string,
+  userCode = USER_CODE,
+  headers: Record<string, string> = {},
+): Promise<Response> {
+  return send(
+    `/approve?user_code=${userCode}`,
+    { headers: { "cf-connecting-ip": address, ...headers } },
+    { APPROVAL_LOOKUP_LIMITER: env.APPROVAL_LOOKUP_LIMITER },
+  );
 }
 
 /** A form submission, as the chooser's and the confirm page's buttons make one. */
@@ -241,9 +262,52 @@ describe("GET /approve", () => {
     expect((await send("/approve?user_code=NOSUCHCODE")).status).toBe(404);
   });
 
-  it("asks for the whole link when the code is missing or malformed", async () => {
-    expect((await send("/approve")).status).toBe(400);
-    expect((await send("/approve?user_code=not%20a%20code")).status).toBe(400);
+  /**
+   * The mint returns a bare `verification_uri` for someone reading the address
+   * off a terminal and typing it into a phone, so that address has to lead to
+   * somewhere the code can be entered rather than to a page telling them to go
+   * back for the whole link.
+   */
+  it("offers a form to type the code into when the url carries none", async () => {
+    const response = await send("/approve");
+    const html = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(html).toContain('<form method="get" action="/approve">');
+    expect(html).toContain('name="user_code"');
+    // A GET, because submitting it only navigates. The two presses that change
+    // what a code is worth stay POSTs.
+    expect(html).not.toContain('<form method="post" action="/approve">');
+  });
+
+  it("reaches the provider page when that form is submitted with a waiting code", async () => {
+    const response = await send(`/approve?user_code=${USER_CODE.toLowerCase()}`);
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("Continue with Google");
+  });
+
+  it("asks again rather than dead-ending when the code is malformed", async () => {
+    const response = await send("/approve?user_code=not%20a%20code");
+    const html = await response.text();
+
+    expect(response.status).toBe(400);
+    expect(html).toContain('<form method="get" action="/approve">');
+    expect(html).toContain("does not look like a code");
+  });
+
+  it("treats a blank submission as no code at all", async () => {
+    const response = await send("/approve?user_code=%20");
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain('<form method="get" action="/approve">');
+  });
+
+  it("still says a well-formed code is gone rather than offering the form again", async () => {
+    const response = await send("/approve?user_code=NOSUCHCODE");
+
+    expect(response.status).toBe(404);
+    expect(await response.text()).not.toContain('<form method="get"');
   });
 
   it("says so plainly on a deployment with no provider configured", async () => {
@@ -262,6 +326,134 @@ describe("GET /approve", () => {
     // nothing that reaches the page can carry markup in the first place.
     const html = await (await send("/approve?user_code=%3Cimg%20src%3Dx%3E")).text();
     expect(html).not.toContain("<img src=x>");
+    // Nor escaped: what was submitted is not put back in the field at all.
+    expect(html).not.toContain("&lt;img");
+  });
+});
+
+/**
+ * A user code is short enough to read aloud, so the page that takes one says
+ * whether it is live. Without a limit that is an enumeration oracle, and a hit
+ * is worth having: whoever finds a pending code can approve it with their own
+ * provider account, and the terminal waiting on it then collects a token for
+ * *their* account (https://github.com/Brevilabs/OpenArtifacts/pull/62#discussion_r3928334751).
+ */
+describe("guessing a user code", () => {
+  it("stops a client working through the code space, and says only that the code is gone", async () => {
+    const address = "198.51.100.5";
+    for (let i = 0; i < LOOKUPS_PER_PERIOD; i += 1) {
+      expect((await lookupFrom(address, "ZZZZZ-ZZZZZ")).status).toBe(404);
+    }
+
+    // A live code from the same address now answers exactly like a miss, so the
+    // limit tells the guesser nothing it did not already have.
+    const refused = await lookupFrom(address);
+    expect(refused.status).toBe(404);
+    expect(await refused.text()).toContain("no longer waiting");
+  });
+
+  it("reads no row once the client is over its allowance", async () => {
+    const address = "198.51.100.6";
+    for (let i = 0; i < LOOKUPS_PER_PERIOD; i += 1) await lookupFrom(address, "ZZZZZ-ZZZZZ");
+
+    // The seeded code is live, so a lookup that reached the database would say
+    // so. Being refused before that read is what makes the limit a real bound.
+    expect((await lookupFrom(address)).status).toBe(404);
+    expect((await readCode())?.state).toBeNull();
+  });
+
+  it("leaves another client's allowance alone", async () => {
+    for (let i = 0; i < LOOKUPS_PER_PERIOD; i += 1) await lookupFrom("198.51.100.7", "ZZZZZ-ZZZZZ");
+
+    const other = await lookupFrom("198.51.100.8");
+    expect(other.status).toBe(200);
+    expect(await other.text()).toContain("Continue with Google");
+  });
+
+  it("counts starting a handshake too, since that also says whether a code is live", async () => {
+    const address = "198.51.100.9";
+    for (let i = 0; i < LOOKUPS_PER_PERIOD; i += 1) await lookupFrom(address, "ZZZZZ-ZZZZZ");
+
+    const refused = await send(
+      "/approve/start/google",
+      {
+        method: "POST",
+        headers: { "cf-connecting-ip": address },
+        body: new URLSearchParams({ user_code: USER_CODE }),
+      },
+      { APPROVAL_LOOKUP_LIMITER: env.APPROVAL_LOOKUP_LIMITER },
+    );
+
+    expect(refused.status).toBe(404);
+    // No handshake was written, so nothing can be completed against it.
+    expect((await readCode())?.state).toBeNull();
+  });
+});
+
+/**
+ * A `GET` needs no preflight, so a hostile page can make any visitor's browser
+ * fetch this route from their address with an `<img>` or an iframe. If those
+ * were counted, twenty of them would spend that visitor's allowance and their
+ * own approval would come back as an expired code
+ * (https://github.com/Brevilabs/OpenArtifacts/pull/62#discussion_r3928455536).
+ */
+describe("a lookup a page made rather than a person", () => {
+  it("refuses a subresource fetch and charges its client nothing", async () => {
+    const address = "198.51.100.20";
+
+    for (let i = 0; i < LOOKUPS_PER_PERIOD + 4; i += 1) {
+      const refused = await lookupFrom(address, USER_CODE, {
+        "sec-fetch-dest": i % 2 === 0 ? "image" : "iframe",
+        "sec-fetch-site": "cross-site",
+      });
+      // The code is live, so a request that got as far as the lookup would say
+      // so. It is refused before that, and told nothing a miss would not tell.
+      expect(refused.status).toBe(404);
+    }
+
+    // The visitor's own approval still works, which is what proves the bucket
+    // was never charged on their behalf.
+    const mine = await lookupFrom(address);
+    expect(mine.status).toBe(200);
+    expect(await mine.text()).toContain("Continue with Google");
+  });
+
+  it("lets a person opening the link through, and counts that", async () => {
+    const address = "198.51.100.21";
+
+    const opened = await lookupFrom(address, USER_CODE, {
+      "sec-fetch-dest": "document",
+      "sec-fetch-mode": "navigate",
+    });
+    expect(opened.status).toBe(200);
+
+    // Charged: the rest of the allowance is what is left after that one.
+    for (let i = 0; i < LOOKUPS_PER_PERIOD - 1; i += 1) await lookupFrom(address, "ZZZZZ-ZZZZZ");
+    expect((await lookupFrom(address)).status).toBe(404);
+  });
+
+  it("lets a client that sends no fetch metadata through, and counts it", async () => {
+    const address = "198.51.100.22";
+
+    expect((await lookupFrom(address)).status).toBe(200);
+
+    for (let i = 0; i < LOOKUPS_PER_PERIOD - 1; i += 1) await lookupFrom(address, "ZZZZZ-ZZZZZ");
+    expect((await lookupFrom(address)).status).toBe(404);
+  });
+
+  it("refuses a handshake a page tried to start, and writes nothing", async () => {
+    const refused = await send(
+      "/approve/start/google",
+      {
+        method: "POST",
+        headers: { "cf-connecting-ip": "198.51.100.23", "sec-fetch-dest": "iframe" },
+        body: new URLSearchParams({ user_code: USER_CODE }),
+      },
+      { APPROVAL_LOOKUP_LIMITER: env.APPROVAL_LOOKUP_LIMITER },
+    );
+
+    expect(refused.status).toBe(404);
+    expect((await readCode())?.state).toBeNull();
   });
 });
 
@@ -508,13 +700,13 @@ describe("POST /approve/confirm", () => {
     expect((await readCode())?.approved_at).toBe(approvedAt);
   });
 
-  it("refuses a token from a page whose handshake has since been restarted", async () => {
+  it("refuses to restart after rendering confirmation and keeps that page usable", async () => {
     await begin();
-    const stale = confirmToken(await (await callback()).text());
-    await begin("github");
+    const confirmation = confirmToken(await (await callback()).text());
 
-    expect((await post("/approve/confirm", { confirm_token: stale })).status).toBe(400);
-    expect((await readCode())?.approved_at).toBeNull();
+    expect((await begin("github")).status).toBe(404);
+    expect((await post("/approve/confirm", { confirm_token: confirmation })).status).toBe(200);
+    expect((await readCode())?.approved_at).toBeGreaterThanOrEqual(NOW);
   });
 
   it("refuses a press for a code that expired while the page was open", async () => {

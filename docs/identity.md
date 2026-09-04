@@ -18,7 +18,13 @@ never mixed:
 | Credential | Owner id | Where it comes from |
 | --- | --- | --- |
 | A Brevilabs license key | an app-sites `User.id` (a uuid) | `license.validateLicenseKey` returns it as `accountId` |
-| An OpenArtifacts account | `oa_` and 26 base32 characters | `newAccountId`, minted by the first approval |
+| An OpenArtifacts token | `oa_` and 26 base32 characters | the `accounts` row the token was issued to |
+
+The second is the one an agent holds. `resolvePublisher` tells the two apart by
+the token's `oat_` prefix and never falls back from one to the other, which is a
+security property rather than an optimisation: without it a token would be sent
+to the license server to be identified, handing this deployment's own secret to
+another service on every request.
 
 An account here holds an id, one verified email address, and the time it was
 created. That is the whole `accounts` table. One further thing about a person is
@@ -60,7 +66,13 @@ is one approval page.
    is recorded against the code, a fresh confirm token is minted, and the page
    asks whether to approve it.
 6. They press Approve, which `POST`s that confirm token back and is the only
-   thing that marks the code approved.
+   thing that marks the code approved. Deny is the same press with the opposite
+   effect, and it exists so that someone who was sent a link can end the code
+   rather than leaving it live until it expires.
+7. The CLI's next poll collects a token, which consumes the device code. The
+   token is minted *there* rather than when Approve is pressed, so a raw token
+   is never written to a row and a terminal that never comes back leaves no
+   credential behind.
 
 The first approval an address makes is the registration. Nothing about the
 browser is remembered at any point, because the token the CLI holds is the
@@ -133,11 +145,23 @@ that verifier, so exactly one of them wins and only the winner is given a
 confirm token. The other is told to start again.
 
 The device flow either side of that page — minting the code, polling it, and
-issuing the token an approval earns — is
-[#57](https://github.com/Brevilabs/OpenArtifacts/issues/57). This repo owns the
-`accounts` row and the one write that binds a code to it.
+issuing the token an approval earns — is `src/device.ts`, and
+[`http-api.md`](http-api.md) is its contract.
 
 ## Three properties that are load-bearing
+
+**A token is a credential, never an identifier.** It is the mirror of the rule
+below, and the two together are why one column can hold both kinds of owner. A
+token is stored only as a SHA-256, is returned exactly once, and resolves to an
+account id that is safe to pass around precisely because holding it grants
+nothing. Nothing ever goes the other way: no endpoint accepts a token id, an
+account id or an email as proof of anything.
+
+Revocation is the visible difference between the two credentials. A token's
+owner is a row in this database, so revoking one takes effect on the next
+request; a license key's owner comes from another service and is cached for an
+hour, so revoking a key takes up to that long. Neither behaviour is
+configurable, and the reason for each is in `src/auth.ts`.
 
 **An owner id is an identifier, never a credential.** It is safe to store, log
 and pass between services only because holding one grants nothing: the owner is
@@ -217,6 +241,10 @@ and that is only acceptable while there is nothing on it for them to steal.
   or two machines' tokens on one account, share one list, one daily push
   allowance and one document ceiling. Isolation is per account, and
   [`http-api.md`](http-api.md) says so.
+- **It does not scope a token to anything.** A token can do everything its
+  account can, which is what Phase 4 of [`private-sharing.md`](private-sharing.md)
+  eventually wants narrowed to a single document. Suggested follow-up: `Scope an
+  agent token to one document`.
 - **It does not survive the account being deleted.** Nothing reacts to a `User`
   row disappearing upstream, and nothing deletes an `accounts` row here. The
   documents would simply stop being reachable by anyone. Worth solving before

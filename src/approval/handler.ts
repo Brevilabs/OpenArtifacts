@@ -3,7 +3,7 @@
  * and the only way an account comes into existence.
  *
  * There is no sign-up form, no sign-in page and no session. A CLI prints a url
- * carrying the device code it is waiting on (#57), the person opens it, proves
+ * carrying the user code it is waiting on, the person opens it, proves
  * an email with Google or GitHub, and presses a button to approve. The first
  * approval an address makes is the registration; every one after it finds the
  * same account. When the page is done, nothing about the browser is remembered
@@ -32,6 +32,7 @@
 import { type Env } from "../config.js";
 import {
   confirmDeviceApproval,
+  denyDeviceApproval,
   deviceCodeIsPending,
   findPendingHandshake,
   holdProvenIdentity,
@@ -39,6 +40,7 @@ import {
   startDeviceHandshake,
 } from "../db.js";
 import { newAccountId, newHandshakeToken } from "../ids.js";
+import { isTopLevelRequest, withinClientLimit } from "../limits.js";
 import { readBodyWithin } from "../quota.js";
 import { ABOUT_LINK, brandPageHtml, escapeHtml, type BrandPage } from "../page.js";
 import {
@@ -68,13 +70,17 @@ export const USER_CODE_PARAM = "user_code";
  */
 const CONFIRM_TOKEN_FIELD = "confirm_token";
 
+/** The words the confirmation page uses when the terminal named itself nothing. */
+const UNNAMED_DEVICE = "that terminal";
+
 /**
  * A device code as it may appear in a url.
  *
- * Deliberately a shape rather than a format: **#57 mints these codes** and is
- * free to choose their length and grouping, so this only has to exclude what
- * cannot be one. Upper case and dashes are what RFC 8628 codes look like when
- * a person reads one off a terminal onto a phone.
+ * Deliberately a shape rather than a format. `newUserCode` decides the length
+ * and the grouping, and this only has to exclude what cannot be a code at all,
+ * so changing the format there does not strand links already printed. Upper
+ * case and dashes are what RFC 8628 codes look like when a person reads one off
+ * a terminal onto a phone.
  */
 const USER_CODE_PATTERN = /^[A-Z0-9][A-Z0-9-]{0,63}$/;
 
@@ -96,6 +102,11 @@ export interface ApprovalDeps {
   now?: () => number;
   /** Injected by tests, since arctic's handshake reaches the network. */
   oauth?: OAuthClient;
+  /**
+   * Injected by tests that need a limiter a deployment has not declared, or a
+   * verdict they choose. Production reads `env.APPROVAL_LOOKUP_LIMITER`.
+   */
+  limiter?: RateLimit;
 }
 
 /**
@@ -116,14 +127,16 @@ export function normalizeUserCode(raw: string | null): string | null {
  * The four routes, and the one method each answers to:
  *
  * ```
+ * GET  /approve                      the page that asks for a code
  * GET  /approve?user_code=…          the page that offers the providers
  * POST /approve/start/{provider}     redirects to the provider
  * GET  /approve/callback/{provider}  where the provider redirects back
  * POST /approve/confirm              the press that approves the code
+ * POST /approve/deny                 the press that refuses it
  * ```
  *
- * The methods are the design rather than a convention. Only the two `POST`s
- * change what a device code is worth, and neither can be caused by a link.
+ * The methods are the design rather than a convention. Only the three `POST`s
+ * change what a device code is worth, and none can be caused by a link.
  *
  * @param url the request url, whose origin is also the redirect uri the
  *   providers are registered against — the router has already refused every
@@ -143,10 +156,13 @@ export async function handleApproval(
 
   try {
     if (section === undefined && request.method === "GET") {
-      return await chooser(url, env, deps);
+      return await chooser(request, url, env, deps);
     }
     if (section === "confirm" && provider === undefined && request.method === "POST") {
       return await confirm(request, env, deps);
+    }
+    if (section === "deny" && provider === undefined && request.method === "POST") {
+      return await deny(request, env, deps);
     }
     if (extra.length === 0 && provider !== undefined) {
       if (section === "start" && request.method === "POST") {
@@ -166,12 +182,50 @@ export async function handleApproval(
   }
 }
 
-/** The page that offers the providers, once the code is known to be waiting. */
-async function chooser(url: URL, env: Env, deps: ApprovalDeps): Promise<Response> {
+/**
+ * The page that offers the providers, once the code is known to be waiting —
+ * and, with no code on the url, the page that asks for one.
+ *
+ * Arriving without a code is the ordinary manual path rather than a mistake.
+ * The mint returns a bare `verification_uri` alongside the one with the code
+ * already in it, precisely so a person can read a short address off a terminal
+ * and type it into a phone; that address has to lead somewhere they can enter
+ * the code they are looking at, or the manual half of RFC 8628 is advertised
+ * and then unusable.
+ *
+ * The form is a `GET`, because submitting it only navigates to this same page
+ * with the code on the url. The two `POST`s either side of it are the ones that
+ * change what a code is worth, and they stay exactly as they are.
+ */
+async function chooser(
+  request: Request,
+  url: URL,
+  env: Env,
+  deps: ApprovalDeps,
+): Promise<Response> {
   if (!approvalIsConfigured(env)) return page(NOT_CONFIGURED, 503);
 
-  const userCode = normalizeUserCode(url.searchParams.get(USER_CODE_PARAM));
-  if (userCode === null) return page(NO_CODE, 400);
+  const submitted = url.searchParams.get(USER_CODE_PARAM);
+  if (submitted === null || submitted.trim() === "") return codeEntry(200);
+
+  const userCode = normalizeUserCode(submitted);
+  if (userCode === null) return codeEntry(400, "That does not look like a code.");
+
+  // Gated before the limiter, not after. This route is a plain `GET`, so a
+  // hostile page can make a visitor's browser send it from their address with
+  // an `<img>` — and if that were counted, twenty of them would spend the
+  // visitor's allowance and their own approval would come back as `CODE_GONE`.
+  // Refusing a subresource first means only requests the visitor made are
+  // charged to them.
+  if (!isTopLevelRequest(request)) return page(CODE_GONE, 404);
+
+  // Counted before the row is read, so a client working through the code space
+  // is stopped by the limit rather than by how many rows it can afford to
+  // read. `CODE_GONE` on refusal, because a throttle and a miss have to look
+  // the same: telling them apart would turn the limit into an oracle for which
+  // codes are real (https://github.com/Brevilabs/OpenArtifacts/pull/62#discussion_r3928334751).
+  const limiter = deps.limiter ?? env.APPROVAL_LOOKUP_LIMITER;
+  if (!(await withinClientLimit(limiter, request))) return page(CODE_GONE, 404);
 
   const now = (deps.now ?? Date.now)();
   // Checked before the providers are offered rather than after the handshake,
@@ -217,7 +271,14 @@ async function begin(
   if (submitted === null) return page(NOT_FOUND, 404);
 
   const userCode = normalizeUserCode(submitted.get(USER_CODE_PARAM));
-  if (userCode === null) return page(NO_CODE, 400);
+  if (userCode === null) return codeEntry(400, "That does not look like a code.");
+
+  // Gated and counted with the chooser's lookups, for the same two reasons:
+  // this route also says whether a code is live, and it writes when it is.
+  if (!isTopLevelRequest(request)) return page(CODE_GONE, 404);
+
+  const limiter = deps.limiter ?? env.APPROVAL_LOOKUP_LIMITER;
+  if (!(await withinClientLimit(limiter, request))) return page(CODE_GONE, 404);
 
   const now = (deps.now ?? Date.now)();
   const state = newHandshakeToken();
@@ -317,17 +378,26 @@ async function prove(
     return page(EXPIRED, 400);
   }
 
+  // The machine's own name for itself, which is the only thing on this page
+  // that tells someone whether the terminal waiting on this code is theirs. It
+  // is client-supplied text, so it is escaped like the address beside it.
+  const device =
+    handshake.label === null ? UNNAMED_DEVICE : `<b><bdi>${escapeHtml(handshake.label)}</bdi></b>`;
+
   return page(
     {
       ...CONFIRM,
-      message: `You are signed in as ${escapeHtml(email)}. Approving lets that terminal publish as you until you revoke it. If you did not start this, close the page and nothing happens.`,
+      message: `You are signed in as ${escapeHtml(email)}. Approving lets ${device} publish as you until you revoke it. If you did not start this, choose Deny: nothing is approved and the code stops working immediately.`,
       detail: codeDetail(handshake.user_code),
       actions: actions(
-        form(
-          `${APPROVAL_PREFIX}/confirm`,
-          { [CONFIRM_TOKEN_FIELD]: confirmToken },
-          "Approve this device",
-        ),
+        [
+          form(
+            `${APPROVAL_PREFIX}/confirm`,
+            { [CONFIRM_TOKEN_FIELD]: confirmToken },
+            "Approve this device",
+          ),
+          form(`${APPROVAL_PREFIX}/deny`, { [CONFIRM_TOKEN_FIELD]: confirmToken }, "Deny"),
+        ].join(""),
       ),
     },
     200,
@@ -356,6 +426,34 @@ async function confirm(request: Request, env: Env, deps: ApprovalDeps): Promise<
   if (userCode === null) return page(EXPIRED, 400);
 
   return page({ ...APPROVED, detail: codeDetail(userCode) }, 200);
+}
+
+/**
+ * The press that refuses the code.
+ *
+ * The other half of the defence the confirm token exists for. Closing the tab
+ * already refuses an approval, but it leaves the code live for the rest of its
+ * lifetime — so someone who lands here for a terminal that is not theirs, which
+ * is exactly the RFC 8628 §5.4 case, has no way to end it. This ends it now,
+ * and the terminal polling that code is told it was refused instead of waiting
+ * out the expiry to learn nothing.
+ *
+ * The token is cleared by whichever press lands first, so a code can be
+ * approved or refused but never both, and neither can be replayed.
+ */
+async function deny(request: Request, env: Env, deps: ApprovalDeps): Promise<Response> {
+  if (!approvalIsConfigured(env)) return page(NOT_CONFIGURED, 503);
+
+  const submitted = await readSmallForm(request);
+  if (submitted === null) return page(NOT_FOUND, 404);
+
+  const token = submitted.get(CONFIRM_TOKEN_FIELD);
+  const now = (deps.now ?? Date.now)();
+
+  const userCode = token === null ? null : await denyDeviceApproval(env.DB, token, now);
+  if (userCode === null) return page(EXPIRED, 400);
+
+  return page({ ...DENIED, detail: codeDetail(userCode) }, 200);
 }
 
 /**
@@ -418,6 +516,40 @@ function codeDetail(userCode: string): string {
   return `  <div class="code">${escapeHtml(userCode)}</div>`;
 }
 
+/**
+ * The page that asks for a code, with an optional line saying why it is being
+ * asked again.
+ *
+ * What was submitted is deliberately not put back in the field. Nothing a
+ * visitor types reaches this page's markup, which makes "the code cannot carry
+ * anything" a property of the page rather than of the escaping being right, and
+ * a ten-letter code is not worth weakening that to save retyping.
+ */
+function codeEntry(status: number, note?: string): Response {
+  const message = note === undefined ? ENTER_CODE.message : `${note} ${ENTER_CODE.message}`;
+  return page({ ...ENTER_CODE, message, actions: actions(codeForm()) }, status);
+}
+
+/**
+ * The one field, and nothing else.
+ *
+ * `autocapitalize` and the uppercasing in the stylesheet are for the phone this
+ * is most often typed into; neither is what makes a lowercase code work, since
+ * `normalizeUserCode` folds case and trims whitespace on the way in. `required`
+ * is what stops an empty submission bouncing off the same page with nothing to
+ * say, and it is markup rather than script — this page has no JavaScript and
+ * gains none here.
+ */
+function codeForm(): string {
+  return (
+    `<form method="get" action="${APPROVAL_PREFIX}">` +
+    `<input type="text" name="${USER_CODE_PARAM}" placeholder="WDJBM-JHTQR" aria-label="Device code"` +
+    ` autocomplete="off" autocapitalize="characters" autocorrect="off" spellcheck="false"` +
+    ` autofocus required>` +
+    `<button type="submit">Continue</button></form>`
+  );
+}
+
 /** Every page is `no-store`: none of them is the same twice. */
 function page(copy: BrandPage, status: number): Response {
   return new Response(brandPageHtml(copy), {
@@ -448,12 +580,20 @@ const APPROVED: BrandPage = {
   actions: ABOUT_LINK,
 };
 
-const NO_CODE: BrandPage = {
-  title: "Approval link incomplete",
-  heading: "This link is incomplete.",
+const DENIED: BrandPage = {
+  title: "Device denied",
+  heading: "Denied.",
   message:
-    "Open the whole address your terminal printed, code and all. If you typed it by hand, check the code against the one still on screen.",
+    "That code is now dead and the terminal waiting on it has been told so. Nothing was approved and no token was issued. If the request was not yours, there is nothing else to do.",
   actions: ABOUT_LINK,
+};
+
+const ENTER_CODE: BrandPage = {
+  title: "Approve a device",
+  heading: "Enter your code.",
+  /** Always rendered with the form as its actions, and sometimes with a note. */
+  message:
+    "Your terminal is waiting on a short code. Type it in exactly as it appears there. Signing in on the next page creates your account the first time, which stores your verified email address and the id your provider uses for you. Nothing else.",
 };
 
 const CODE_GONE: BrandPage = {
