@@ -2,6 +2,14 @@
   "name": "openartifacts",
   "version": "0.2.0",
   "description": "Install the OpenArtifacts agent skill and publish files from the terminal",
+  "keywords": [
+    "cli",
+    "upload",
+    "share",
+    "artifacts",
+    "markdown",
+    "mermaid"
+  ],
   "type": "module",
   "license": "MIT",
   "repository": {
