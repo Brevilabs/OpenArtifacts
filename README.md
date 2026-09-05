@@ -109,6 +109,38 @@ deployment.
 
 ## Self-host on Cloudflare
 
+### How it fits together
+
+One Cloudflare Worker runs the backend. A Worker is a serverless application:
+Cloudflare runs its code when requests arrive and manages the servers and
+scaling. The API and public document hostnames reach the same Worker, but expose
+different operations.
+
+```mermaid
+flowchart TD
+    Publisher["CLI, agent, or other API client"] -->|"Publish, update, list, unshare"| API["API hostname<br/>api.example.com"]
+    Reader["Reader's browser"] -->|"Open a public link"| Serving["Document hostname<br/>exampleusercontent.net"]
+
+    subgraph Account["Your Cloudflare account"]
+        API --> Worker["One OpenArtifacts Worker<br/>Authenticate publishers, enforce limits,<br/>manage and serve documents"]
+        Serving --> Worker
+        Worker --> DB[("D1 database<br/>Ownership and version records,<br/>accounts, tokens, and quotas")]
+        Worker --> Files[("R2 storage<br/>Published HTML versions")]
+    end
+```
+
+D1 and R2 keep the persistent data; they are storage services, not additional
+Workers. Use a separate registrable domain for document HTML, not just another
+subdomain of your API's domain. Readers need no account, and the document host
+does not expose the publishing API.
+
+This deployment uses your own Cloudflare resources. It does not require the
+OpenArtifacts hosted website, a Copilot subscription, or a billing service. The
+setup below uses a self-managed publisher key; browser sign-in is optional and
+requires separate OAuth configuration.
+
+### Set up your deployment
+
 You need a Cloudflare account with Workers, R2, and D1, plus two domains added
 to that account:
 
