@@ -227,6 +227,7 @@ const HELP = `Usage: openartifacts <command> [argument]
 Commands:
   install            Install or upgrade the CLI and detected agent skills
   login              Approve this machine and store its token
+  preview <file>     Print rendered HTML locally without publishing or signing in
   publish <file>     Publish Markdown or HTML; repeat to update the same document
   list               List published documents
   get <docId>        Print a document's current HTML
@@ -242,15 +243,19 @@ export async function main(args) {
     console.log(HELP);
     return;
   }
-  if (!["install", "login", "publish", "list", "get", "unshare", "tokens", "revoke"].includes(command)) {
+  if (!["install", "login", "preview", "publish", "list", "get", "unshare", "tokens", "revoke"].includes(command)) {
     throw new Error(HELP);
   }
-  const needsArgument = ["publish", "get", "unshare", "revoke"].includes(command);
+  const needsArgument = ["preview", "publish", "get", "unshare", "revoke"].includes(command);
   if (extra.length || (needsArgument && !argument) || (!needsArgument && argument)) {
     throw new Error(HELP);
   }
   const value = argument ?? "";
   if (command === "install") return install();
+  if (command === "preview") {
+    process.stdout.write(await renderFile(await realpath(resolve(value))));
+    return;
+  }
 
   const host = (process.env.OPENARTIFACTS_API_HOST ?? DEFAULT_HOST).replace(/\/$/, "");
   const directory = configDir();
