@@ -123,10 +123,13 @@ export const MAX_PUSHES_PER_DAY = 100;
 /** Live (non-deleted) docs a paid license owner may hold. */
 export const MAX_DOCS_PER_PUBLISHER = 500;
 
+/** Live docs a token account may hold when the deployment sets no override. */
+export const DEFAULT_ACCOUNT_MAX_DOCS = 3;
+
 /** Invalid deployment config must never silently grant the paid allowance. */
 export function accountMaxDocs(env: Env): number {
   const raw = env.ACCOUNT_MAX_DOCS;
-  if (raw === undefined) return 3;
+  if (raw === undefined) return DEFAULT_ACCOUNT_MAX_DOCS;
   const limit = Number(raw);
   if (!/^[1-9]\d*$/.test(raw) || !Number.isSafeInteger(limit)) {
     throw new Error("ACCOUNT_MAX_DOCS must be a positive safe integer.");

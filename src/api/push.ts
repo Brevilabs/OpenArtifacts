@@ -242,7 +242,7 @@ export async function createDoc(
     if (isAccount) {
       return errorResponse(
         "limit_reached",
-        `Your free account can hold ${maxDocs} published documents. Unshare one to publish another.`,
+        `Your account can hold ${maxDocs} published documents. Unshare one to publish another.`,
         undefined,
         { limit: "documents", plan: ACCOUNT_TOKEN_PLAN },
       );

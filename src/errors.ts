@@ -41,8 +41,10 @@ const ERROR_STATUS: Record<ErrorCode, number> = {
 };
 
 export interface LimitDetails {
-  limit: "documents";
-  plan: "account";
+  /** Identifier of the exceeded limit, not display text. */
+  limit: string;
+  /** The account's current plan name. */
+  plan: string;
 }
 
 /** The wire shape. Clients match on `code`; `message` is human-facing only. */

@@ -245,7 +245,7 @@ describe("free account document limit", () => {
     expect(await refused.json()).toEqual({
       error: {
         code: "limit_reached",
-        message: expect.stringContaining("3 published documents"),
+        message: "Your account can hold 3 published documents. Unshare one to publish another.",
         limit: "documents",
         plan: "account",
       },

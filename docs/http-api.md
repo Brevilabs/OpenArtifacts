@@ -555,7 +555,7 @@ exposes this API payload to a reader.
 | `gone` | 410 | Every request to the retired `api.symposium.md` host. The canonical API does not emit this code. |
 | `too_large` | 413 | `html` over 10MB. |
 | `quota_exceeded` | 429 | Daily push ceiling or license-key doc-count ceiling reached. |
-| `limit_reached` | 402 | Account-token create would exceed its live-document ceiling. Carries `limit: "documents"` and `plan: "account"` inside `error`. |
+| `limit_reached` | 402 | Account-token create would exceed its live-document ceiling. Carries the exceeded limit's identifier (`limit`) and the account's current plan name (`plan`) as strings inside `error`. |
 | `internal` | 500 | Our fault, including the license server being unreachable for a key we have never seen. |
 | `authorization_pending` | 400 | `POST /device/token`: nobody has approved the code yet. |
 | `slow_down` | 400 | `POST /device/token`: polled faster than the `interval`. |
@@ -608,7 +608,13 @@ An invalid value returns `500 internal` on account-token creates before any
 document or daily quota write; other operations and license-key caps are
 unchanged. No database migration is required.
 
-At the account-token document ceiling, the response is:
+`limit` identifies which limit was hit; `plan` names the account's current plan.
+These are values, not fixed enums: clients must accept unfamiliar strings and
+must not treat either field as proof of paid entitlement. The
+current values are `"documents"` and `"account"`, respectively; real account
+plan names will replace the latter when per-account plans ship.
+
+For example, the current account-token document-cap response is:
 
 ```json
 {"error":{"code":"limit_reached","message":"...","limit":"documents","plan":"account"}}
