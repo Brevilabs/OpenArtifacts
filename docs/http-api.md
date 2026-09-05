@@ -555,7 +555,7 @@ exposes this API payload to a reader.
 | `gone` | 410 | Every request to the retired `api.symposium.md` host. The canonical API does not emit this code. |
 | `too_large` | 413 | `html` over 10MB. |
 | `quota_exceeded` | 429 | License-key publishing ceiling or device-flow rate limit reached. |
-| `limit_reached` | 402 | Account-token publish would exceed a plan limit. Carries the exceeded limit's identifier (`limit`), current plan name (`plan`), and optional `upgradeUrl` inside `error`. |
+| `limit_reached` | 402 | Account-token publish would exceed a plan limit. Carries the exceeded limit's identifier (`limit`), current plan name (`plan`), and optional `upgrade_url` inside `error`. |
 | `internal` | 500 | Our fault, including the license server being unreachable for a key we have never seen. |
 | `authorization_pending` | 400 | `POST /device/token`: nobody has approved the code yet. |
 | `slow_down` | 400 | `POST /device/token`: polled faster than the `interval`. |

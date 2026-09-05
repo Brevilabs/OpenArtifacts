@@ -34,7 +34,7 @@ async function send(method: string, path: string, body?: unknown, overrides: Par
 const create = (html = "<p>one</p>", overrides: Partial<Env> = {}, credential = token) => send("POST", "/api/v1/docs", { html }, overrides, credential);
 const setPlan = (plan: string, owner = OWNER, overrides: Partial<Env> = {}, credential = ADMIN) => send("PUT", `/admin/v1/accounts/${owner}/plan`, { plan }, overrides, credential);
 const usage = async () => (await env.DB.prepare("SELECT pushes FROM push_quota WHERE owner = ? AND day = ?").bind(OWNER, utcDay(Date.now())).first<{ pushes: number }>())?.pushes ?? 0;
-const error = (response: Response) => response.json<{ error: { code: string; limit?: string; plan?: string; upgradeUrl?: string } }>();
+const error = (response: Response) => response.json<{ error: { code: string; limit?: string; plan?: string; upgrade_url?: string } }>();
 beforeEach(async () => {
   await findOrCreateAccount(env.DB, OWNER, "plans@example.test", Date.now());
   token = await issue();
@@ -132,9 +132,10 @@ describe("configured account plans", () => {
   it("returns an optional checkout URL carrying only the authenticated owner", async () => {
     const response = await create("x".repeat(1048577), { UPGRADE_URL: "https://billing.test/upgrade?owner=forged&source=cli" });
     const details = (await error(response)).error;
-    expect(details.upgradeUrl).toBe(`https://billing.test/upgrade?owner=${OWNER}&source=cli`);
+    expect(details.upgrade_url).toBe(`https://billing.test/upgrade?owner=${OWNER}&source=cli`);
+    expect(details).not.toHaveProperty("upgradeUrl");
     expect(JSON.stringify(details)).not.toContain(token);
-    expect((await error(await create("x".repeat(1048577)))).error).not.toHaveProperty("upgradeUrl");
+    expect((await error(await create("x".repeat(1048577)))).error).not.toHaveProperty("upgrade_url");
   });
 
   it.each(["no json", "[]", "{}", '{"free":{"documents":3,"pushesPerDay":0,"htmlBytes":1}}', '{"free":{"documents":3,"pushesPerDay":6,"htmlBytes":10485761}}'])("fails closed on bad plan config %s without blocking management", async (PLAN_LIMITS) => {

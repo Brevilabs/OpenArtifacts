@@ -56,6 +56,6 @@ export function limitReached(env: Env, publisher: Publisher, limit: string, mess
     upgradeUrl = url.toString();
   }
   return errorResponse("limit_reached", message, undefined, {
-    plan: publisher.plan, limit, ...(upgradeUrl ? { upgradeUrl } : {}),
+    plan: publisher.plan, limit, ...(upgradeUrl ? { upgrade_url: upgradeUrl } : {}),
   });
 }
