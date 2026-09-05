@@ -32,7 +32,10 @@ export async function handleAdmin(request: Request, url: URL, env: Env): Promise
   if (!Object.hasOwn(configuredPlans(env), body.plan)) {
     return errorResponse("bad_request", "Unknown plan.");
   }
-  const owner = decodeURIComponent(match[1]!);
+  let owner: string;
+  try { owner = decodeURIComponent(match[1]!); } catch {
+    return errorResponse("not_found", "No account with that id.");
+  }
   const updated = await env.DB.prepare("UPDATE accounts SET plan = ? WHERE id = ? RETURNING id, plan")
     .bind(body.plan, owner).first<{ id: string; plan: string }>();
   if (!updated) return errorResponse("not_found", "No account with that id.");

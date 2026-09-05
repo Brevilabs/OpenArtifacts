@@ -50,8 +50,10 @@ Only the key's SHA-256 is ever stored; the raw key is never persisted or logged.
 resolves the key to the account that holds it, and that account owns everything
 published with it. So every key on one account sees one list, and any of them
 can push a new version of, or unshare, a document another one created. Replacing
-a key changes nothing about which documents you have. Nothing in this API takes
-an account id as input, and none is ever returned.
+a key changes nothing about which documents you have. Publisher operations never
+accept an account id to select whose documents to access; ownership is derived
+from the credential. The separate admin API and optional account-token upgrade
+link expose account ids for routing, not as publisher credentials.
 
 **Publishing requires a paid plan.** Both current license-server paid plans are
 entitled: `PLUS` subscriptions and the lifetime `BELIEVER` plan (sold as
@@ -592,15 +594,17 @@ Apply `0005_account_plans.sql` before deploying this version, following the
 [migration procedure](deploying.md#later-deploys-happen-in-ci). Existing accounts become
 `free`; their tokens and documents remain valid. Unknown plans or malformed
 configuration fail closed for publishing, but do not block listing or unsharing.
-Absent or blank `PLAN_LIMITS` retains the self-hosting fallback: `free` uses
-`ACCOUNT_MAX_DOCS` (default 3), 100 pushes/day and 10 MiB HTML.
+Absent or blank `PLAN_LIMITS` uses the built-in map with one `free` entry:
+3 documents, 6 pushes/day and 1 MiB HTML. `PLAN_LIMITS` replaces that map.
 
 ### Change an account's plan
 
 `PUT /admin/v1/accounts/{owner}/plan` on the API host accepts `{"plan":"pro"}`
 and returns `200 {"owner":"…","plan":"pro"}`. Authorize with
 `Authorization: Bearer <ADMIN_API_KEY>`, a separate Worker secret held only by
-your billing service. Publisher tokens and license keys cannot administer plans.
+your billing service. Use a long, cryptographically random secret (at least 32
+random bytes); this route has no application-level rate limiter. Publisher
+tokens and license keys cannot administer plans.
 No configured secret disables the route (`404`); incorrect credentials return
 `401`, an unknown plan `400`, and a missing account `404`. Retrying the same
 change is safe. Every account token sees the new plan on its next request.

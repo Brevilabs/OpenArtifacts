@@ -224,6 +224,9 @@ async function tokensSeeDoc(credential: string): Promise<string[]> {
 }
 
 describe("free account document limit", () => {
+  const cap = (documents: number): Partial<Env> => ({
+    PLAN_LIMITS: JSON.stringify({ free: { documents, pushesPerDay: 6, htmlBytes: 1048576 } }),
+  });
   const create = (token: string, overrides?: Partial<Env>) =>
     send("POST", "/api/v1/docs", token, { html: page("new") }, overrides);
 
@@ -298,7 +301,7 @@ describe("free account document limit", () => {
     const { token } = await issueToken(ACCOUNT_A);
     const docs: PushResponse[] = [];
     for (let i = 0; i < 4; i++) {
-      const response = await create(token, { ACCOUNT_MAX_DOCS: "4" });
+      const response = await create(token, cap(4));
       expect(response.status).toBe(201);
       docs.push(await response.json<PushResponse>());
     }
@@ -317,28 +320,26 @@ describe("free account document limit", () => {
 
   it("honors a self-hosted account cap without changing paid license limits", async () => {
     const { token } = await issueToken(ACCOUNT_A);
-    expect((await create(token, { ACCOUNT_MAX_DOCS: "1" })).status).toBe(201);
-    expect((await create(token, { ACCOUNT_MAX_DOCS: "1" })).status).toBe(402);
+    expect((await create(token, cap(1))).status).toBe(201);
+    expect((await create(token, cap(1))).status).toBe(402);
     for (let i = 0; i < 4; i++) {
-      expect((await create(LICENSE_KEY, { ACCOUNT_MAX_DOCS: "1" })).status).toBe(201);
+      expect((await create(LICENSE_KEY, cap(1))).status).toBe(201);
     }
   });
 
-  it.each(["", "0", "-1", "3.5", "Infinity", "oops", "9007199254740992"])(
-    "fails closed before document writes for invalid account cap %j",
-    async (value) => {
-      const { token } = await issueToken(ACCOUNT_A);
-      const before = await storage();
-      const response = await create(token, { ACCOUNT_MAX_DOCS: value });
-      expect(response.status).toBe(500);
-      expect(await errorOf(response)).toBe("internal");
-      expect(await storage()).toEqual(before);
-      // A typo must not disable existing readers, management, or paid access.
-      expect((await send("GET", "/api/v1/docs", token, undefined, { ACCOUNT_MAX_DOCS: value })).status)
-        .toBe(200);
-      expect((await create(LICENSE_KEY, { ACCOUNT_MAX_DOCS: value })).status).toBe(201);
-    },
-  );
+  it("fails closed before document writes for invalid plans without changing paid licenses", async () => {
+    const overrides = cap(0);
+    const { token } = await issueToken(ACCOUNT_A);
+    const before = await storage();
+    const response = await create(token, overrides);
+    expect(response.status).toBe(500);
+    expect(await errorOf(response)).toBe("internal");
+    expect(await storage()).toEqual(before);
+    // A typo must not disable existing readers, management, or paid access.
+    expect((await send("GET", "/api/v1/docs", token, undefined, overrides)).status)
+      .toBe(200);
+    expect((await create(LICENSE_KEY, overrides)).status).toBe(201);
+  });
 });
 
 describe("recording when a token was last used", () => {

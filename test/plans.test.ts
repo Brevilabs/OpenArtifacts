@@ -14,7 +14,7 @@ const ADMIN = "test-service-secret";
 let token: string;
 const local = (overrides: Partial<Env> = {}): Env => ({
   ...env, SERVING_HOST: "", API_HOST: "", LEGACY_SERVING_HOST: "", RETIRED_API_HOST: "",
-  PLAN_LIMITS: env.HOSTED_PLAN_LIMITS, DEFAULT_PLAN: "free", ADMIN_API_KEY: ADMIN, ...overrides,
+  ADMIN_API_KEY: ADMIN, ...overrides,
 });
 async function issue(owner = OWNER) {
   const value = newApiToken();
@@ -56,8 +56,9 @@ describe("configured account plans", () => {
   it("loads the agreed hosted values from wrangler, not a separate test copy", () => {
     expect(planLimits(local(), "free")).toEqual({ documents: 3, pushesPerDay: 6, htmlBytes: 1048576 });
     expect(planLimits(local(), "pro")).toEqual({ documents: 500, pushesPerDay: 100, htmlBytes: 10485760 });
-    expect(planLimits(local({ PLAN_LIMITS: undefined, ACCOUNT_MAX_DOCS: "50" }), "free"))
-      .toEqual({ documents: 50, pushesPerDay: 100, htmlBytes: 10485760 });
+    for (const PLAN_LIMITS of [undefined, ""]) {
+      expect(planLimits(local({ PLAN_LIMITS }), "free")).toEqual(planLimits(local(), "free"));
+    }
   });
 
   it("assigns the configured default once and never resets a returning account", async () => {
@@ -184,6 +185,7 @@ describe("service-only plan changes", () => {
     }
     expect((await setPlan("not-configured")).status).toBe(400);
     expect((await setPlan("pro", "license-owner")).status).toBe(404);
+    expect((await setPlan("pro", "%broken")).status).toBe(404);
     expect((await send("PUT", `/admin/v1/accounts/${OWNER}/plan`, { plan: "free", owner: "other" }, {}, ADMIN)).status).toBe(400);
   });
   it("never exposes admin writes on serving, retired or unknown hosts", async () => {

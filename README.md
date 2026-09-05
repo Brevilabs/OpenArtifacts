@@ -120,9 +120,9 @@ not take down your API or brand domain. [Serving domain](docs/serving-domain.md)
 explains the boundary.
 
 Choose your own account limits with `PLAN_LIMITS` and `DEFAULT_PLAN` in Worker
-vars; the checked-in values are the hosted free/paid policy. Without a plan map,
-`ACCOUNT_MAX_DOCS` remains supported (default 3), with 100 pushes/day and 10 MiB
-per document. Billing is optional: [plan configuration and the admin API](docs/http-api.md#account-plans)
+vars; the checked-in values are the hosted free/paid policy. Without an override,
+the built-in map has one free plan: 3 documents, 6 pushes/day, and 1 MiB HTML.
+Billing is optional: [plan configuration and the admin API](docs/http-api.md#account-plans)
 let your own service change plans. Never expose the admin secret to clients.
 
 Sign in to Cloudflare and create the storage resources. The names below are
@@ -145,7 +145,7 @@ The D1 command prints a `database_id`. Update `wrangler.jsonc` for your account:
 3. Set `database_name` and `database_id` to your D1 values.
 4. Replace `routes` with exactly two `custom_domain` entries: your document
    host and your API host.
-5. Set `SERVING_HOST` and `API_HOST` under `vars` to those hosts and remove the two legacy host vars. Keep your chosen `PLAN_LIMITS`/`DEFAULT_PLAN`, or remove the plan map and retain `ACCOUNT_MAX_DOCS` for the legacy configuration.
+5. Set `SERVING_HOST` and `API_HOST` under `vars` to those hosts and remove the two legacy host vars. Keep your chosen `PLAN_LIMITS`/`DEFAULT_PLAN`.
 6. Keep `workers_dev` set to `false`.
 
 Apply the schema, create a publisher key, deploy, and run the smoke test:

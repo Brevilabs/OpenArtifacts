@@ -1,5 +1,4 @@
 import { defineWorkersConfig, readD1Migrations } from "@cloudflare/vitest-pool-workers/config";
-import { readFileSync } from "node:fs";
 
 /**
  * Tests run inside workerd, not Node.
@@ -13,8 +12,6 @@ export default defineWorkersConfig(async () => {
   // The same files `wrangler d1 migrations apply` runs, so the schema under
   // test is the schema that ships rather than a hand-maintained copy.
   const migrations = await readD1Migrations(new URL("migrations", import.meta.url).pathname);
-  const configText = readFileSync(new URL("wrangler.jsonc", import.meta.url), "utf8");
-  const hostedLimits = JSON.parse(configText.match(/"PLAN_LIMITS"\s*:\s*("(?:[^"\\]|\\.)*")/)![1]!);
 
   return {
     test: {
@@ -34,9 +31,7 @@ export default defineWorkersConfig(async () => {
             // binary supports rather than left to drift silently.
             compatibilityDate: "2026-03-01",
 
-            // Legacy tests exercise the no-plan-map self-hosting compatibility path.
-            // plans.test exercises the deployed configuration separately.
-            bindings: { TEST_MIGRATIONS: migrations, PLAN_LIMITS: "", DEFAULT_PLAN: "free", HOSTED_PLAN_LIMITS: hostedLimits },
+            bindings: { TEST_MIGRATIONS: migrations },
           },
         },
       },

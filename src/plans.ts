@@ -1,4 +1,4 @@
-import { accountMaxDocs, MAX_DOC_BYTES, MAX_PUSHES_PER_DAY, type Env } from "./config.js";
+import { MAX_DOC_BYTES, type Env } from "./config.js";
 import type { Publisher } from "./auth.js";
 import { errorResponse } from "./errors.js";
 
@@ -8,11 +8,15 @@ export interface PlanLimits {
   htmlBytes: number;
 }
 
+const DEFAULT_PLANS: Record<string, PlanLimits> = {
+  free: { documents: 3, pushesPerDay: 6, htmlBytes: 1024 * 1024 },
+};
+
 /** Finite positive ceilings only; the HTML memory safety bound is never configurable. */
 export function configuredPlans(env: Env): Record<string, PlanLimits> {
   const raw: unknown = env.PLAN_LIMITS?.trim()
     ? JSON.parse(env.PLAN_LIMITS)
-    : { free: { documents: accountMaxDocs(env), pushesPerDay: MAX_PUSHES_PER_DAY, htmlBytes: MAX_DOC_BYTES } };
+    : DEFAULT_PLANS;
   if (!raw || typeof raw !== "object" || Array.isArray(raw) || Object.keys(raw).length === 0) {
     throw new Error("Invalid PLAN_LIMITS.");
   }
