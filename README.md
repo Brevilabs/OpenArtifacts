@@ -145,7 +145,7 @@ The D1 command prints a `database_id`. Update `wrangler.jsonc` for your account:
 3. Set `database_name` and `database_id` to your D1 values.
 4. Replace `routes` with exactly two `custom_domain` entries: your document
    host and your API host.
-5. Keep only `SERVING_HOST` and `API_HOST` under `vars`, using those same hosts.
+5. Keep `SERVING_HOST` and `API_HOST` under `vars`, using those same hosts, plus `ACCOUNT_MAX_DOCS` if you set a custom document ceiling.
 6. Keep `workers_dev` set to `false`.
 
 Apply the schema, create a publisher key, deploy, and run the smoke test:
