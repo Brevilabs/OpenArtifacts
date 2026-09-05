@@ -18,8 +18,9 @@
  * the failure may equally be the version insert *after* a successful write, and
  * a rollback there would strand the object it names.
  */
-import { ACCOUNT_TOKEN_PLAN, type Publisher } from "../auth.js";
-import { accountMaxDocs, MAX_DOCS_PER_PUBLISHER, MAX_DOC_BYTES, MAX_PUSHES_PER_DAY } from "../config.js";
+import type { Publisher } from "../auth.js";
+import { MAX_DOCS_PER_PUBLISHER, MAX_DOC_BYTES, MAX_PUSHES_PER_DAY } from "../config.js";
+import { limitReached, planLimits, type PlanLimits } from "../plans.js";
 import type { Env } from "../config.js";
 import {
   deleteDocRow,
@@ -64,6 +65,7 @@ interface PushBody {
    */
   title: string | null | undefined;
   html: string;
+  htmlBytes: number;
 }
 
 type ParsedPush = { ok: true; body: PushBody } | { ok: false; response: Response };
@@ -114,7 +116,8 @@ async function parsePushBody(request: Request): Promise<ParsedPush> {
       response: errorResponse("bad_request", "`html` must be a non-empty string."),
     };
   }
-  if (utf8Length(html) > MAX_DOC_BYTES) {
+  const htmlBytes = utf8Length(html);
+  if (htmlBytes > MAX_DOC_BYTES) {
     return {
       ok: false,
       response: errorResponse("too_large", `A doc may be at most ${MAX_DOC_BYTES} bytes of HTML.`),
@@ -131,15 +134,18 @@ async function parsePushBody(request: Request): Promise<ParsedPush> {
       // `null` for a present-but-blank title, `undefined` for an absent one.
       title: titleGiven ? (typeof title === "string" ? normalizeTitle(title) : null) : undefined,
       html,
+      htmlBytes,
     },
   };
 }
 
-function dailyQuotaExceeded(): Response {
-  return errorResponse(
-    "quota_exceeded",
-    `You have used all ${MAX_PUSHES_PER_DAY} of today's pushes. Try again tomorrow (UTC).`,
-  );
+function dailyQuotaExceeded(env: Env, publisher: Publisher, limits: PlanLimits | null): Response {
+  const message = `You have used all ${limits?.pushesPerDay ?? MAX_PUSHES_PER_DAY} of today's pushes. Try again tomorrow (UTC).`;
+  return limits ? limitReached(env, publisher, "pushesPerDay", message) : errorResponse("quota_exceeded", message);
+}
+
+function planHtmlExceeded(env: Env, publisher: Publisher, limits: PlanLimits): Response {
+  return limitReached(env, publisher, "htmlBytes", `Your plan allows ${limits.htmlBytes} bytes of HTML per document.`);
 }
 
 /**
@@ -211,11 +217,14 @@ export async function createDoc(
   env: Env,
   publisher: Publisher,
 ): Promise<Response> {
+  const limits = publisher.authKind === "account" ? planLimits(env, publisher.plan) : null;
   const parsed = await parsePushBody(request);
   if (!parsed.ok) return parsed.response;
+  if (limits && parsed.body.htmlBytes > limits.htmlBytes) {
+    return planHtmlExceeded(env, publisher, limits);
+  }
 
-  const isAccount = publisher.plan === ACCOUNT_TOKEN_PLAN;
-  const maxDocs = isAccount ? accountMaxDocs(env) : MAX_DOCS_PER_PUBLISHER;
+  const maxDocs = limits?.documents ?? MAX_DOCS_PER_PUBLISHER;
   const now = Date.now();
   // A create always names the doc something: absent and blank alike land on the
   // default rather than leaving it nameless in the list.
@@ -239,12 +248,10 @@ export async function createDoc(
     maxDocs,
   );
   if (!inserted) {
-    if (isAccount) {
-      return errorResponse(
-        "limit_reached",
+    if (limits) {
+      return limitReached(
+        env, publisher, "documents",
         `Your account can hold ${maxDocs} published documents. Unshare one to publish another.`,
-        undefined,
-        { limit: "documents", plan: ACCOUNT_TOKEN_PLAN },
       );
     }
     return errorResponse(
@@ -254,9 +261,9 @@ export async function createDoc(
   }
 
   const day = utcDay(now);
-  if (!(await reserveDailyPush(env.DB, publisher.owner, day))) {
+  if (!(await reserveDailyPush(env.DB, publisher.owner, day, limits?.pushesPerDay))) {
     await deleteDocRow(env.DB, docId);
-    return dailyQuotaExceeded();
+    return dailyQuotaExceeded(env, publisher, limits);
   }
 
   // A create is deletable before it answers: the row is visible to this
@@ -281,6 +288,7 @@ export async function updateDoc(
   // An id that cannot exist is answered without touching D1.
   if (!isDocId(docId)) return docNotFound(docId);
 
+  const limits = publisher.authKind === "account" ? planLimits(env, publisher.plan) : null;
   const parsed = await parsePushBody(request);
   if (!parsed.ok) return parsed.response;
 
@@ -291,11 +299,14 @@ export async function updateDoc(
   if (!(await ownsLiveDoc(env.DB, docId, publisher.owner))) {
     return docNotFound(docId);
   }
+  if (limits && parsed.body.htmlBytes > limits.htmlBytes) {
+    return planHtmlExceeded(env, publisher, limits);
+  }
 
   const now = Date.now();
   const day = utcDay(now);
-  if (!(await reserveDailyPush(env.DB, publisher.owner, day))) {
-    return dailyQuotaExceeded();
+  if (!(await reserveDailyPush(env.DB, publisher.owner, day, limits?.pushesPerDay))) {
+    return dailyQuotaExceeded(env, publisher, limits);
   }
 
   // Past this point the push is paid for, and a delete can still land at either

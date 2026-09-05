@@ -36,9 +36,11 @@ test("publication uses pristine source, not files from the test job", () => {
   assert.doesNotMatch(jobs.prepare, /npm (?:pack|publish)\b/);
   assert.doesNotMatch(workflow, /actions\/(?:upload|download)-artifact/);
   for (const job of [jobs.prepare, jobs.publish]) {
-    assert.match(job, /actions\/checkout@v4\n\s+with:\n\s+ref: \$\{\{ github\.event\.pull_request\.merge_commit_sha \}\}/);
+    assert.match(job, /actions\/checkout@v7\n\s+with:\n\s+ref: \$\{\{ github\.event\.pull_request\.merge_commit_sha \}\}/);
   }
   assert.match(jobs.publish, /persist-credentials: false/);
+  assert.match(jobs.publish, /package-manager-cache: false/);
+  assert.doesNotMatch(jobs.publish, /^\s+cache:/m);
   assert.match(jobs.publish, /npm publish --workspace packages\/openartifacts --ignore-scripts --access public --provenance/);
   assert.match(jobs.publish, /if: steps\.recheck\.outputs\.exists != 'true'/);
 });

@@ -44,15 +44,16 @@ jobs:
 
       - name: Check out merge commit
         if: steps.release.outputs.is_release == 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.merge_commit_sha }}
 
       - name: Set up Node.js
         if: steps.release.outputs.is_release == 'true'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 24
+          package-manager-cache: false
 
       - name: Validate package version
         if: steps.release.outputs.is_release == 'true'
@@ -101,14 +102,15 @@ jobs:
 
     steps:
       - name: Check out merge commit
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.merge_commit_sha }}
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 24
+          package-manager-cache: false
 
       - name: Install JavaScript dependencies
         run: npm ci
@@ -129,16 +131,17 @@ jobs:
 
     steps:
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 24
+          package-manager-cache: false
           registry-url: https://registry.npmjs.org
 
       - name: Use an npm version with Trusted Publishing support
         run: npm install --global npm@11.5.1 --ignore-scripts
 
       - name: Check out pristine merge commit
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.merge_commit_sha }}
           persist-credentials: false

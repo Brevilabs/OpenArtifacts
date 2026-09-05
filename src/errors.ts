@@ -45,6 +45,8 @@ export interface LimitDetails {
   limit: string;
   /** The account's current plan name. */
   plan: string;
+  /** Optional deployment-owned checkout URL; never contains the bearer token. */
+  upgrade_url?: string;
 }
 
 /** The wire shape. Clients match on `code`; `message` is human-facing only. */

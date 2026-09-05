@@ -86,8 +86,14 @@ export interface Env {
    */
   LICENSE_API_KEY?: string;
 
-  /** Live docs per token account. Defaults to 3; self-hosters may override. */
-  ACCOUNT_MAX_DOCS?: string;
+  /** JSON map of plan names to documents, pushesPerDay and htmlBytes limits. */
+  PLAN_LIMITS?: string;
+  /** Assigned only when a new account is created. Existing plans never reset. */
+  DEFAULT_PLAN?: string;
+  /** Optional absolute checkout URL. The authenticated owner is added as a query. */
+  UPGRADE_URL?: string;
+  /** Server-to-server bearer credential. Unset disables the admin surface. */
+  ADMIN_API_KEY?: string;
 
   /**
    * OAuth client credentials for the approval page, one pair per provider.
@@ -122,20 +128,6 @@ export const MAX_PUSHES_PER_DAY = 100;
 
 /** Live (non-deleted) docs a paid license owner may hold. */
 export const MAX_DOCS_PER_PUBLISHER = 500;
-
-/** Live docs a token account may hold when the deployment sets no override. */
-export const DEFAULT_ACCOUNT_MAX_DOCS = 3;
-
-/** Invalid deployment config must never silently grant the paid allowance. */
-export function accountMaxDocs(env: Env): number {
-  const raw = env.ACCOUNT_MAX_DOCS;
-  if (raw === undefined) return DEFAULT_ACCOUNT_MAX_DOCS;
-  const limit = Number(raw);
-  if (!/^[1-9]\d*$/.test(raw) || !Number.isSafeInteger(limit)) {
-    throw new Error("ACCOUNT_MAX_DOCS must be a positive safe integer.");
-  }
-  return limit;
-}
 
 /**
  * How long a device code is worth approving.

@@ -58,21 +58,6 @@ const LICENSE_TIMEOUT_MS = 5_000;
 const UNKNOWN_PLAN = "unknown";
 
 /**
- * The plan an account authenticated by its own token publishes under.
- *
- * A token account holds no license, so it has no plan the license server could
- * name, and `mayPublish` is the only gate on the push path — a brand-new
- * account that could not publish would make the whole approval flow end in a
- * refusal. It therefore has to be a value the license server can never return:
- * naming it `free` would hand publishing to every FREE license key at the same
- * time, which is the one mistake this constant exists to make impossible.
- *
- * Token accounts have their own live-document ceiling, counted per owner across
- * all tokens. Paid subscription entitlements remain follow-up work in #60.
- */
-export const ACCOUNT_TOKEN_PLAN = "account";
-
-/**
  * The paid Copilot plans entitled to publish.
  *
  * The license server currently has two paid plans: Plus subscriptions and the
@@ -83,7 +68,7 @@ export const ACCOUNT_TOKEN_PLAN = "account";
  * Lowercase because `validateLicense` folds the license server's uppercase enum
  * before it gets here, and because `publishers.plan` stores the folded form.
  */
-const PUBLISHING_PLANS: ReadonlySet<string> = new Set(["plus", "believer", ACCOUNT_TOKEN_PLAN]);
+const PUBLISHING_PLANS: ReadonlySet<string> = new Set(["plus", "believer"]);
 
 /**
  * Entitlement is per *operation*, not per identity, so this is deliberately not
@@ -121,6 +106,8 @@ export interface Publisher {
    */
   owner: string;
   plan: string;
+  /** Present only for our own tokens; never infer identity type from a plan name. */
+  authKind?: "account";
 }
 
 export type PublisherFailure =
@@ -273,7 +260,7 @@ async function resolveAccountToken(
     await touchTokenUse(env.DB, live.id, at, at - TOKEN_LAST_USED_RESOLUTION_MS);
   }
 
-  return { ok: true, publisher: { owner: live.account_id, plan: ACCOUNT_TOKEN_PLAN } };
+  return { ok: true, publisher: { owner: live.account_id, plan: live.plan, authKind: "account" } };
 }
 
 const FAILURE_STATUS: Record<PublisherFailure, ErrorCode> = {

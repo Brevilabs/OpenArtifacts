@@ -19,6 +19,8 @@ const local = (): Env => ({
 }) as Env;
 
 async function issueToken(): Promise<{ token: string; id: string }> {
+  await env.DB.prepare("INSERT INTO accounts (id, email, created_at) VALUES (?, ?, ?)")
+    .bind("oa_cli_test_account000000000", "cli@example.test", Date.now()).run();
   const token = newApiToken();
   const id = newTokenId();
   await env.DB.prepare(

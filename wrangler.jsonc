@@ -112,6 +112,8 @@
     "SERVING_HOST": "openartifacts.site",
     "API_HOST": "api.openartifacts.ai",
     "LEGACY_SERVING_HOST": "symposium.site",
-    "RETIRED_API_HOST": "api.symposium.md"
+    "RETIRED_API_HOST": "api.symposium.md",
+    "DEFAULT_PLAN": "free",
+    "PLAN_LIMITS": "{\"free\":{\"documents\":3,\"pushesPerDay\":6,\"htmlBytes\":1048576},\"pro\":{\"documents\":500,\"pushesPerDay\":100,\"htmlBytes\":10485760}}"
   }
 }
