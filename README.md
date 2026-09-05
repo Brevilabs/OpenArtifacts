@@ -29,8 +29,10 @@ comments do not exist yet.
 - **List and unshare documents.** Deleting destroys the stored files and leaves
   a `410 Gone` tombstone. Copies already in a reader's browser cache cannot be
   recalled.
-- **Bound abuse.** The current limits are 10 MB per document, 100 pushes per UTC
-  day, and 500 live documents per owner.
+- **Bound abuse.** Free accounts can hold three published documents total,
+  shared across all their agents and devices. Updating one does not use another
+  slot; unsharing one frees a slot. Paid Copilot licenses keep their 500-document
+  ceiling. Both paths allow 100 pushes per UTC day and 10 MB per document.
 
 ## Use from an agent
 
@@ -116,6 +118,13 @@ The separation is important. A document that is reported as phishing should
 not take down your API or brand domain. [Serving domain](docs/serving-domain.md)
 explains the boundary.
 
+Account-token publishing defaults to three live documents per account. Set
+`ACCOUNT_MAX_DOCS` in your Worker vars to a positive safe integer to choose a
+different ceiling for your deployment. An invalid value blocks account-token
+creates without affecting listing, updates, unsharing, or license-key publishing.
+This setting does not require a billing service; hosted subscription checkout
+and per-account paid plans are not implemented yet.
+
 Sign in to Cloudflare and create the storage resources. The names below are
 examples; any names work when these commands and `wrangler.jsonc` agree.
 
@@ -136,7 +145,7 @@ The D1 command prints a `database_id`. Update `wrangler.jsonc` for your account:
 3. Set `database_name` and `database_id` to your D1 values.
 4. Replace `routes` with exactly two `custom_domain` entries: your document
    host and your API host.
-5. Keep only `SERVING_HOST` and `API_HOST` under `vars`, using those same hosts.
+5. Keep `SERVING_HOST` and `API_HOST` under `vars`, using those same hosts, plus `ACCOUNT_MAX_DOCS` if you set a custom document ceiling.
 6. Keep `workers_dev` set to `false`.
 
 Apply the schema, create a publisher key, deploy, and run the smoke test:

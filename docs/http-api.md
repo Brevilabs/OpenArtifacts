@@ -93,10 +93,13 @@ subscriber who wants the documents their plugin published presents the same
 license key the plugin does — this API accepts it from a terminal like any other
 caller.
 
-**Publishing works on a new account.** A token's account is entitled to publish
-under the quotas below from its first approval, so nobody has to buy anything
-before the first document lands. Per-plan limits and a `402` refusal are
-[#60](https://github.com/Brevilabs/OpenArtifacts/issues/60) and are not here yet.
+**Publishing works on a new account.** A token's account can hold three live
+documents by default, starting with its first approval. Creating another at
+the ceiling returns `402 limit_reached`; updating an existing document remains
+allowed. The ceiling is per account across all tokens and does not reset daily.
+Self-hosters can set `ACCOUNT_MAX_DOCS` to choose a different ceiling. Per-account
+paid plans and the admin plan API remain in
+[#60](https://github.com/Brevilabs/OpenArtifacts/issues/60).
 
 **Revocation is immediate.** A revoked token fails on its very next request,
 where a revoked license key keeps working until its cached validation ages out.
@@ -551,7 +554,8 @@ exposes this API payload to a reader.
 | `not_found` | 404 | No such doc, not yours, already deleted, or no route. |
 | `gone` | 410 | Every request to the retired `api.symposium.md` host. The canonical API does not emit this code. |
 | `too_large` | 413 | `html` over 10MB. |
-| `quota_exceeded` | 429 | Daily push or doc-count ceiling reached. |
+| `quota_exceeded` | 429 | Daily push ceiling or license-key doc-count ceiling reached. |
+| `limit_reached` | 402 | Account-token create would exceed its live-document ceiling. Carries the exceeded limit's identifier (`limit`) and the account's current plan name (`plan`) as strings inside `error`. |
 | `internal` | 500 | Our fault, including the license server being unreachable for a key we have never seen. |
 | `authorization_pending` | 400 | `POST /device/token`: nobody has approved the code yet. |
 | `slow_down` | 400 | `POST /device/token`: polled faster than the `interval`. |
@@ -578,26 +582,48 @@ Three of these are worth handling deliberately in a client:
 
 ## Quotas
 
-Per license key. They cap the abuse and hoarding tail; a real user never reaches
-one.
+Publishing limits follow the authenticated account, not the token, key, agent,
+or device. License-key and account-token identities remain separate.
 
 | Limit | Value | Exceeded |
 | --- | --- | --- |
 | HTML per doc | 10 MB | `413 too_large` |
 | Pushes per day | 100 (UTC day, rolls at midnight) | `429 quota_exceeded` |
-| Live docs held | 500 | `429 quota_exceeded` |
+| Live docs held, license-key account | 500 | `429 quota_exceeded` |
+| Live docs held, account-token account | 3 by default | `402 limit_reached` |
 
-Both limits are **per account, not per key**: two keys on one account share one
-daily allowance and one 500-document ceiling rather than getting two.
+Two credentials on one account share one daily allowance and one document
+ceiling rather than getting two. The document ceiling never resets with time.
 
 Both `POST` and `PUT` spend one push. A rejected push spends nothing: a `413`,
 a `400`, or a `PUT` at a doc you do not own leaves the day's allowance intact.
-Deleting a doc frees a slot against the 500.
+Unsharing a doc frees a document slot. Updating an existing doc uses a daily
+push but no new document slot. Accounts already above their document ceiling
+keep their existing documents and can update, list, and unshare them; they
+cannot create another until they are below the ceiling.
 
-An account that authenticates with tokens is counted the same way and against
-the same numbers: every token it has issued shares one daily allowance and one
-document ceiling, because the ceiling follows the account and not the
-credential.
+The account-token document ceiling is configured with the optional Worker var
+`ACCOUNT_MAX_DOCS`: a positive safe integer, defaulting to 3 when omitted.
+An invalid value returns `500 internal` on account-token creates before any
+document or daily quota write; other operations and license-key caps are
+unchanged. No database migration is required.
+
+`limit` identifies which limit was hit; `plan` names the account's current plan.
+These are values, not fixed enums: clients must accept unfamiliar strings and
+must not treat either field as proof of paid entitlement. The
+current values are `"documents"` and `"account"`, respectively; real account
+plan names will replace the latter when per-account plans ship.
+
+For example, the current account-token document-cap response is:
+
+```json
+{"error":{"code":"limit_reached","message":"...","limit":"documents","plan":"account"}}
+```
+
+Waiting until tomorrow or signing in on another machine does not free a slot.
+The CLI already handles this refusal without suggesting a daily reset. No
+`upgrade_url` is returned until a real upgrade flow is configured; subscription
+checkout and individual paid account plans are separate follow-up work.
 
 Two further limits sit outside all of this. On `POST /device/code`, a single
 client address may ask for five sign-in codes a minute, and past that the mint

@@ -67,10 +67,8 @@ const UNKNOWN_PLAN = "unknown";
  * naming it `free` would hand publishing to every FREE license key at the same
  * time, which is the one mistake this constant exists to make impossible.
  *
- * It is a placeholder for `accounts.plan` and the per-plan limits config in
- * [#60](https://github.com/Brevilabs/OpenArtifacts/issues/60). Until then a
- * token account publishes under the same ceilings a license key does, since
- * both are counted per owner.
+ * Token accounts have their own live-document ceiling, counted per owner across
+ * all tokens. Paid subscription entitlements remain follow-up work in #60.
  */
 export const ACCOUNT_TOKEN_PLAN = "account";
 

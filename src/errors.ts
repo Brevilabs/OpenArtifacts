@@ -9,6 +9,7 @@ export type ErrorCode =
   | "gone"
   | "too_large"
   | "quota_exceeded"
+  | "limit_reached"
   | "internal"
   // The four conditions RFC 8628 §3.5 defines for a device-flow poll. They keep
   // the RFC's names so a client written against the standard recognises them,
@@ -27,6 +28,7 @@ const ERROR_STATUS: Record<ErrorCode, number> = {
   gone: 410,
   too_large: 413,
   quota_exceeded: 429,
+  limit_reached: 402,
   internal: 500,
   // 400 for all four, as RFC 6749 §5.2 requires of a token endpoint. None of
   // them is a failure of the request: three are the state of an approval nobody
@@ -38,13 +40,25 @@ const ERROR_STATUS: Record<ErrorCode, number> = {
   access_denied: 400,
 };
 
-/** The wire shape. Clients match on `code`; `message` is human-facing only. */
-export interface ErrorBody {
-  error: { code: ErrorCode; message: string };
+export interface LimitDetails {
+  /** Identifier of the exceeded limit, not display text. */
+  limit: string;
+  /** The account's current plan name. */
+  plan: string;
 }
 
-export function errorResponse(code: ErrorCode, message: string, headers?: HeadersInit): Response {
-  const body: ErrorBody = { error: { code, message } };
+/** The wire shape. Clients match on `code`; `message` is human-facing only. */
+export interface ErrorBody {
+  error: { code: ErrorCode; message: string } & Partial<LimitDetails>;
+}
+
+export function errorResponse(
+  code: ErrorCode,
+  message: string,
+  headers?: HeadersInit,
+  details?: LimitDetails,
+): Response {
+  const body: ErrorBody = { error: { code, message, ...details } };
   return Response.json(body, { status: ERROR_STATUS[code], headers });
 }
 

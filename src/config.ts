@@ -86,6 +86,9 @@ export interface Env {
    */
   LICENSE_API_KEY?: string;
 
+  /** Live docs per token account. Defaults to 3; self-hosters may override. */
+  ACCOUNT_MAX_DOCS?: string;
+
   /**
    * OAuth client credentials for the approval page, one pair per provider.
    *
@@ -114,11 +117,25 @@ export const LICENSE_CACHE_TTL_MS = 60 * 60 * 1000;
 /** Largest HTML body a single push may carry, before injection. */
 export const MAX_DOC_BYTES = 10 * 1024 * 1024;
 
-/** Pushes a single publisher key may make in one UTC day. */
+/** Pushes a single owner may make in one UTC day, across credentials. */
 export const MAX_PUSHES_PER_DAY = 100;
 
-/** Live (non-deleted) docs a single publisher key may hold. */
+/** Live (non-deleted) docs a paid license owner may hold. */
 export const MAX_DOCS_PER_PUBLISHER = 500;
+
+/** Live docs a token account may hold when the deployment sets no override. */
+export const DEFAULT_ACCOUNT_MAX_DOCS = 3;
+
+/** Invalid deployment config must never silently grant the paid allowance. */
+export function accountMaxDocs(env: Env): number {
+  const raw = env.ACCOUNT_MAX_DOCS;
+  if (raw === undefined) return DEFAULT_ACCOUNT_MAX_DOCS;
+  const limit = Number(raw);
+  if (!/^[1-9]\d*$/.test(raw) || !Number.isSafeInteger(limit)) {
+    throw new Error("ACCOUNT_MAX_DOCS must be a positive safe integer.");
+  }
+  return limit;
+}
 
 /**
  * How long a device code is worth approving.
