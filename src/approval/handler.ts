@@ -40,6 +40,7 @@ import {
   startDeviceHandshake,
 } from "../db.js";
 import { newAccountId, newHandshakeToken } from "../ids.js";
+import { defaultPlan } from "../plans.js";
 import { isTopLevelRequest, withinClientLimit } from "../limits.js";
 import { readBodyWithin } from "../quota.js";
 import { ABOUT_LINK, brandPageHtml, escapeHtml, type BrandPage } from "../page.js";
@@ -362,6 +363,7 @@ async function prove(
     email,
     newAccountId(),
     now,
+    defaultPlan(env),
   );
   if (account === null) return page(EMAIL_CLAIMED, 409);
 

@@ -88,6 +88,14 @@ export interface Env {
 
   /** Live docs per token account. Defaults to 3; self-hosters may override. */
   ACCOUNT_MAX_DOCS?: string;
+  /** JSON map of plan names to documents, pushesPerDay and htmlBytes limits. */
+  PLAN_LIMITS?: string;
+  /** Assigned only when a new account is created. Existing plans never reset. */
+  DEFAULT_PLAN?: string;
+  /** Optional absolute checkout URL. The authenticated owner is added as a query. */
+  UPGRADE_URL?: string;
+  /** Server-to-server bearer credential. Unset disables the admin surface. */
+  ADMIN_API_KEY?: string;
 
   /**
    * OAuth client credentials for the approval page, one pair per provider.

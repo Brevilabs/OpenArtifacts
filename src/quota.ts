@@ -96,6 +96,7 @@ export async function reserveDailyPush(
   db: D1Database,
   owner: string,
   day: string,
+  limit = MAX_PUSHES_PER_DAY,
 ): Promise<boolean> {
   const claimed = await db
     .prepare(
@@ -104,7 +105,7 @@ export async function reserveDailyPush(
          WHERE push_quota.pushes < ?
        RETURNING pushes`,
     )
-    .bind(owner, day, MAX_PUSHES_PER_DAY)
+    .bind(owner, day, limit)
     .first<{ pushes: number }>();
 
   return claimed !== null;

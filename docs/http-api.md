@@ -93,13 +93,11 @@ subscriber who wants the documents their plugin published presents the same
 license key the plugin does — this API accepts it from a terminal like any other
 caller.
 
-**Publishing works on a new account.** A token's account can hold three live
-documents by default, starting with its first approval. Creating another at
-the ceiling returns `402 limit_reached`; updating an existing document remains
-allowed. The ceiling is per account across all tokens and does not reset daily.
-Self-hosters can set `ACCOUNT_MAX_DOCS` to choose a different ceiling. Per-account
-paid plans and the admin plan API remain in
-[#60](https://github.com/Brevilabs/OpenArtifacts/issues/60).
+**Publishing follows the account's plan.** First approval uses the deployment's
+default plan. Every token shares its account's limits, and a plan change takes
+effect on the next request without signing in again. The hosted free plan has
+three live documents, six publishes/updates per UTC day, and 1 MiB HTML per doc.
+Listing and unsharing never require available publishing quota.
 
 **Revocation is immediate.** A revoked token fails on its very next request,
 where a revoked license key keeps working until its cached validation ages out.
@@ -554,8 +552,8 @@ exposes this API payload to a reader.
 | `not_found` | 404 | No such doc, not yours, already deleted, or no route. |
 | `gone` | 410 | Every request to the retired `api.symposium.md` host. The canonical API does not emit this code. |
 | `too_large` | 413 | `html` over 10MB. |
-| `quota_exceeded` | 429 | Daily push ceiling or license-key doc-count ceiling reached. |
-| `limit_reached` | 402 | Account-token create would exceed its live-document ceiling. Carries the exceeded limit's identifier (`limit`) and the account's current plan name (`plan`) as strings inside `error`. |
+| `quota_exceeded` | 429 | License-key publishing ceiling or device-flow rate limit reached. |
+| `limit_reached` | 402 | Account-token publish would exceed a plan limit. Carries the exceeded limit's identifier (`limit`), current plan name (`plan`), and optional `upgradeUrl` inside `error`. |
 | `internal` | 500 | Our fault, including the license server being unreachable for a key we have never seen. |
 | `authorization_pending` | 400 | `POST /device/token`: nobody has approved the code yet. |
 | `slow_down` | 400 | `POST /device/token`: polled faster than the `interval`. |
@@ -580,17 +578,54 @@ Three of these are worth handling deliberately in a client:
   no `403`. A doc belonging to another account answers exactly like a doc that
   never existed, because a distinguishable reply would confirm the id is real.
 
+## Account plans
+
+Worker var `PLAN_LIMITS` is a JSON string mapping plan names to positive integer
+ceilings. HTML is measured in UTF-8 bytes and cannot exceed the 10 MiB safety bound:
+
+```json
+{"free":{"documents":3,"pushesPerDay":6,"htmlBytes":1048576},"pro":{"documents":500,"pushesPerDay":100,"htmlBytes":10485760}}
+```
+
+`DEFAULT_PLAN` (default `free`) selects the plan for newly created accounts.
+Apply `0005_account_plans.sql` before deploying this version, following the
+[migration procedure](deploying.md#later-deploys-happen-in-ci). Existing accounts become
+`free`; their tokens and documents remain valid. Unknown plans or malformed
+configuration fail closed for publishing, but do not block listing or unsharing.
+Absent or blank `PLAN_LIMITS` retains the self-hosting fallback: `free` uses
+`ACCOUNT_MAX_DOCS` (default 3), 100 pushes/day and 10 MiB HTML.
+
+### Change an account's plan
+
+`PUT /admin/v1/accounts/{owner}/plan` on the API host accepts `{"plan":"pro"}`
+and returns `200 {"owner":"…","plan":"pro"}`. Authorize with
+`Authorization: Bearer <ADMIN_API_KEY>`, a separate Worker secret held only by
+your billing service. Publisher tokens and license keys cannot administer plans.
+No configured secret disables the route (`404`); incorrect credentials return
+`401`, an unknown plan `400`, and a missing account `404`. Retrying the same
+change is safe. Every account token sees the new plan on its next request.
+
+Optional `UPGRADE_URL` adds an absolute HTTP(S) link to plan-limit errors, with
+the account's `owner` query parameter. That ID routes checkout; it does **not**
+authorize access. Billing must independently verify account ownership. Leave
+this variable unset until checkout exists. No billing or admin secret belongs
+in a CLI, skill, public link, or this repository.
+
 ## Quotas
 
 Publishing limits follow the authenticated account, not the token, key, agent,
 or device. License-key and account-token identities remain separate.
 
-| Limit | Value | Exceeded |
+| Limit | Hosted free account | Hosted paid account / paid license |
 | --- | --- | --- |
-| HTML per doc | 10 MB | `413 too_large` |
-| Pushes per day | 100 (UTC day, rolls at midnight) | `429 quota_exceeded` |
-| Live docs held, license-key account | 500 | `429 quota_exceeded` |
-| Live docs held, account-token account | 3 by default | `402 limit_reached` |
+| HTML per doc | 1 MiB | 10 MiB |
+| Pushes per UTC day | 6 | 100 |
+| Live docs held | 3 | 500 |
+
+Account plan refusals use `402 limit_reached`. License-key refusals are unchanged:
+`413 too_large` for HTML size, `429 quota_exceeded` for document/daily limits.
+The absolute 10 MiB HTML ceiling and the bounded request reader remain safety
+limits on every plan; exceeding those returns `413 too_large`.
 
 Two credentials on one account share one daily allowance and one document
 ceiling rather than getting two. The document ceiling never resets with time.
@@ -600,30 +635,24 @@ a `400`, or a `PUT` at a doc you do not own leaves the day's allowance intact.
 Unsharing a doc frees a document slot. Updating an existing doc uses a daily
 push but no new document slot. Accounts already above their document ceiling
 keep their existing documents and can update, list, and unshare them; they
-cannot create another until they are below the ceiling.
+cannot create another until they are below the ceiling. Updates must still fit
+the active daily and byte limits. Downgrades do not remove existing content,
+including documents larger than the new plan permits uploading.
 
-The account-token document ceiling is configured with the optional Worker var
-`ACCOUNT_MAX_DOCS`: a positive safe integer, defaulting to 3 when omitted.
-An invalid value returns `500 internal` on account-token creates before any
-document or daily quota write; other operations and license-key caps are
-unchanged. No database migration is required.
-
-`limit` identifies which limit was hit; `plan` names the account's current plan.
+`limit` identifies which limit was hit (`documents`, `pushesPerDay`, or
+`htmlBytes` today); `plan` names the account's current plan.
 These are values, not fixed enums: clients must accept unfamiliar strings and
-must not treat either field as proof of paid entitlement. The
-current values are `"documents"` and `"account"`, respectively; real account
-plan names will replace the latter when per-account plans ship.
+must not treat either field as proof of paid entitlement.
 
 For example, the current account-token document-cap response is:
 
 ```json
-{"error":{"code":"limit_reached","message":"...","limit":"documents","plan":"account"}}
+{"error":{"code":"limit_reached","message":"...","limit":"documents","plan":"free"}}
 ```
 
-Waiting until tomorrow or signing in on another machine does not free a slot.
-The CLI already handles this refusal without suggesting a daily reset. No
-`upgrade_url` is returned until a real upgrade flow is configured; subscription
-checkout and individual paid account plans are separate follow-up work.
+Waiting until tomorrow only resets daily pushes, not document capacity.
+Signing in on another machine resets neither. The CLI displays the refusal
+and upgrade link when present. Hosted checkout remains separate work.
 
 Two further limits sit outside all of this. On `POST /device/code`, a single
 client address may ask for five sign-in codes a minute, and past that the mint

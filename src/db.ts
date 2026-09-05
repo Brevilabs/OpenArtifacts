@@ -590,14 +590,15 @@ export async function findOrCreateAccount(
   id: string,
   email: string,
   atMs: number,
+  plan = "free",
 ): Promise<AccountRow> {
   const inserted = await db
     .prepare(
-      `INSERT INTO accounts (id, email, created_at) VALUES (?, ?, ?)
+      `INSERT INTO accounts (id, email, created_at, plan) VALUES (?, ?, ?, ?)
        ON CONFLICT(email) DO NOTHING
        RETURNING id, email, created_at`,
     )
-    .bind(id, email, atMs)
+    .bind(id, email, atMs, plan)
     .first<AccountRow>();
   if (inserted !== null) return inserted;
 
@@ -648,6 +649,7 @@ export async function resolveAccountForIdentity(
   email: string,
   newId: string,
   nowMs: number,
+  plan = "free",
 ): Promise<AccountRow | null> {
   const linked = await db
     .prepare(
@@ -664,7 +666,7 @@ export async function resolveAccountForIdentity(
     .bind(email)
     .first<AccountRow>();
 
-  const account = byEmail ?? (await findOrCreateAccount(db, newId, email, nowMs));
+  const account = byEmail ?? (await findOrCreateAccount(db, newId, email, nowMs, plan));
 
   // No conflict target, so *either* constraint refuses the insert quietly. The
   // two mean opposite things, and the read below is what tells them apart.
@@ -1136,14 +1138,15 @@ export async function collectDeviceToken(
 export async function findLiveToken(
   db: D1Database,
   tokenHash: string,
-): Promise<Pick<TokenRow, "id" | "account_id" | "last_used_at"> | null> {
+): Promise<(Pick<TokenRow, "id" | "account_id" | "last_used_at"> & { plan: string }) | null> {
   // `return await`: see the note on the router's catch in index.ts.
   return await db
     .prepare(
-      `SELECT id, account_id, last_used_at FROM tokens WHERE token_hash = ?`,
+      `SELECT t.id, t.account_id, t.last_used_at, a.plan
+         FROM tokens t JOIN accounts a ON a.id = t.account_id WHERE t.token_hash = ?`,
     )
     .bind(tokenHash)
-    .first<Pick<TokenRow, "id" | "account_id" | "last_used_at">>();
+    .first<Pick<TokenRow, "id" | "account_id" | "last_used_at"> & { plan: string }>();
 }
 
 /**

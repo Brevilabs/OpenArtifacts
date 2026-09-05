@@ -1,4 +1,5 @@
 import { deleteDoc, listDocs } from "./api/manage.js";
+import { ADMIN_PREFIX, handleAdmin } from "./admin.js";
 import { APPROVAL_PREFIX, handleApproval } from "./approval/handler.js";
 import { createDoc, updateDoc } from "./api/push.js";
 import {
@@ -85,6 +86,7 @@ export function resolveSurface(hostname: string, pathname: string, config: Surfa
   if (hostsAreConfigured(config)) return "unknown";
 
   if (pathIsUnder(pathname, API_PREFIX)) return "api";
+  if (pathIsUnder(pathname, ADMIN_PREFIX)) return "api";
   // The approval page and the device flow share the API host in production;
   // locally they share the API surface's path fallback, so `wrangler dev` can
   // serve them too.
@@ -123,7 +125,7 @@ async function handleApi(request: Request, url: URL, env: Env): Promise<Response
     extra.length === 0 &&
     ((docId === undefined && request.method === "POST") ||
       (docId !== undefined && request.method === "PUT"));
-  if (publishing && !mayPublish(auth.publisher.plan)) {
+  if (publishing && auth.publisher.authKind !== "account" && !mayPublish(auth.publisher.plan)) {
     return publisherErrorResponse(INELIGIBLE_PLAN);
   }
 
@@ -214,6 +216,9 @@ export default {
       // handle it, which fails the whole test run.
       switch (surface) {
         case "api":
+          if (pathIsUnder(url.pathname, ADMIN_PREFIX)) {
+            return await handleAdmin(request, url, env);
+          }
           // Before `handleApi`, because approval is the one thing on this host
           // a person reaches with a browser and no credential — authenticating
           // it would answer a human with `401` JSON. It is not under

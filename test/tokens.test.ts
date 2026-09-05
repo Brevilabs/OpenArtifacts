@@ -1,6 +1,6 @@
 import { createExecutionContext, env, waitOnExecutionContext } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
-import { ACCOUNT_TOKEN_PLAN, resolvePublisher } from "../src/auth.js";
+import { resolvePublisher } from "../src/auth.js";
 import { TOKEN_LAST_USED_RESOLUTION_MS } from "../src/config.js";
 import type { Env } from "../src/config.js";
 import { sha256Hex } from "../src/hash.js";
@@ -38,6 +38,8 @@ async function issueToken(
   accountId: string,
   over: { label?: string | null; createdAt?: number } = {},
 ): Promise<{ token: string; id: string }> {
+  await env.DB.prepare("INSERT INTO accounts (id, email, created_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING")
+    .bind(accountId, `${accountId}@example.test`, NOW).run();
   const token = newApiToken();
   const id = newTokenId();
   await env.DB.prepare(
@@ -177,7 +179,7 @@ describe("Authorization: Bearer <token>", () => {
     expect(calls).toBe(0);
     expect(resolved).toEqual({
       ok: true,
-      publisher: { owner: ACCOUNT_A, plan: ACCOUNT_TOKEN_PLAN },
+      publisher: { owner: ACCOUNT_A, plan: "free", authKind: "account" },
     });
   });
 
@@ -247,7 +249,7 @@ describe("free account document limit", () => {
         code: "limit_reached",
         message: "Your account can hold 3 published documents. Unshare one to publish another.",
         limit: "documents",
-        plan: "account",
+        plan: "free",
       },
     });
     expect(await storage()).toEqual(before);
