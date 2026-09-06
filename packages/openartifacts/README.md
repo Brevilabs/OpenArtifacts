@@ -9,7 +9,7 @@ npx openartifacts install
 Hermes Agent needs only its native skill install:
 
 ```bash
-hermes skills install https://cdn.jsdelivr.net/npm/openartifacts@latest/skill/v1/SKILL.md
+hermes skills install https://cdn.jsdelivr.net/npm/openartifacts@latest/skill/openartifacts/SKILL.md
 ```
 
 The skill uses an installed `openartifacts` command when available and falls
@@ -46,26 +46,22 @@ skill handles the rendered review and approval.
 
 Set `OPENARTIFACTS_TOKEN` to supply a credential without browser sign-in. Set `OPENARTIFACTS_API_HOST` to target a self-hosted deployment.
 
-## Host adapters and contract v1
+## Host adapters
 
-The published shared skill is available without Node or npm at:
-https://cdn.jsdelivr.net/npm/openartifacts@latest/skill/v1/SKILL.md
+The canonical skill is `skill/openartifacts/SKILL.md`. Hosts such as Copilot bundle
+its **Shared publishing rules** at build time and provide their own execution,
+authentication, identity, and approval UI. No instruction fetch occurs while publishing.
 
-Hosts such as Copilot fetch it once per publishing task and follow **Shared
-publishing rules**, replacing **Standalone CLI** with their bundled transport,
-authentication, identity, and approval UI. A failed fetch stops agent publishing;
-it does not justify skipping review. No scripts are downloaded for execution.
+Pin the npm package version in the host's development dependencies. Regenerate the
+bundled rules when upgrading that version, and test that they match the installed
+package's shared section. Review and ship the host update normally. Plugin users do
+not need Node or npm. Never download executable scripts at runtime.
 
-Keep `skill/v1/SKILL.md` compatible with existing v1 hosts in every future npm
-release. A rule requiring new host capabilities belongs in a new contract path;
-retain v1 for installed clients. CDN caching means compatible updates may not be
-immediately visible. Do not point hosts at unreleased branch content.
+Skill edits require a new npm version. Merge this feature, publish through the
+existing release PR workflow, then pin that published version in Copilot.
+The agent skill requires human approval; the non-interactive CLI does not enforce
+human review. The optional `--reviewed-sha256` flag only verifies content consistency.
 
-Skill edits and CLI changes require a new npm version. This feature PR does not
-publish one: merge it, then use the existing `vX.Y.Z` release PR workflow. Verify
-the URL serves the new skill before releasing the Copilot adapter.
-
-For publishing changes, verify both the CLI and Copilot flows: protected rendered
-review, explicit approval, unchanged uploaded HTML, changed-content review,
-stable updates, cancellation/reopen, and exact failure reporting. Preserve the
-Copilot banner. Sharing instructions does not replace host implementation checks.
+Verify both implementations for protected rendered review, explicit approval,
+unchanged upload HTML, changed-content review, stable updates, cancellation/reopen,
+and exact errors. The server-added Copilot banner remains unchanged.

@@ -68,12 +68,12 @@ test("installer fetches latest and copies its newly installed skill", async () =
   const installedRoot = join(globalRoot, "openartifacts");
   const calls = join(directory, "npm-calls.jsonl");
   await mkdir(bin, { recursive: true });
-  await mkdir(join(installedRoot, "skill", "v1"), { recursive: true });
+  await mkdir(join(installedRoot, "skill", "openartifacts"), { recursive: true });
   await writeFile(join(installedRoot, "package.json"), JSON.stringify({
     name: "openartifacts",
     version: "0.2.0",
   }));
-  await writeFile(join(installedRoot, "skill", "v1", "SKILL.md"), "latest skill\n");
+  await writeFile(join(installedRoot, "skill", "openartifacts", "SKILL.md"), "latest skill\n");
   const fakeNpm = join(bin, "npm");
   await writeFile(fakeNpm, `#!${process.execPath}\nconst { appendFileSync } = require("node:fs");\nconst args = process.argv.slice(2);\nappendFileSync(${JSON.stringify(calls)}, JSON.stringify(args) + "\\n");\nif (args[0] === "root") console.log(${JSON.stringify(globalRoot)});\n`);
   await chmod(fakeNpm, 0o755);

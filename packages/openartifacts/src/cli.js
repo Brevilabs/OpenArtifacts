@@ -11,7 +11,7 @@ import { APIError, createClient } from "./client.js";
 
 const DEFAULT_HOST = "https://api.openartifacts.ai";
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const SKILL_SOURCE = join(PACKAGE_ROOT, "skill", "v1", "SKILL.md");
+const SKILL_SOURCE = join(PACKAGE_ROOT, "skill", "openartifacts", "SKILL.md");
 /** @typedef {{name: string, detected: boolean, target: string}} DetectedAgent */
 /** @typedef {{files: Record<string, {docId: string, url: string}>}} PublishState */
 /** @typedef {{hosts: Record<string, {token: string, tokenId?: string}>}} Credentials */
@@ -218,7 +218,7 @@ async function install() {
   const installedManifest = JSON.parse(await readFile(join(installedRoot, "package.json"), "utf8"));
   console.log(`CLI: installed ${installedManifest.name}@${installedManifest.version}`);
   const agents = await detectAgents();
-  await installSkills(agents, join(installedRoot, "skill", "v1", "SKILL.md"));
+  await installSkills(agents, join(installedRoot, "skill", "openartifacts", "SKILL.md"));
   for (const agent of agents) {
     console.log(`${agent.name}: ${agent.detected ? `installed ${agent.target}` : "not detected"}`);
   }
