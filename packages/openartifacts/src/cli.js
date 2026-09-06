@@ -4,12 +4,14 @@ import { homedir, hostname, platform } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
+import { createBrowserPreview } from "./preview.js";
 import { marked } from "marked";
 import { APIError, createClient } from "./client.js";
 
 const DEFAULT_HOST = "https://api.openartifacts.ai";
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const SKILL_SOURCE = join(PACKAGE_ROOT, "skill", "openartifacts", "SKILL.md");
+const SKILL_SOURCE = join(PACKAGE_ROOT, "skill", "v1", "SKILL.md");
 /** @typedef {{name: string, detected: boolean, target: string}} DetectedAgent */
 /** @typedef {{files: Record<string, {docId: string, url: string}>}} PublishState */
 /** @typedef {{hosts: Record<string, {token: string, tokenId?: string}>}} Credentials */
@@ -216,7 +218,7 @@ async function install() {
   const installedManifest = JSON.parse(await readFile(join(installedRoot, "package.json"), "utf8"));
   console.log(`CLI: installed ${installedManifest.name}@${installedManifest.version}`);
   const agents = await detectAgents();
-  await installSkills(agents, join(installedRoot, "skill", "openartifacts", "SKILL.md"));
+  await installSkills(agents, join(installedRoot, "skill", "v1", "SKILL.md"));
   for (const agent of agents) {
     console.log(`${agent.name}: ${agent.detected ? `installed ${agent.target}` : "not detected"}`);
   }
@@ -228,7 +230,8 @@ Commands:
   install            Install or upgrade the CLI and detected agent skills
   login              Approve this machine and store its token
   preview <file>     Print rendered HTML locally without publishing or signing in
-  publish <file>     Publish Markdown or HTML; repeat to update the same document
+  publish <file> [--reviewed-sha256 <hash>]
+                     Publish Markdown or HTML; repeat to update the same document
   list               List published documents
   get <docId>        Print a document's current HTML
   unshare <docId>    Withdraw a public document
@@ -247,13 +250,16 @@ export async function main(args) {
     throw new Error(HELP);
   }
   const needsArgument = ["preview", "publish", "get", "unshare", "revoke"].includes(command);
-  if (extra.length || (needsArgument && !argument) || (!needsArgument && argument)) {
+  const reviewedHash = command === "publish" && extra.length === 2 && extra[0] === "--reviewed-sha256" && /^[a-f0-9]{64}$/.test(extra[1] ?? "") ? extra[1] : undefined;
+  if ((extra.length && !reviewedHash) || (needsArgument && !argument) || (!needsArgument && argument)) {
     throw new Error(HELP);
   }
   const value = argument ?? "";
   if (command === "install") return install();
   if (command === "preview") {
-    process.stdout.write(await renderFile(await realpath(resolve(value))));
+    const html = await renderFile(await realpath(resolve(value)));
+    process.stdout.write(createBrowserPreview(html));
+    console.error(`Reviewed SHA-256: ${createHash("sha256").update(html).digest("hex")}`);
     return;
   }
 
@@ -268,9 +274,13 @@ export async function main(args) {
   let preparedPublish;
   if (command === "publish") {
     const file = await realpath(resolve(value));
+    const html = await renderFile(file);
+    if (reviewedHash && createHash("sha256").update(html).digest("hex") !== reviewedHash) {
+      throw new Error("The source changed after review. Generate a new preview and obtain approval again.");
+    }
     preparedPublish = {
       file,
-      body: { title: basename(file, extname(file)), html: await renderFile(file) },
+      body: { title: basename(file, extname(file)), html },
     };
   }
 

