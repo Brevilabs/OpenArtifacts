@@ -143,3 +143,5 @@ Before committing, review the staged set with `git status` **and**
 untracked files.
 
 All changes ship through a pull request. Never push directly to `main`.
+
+For npm release preparation, follow the [release rules in AGENTS.md](AGENTS.md#npm-releases).

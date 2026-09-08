@@ -47,7 +47,7 @@ npx openartifacts install
 Hermes Agent needs only its native skill install:
 
 ```bash
-hermes skills install https://raw.githubusercontent.com/Brevilabs/OpenArtifacts/main/packages/openartifacts/skill/openartifacts/SKILL.md
+hermes skills install https://cdn.jsdelivr.net/npm/openartifacts@latest/skill/openartifacts/SKILL.md
 ```
 
 Hermes security-scans the skill and can refresh it later with

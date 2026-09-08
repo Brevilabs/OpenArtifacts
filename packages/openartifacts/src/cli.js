@@ -4,6 +4,8 @@ import { homedir, hostname, platform } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
+import { createBrowserPreview } from "./preview.js";
 import { marked } from "marked";
 import { APIError, createClient } from "./client.js";
 
@@ -227,7 +229,9 @@ const HELP = `Usage: openartifacts <command> [argument]
 Commands:
   install            Install or upgrade the CLI and detected agent skills
   login              Approve this machine and store its token
-  publish <file>     Publish Markdown or HTML; repeat to update the same document
+  preview <file>     Print rendered HTML locally without publishing or signing in
+  publish <file> [--reviewed-sha256 <hash>]
+                     Publish Markdown or HTML; repeat to update the same document
   list               List published documents
   get <docId>        Print a document's current HTML
   unshare <docId>    Withdraw a public document
@@ -242,15 +246,22 @@ export async function main(args) {
     console.log(HELP);
     return;
   }
-  if (!["install", "login", "publish", "list", "get", "unshare", "tokens", "revoke"].includes(command)) {
+  if (!["install", "login", "preview", "publish", "list", "get", "unshare", "tokens", "revoke"].includes(command)) {
     throw new Error(HELP);
   }
-  const needsArgument = ["publish", "get", "unshare", "revoke"].includes(command);
-  if (extra.length || (needsArgument && !argument) || (!needsArgument && argument)) {
+  const needsArgument = ["preview", "publish", "get", "unshare", "revoke"].includes(command);
+  const reviewedHash = command === "publish" && extra.length === 2 && extra[0] === "--reviewed-sha256" && /^[a-f0-9]{64}$/.test(extra[1] ?? "") ? extra[1] : undefined;
+  if ((extra.length && !reviewedHash) || (needsArgument && !argument) || (!needsArgument && argument)) {
     throw new Error(HELP);
   }
   const value = argument ?? "";
   if (command === "install") return install();
+  if (command === "preview") {
+    const html = await renderFile(await realpath(resolve(value)));
+    process.stdout.write(createBrowserPreview(html));
+    console.error(`Reviewed SHA-256: ${createHash("sha256").update(html).digest("hex")}`);
+    return;
+  }
 
   const host = (process.env.OPENARTIFACTS_API_HOST ?? DEFAULT_HOST).replace(/\/$/, "");
   const directory = configDir();
@@ -263,9 +274,13 @@ export async function main(args) {
   let preparedPublish;
   if (command === "publish") {
     const file = await realpath(resolve(value));
+    const html = await renderFile(file);
+    if (reviewedHash && createHash("sha256").update(html).digest("hex") !== reviewedHash) {
+      throw new Error("The source changed after review. Generate a new preview and obtain approval again.");
+    }
     preparedPublish = {
       file,
-      body: { title: basename(file, extname(file)), html: await renderFile(file) },
+      body: { title: basename(file, extname(file)), html },
     };
   }
 

