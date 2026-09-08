@@ -1,6 +1,10 @@
 ---
 name: openartifacts
 description: Publish, update, list, fetch, or unshare OpenArtifacts documents with rendered review before publication.
+metadata:
+  hermes:
+    category: productivity
+    tags: [publishing, markdown, artifacts]
 ---
 
 # OpenArtifacts

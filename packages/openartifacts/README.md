@@ -38,7 +38,7 @@ openartifacts publish notes.md --reviewed-sha256 <hash-printed-by-preview>
 publishing state. It wraps the rendered upload HTML in a protected static preview:
 page scripts, network resources, and navigation are disabled only during review.
 It prints the upload HTML's SHA-256 to stderr; `--reviewed-sha256` rejects changed
-content before authentication or upload. Published HTML remains unchanged.
+content before authentication or upload. The preview explains these limitations above the page. Published HTML remains unchanged.
 OpenArtifacts' serving decorations are not included. Root presentation attributes
 and embedded SVG resources are preserved. The CLI's `publish` command remains
 non-interactive; the agent skill handles rendered review and approval.
@@ -51,13 +51,15 @@ The canonical skill is `skill/openartifacts/SKILL.md`. Hosts such as Copilot bun
 its **Shared publishing rules** at build time and provide their own execution,
 authentication, identity, and approval UI. No instruction fetch occurs while publishing.
 
-Pin the npm package version in the host's development dependencies. Regenerate the
-bundled rules when upgrading that version, and test that they match the installed
-package's shared section. Review and ship the host update normally. Plugin users do
-not need Node or npm. Never download executable scripts at runtime.
+Pin a published package version or vendor a reviewed source snapshot with its
+immutable commit and content hash. Test that bundled rules match that pinned
+source, and refresh them through the host's normal review and release process.
+Copilot uses a vendored snapshot, so its builds and publishing do not depend on
+an npm release. Plugin users do not need Node or npm. Never download executable
+scripts at runtime.
 
-Skill edits require a new npm version. Merge this feature, publish through the
-existing release PR workflow, then pin that published version in Copilot.
+Skill edits for standalone installations ship in a new npm version through the
+existing release PR workflow.
 The agent skill requires human approval; the non-interactive CLI does not enforce
 human review. The optional `--reviewed-sha256` flag only verifies content consistency.
 

@@ -421,6 +421,8 @@ test("protected preview keeps hostile source out of the trusted shell", () => {
   const preview = createBrowserPreview(source);
   assert.equal((preview.match(/<script>/g) ?? []).length, 1);
   assert.equal((preview.match(/<\/script>/g) ?? []).length, 1);
+  assert.match(preview, /role="note">Static preview: scripts, embedded frames, external resources, and navigation are disabled here/);
+  assert.match(preview, /published page keeps the original HTML and may behave differently/);
   assert.match(preview, /sandbox="allow-same-origin"/);
   assert.doesNotMatch(preview, /sandbox="allow-scripts"/);
   assert.match(preview, /script-src 'none'/);
