@@ -39,10 +39,9 @@ publishing state. It wraps the rendered upload HTML in a protected static previe
 page scripts, network resources, and navigation are disabled only during review.
 It prints the upload HTML's SHA-256 to stderr; `--reviewed-sha256` rejects changed
 content before authentication or upload. Published HTML remains unchanged.
-OpenArtifacts' serving decorations are not included. Source `<html>` and `<body>`
-attributes are not preserved in this static preview; put essential styling in CSS
-rules or content elements when preparing a page for review. The CLI's `publish` command itself remains non-interactive; the agent
-skill handles the rendered review and approval.
+OpenArtifacts' serving decorations are not included. Root presentation attributes
+and embedded SVG resources are preserved. The CLI's `publish` command remains
+non-interactive; the agent skill handles rendered review and approval.
 
 Set `OPENARTIFACTS_TOKEN` to supply a credential without browser sign-in. Set `OPENARTIFACTS_API_HOST` to target a self-hosted deployment.
 
