@@ -53,7 +53,7 @@ it("reports account plan, limits, combined usage and association without reveali
   }
   const response = await send("GET", "/api/v1/account", token);
   expect(response.status).toBe(200);
-  expect(await response.json()).toEqual({ accountId: ACCOUNT, plan: "free", limits: { documents: 3, pushesPerDay: 6, htmlBytes: 1048576 }, usage: { documents: 2, pushesToday: 4 }, externalLinked: true });
+  expect(await response.json()).toEqual({ accountId: ACCOUNT, plan: "free", limits: { documents: 1, pushesPerDay: 6, htmlBytes: 1048576 }, usage: { documents: 2, pushesToday: 4 }, externalLinked: true });
   const other = await (await send("GET", "/api/v1/account", otherToken)).json();
   expect(other).toMatchObject({ accountId: OTHER, usage: { documents: 0, pushesToday: 0 }, externalLinked: false });
 });

@@ -55,7 +55,7 @@ describe("configured account plans", () => {
   });
 
   it("loads the agreed hosted values from wrangler, not a separate test copy", () => {
-    expect(planLimits(local(), "free")).toEqual({ documents: 3, pushesPerDay: 6, htmlBytes: 1048576 });
+    expect(planLimits(local(), "free")).toEqual({ documents: 1, pushesPerDay: 6, htmlBytes: 1048576 });
     expect(planLimits(local(), "pro")).toEqual({ documents: 500, pushesPerDay: 100, htmlBytes: 10485760 });
     for (const PLAN_LIMITS of [undefined, ""]) {
       expect(planLimits(local({ PLAN_LIMITS }), "free")).toEqual(planLimits(local(), "free"));
@@ -75,7 +75,7 @@ describe("configured account plans", () => {
     const other = await issue();
     const doc = await (await create()).json<{ docId: string }>();
     for (let i = 0; i < 5; i++) expect((await send("PUT", `/api/v1/docs/${doc.docId}`, { html: "updated" }, {}, other)).status).toBe(200);
-    const rejected = await create();
+    const rejected = await send("PUT", `/api/v1/docs/${doc.docId}`, { html: "one too many" });
     expect(rejected.status).toBe(402);
     expect(await error(rejected)).toMatchObject({ error: { limit: "pushesPerDay", plan: "free" } });
     expect(await usage()).toBe(6);

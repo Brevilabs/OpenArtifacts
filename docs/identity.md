@@ -13,7 +13,7 @@ having never made one — and see the same documents throughout.
 
 `docs.owner` is an opaque string. Nothing parses it, and every query only ever
 compares it for equality. Two things put a value there, and they are deliberately
-never mixed:
+stored with their original provenance:
 
 | Credential | Owner id | Where it comes from |
 | --- | --- | --- |
@@ -27,8 +27,8 @@ to the license server to be identified, handing this deployment's own secret to
 another service on every request.
 
 An account here holds an id, one verified email address, and the time it was
-created. That is the whole `accounts` table. One further thing about a person is
-stored, and it lives in `identities`: the provider's own permanent id for them,
+created, alongside its configured plan, expiry and revision. One further thing
+about a person is stored, and it lives in `identities`: the provider's own permanent id for them,
 which is what returns a later sign-in to the right account. Beyond those,
 nothing is read, requested or stored, so no name and no avatar.
 
@@ -269,6 +269,6 @@ and that is only acceptable while there is nothing on it for them to steal.
   documents would simply stop being reachable by anyone. Worth solving before
   there are accounts worth deleting.
 - **It does not decide what an account may do.** Entitlement is a separate
-  question, answered per operation — today by the license key's plan, next by
-  [#60](https://github.com/Brevilabs/OpenArtifacts/issues/60)'s plan config. An
-  account exists before it is allowed to do anything.
+  question, answered per operation by the license key's entitlement or the
+  local account's configured plan. Hosted OAuth accounts start with one free
+  published document; listing and unsharing remain available over the limit.
