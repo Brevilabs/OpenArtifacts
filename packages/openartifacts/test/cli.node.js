@@ -165,6 +165,9 @@ test("publish reads only HTML files and parses its options before authentication
   await assert.rejects(preparePublish(page, ["--title", "--doc-id"]), /Usage: openartifacts/);
   await assert.rejects(preparePublish(page, ["--title", "a", "--title", "b"]), /Usage: openartifacts/);
   await assert.rejects(preparePublish(page, ["--unknown", "x"]), /Usage: openartifacts/);
+  // A blank id must not silently turn an update into a create.
+  await assert.rejects(preparePublish(page, ["--doc-id", ""]), /Usage: openartifacts/);
+  await assert.rejects(preparePublish(page, ["--title", ""]), /Usage: openartifacts/);
   await assert.rejects(preparePublish(join(directory, "missing.html"), []), { code: "ENOENT" });
 
   await withEnvironment({

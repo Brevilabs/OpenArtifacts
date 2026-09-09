@@ -235,7 +235,7 @@ export async function preparePublish(file, options) {
   const flags = {};
   for (let index = 0; index < options.length; index += 2) {
     const [flag, value] = [options[index], options[index + 1]];
-    if (value === undefined || value.startsWith("--")) throw new Error(HELP);
+    if (!value || value.startsWith("--")) throw new Error(HELP);
     if (flag === "--title" && flags.title === undefined) flags.title = value;
     else if (flag === "--doc-id" && flags.docId === undefined) flags.docId = value;
     else throw new Error(HELP);
