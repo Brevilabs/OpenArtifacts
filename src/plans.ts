@@ -49,7 +49,7 @@ export function effectivePlan(env: Env, plan: string, expiresAt: number | null, 
   return expiresAt !== null && expiresAt <= now ? defaultPlan(env) : plan;
 }
 
-export function limitReached(env: Env, publisher: Publisher, limit: string, message: string): Response {
+export function limitReached(env: Env, publisher: Publisher, limit: keyof PlanLimits, message: string): Response {
   let upgradeUrl: string | undefined;
   if (env.UPGRADE_URL?.trim()) {
     const url = new URL(env.UPGRADE_URL);
@@ -60,6 +60,10 @@ export function limitReached(env: Env, publisher: Publisher, limit: string, mess
     url.searchParams.set("owner", publisher.owner);
     upgradeUrl = url.toString();
   }
+  // Fixed non-identifying fields only; messages and upgrade URLs can contain identity.
+  console.info("publishing_limit_reached", {
+    limit, authKind: publisher.authKind === "account" ? "account" : "license",
+  });
   return errorResponse("limit_reached", message, undefined, {
     plan: publisher.plan, limit, ...(upgradeUrl ? { upgrade_url: upgradeUrl } : {}),
   });
