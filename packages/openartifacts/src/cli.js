@@ -90,12 +90,21 @@ async function writePrivateJson(path, value) {
   await chmod(path, 0o600);
 }
 
+/** Keep browser URLs as data, including Windows shell metacharacters.
+ * @param {string} url @param {NodeJS.Platform} [os]
+ */
+export function browserProcess(url, os = platform()) {
+  return os === "win32"
+    ? { command: "powershell.exe", args: ["-NoProfile", "-NonInteractive", "-Command", "Start-Process -FilePath $env:OPENARTIFACTS_BROWSER_URL"],
+      env: { ...process.env, OPENARTIFACTS_BROWSER_URL: url } }
+    : { command: os === "darwin" ? "open" : "xdg-open", args: [url], env: process.env };
+}
+
 /** @param {string} url */
 function openBrowser(url) {
-  const command = platform() === "darwin" ? "open" : platform() === "win32" ? "cmd" : "xdg-open";
-  const args = platform() === "win32" ? ["/c", "start", "", url] : [url];
+  const opener = browserProcess(url);
   try {
-    const child = spawn(command, args, { detached: true, stdio: "ignore" });
+    const child = spawn(opener.command, opener.args, { env: opener.env, shell: false, detached: true, stdio: "ignore" });
     child.on("error", () => {});
     child.unref();
   } catch {}

@@ -5,7 +5,7 @@ import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { collectToken, configDir, detectAgents, installSkills, main, npmProcess, preparePublish, presentError } from "../src/cli.js";
+import { browserProcess, collectToken, configDir, detectAgents, installSkills, main, npmProcess, preparePublish, presentError } from "../src/cli.js";
 import { APIError } from "../src/client.js";
 
 /** Point the CLI at a scratch config directory and host for one test. */
@@ -464,4 +464,15 @@ test("account actions reject unsafe browser URLs without printing them", async (
     assert.match(result.stderr, /invalid account action link/);
     assert(!result.stderr.includes("javascript:"));
   } finally { remote.server.close(); }
+});
+
+test("Windows browser launch passes the complete URL as data rather than command text", () => {
+  const url = 'https://actions.example.test/?source=cli&code=abc&x=";Write-Output injected"';
+  const windows = browserProcess(url, "win32");
+  assert.equal(windows.command, "powershell.exe");
+  assert.deepEqual(windows.args, ["-NoProfile", "-NonInteractive", "-Command", "Start-Process -FilePath $env:OPENARTIFACTS_BROWSER_URL"]);
+  assert.equal(windows.env.OPENARTIFACTS_BROWSER_URL, url);
+  assert(!windows.args.some((arg) => arg.includes(url)));
+  assert.deepEqual(browserProcess(url, "darwin").args, [url]);
+  assert.deepEqual(browserProcess(url, "linux").args, [url]);
 });
