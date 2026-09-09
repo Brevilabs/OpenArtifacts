@@ -42,6 +42,7 @@ import { LICENSE_CACHE_TTL_MS, TOKEN_LAST_USED_RESOLUTION_MS, type Env } from ".
 import { d1PublisherStore, findLiveToken, touchTokenUse, type PublisherStore } from "./db.js";
 import { errorResponse, type ErrorCode } from "./errors.js";
 import { sha256Hex } from "./hash.js";
+import { effectivePlan } from "./plans.js";
 import { TOKEN_PREFIX } from "./ids.js";
 
 /** tRPC endpoint on the license server, appended to `LICENSE_API_URL`. */
@@ -260,7 +261,7 @@ async function resolveAccountToken(
     await touchTokenUse(env.DB, live.id, at, at - TOKEN_LAST_USED_RESOLUTION_MS);
   }
 
-  return { ok: true, publisher: { owner: live.account_id, plan: live.plan, authKind: "account" } };
+  return { ok: true, publisher: { owner: live.account_id, plan: effectivePlan(env, live.plan, live.plan_expires_at, at), authKind: "account" } };
 }
 
 const FAILURE_STATUS: Record<PublisherFailure, ErrorCode> = {

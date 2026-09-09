@@ -44,6 +44,11 @@ export function defaultPlan(env: Env): string {
   return plan;
 }
 
+/** Expiration changes access on the next request, never ownership or stored history. */
+export function effectivePlan(env: Env, plan: string, expiresAt: number | null, now = Date.now()): string {
+  return expiresAt !== null && expiresAt <= now ? defaultPlan(env) : plan;
+}
+
 export function limitReached(env: Env, publisher: Publisher, limit: string, message: string): Response {
   let upgradeUrl: string | undefined;
   if (env.UPGRADE_URL?.trim()) {

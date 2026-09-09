@@ -143,3 +143,14 @@ it("associates only through service authorization, repeats safely, rejects confl
   expect((await send("PUT", path, SERVICE, { externalOwner: ACCOUNT })).status).toBe(400);
   expect((await send("PUT", path, SERVICE, { externalOwner: EXTERNAL, plan: "pro" })).status).toBe(400);
 });
+
+it("lets only the trusted service recover the current owner association", async () => {
+  const path = `/admin/v1/accounts/${ACCOUNT}/external-owner`;
+  expect((await send("GET", path, token)).status).toBe(401);
+  expect((await send("GET", "/admin/v1/accounts/missing/external-owner", SERVICE)).status).toBe(404);
+  const empty = await send("GET", path, SERVICE);
+  expect(empty.headers.get("cache-control")).toBe("no-store");
+  expect(await empty.json()).toEqual({ accountId: ACCOUNT, externalOwner: null });
+  await send("PUT", path, SERVICE, { externalOwner: EXTERNAL });
+  expect(await (await send("GET", path, SERVICE)).json()).toEqual({ accountId: ACCOUNT, externalOwner: EXTERNAL });
+});

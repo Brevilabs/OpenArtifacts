@@ -3,7 +3,7 @@ import type { Env } from "./config.js";
 import { errorResponse } from "./errors.js";
 import { sha256Hex } from "./hash.js";
 import { OWNER_SCOPE_SQL } from "./owners.js";
-import { planLimits } from "./plans.js";
+import { effectivePlan, planLimits } from "./plans.js";
 import { readBodyWithin, utcDay } from "./quota.js";
 
 const NO_STORE = { "cache-control": "no-store" };
@@ -39,15 +39,16 @@ export async function handleAccount(request: Request, env: Env, publisher: Publi
   const path = new URL(request.url).pathname;
   if (path === "/api/v1/account" && request.method === "GET") {
     const row = await env.DB.prepare(`${OWNER_SCOPE_SQL}
-      SELECT a.id AS accountId, a.plan,
+      SELECT a.id AS accountId, a.plan, a.plan_expires_at,
         (SELECT COUNT(*) FROM docs WHERE owner IN (SELECT owner FROM owner_scope) AND deleted_at IS NULL) AS documents,
         (SELECT COALESCE(SUM(pushes), 0) FROM push_quota WHERE owner IN (SELECT owner FROM owner_scope) AND day = ?) AS pushesToday,
         EXISTS(SELECT 1 FROM owner_links WHERE account_id = a.id) AS externalLinked
       FROM accounts a WHERE a.id = ?`)
       .bind(publisher.owner, publisher.owner, utcDay(Date.now()), publisher.owner)
-      .first<{ accountId: string; plan: string; documents: number; pushesToday: number; externalLinked: number }>();
+      .first<{ accountId: string; plan: string; plan_expires_at: number | null; documents: number; pushesToday: number; externalLinked: number }>();
     if (!row) return errorResponse("unauthorized", "Sign in again.");
-    return Response.json({ accountId: row.accountId, plan: row.plan, limits: planLimits(env, row.plan),
+    const plan = effectivePlan(env, row.plan, row.plan_expires_at);
+    return Response.json({ accountId: row.accountId, plan, limits: planLimits(env, plan),
       usage: { documents: row.documents, pushesToday: row.pushesToday }, externalLinked: !!row.externalLinked }, { headers: NO_STORE });
   }
   if (path !== "/api/v1/account/handoffs" || request.method !== "POST") return errorResponse("not_found", "No account route.");

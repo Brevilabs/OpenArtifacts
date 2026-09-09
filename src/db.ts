@@ -1145,15 +1145,15 @@ export async function collectDeviceToken(
 export async function findLiveToken(
   db: D1Database,
   tokenHash: string,
-): Promise<(Pick<TokenRow, "id" | "account_id" | "last_used_at"> & { plan: string }) | null> {
+): Promise<(Pick<TokenRow, "id" | "account_id" | "last_used_at"> & { plan: string; plan_expires_at: number | null }) | null> {
   // `return await`: see the note on the router's catch in index.ts.
   return await db
     .prepare(
-      `SELECT t.id, t.account_id, t.last_used_at, a.plan
+      `SELECT t.id, t.account_id, t.last_used_at, a.plan, a.plan_expires_at
          FROM tokens t JOIN accounts a ON a.id = t.account_id WHERE t.token_hash = ?`,
     )
     .bind(tokenHash)
-    .first<Pick<TokenRow, "id" | "account_id" | "last_used_at"> & { plan: string }>();
+    .first<Pick<TokenRow, "id" | "account_id" | "last_used_at"> & { plan: string; plan_expires_at: number | null }>();
 }
 
 /**

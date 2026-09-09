@@ -780,3 +780,39 @@ an identical retry return `200` with `{"accountId":"oa_…","externalOwner":"…
 A conflicting association returns `409 conflict`; invalid identities return
 `400`; a missing local account returns `404`. Associations are permanent and do
 not change plans, credential permissions, document IDs, or stored versions.
+
+### Ordered plan snapshots
+
+The existing service-only `PUT /admin/v1/accounts/{accountId}/plan` also accepts
+exactly `{"plan":"pro","expiresAt":1800000600000,"revision":1}`. `expiresAt` is
+null for unlimited validity or a nonnegative safe-integer epoch millisecond
+value. `revision` is a positive safe integer. Both fields must be supplied
+together; missing fields, additional fields, invalid numbers, and unconfigured
+plan names return `400`.
+
+A larger revision atomically replaces the stored snapshot. An identical retry
+of the current revision succeeds; a lower revision, or the same revision with
+different contents, returns `409 conflict`. Missing accounts return `404`.
+Success returns the stored snapshot, not its time-dependent effective plan:
+`{"owner":"oa_…","plan":"pro","expiresAt":1800000600000,"revision":1}`.
+The caller must allocate revisions durably per account and deliver reconciled
+snapshots in increasing order. A newer reconciliation can supersede a manual
+operator assignment; retries must never send changed contents under an old
+revision.
+
+At `expiresAt <= now`, account authentication and status use the configured
+default plan. This requires no remote call or database mutation. The stored
+snapshot, documents, versions, credentials, and usage remain intact. Existing
+above-limit collections remain listable, editable within the effective daily
+and byte limits, and removable; additional documents are refused at the cap.
+
+The original `{"plan":"…"}` manual operation and `{owner,plan}` response remain
+supported. It clears expiration but preserves the latest revision fence. The
+next service reconciliation must use a larger revision to replace that override.
+
+`GET /admin/v1/accounts/{accountId}/external-owner` uses the same service
+credential and returns `{accountId,externalOwner}` with null when the account
+has no association, or `404` when the account is unknown. This read supports
+recovery when association succeeds but a trusted caller's subsequent local
+write fails. It does not require retaining a raw external credential or
+replaying a consumed handoff. Responses use `cache-control: no-store`.
