@@ -29,7 +29,8 @@ defaults of your own. A missing theme never blocks publishing.
 
 Write the HTML to a new file next to the source, for example `notes.html` for
 `notes.md`. Never overwrite the source. Tell the user the absolute path and that
-opening it in a browser shows exactly what will be published. Then end your turn.
+opening it in a browser shows the page as it will be uploaded; OpenArtifacts adds its
+own header and footer bylines when it serves the page. Then end your turn.
 
 Never publish in the same turn that produced the HTML. Publish only when a later
 message from the user clearly asks to publish this page. Treat anything else as

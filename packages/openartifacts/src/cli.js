@@ -221,9 +221,11 @@ Commands:
   revoke <tokenId>   Revoke a machine token`;
 
 /**
- * Read the HTML file and the publish options before any authentication.
+ * Read the HTML file and the publish options before any authentication. A create
+ * defaults the title to the file name; an update omits it so the server keeps the
+ * current title unless --title was given.
  * @param {string} file @param {string[]} options
- * @returns {Promise<{docId?: string, body: {title: string, html: string}}>}
+ * @returns {Promise<{docId?: string, body: {title?: string, html: string}}>}
  */
 export async function preparePublish(file, options) {
   if (![".html", ".htm"].includes(extname(file).toLowerCase())) {
@@ -239,10 +241,9 @@ export async function preparePublish(file, options) {
     else throw new Error(HELP);
   }
   const path = resolve(file);
-  return {
-    docId: flags.docId,
-    body: { title: flags.title ?? basename(path, extname(path)), html: await readFile(path, "utf8") },
-  };
+  const html = await readFile(path, "utf8");
+  const title = flags.title ?? (flags.docId ? undefined : basename(path, extname(path)));
+  return { docId: flags.docId, body: title === undefined ? { html } : { title, html } };
 }
 
 /** CLI entry point. */

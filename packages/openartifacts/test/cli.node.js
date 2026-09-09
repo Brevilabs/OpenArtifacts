@@ -155,6 +155,11 @@ test("publish reads only HTML files and parses its options before authentication
     docId: "9f2k4mvq7t0xbz3n",
     body: { title: "Notes", html: "<!doctype html><p>kept</p>" },
   });
+  // An update without --title omits the field so the server keeps the current title.
+  assert.deepEqual(await preparePublish(page, ["--doc-id", "9f2k4mvq7t0xbz3n"]), {
+    docId: "9f2k4mvq7t0xbz3n",
+    body: { html: "<!doctype html><p>kept</p>" },
+  });
   await assert.rejects(preparePublish(markdown, []), /HTML file.*Render other formats/);
   await assert.rejects(preparePublish(page, ["--title"]), /Usage: openartifacts/);
   await assert.rejects(preparePublish(page, ["--title", "--doc-id"]), /Usage: openartifacts/);
@@ -244,7 +249,7 @@ test("publish creates, --doc-id updates, and unshare withdraws using the environ
   ]);
   assert(remote.requests.every((request) => request.authorization === "Bearer opaque-test-token"));
   assert.deepEqual(remote.requests[0].body, { title: "Notes", html });
-  assert.deepEqual(remote.requests[1].body, { title: "notes", html });
+  assert.deepEqual(remote.requests[1].body, { html });
 });
 
 test("a stale --doc-id is reported, never silently replaced", async () => {
