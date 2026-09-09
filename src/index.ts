@@ -1,3 +1,4 @@
+import { handleAccount } from "./account.js";
 import { deleteDoc, listDocs } from "./api/manage.js";
 import { ADMIN_PREFIX, handleAdmin } from "./admin.js";
 import { APPROVAL_PREFIX, handleApproval } from "./approval/handler.js";
@@ -111,6 +112,10 @@ async function handleApi(request: Request, url: URL, env: Env): Promise<Response
     .slice(API_PREFIX.length)
     .split("/")
     .filter(Boolean);
+
+  if (collection === "account" && extra.length === 0) {
+    return await handleAccount(request, env, auth.publisher);
+  }
 
   // Entitlement is per operation. Authentication above says *who* this is;
   // only publishing asks whether their plan may. Applying it to the whole

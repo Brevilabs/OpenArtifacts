@@ -718,3 +718,65 @@ curl -sS "$DOC" -o /dev/null -w '%{http_code}\n'            # → 410
 
 `scripts/smoke.sh` runs exactly this sequence against a deployment and checks
 every status.
+
+## Account status and trusted browser actions
+
+These additive routes are served on the API host. They use no browser cookies.
+`GET /api/v1/account` requires a live OAuth-issued bearer token. License keys
+cannot access it. It returns `200` with `cache-control: no-store`:
+
+```json
+{"accountId":"oa_…","plan":"free","limits":{"documents":3,"pushesPerDay":6,"htmlBytes":1048576},"usage":{"documents":1,"pushesToday":2},"externalLinked":false}
+```
+
+Limits reflect the deployment configuration. Usage counts live documents and
+UTC-day reservations across linked owners, including uploads still pending.
+The external identity and email are not included in this publisher response.
+
+`POST /api/v1/account/handoffs` requires the same token and exactly one JSON
+field: `{"purpose":"upgrade"}`, `{"purpose":"billing"}`, or `{"purpose":"link"}`.
+It returns `200` with `{"url":"https://trusted.example/actions?code=…","expiresAt":1800000600000}`
+and `cache-control: no-store`. The timestamp is epoch milliseconds. The URL is
+configured by `ACCOUNT_ACTION_URL`; it must be absolute HTTPS without credentials
+or a fragment. HTTP is allowed only for localhost, 127.0.0.1, or [::1]. An absent
+configuration returns `404` without creating a code; invalid configuration fails
+closed with `500`. Do not send the publisher token to this URL.
+
+Codes contain 256 random bits, expire after ten minutes, and are stored only as
+hashes. At most five actions may remain outstanding per account; the sixth
+returns `429 quota_exceeded`. Minting clears that account's expired entries.
+Revoking the originating machine token also invalidates its unconsumed codes.
+Unknown purposes, extra fields, malformed JSON, and bodies over 1024 bytes
+return `400 bad_request`. Account routes reject license credentials with `401`.
+
+### Trusted service endpoints
+
+These routes require `Authorization: Bearer <ADMIN_API_KEY>`, never a publisher
+credential. They return `404` if the service API is unconfigured and `401` for an
+incorrect credential. Successful responses use `cache-control: no-store`.
+
+`POST /admin/v1/handoffs/consume` accepts exactly `{"code":"…"}`. It atomically
+consumes a live code once and returns:
+
+```json
+{"accountId":"oa_…","email":"user@example.test","purpose":"link","externalOwner":null}
+```
+
+`externalOwner` is the linked identity or null. The service must dispatch only
+the returned purpose and preserve this server-verified account identity through
+its confirmation flow; email is informational, never account proof. Replayed,
+expired, unknown, or originating-token-revoked codes all return `404 not_found`.
+Malformed codes or extra body fields return `400`. A failed authorization does
+not consume the code. Never log codes, include them in analytics, or forward
+these action URLs to third-party resources. The trusted page should remove the
+code from its browser URL after exchange and require explicit confirmation for
+consequential actions; a GET of that page must not itself link an account.
+
+`PUT /admin/v1/accounts/{accountId}/external-owner` accepts exactly
+`{"externalOwner":"…"}`. The trusted caller must freshly prove the external
+identity and obtain the account holder's confirmation before calling this route;
+a license outage cache or matching email does not prove ownership. Success and
+an identical retry return `200` with `{"accountId":"oa_…","externalOwner":"…"}`.
+A conflicting association returns `409 conflict`; invalid identities return
+`400`; a missing local account returns `404`. Associations are permanent and do
+not change plans, credential permissions, document IDs, or stored versions.
