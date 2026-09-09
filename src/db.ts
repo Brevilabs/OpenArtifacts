@@ -161,6 +161,7 @@ export type ListedTokenRow = Pick<TokenRow, "id" | "label" | "created_at" | "las
 export interface PublisherStore {
   read(keyHash: string): Promise<PublisherRow | null>;
   save(row: PublisherRow): Promise<void>;
+  remove(keyHash: string): Promise<void>;
 }
 
 /** Version numbers start at 1; a `docs` row at 0 has never been pushed to. */
@@ -173,6 +174,10 @@ export function d1PublisherStore(db: D1Database): PublisherStore {
         .prepare("SELECT key_hash, plan, validated_at, owner FROM publishers WHERE key_hash = ?")
         .bind(keyHash)
         .first<PublisherRow>();
+    },
+
+    async remove(keyHash) {
+      await db.prepare("DELETE FROM publishers WHERE key_hash = ?").bind(keyHash).run();
     },
 
     // `owner` is written on every validation, like `plan` is. That is a refresh,

@@ -49,6 +49,9 @@ function memoryStore(...seed: PublisherRow[]): MemoryStore {
     async read(keyHash) {
       return rows.get(keyHash) ?? null;
     },
+    async remove(keyHash) {
+      rows.delete(keyHash);
+    },
     async save(row) {
       rows.set(row.key_hash, { ...row });
     },
@@ -343,8 +346,7 @@ describe("resolvePublisher — a key the license server rejects", () => {
     });
 
     expect(result).toMatchObject({ ok: false, reason: "invalid_license" });
-    // Nothing is written, so an unauthorized key never gets a publishers row a
-    // later doc insert records as its owner.
+    // An unauthorized key never acquires a cached validation.
     expect(store.rows.size).toBe(0);
   };
 
@@ -365,7 +367,7 @@ describe("resolvePublisher — a key the license server rejects", () => {
     denied(answers({ isValid: false, backendAccess: true })),
   );
 
-  it("leaves an existing row untouched when the key has since lapsed", async () => {
+  it("forgets a cached validation when the key has since lapsed", async () => {
     const stale = validatedAt(2 * 60 * 60 * 1000);
     const store = memoryStore(stale);
 
@@ -376,9 +378,7 @@ describe("resolvePublisher — a key the license server rejects", () => {
     });
 
     expect(result).toMatchObject({ ok: false, reason: "invalid_license" });
-    // The row stays: it is the only record of which account owns the docs.
-    // It simply stops resolving.
-    expect(store.rows.get(KEY_HASH)).toEqual(stale);
+    expect(store.rows.has(KEY_HASH)).toBe(false);
   });
 
   it("locks out a revoked key that still has a cached validation", async () => {
@@ -394,6 +394,47 @@ describe("resolvePublisher — a key the license server rejects", () => {
     // If it did, revocation would never take effect: each request would fail to
     // revalidate and be waved through on the stale row, forever.
     expect(result).toMatchObject({ ok: false, reason: "invalid_license" });
+  });
+});
+
+describe("rejected credentials cannot use outage fallback", () => {
+  for (const [label, reply] of [
+    ["NOT_FOUND", trpcError("NOT_FOUND", 404)],
+    ["invalid", answers({ isValid: false })],
+    ["no backend access", answers({ isValid: true, backendAccess: false })],
+  ] as const) {
+    it(`forgets ${label} until a fresh validation succeeds`, async () => {
+      const store = memoryStore(validatedAt(LICENSE_CACHE_TTL_MS));
+      expect(await resolvePublisher(KEY, env(), {
+        store, now, fetch: licenseServer(reply).fetch,
+      })).toMatchObject({ ok: false, reason: "invalid_license" });
+
+      expect(await resolvePublisher(KEY, env(), {
+        store, now, fetch: licenseServer(() => Promise.reject(new Error("down"))).fetch,
+      })).toMatchObject({ ok: false, reason: "license_unavailable" });
+
+      expect(await resolvePublisher(KEY, env(), {
+        store, now, fetch: licenseServer(validBeliever).fetch,
+      })).toEqual({ ok: true, publisher: { owner: ACCOUNT, plan: "believer" } });
+      expect(store.rows.get(KEY_HASH)?.owner).toBe(ACCOUNT);
+    });
+  }
+
+  it("does not reuse an outage request's snapshot after another request rejects the key", async () => {
+    const store = memoryStore(validatedAt(LICENSE_CACHE_TTL_MS));
+    let started!: () => void;
+    const pending = new Promise<void>((resolve) => { started = resolve; });
+    let finish!: (response: Response) => void;
+    const response = new Promise<Response>((resolve) => { finish = resolve; });
+    const outage = resolvePublisher(KEY, env(), {
+      store, now, fetch: licenseServer(() => { started(); return response; }).fetch,
+    });
+    await pending;
+    expect(await resolvePublisher(KEY, env(), {
+      store, now, fetch: licenseServer(trpcError("NOT_FOUND", 404)).fetch,
+    })).toMatchObject({ ok: false, reason: "invalid_license" });
+    finish(new Response("down", { status: 503 }));
+    expect(await outage).toMatchObject({ ok: false, reason: "license_unavailable" });
   });
 });
 
@@ -628,6 +669,7 @@ describe("authenticateRequest", () => {
     const store = {
       read: () => Promise.reject(new Error("must not be read")),
       save: () => Promise.reject(new Error("must not be written")),
+      remove: () => Promise.reject(new Error("must not be removed")),
     } satisfies PublisherStore;
 
     for (const header of [undefined, "", "Basic hunter2", "Bearer", `Token ${KEY}`]) {
@@ -660,6 +702,10 @@ function fakeD1(): D1Database & { rows: Map<string, PublisherRow> } {
         return rows.get(String(args[0])) ?? null;
       },
       async run() {
+        if (/^\s*DELETE FROM publishers/i.test(sql)) {
+          rows.delete(String(args[0]));
+          return { success: true };
+        }
         if (!/^\s*INSERT/i.test(sql)) throw new Error(`run() on non-insert: ${sql}`);
         rows.set(String(args[0]), {
           key_hash: String(args[0]),
