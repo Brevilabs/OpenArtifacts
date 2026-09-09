@@ -1,7 +1,7 @@
 import { createExecutionContext, env, waitOnExecutionContext } from "cloudflare:test";
 import { beforeEach, expect, it } from "vitest";
 import type { Env } from "../src/config.js";
-import { deleteDocRow, insertDocWithinQuota, insertVersion, reserveNextVersion } from "../src/db.js";
+import { deleteDocRow, insertDocWithinQuota, insertVersion, reserveNextVersion, tombstoneEmptyDoc } from "../src/db.js";
 import { sha256Hex } from "../src/hash.js";
 import { newApiToken, newDocId, newTokenId } from "../src/ids.js";
 import { linkExternalOwner, publisherSuspended } from "../src/owners.js";
@@ -90,7 +90,7 @@ it("rolls back an empty create and refunds its exact daily reservation when susp
   await env.DB.exec(`CREATE TRIGGER suspend_create AFTER INSERT ON docs BEGIN INSERT INTO publisher_suspensions VALUES (NEW.owner, 1); END`);
   const result = await push(); expect(result.status).toBe(403);
   expect(await result.json()).toMatchObject({ error: { code: "publisher_suspended" } });
-  expect(await env.DB.prepare("SELECT id FROM docs").first()).toBeNull();
+  expect(await env.DB.prepare("SELECT deleted_at FROM docs").first()).toMatchObject({ deleted_at: expect.any(Number) });
   expect(await quota()).toBe(0);
   expect((await env.DOCS.list()).objects).toHaveLength(0);
 });
@@ -141,6 +141,7 @@ it("compensates for a takedown after version insertion without deleting the tomb
 
 it("never rolls back a live placeholder that another writer has populated", async () => {
   const id = await published(); await deleteDocRow(env.DB, id);
+  await tombstoneEmptyDoc(env.DB, id, Date.now());
   expect((await send("GET", `/d/${id}`)).status).toBe(200);
 });
 
@@ -149,7 +150,8 @@ it("withdraws before cleanup failure, returns retryable 500, and removes all R2 
   for (let n = 2; n <= 5; n++) await env.DOCS.put(`docs/${id}/v${n}.html`, "orphan or old version");
   const broken = new Proxy(env.DOCS, { get(target, prop, receiver) {
     if (prop === "delete") return () => Promise.reject(new Error("synthetic R2 failure"));
-    return Reflect.get(target, prop, receiver);
+    const value: unknown = Reflect.get(target, prop, receiver);
+    return typeof value === "function" ? value.bind(target) : value;
   } });
   expect((await send("DELETE", `/admin/v1/docs/${id}`, token)).status).toBe(401);
   expect((await send("DELETE", `/admin/v1/docs/${id}`, SERVICE, undefined, { DOCS: broken })).status).toBe(500);
@@ -161,4 +163,47 @@ it("withdraws before cleanup failure, returns retryable 500, and removes all R2 
   expect(await env.DB.prepare("SELECT deleted_at FROM docs WHERE id = ?").bind(id).first()).toEqual(tombstone);
   expect((await send("DELETE", `/admin/v1/docs/${newDocId()}`)).status).toBe(404);
   expect((await send("DELETE", "/admin/v1/docs/invalid")).status).toBe(404);
+});
+
+it("releases free capacity and quota after rejected-create cleanup fails, retaining a cleanup tombstone", async () => {
+  await env.DB.prepare("UPDATE accounts SET plan = 'free' WHERE id = ?").bind(ACCOUNT).run();
+  await env.DB.exec(`CREATE TRIGGER suspend_create AFTER INSERT ON docs BEGIN INSERT INTO publisher_suspensions VALUES (NEW.owner, 1); END`);
+  const broken = new Proxy(env.DOCS, { get(target, prop, receiver) {
+    if (prop === "delete") return () => Promise.reject(new Error("synthetic R2 failure"));
+    const value: unknown = Reflect.get(target, prop, receiver);
+    return typeof value === "function" ? value.bind(target) : value;
+  } });
+  const result = await send("POST", "/api/v1/docs", token, { html: "<html>Rejected</html>" }, { DOCS: broken });
+  expect(result.status).toBe(403);
+  expect(await quota()).toBe(0);
+  const row = await env.DB.prepare("SELECT id, deleted_at FROM docs").first<{ id: string; deleted_at: number }>();
+  expect(row?.deleted_at).toEqual(expect.any(Number));
+  expect((await env.DOCS.list()).objects).toHaveLength(1);
+  expect((await send("GET", `/d/${row!.id}`)).status).toBe(410);
+  await env.DB.exec("DROP TRIGGER suspend_create");
+  await suspend(ACCOUNT, false);
+  const replacement = await published();
+  expect(replacement).not.toBe(row!.id);
+  expect(await quota()).toBe(1);
+  expect((await send("DELETE", `/admin/v1/docs/${row!.id}`)).status).toBe(204);
+  expect((await env.DOCS.list({ prefix: `docs/${row!.id}/` })).objects).toHaveLength(0);
+  expect(await env.DB.prepare("SELECT deleted_at FROM docs WHERE id = ?").bind(row!.id).first()).toEqual({ deleted_at: row!.deleted_at });
+});
+
+it("refunds a rejected update despite cleanup failure and continues serving its previous version", async () => {
+  const id = await published();
+  await env.DB.exec(`CREATE TRIGGER suspend_update AFTER UPDATE OF latest_version ON docs BEGIN INSERT INTO publisher_suspensions VALUES (NEW.owner, 1); END`);
+  const broken = new Proxy(env.DOCS, { get(target, prop, receiver) {
+    if (prop === "delete") return () => Promise.reject(new Error("synthetic R2 failure"));
+    const value: unknown = Reflect.get(target, prop, receiver);
+    return typeof value === "function" ? value.bind(target) : value;
+  } });
+  expect((await send("PUT", `/api/v1/docs/${id}`, token, { html: "<html>Rejected</html>" }, { DOCS: broken })).status).toBe(403);
+  expect(await quota()).toBe(1);
+  expect((await env.DOCS.list({ prefix: `docs/${id}/` })).objects).toHaveLength(2);
+  expect((await send("GET", `/d/${id}`)).status).toBe(200);
+  expect((await send("GET", `/d/${id}/v2`)).status).toBe(404);
+  expect(await env.DB.prepare("SELECT n FROM versions WHERE doc_id = ?").bind(id).all()).toMatchObject({ results: [{ n: 1 }] });
+  expect((await send("DELETE", `/admin/v1/docs/${id}`)).status).toBe(204);
+  expect((await env.DOCS.list({ prefix: `docs/${id}/` })).objects).toHaveLength(0);
 });

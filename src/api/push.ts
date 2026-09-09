@@ -25,6 +25,7 @@ import { limitReached, planLimits, type PlanLimits } from "../plans.js";
 import type { Env } from "../config.js";
 import {
   deleteDocRow,
+  tombstoneEmptyDoc,
   deleteVersionRow,
   commitVersionMetadata,
   docIsDeleted,
@@ -190,7 +191,10 @@ async function storeVersion(
   }, owner);
 
   if (!committed) {
-    await env.DOCS.delete(key);
+    try { await env.DOCS.delete(key); } catch {
+      // Noncommit is known: cleanup failure must not spend quota or capacity.
+      console.error("Rejected version cleanup failed", { docId, version });
+    }
     return "rejected";
   }
 
@@ -293,7 +297,7 @@ export async function createDoc(
   if (await storeVersion(env, docId, FIRST_VERSION, parsed.body.html, title, now, publisher.owner) !== "stored") {
     const response = await rejectedPush(env, publisher.owner, docId);
     await refundDailyPush(env.DB, publisher.owner, day);
-    await deleteDocRow(env.DB, docId);
+    await tombstoneEmptyDoc(env.DB, docId, now);
     return response;
   }
   return pushed(env, requestUrl, docId, FIRST_VERSION, 201);

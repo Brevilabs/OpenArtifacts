@@ -257,6 +257,12 @@ export async function deleteDocRow(db: D1Database, docId: string): Promise<void>
   await db.prepare("DELETE FROM docs WHERE id = ? AND deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM versions WHERE doc_id = docs.id)").bind(docId).run();
 }
 
+/** Keep a cleanup target for a rejected create without occupying live capacity. */
+export async function tombstoneEmptyDoc(db: D1Database, docId: string, atMs: number): Promise<void> {
+  await db.prepare(`UPDATE docs SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL
+    AND NOT EXISTS (SELECT 1 FROM versions WHERE doc_id = docs.id)`).bind(atMs, docId).run();
+}
+
 /** Whether a doc has been soft-deleted since a push started writing to it. */
 export async function docIsDeleted(db: D1Database, docId: string): Promise<boolean> {
   const row = await db
