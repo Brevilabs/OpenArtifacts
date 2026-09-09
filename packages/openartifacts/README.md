@@ -1,6 +1,7 @@
 # OpenArtifacts CLI
 
-Install the CLI and the shared OpenArtifacts skill into detected Claude Code, Codex, OpenCode, and pi installations:
+Install the CLI and the OpenArtifacts skill into detected Claude Code, Codex, OpenCode,
+and pi installations:
 
 ```bash
 npx openartifacts install
@@ -12,57 +13,46 @@ Hermes Agent needs only its native skill install:
 hermes skills install https://cdn.jsdelivr.net/npm/openartifacts@latest/skill/openartifacts/SKILL.md
 ```
 
-The skill uses an installed `openartifacts` command when available and falls
-back to `npx --yes openartifacts@latest`, so no separate CLI installation is
-required. Run `hermes skills update` to refresh the skill from that source.
+The skill uses an installed `openartifacts` command when available and falls back to
+`npx --yes openartifacts@latest`, so no separate CLI installation is required. Run
+`hermes skills update` to refresh the skill from that source.
 
-The `openartifacts` binary can then preview and publish Markdown or HTML, update the same document on repeat publishes, list and fetch documents, unshare them, and list or revoke machine tokens. The first authenticated command opens the browser device flow and stores the resulting token with owner-only permissions.
+## How publishing works
 
-Render a local review file before publishing (choose a separate output path that
-does not overwrite your source):
-
-```bash
-openartifacts preview notes.md > notes.review.html
-```
-
-Open the review HTML in a browser to inspect the rendered page. The agent skill
-requires the user's explicit approval of that displayed page before every publish
-or update. If the source changes, preview and approve it again. After approval,
-publish the original source path to preserve its existing update mapping:
+The agent is the renderer. It reads the user's document, writes a complete HTML
+file, tells the user where the file is, and ends its turn. When the user later asks
+to publish, the agent runs:
 
 ```bash
-openartifacts publish notes.md --reviewed-sha256 <hash-printed-by-preview>
+openartifacts publish notes.html --title "Notes"
 ```
 
-`preview` prints HTML to stdout without authentication, API requests, or changes to
-publishing state. It wraps the rendered upload HTML in a protected static preview:
-page scripts, network resources, and navigation are disabled only during review.
-It prints the upload HTML's SHA-256 to stderr; `--reviewed-sha256` rejects changed
-content before authentication or upload. The preview explains these limitations above the page. Published HTML remains unchanged.
-OpenArtifacts' serving decorations are not included. Root presentation attributes
-and embedded SVG resources are preserved. The CLI's `publish` command remains
-non-interactive; the agent skill handles rendered review and approval.
+The command prints `{"docId","url","version"}`. Updating the same page is the same
+command with `--doc-id <docId>`, which serves the next version at the same url.
+`openartifacts unshare <docId>` withdraws a page. `list`, `get`, `tokens`, and
+`revoke` round out the account commands.
 
-Set `OPENARTIFACTS_TOKEN` to supply a credential without browser sign-in. Set `OPENARTIFACTS_API_HOST` to target a self-hosted deployment.
+The CLI never renders Markdown and keeps no record of which file became which page.
+Both are the agent's job: it writes the HTML the user reviewed, and it remembers the
+docId from the url it reported or from `openartifacts list`.
 
-## Host adapters
+## Themes
 
-The canonical skill is `skill/openartifacts/SKILL.md`. Hosts such as Copilot bundle
-its **Shared publishing rules** at build time and provide their own execution,
-authentication, identity, and approval UI. No instruction fetch occurs while publishing.
+`skill/openartifacts/themes/*.md` are design specs written for the agent, not CSS.
+The agent reads the named theme and follows it while writing the HTML. The bundled
+`research-memo` theme is the first; `openartifacts install` copies the themes next
+to the installed SKILL.md.
 
-Pin a published package version or vendor a reviewed source snapshot with its
-immutable commit and content hash. Test that bundled rules match that pinned
-source, and refresh them through the host's normal review and release process.
-Copilot uses a vendored snapshot, so its builds and publishing do not depend on
-an npm release. Plugin users do not need Node or npm. Never download executable
-scripts at runtime.
+## Credentials
 
-Skill edits for standalone installations ship in a new npm version through the
-existing release PR workflow.
-The agent skill requires human approval; the non-interactive CLI does not enforce
-human review. The optional `--reviewed-sha256` flag only verifies content consistency.
+The first authenticated command opens the browser device flow and stores the resulting
+token with owner-only permissions. Set `OPENARTIFACTS_TOKEN` to supply a credential
+without browser sign-in; it accepts an OpenArtifacts token or a Brevilabs license key.
+Set `OPENARTIFACTS_API_HOST` to target a self-hosted deployment.
 
-Verify both implementations for protected rendered review, explicit approval,
-unchanged upload HTML, changed-content review, stable updates, cancellation/reopen,
-and exact errors. The server-added Copilot banner remains unchanged.
+## Hosts
+
+Hosts such as Obsidian Copilot ship their own execution wrapper for agents that run
+without Node. They can import the skill text and themes from this package as a
+pinned development dependency at build time. Skill and theme edits ship in a new npm
+version through the existing release PR workflow.

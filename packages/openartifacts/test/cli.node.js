@@ -1,14 +1,40 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, mkdir, readFile, readdir, realpath, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { createHash } from "node:crypto";
-import { createBrowserPreview } from "../src/preview.js";
-import { collectToken, configDir, detectAgents, installSkills, main, npmProcess, presentError, renderFile } from "../src/cli.js";
+import { collectToken, configDir, detectAgents, installSkills, main, npmProcess, preparePublish, presentError } from "../src/cli.js";
 import { APIError } from "../src/client.js";
+
+/** Point the CLI at a scratch config directory and host for one test. */
+async function withEnvironment(values, run) {
+  const names = ["OPENARTIFACTS_CONFIG_DIR", "OPENARTIFACTS_API_HOST", "OPENARTIFACTS_TOKEN"];
+  const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+  const log = console.log;
+  const lines = [];
+  console.log = (line) => lines.push(String(line));
+  for (const name of names) {
+    values[name] === undefined ? delete process.env[name] : process.env[name] = values[name];
+  }
+  try {
+    await run(lines);
+  } finally {
+    console.log = log;
+    for (const [name, value] of Object.entries(previous)) {
+      value === undefined ? delete process.env[name] : process.env[name] = value;
+    }
+  }
+}
+
+async function writeSkillSource(directory, marker) {
+  const source = join(directory, "skill");
+  await mkdir(join(source, "themes"), { recursive: true });
+  await writeFile(join(source, "SKILL.md"), `${marker} skill\n`);
+  await writeFile(join(source, "themes", "research-memo.md"), `${marker} theme\n`);
+  return source;
+}
 
 test("uses each platform's user config directory", () => {
   assert.equal(configDir("darwin", "/home/me", {}), "/home/me/Library/Application Support/openartifacts");
@@ -22,26 +48,30 @@ test("runs npm.cmd through the Windows command processor", () => {
   assert.deepEqual(npmProcess("linux"), { command: "npm", shell: false });
 });
 
-test("rejects an unknown command before authentication", async () => {
+test("rejects unknown commands and malformed arguments before authentication", async () => {
   await assert.rejects(main(["unknown"]), /Usage: openartifacts/);
+  await assert.rejects(main(["list", "extra"]), /Usage: openartifacts/);
+  await assert.rejects(main(["unshare"]), /Usage: openartifacts/);
+  await assert.rejects(main(["publish"]), /Usage: openartifacts/);
+  await assert.rejects(main(["preview", "page.html"]), /Usage: openartifacts/);
 });
 
-test("detects configured agents and installs the same skill into each", async () => {
+test("detects configured agents and installs the skill directory into each", async () => {
   const home = await mkdtemp(join(tmpdir(), "openartifacts-agents-"));
   await mkdir(join(home, ".claude"));
   await mkdir(join(home, ".codex"));
-  const source = join(home, "SKILL.md");
-  await writeFile(source, "shared skill\n");
+  const source = await writeSkillSource(home, "shared");
   const agents = await detectAgents(home, { PATH: "" });
   assert.deepEqual(agents.filter((agent) => agent.detected).map((agent) => agent.name), ["Claude Code", "Codex"]);
   await installSkills(agents, source);
   for (const agent of agents.filter((item) => item.detected)) {
-    assert.equal(await readFile(agent.target, "utf8"), "shared skill\n");
+    assert.equal(await readFile(join(agent.target, "SKILL.md"), "utf8"), "shared skill\n");
+    assert.equal(await readFile(join(agent.target, "themes", "research-memo.md"), "utf8"), "shared theme\n");
   }
-  await writeFile(source, "upgraded skill\n");
+  await writeFile(join(source, "SKILL.md"), "upgraded skill\n");
   await installSkills(agents, source);
   for (const agent of agents.filter((item) => item.detected)) {
-    assert.equal(await readFile(agent.target, "utf8"), "upgraded skill\n");
+    assert.equal(await readFile(join(agent.target, "SKILL.md"), "utf8"), "upgraded skill\n");
   }
 });
 
@@ -55,25 +85,23 @@ test("honours agent-specific config roots", async () => {
     XDG_CONFIG_HOME: join(home, "xdg"),
   });
   const targets = Object.fromEntries(agents.map((agent) => [agent.name, agent.target]));
-  assert.equal(targets["Claude Code"], join(home, "claude-home", "skills", "openartifacts", "SKILL.md"));
-  assert.equal(targets.Codex, join(home, "codex-home", "skills", "openartifacts", "SKILL.md"));
-  assert.equal(targets.OpenCode, join(home, "xdg", "opencode", "skills", "openartifacts", "SKILL.md"));
-  assert.equal(targets.pi, join(home, "pi-home", "skills", "openartifacts", "SKILL.md"));
+  assert.equal(targets["Claude Code"], join(home, "claude-home", "skills", "openartifacts"));
+  assert.equal(targets.Codex, join(home, "codex-home", "skills", "openartifacts"));
+  assert.equal(targets.OpenCode, join(home, "xdg", "opencode", "skills", "openartifacts"));
+  assert.equal(targets.pi, join(home, "pi-home", "skills", "openartifacts"));
 });
 
-test("installer fetches latest and copies its newly installed skill", async () => {
+test("installer fetches latest and copies its newly installed skill and themes", async () => {
   const directory = await mkdtemp(join(tmpdir(), "openartifacts-install-"));
   const bin = join(directory, "bin");
   const globalRoot = join(directory, "global", "node_modules");
   const installedRoot = join(globalRoot, "openartifacts");
   const calls = join(directory, "npm-calls.jsonl");
   await mkdir(bin, { recursive: true });
-  await mkdir(join(installedRoot, "skill", "openartifacts"), { recursive: true });
-  await writeFile(join(installedRoot, "package.json"), JSON.stringify({
-    name: "openartifacts",
-    version: "0.2.0",
-  }));
+  await mkdir(join(installedRoot, "skill", "openartifacts", "themes"), { recursive: true });
+  await writeFile(join(installedRoot, "package.json"), JSON.stringify({ name: "openartifacts", version: "0.2.2" }));
   await writeFile(join(installedRoot, "skill", "openartifacts", "SKILL.md"), "latest skill\n");
+  await writeFile(join(installedRoot, "skill", "openartifacts", "themes", "research-memo.md"), "latest theme\n");
   const fakeNpm = join(bin, "npm");
   await writeFile(fakeNpm, `#!${process.execPath}\nconst { appendFileSync } = require("node:fs");\nconst args = process.argv.slice(2);\nappendFileSync(${JSON.stringify(calls)}, JSON.stringify(args) + "\\n");\nif (args[0] === "root") console.log(${JSON.stringify(globalRoot)});\n`);
   await chmod(fakeNpm, 0o755);
@@ -103,136 +131,153 @@ test("installer fetches latest and copies its newly installed skill", async () =
   ]);
   for (const root of ["claude", "codex", "pi"]) {
     assert.equal(await readFile(join(directory, root, "skills", "openartifacts", "SKILL.md"), "utf8"), "latest skill\n");
+    assert.equal(await readFile(join(directory, root, "skills", "openartifacts", "themes", "research-memo.md"), "utf8"), "latest theme\n");
   }
 });
 
-test("keeps HTML verbatim and renders plain Markdown locally", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "openartifacts-render-"));
-  const html = join(directory, "page.html");
-  const markdown = join(directory, "notes.md");
-  await writeFile(html, "<!doctype html><p>kept</p>");
-  await writeFile(markdown, "# Heading\n\nHello **world**.");
-  assert.equal(await renderFile(html), "<!doctype html><p>kept</p>");
-  assert.match(await renderFile(markdown), /<h1>Heading<\/h1>[\s\S]*<strong>world<\/strong>/);
-  await assert.rejects(renderFile(join(directory, "notes.txt")), /Markdown.*or HTML/);
+test("the shipped skill directory carries the skill and the research-memo theme", async () => {
+  const skill = new URL("../skill/openartifacts/", import.meta.url);
+  assert.match(await readFile(new URL("SKILL.md", skill), "utf8"), /end your turn/i);
+  assert.deepEqual(await readdir(new URL("themes/", skill)), ["research-memo.md"]);
 });
 
-test("validates a publish file before authentication", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "openartifacts-invalid-"));
-  const text = join(directory, "notes.txt");
-  await writeFile(text, "not publishable");
-  const previous = {
-    config: process.env.OPENARTIFACTS_CONFIG_DIR,
-    host: process.env.OPENARTIFACTS_API_HOST,
-    token: process.env.OPENARTIFACTS_TOKEN,
-  };
-  process.env.OPENARTIFACTS_CONFIG_DIR = join(directory, "config");
-  process.env.OPENARTIFACTS_API_HOST = "http://127.0.0.1:1";
-  delete process.env.OPENARTIFACTS_TOKEN;
-  try {
-    await assert.rejects(main(["publish", text]), /Markdown.*or HTML/);
-  } finally {
-    for (const [name, value] of [
-      ["OPENARTIFACTS_CONFIG_DIR", previous.config],
-      ["OPENARTIFACTS_API_HOST", previous.host],
-      ["OPENARTIFACTS_TOKEN", previous.token],
-    ]) value === undefined ? delete process.env[name] : process.env[name] = value;
-  }
-});
-
-test("preview is unauthenticated, leaves config untouched, and matches create and update HTML", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "openartifacts-preview-"));
-  const config = join(directory, "config");
+test("publish reads only HTML files and parses its options before authentication", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openartifacts-prepare-"));
+  const page = join(directory, "My Page.html");
   const markdown = join(directory, "notes.md");
-  const alias = join(directory, "alias.md");
-  const html = join(directory, "page.html");
-  const htmlSource = '<!doctype html><style>p::before{content:"\\00b7"}</style><p>Kept</p>';
-  await writeFile(markdown, "# Heading\n\nHello **world**.");
-  await symlink(markdown, alias);
-  await writeFile(html, htmlSource);
-  const variables = ["OPENARTIFACTS_CONFIG_DIR", "OPENARTIFACTS_API_HOST", "OPENARTIFACTS_TOKEN"];
-  const previous = Object.fromEntries(variables.map((name) => [name, process.env[name]]));
-  process.env.OPENARTIFACTS_CONFIG_DIR = config;
-  process.env.OPENARTIFACTS_API_HOST = "https://preview-test.invalid";
-  delete process.env.OPENARTIFACTS_TOKEN;
-  const requests = [];
-  t.mock.method(globalThis, "fetch", async (url, init) => {
-    requests.push({ url, ...init });
-    return Response.json({ docId: "preview-test", url: "https://example.test/d/preview-test" });
+  await writeFile(page, "<!doctype html><p>kept</p>");
+  await writeFile(markdown, "# Not rendered here");
+  assert.deepEqual(await preparePublish(page, []), {
+    docId: undefined,
+    body: { title: "My Page", html: "<!doctype html><p>kept</p>" },
   });
-  t.mock.method(console, "log", () => {});
-  async function preview(file) {
-    let output = "";
-    const stdout = t.mock.method(process.stdout, "write", (chunk) => { output += chunk; return true; });
-    try {
-      await main(["preview", file]);
-      return output;
-    } finally {
-      stdout.mock.restore();
-    }
-  }
-  try {
-    // Resolving the alias must use the same title and content as publishing it.
-    const rendered = await preview(alias);
-    const uploadHtml = await renderFile(markdown);
-    assert.equal(rendered, createBrowserPreview(uploadHtml));
-    assert.equal(await preview(html), createBrowserPreview(htmlSource));
-    assert.equal(requests.length, 0);
-    await assert.rejects(readdir(config), { code: "ENOENT" });
+  assert.deepEqual(await preparePublish(page, ["--doc-id", "9f2k4mvq7t0xbz3n", "--title", "Notes"]), {
+    docId: "9f2k4mvq7t0xbz3n",
+    body: { title: "Notes", html: "<!doctype html><p>kept</p>" },
+  });
+  // An update without --title omits the field so the server keeps the current title.
+  assert.deepEqual(await preparePublish(page, ["--doc-id", "9f2k4mvq7t0xbz3n"]), {
+    docId: "9f2k4mvq7t0xbz3n",
+    body: { html: "<!doctype html><p>kept</p>" },
+  });
+  await assert.rejects(preparePublish(markdown, []), /HTML file.*Render other formats/);
+  await assert.rejects(preparePublish(page, ["--title"]), /Usage: openartifacts/);
+  await assert.rejects(preparePublish(page, ["--title", "--doc-id"]), /Usage: openartifacts/);
+  await assert.rejects(preparePublish(page, ["--title", "a", "--title", "b"]), /Usage: openartifacts/);
+  await assert.rejects(preparePublish(page, ["--unknown", "x"]), /Usage: openartifacts/);
+  // A blank id must not silently turn an update into a create.
+  await assert.rejects(preparePublish(page, ["--doc-id", ""]), /Usage: openartifacts/);
+  await assert.rejects(preparePublish(page, ["--title", ""]), /Usage: openartifacts/);
+  await assert.rejects(preparePublish(join(directory, "missing.html"), []), { code: "ENOENT" });
 
-    // Even invalid stored credentials are irrelevant to this local operation.
-    await mkdir(config);
-    await writeFile(join(config, "credentials.json"), "invalid credentials JSON");
-    await writeFile(join(config, "state.json"), '{"files":{}}');
-    assert.equal(await preview(alias), rendered);
-    assert.equal(await readFile(join(config, "credentials.json"), "utf8"), "invalid credentials JSON");
-    assert.equal(await readFile(join(config, "state.json"), "utf8"), '{"files":{}}');
-    assert.deepEqual((await readdir(config)).sort(), ["credentials.json", "state.json"]);
-    assert.equal(requests.length, 0);
-
-    process.env.OPENARTIFACTS_TOKEN = "test-token";
-    const hash = createHash("sha256").update(uploadHtml).digest("hex");
-    await writeFile(markdown, "Changed after review");
-    await assert.rejects(main(["publish", alias, "--reviewed-sha256", hash]), /changed after review/);
-    assert.equal(requests.length, 0);
-    await writeFile(markdown, "# Heading\n\nHello **world**.");
-    await main(["publish", alias, "--reviewed-sha256", hash]);
-    await main(["publish", markdown]);
-    await main(["publish", html]);
-    assert.deepEqual(requests.map((request) => request.method), ["POST", "PUT", "POST"]);
-    assert.deepEqual(requests.map((request) => JSON.parse(request.body).html), [uploadHtml, uploadHtml, htmlSource]);
-    const state = JSON.parse(await readFile(join(config, "state.json"), "utf8"));
-    assert.deepEqual(Object.keys(state.files).sort(), [
-      `https://preview-test.invalid\n${await realpath(markdown)}`,
-      `https://preview-test.invalid\n${await realpath(html)}`,
-    ].sort());
-  } finally {
-    for (const [name, value] of Object.entries(previous)) {
-      value === undefined ? delete process.env[name] : process.env[name] = value;
-    }
-  }
+  await withEnvironment({
+    OPENARTIFACTS_CONFIG_DIR: join(directory, "config"),
+    OPENARTIFACTS_API_HOST: "http://127.0.0.1:1",
+  }, async () => {
+    await assert.rejects(main(["publish", markdown]), /HTML file/);
+    await assert.rejects(readdir(join(directory, "config")), { code: "ENOENT" });
+  });
 });
 
-test("preview rejects invalid arguments and inputs without authentication or state writes", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "openartifacts-preview-invalid-"));
-  const unsupported = join(directory, "notes.txt");
-  await writeFile(unsupported, "unsupported");
-  const config = process.env.OPENARTIFACTS_CONFIG_DIR;
-  const token = process.env.OPENARTIFACTS_TOKEN;
-  process.env.OPENARTIFACTS_CONFIG_DIR = join(directory, "config");
-  delete process.env.OPENARTIFACTS_TOKEN;
-  const fetch = t.mock.method(globalThis, "fetch", () => { throw new Error("Unexpected network access"); });
+async function publishingServer() {
+  const requests = [];
+  const control = { staleUpdates: false, missingDeletes: false };
+  const server = createServer((request, response) => {
+    let body = "";
+    request.setEncoding("utf8");
+    request.on("data", (chunk) => { body += chunk; });
+    request.on("end", () => {
+      requests.push({
+        method: request.method,
+        path: request.url,
+        authorization: request.headers.authorization,
+        body: body ? JSON.parse(body) : undefined,
+      });
+      response.setHeader("content-type", "application/json");
+      if ((request.method === "PUT" && control.staleUpdates) || (request.method === "DELETE" && control.missingDeletes)) {
+        response.statusCode = 404;
+        response.end(JSON.stringify({ error: { code: "not_found", message: "Document not found." } }));
+        return;
+      }
+      if (request.method === "DELETE") {
+        response.statusCode = 204;
+        response.end();
+        return;
+      }
+      response.statusCode = request.method === "POST" ? 201 : 200;
+      response.end(JSON.stringify({
+        docId: "9f2k4mvq7t0xbz3n",
+        url: `http://${request.headers.host}/d/9f2k4mvq7t0xbz3n`,
+        version: requests.length,
+      }));
+    });
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address();
+  assert(address && typeof address !== "string");
+  return { server, requests, control, host: `http://127.0.0.1:${address.port}` };
+}
+
+test("publish creates, --doc-id updates, and unshare withdraws using the environment token", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openartifacts-publish-"));
+  const page = join(directory, "notes.html");
+  const html = '<!doctype html><style>p::before{content:"\\00b7"}</style><p>Kept</p>';
+  await writeFile(page, html);
+  const remote = await publishingServer();
   try {
-    await assert.rejects(main(["preview"]), /Usage: openartifacts/);
-    await assert.rejects(main(["preview", unsupported, "extra"]), /Usage: openartifacts/);
-    await assert.rejects(main(["preview", unsupported]), /Markdown.*or HTML/);
-    await assert.rejects(main(["preview", join(directory, "missing.md")]), { code: "ENOENT" });
-    assert.equal(fetch.mock.callCount(), 0);
-    await assert.rejects(readdir(process.env.OPENARTIFACTS_CONFIG_DIR), { code: "ENOENT" });
+    await withEnvironment({
+      OPENARTIFACTS_CONFIG_DIR: join(directory, "config"),
+      OPENARTIFACTS_API_HOST: remote.host,
+      OPENARTIFACTS_TOKEN: "opaque-test-token",
+    }, async (lines) => {
+      await main(["publish", page, "--title", "Notes"]);
+      await main(["publish", page, "--doc-id", "9f2k4mvq7t0xbz3n"]);
+      await main(["unshare", "9f2k4mvq7t0xbz3n"]);
+      assert.deepEqual(lines, [
+        JSON.stringify({ docId: "9f2k4mvq7t0xbz3n", url: `${remote.host}/d/9f2k4mvq7t0xbz3n`, version: 1 }),
+        JSON.stringify({ docId: "9f2k4mvq7t0xbz3n", url: `${remote.host}/d/9f2k4mvq7t0xbz3n`, version: 2 }),
+        "Unshared 9f2k4mvq7t0xbz3n.",
+      ]);
+      // The CLI keeps no publish state; only a credential file could ever exist here.
+      await assert.rejects(readdir(join(directory, "config")), { code: "ENOENT" });
+    });
   } finally {
-    config === undefined ? delete process.env.OPENARTIFACTS_CONFIG_DIR : process.env.OPENARTIFACTS_CONFIG_DIR = config;
-    token === undefined ? delete process.env.OPENARTIFACTS_TOKEN : process.env.OPENARTIFACTS_TOKEN = token;
+    remote.server.close();
   }
+  assert.deepEqual(remote.requests.map(({ method, path }) => [method, path]), [
+    ["POST", "/api/v1/docs"],
+    ["PUT", "/api/v1/docs/9f2k4mvq7t0xbz3n"],
+    ["DELETE", "/api/v1/docs/9f2k4mvq7t0xbz3n"],
+  ]);
+  assert(remote.requests.every((request) => request.authorization === "Bearer opaque-test-token"));
+  assert.deepEqual(remote.requests[0].body, { title: "Notes", html });
+  assert.deepEqual(remote.requests[1].body, { html });
+});
+
+test("a stale --doc-id is reported, never silently replaced", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openartifacts-stale-"));
+  const page = join(directory, "notes.html");
+  await writeFile(page, "<p>One</p>");
+  const remote = await publishingServer();
+  remote.control.staleUpdates = true;
+  try {
+    await withEnvironment({
+      OPENARTIFACTS_CONFIG_DIR: join(directory, "config"),
+      OPENARTIFACTS_API_HOST: remote.host,
+      OPENARTIFACTS_TOKEN: "opaque-test-token",
+    }, async () => {
+      await assert.rejects(
+        main(["publish", page, "--doc-id", "9f2k4mvq7t0xbz3n"]),
+        (error) => error instanceof APIError && error.status === 404 && /without --doc-id to create a new document/.test(error.message),
+      );
+      remote.control.missingDeletes = true;
+      await main(["unshare", "9f2k4mvq7t0xbz3n"]);
+    });
+  } finally {
+    remote.server.close();
+  }
+  assert.deepEqual(remote.requests.map((request) => request.method), ["PUT", "DELETE"]);
 });
 
 test("device polling handles pending, slow down, denial, and expiry", async () => {
@@ -307,126 +352,4 @@ test("prints guidance for current quota and future plan limits", () => {
   assert(lines.some((line) => line.includes("quota window")));
   assert(lines.includes("Limit: 10 documents"));
   assert(lines.includes("Upgrade: https://example.test/upgrade"));
-});
-
-async function publishingServer() {
-  const methods = [];
-  const control = { staleUpdates: false, missingDeletes: false };
-  const server = createServer((request, response) => {
-    methods.push(request.method);
-    response.setHeader("content-type", "application/json");
-    if (request.method === "PUT" && control.staleUpdates) {
-      response.statusCode = 404;
-      response.end(JSON.stringify({ error: { code: "not_found", message: "Document not found." } }));
-      return;
-    }
-    if (request.method === "DELETE" && control.missingDeletes) {
-      response.statusCode = 404;
-      response.end(JSON.stringify({ error: { code: "not_found", message: "Document not found." } }));
-      return;
-    }
-    response.end(JSON.stringify({
-      docId: "9f2k4mvq7t0xbz3n",
-      url: `http://${request.headers.host}/d/9f2k4mvq7t0xbz3n`,
-      version: methods.length,
-    }));
-  });
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  const address = server.address();
-  assert(address && typeof address !== "string");
-  return { server, methods, control, host: `http://127.0.0.1:${address.port}` };
-}
-
-test("repeat publish updates per API host", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "openartifacts-state-"));
-  const markdown = join(directory, "notes.md");
-  await writeFile(markdown, "# One");
-  const first = await publishingServer();
-  const second = await publishingServer();
-  const previous = {
-    config: process.env.OPENARTIFACTS_CONFIG_DIR,
-    host: process.env.OPENARTIFACTS_API_HOST,
-    token: process.env.OPENARTIFACTS_TOKEN,
-    log: console.log,
-  };
-  process.env.OPENARTIFACTS_CONFIG_DIR = join(directory, "config");
-  process.env.OPENARTIFACTS_TOKEN = "opaque-test-token";
-  console.log = () => {};
-  try {
-    process.env.OPENARTIFACTS_API_HOST = first.host;
-    await main(["publish", markdown]);
-    await main(["publish", markdown]);
-    process.env.OPENARTIFACTS_API_HOST = second.host;
-    await main(["publish", markdown]);
-    process.env.OPENARTIFACTS_API_HOST = first.host;
-    await main(["unshare", "9f2k4mvq7t0xbz3n"]);
-    process.env.OPENARTIFACTS_API_HOST = second.host;
-    await main(["publish", markdown]);
-  } finally {
-    console.log = previous.log;
-    for (const [name, value] of [
-      ["OPENARTIFACTS_CONFIG_DIR", previous.config],
-      ["OPENARTIFACTS_API_HOST", previous.host],
-      ["OPENARTIFACTS_TOKEN", previous.token],
-    ]) value === undefined ? delete process.env[name] : process.env[name] = value;
-    first.server.close();
-    second.server.close();
-  }
-  assert.deepEqual(first.methods, ["POST", "PUT", "DELETE"]);
-  assert.deepEqual(second.methods, ["POST", "PUT"]);
-});
-
-test("a stale publish mapping requires explicit replacement", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "openartifacts-stale-"));
-  const markdown = join(directory, "notes.md");
-  await writeFile(markdown, "# One");
-  const remote = await publishingServer();
-  const previous = {
-    config: process.env.OPENARTIFACTS_CONFIG_DIR,
-    host: process.env.OPENARTIFACTS_API_HOST,
-    token: process.env.OPENARTIFACTS_TOKEN,
-    log: console.log,
-  };
-  process.env.OPENARTIFACTS_CONFIG_DIR = join(directory, "config");
-  process.env.OPENARTIFACTS_API_HOST = remote.host;
-  process.env.OPENARTIFACTS_TOKEN = "opaque-test-token";
-  console.log = () => {};
-  try {
-    await main(["publish", markdown]);
-    remote.control.staleUpdates = true;
-    await assert.rejects(
-      main(["publish", markdown]),
-      /openartifacts unshare 9f2k4mvq7t0xbz3n/,
-    );
-    remote.control.missingDeletes = true;
-    await main(["unshare", "9f2k4mvq7t0xbz3n"]);
-    remote.control.staleUpdates = false;
-    await main(["publish", markdown]);
-  } finally {
-    console.log = previous.log;
-    for (const [name, value] of [
-      ["OPENARTIFACTS_CONFIG_DIR", previous.config],
-      ["OPENARTIFACTS_API_HOST", previous.host],
-      ["OPENARTIFACTS_TOKEN", previous.token],
-    ]) value === undefined ? delete process.env[name] : process.env[name] = value;
-    remote.server.close();
-  }
-  assert.deepEqual(remote.methods, ["POST", "PUT", "DELETE", "POST"]);
-});
-
-
-test("protected preview keeps hostile source out of the trusted shell", () => {
-  const source = '<script>fetch("https://example.invalid/leak")</script><meta http-equiv="refresh" content="0;url=https://example.invalid"><p>Note</p>';
-  const preview = createBrowserPreview(source);
-  assert.equal((preview.match(/<script>/g) ?? []).length, 1);
-  assert.equal((preview.match(/<\/script>/g) ?? []).length, 1);
-  assert.match(preview, /role="note">Static preview: scripts, embedded frames, external resources, and navigation are disabled here/);
-  assert.match(preview, /published page keeps the original HTML and may behave differently/);
-  assert.match(preview, /sandbox="allow-same-origin"/);
-  assert.doesNotMatch(preview, /sandbox="allow-scripts"/);
-  assert.match(preview, /script-src 'none'/);
-  assert.match(preview, /connect-src 'none'/);
-  assert.match(preview, /frame-src 'none'/);
-  assert.ok(!preview.includes(source));
 });

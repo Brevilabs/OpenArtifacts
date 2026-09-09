@@ -1,19 +1,15 @@
-import { access, chmod, copyFile, mkdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
+import { access, chmod, cp, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { homedir, hostname, platform } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { createHash } from "node:crypto";
-import { createBrowserPreview } from "./preview.js";
-import { marked } from "marked";
 import { APIError, createClient } from "./client.js";
 
 const DEFAULT_HOST = "https://api.openartifacts.ai";
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const SKILL_SOURCE = join(PACKAGE_ROOT, "skill", "openartifacts", "SKILL.md");
+const SKILL_SOURCE = join(PACKAGE_ROOT, "skill", "openartifacts");
 /** @typedef {{name: string, detected: boolean, target: string}} DetectedAgent */
-/** @typedef {{files: Record<string, {docId: string, url: string}>}} PublishState */
 /** @typedef {{hosts: Record<string, {token: string, tokenId?: string}>}} Credentials */
 
 /** @param {NodeJS.Platform} os @param {string} home @param {NodeJS.ProcessEnv} env */
@@ -58,34 +54,21 @@ export async function detectAgents(home = homedir(), env = process.env) {
     found.push({
       name: agent.name,
       detected: agent.hinted || configured || (await hasCommand(agent.command, env)),
-      target: join(agent.root, "skills", "openartifacts", "SKILL.md"),
+      target: join(agent.root, "skills", "openartifacts"),
     });
   }
   return found;
 }
 
-/** Copy the package's one shared skill into every detected agent.
+/** Copy the skill directory (SKILL.md and its themes) into every detected agent.
  * @param {DetectedAgent[]} agents @param {string} [source]
  */
 export async function installSkills(agents, source = SKILL_SOURCE) {
   for (const agent of agents) {
     if (!agent.detected) continue;
     await mkdir(dirname(agent.target), { recursive: true });
-    await copyFile(source, agent.target);
+    await cp(source, agent.target, { recursive: true });
   }
-}
-
-/** @param {string} file */
-export async function renderFile(file) {
-  const extension = extname(file).toLowerCase();
-  if (![".md", ".markdown", ".html", ".htm"].includes(extension)) {
-    throw new Error("Publish a Markdown (.md, .markdown) or HTML (.html, .htm) file.");
-  }
-  const source = await readFile(file, "utf8");
-  if ([".html", ".htm"].includes(extension)) return source;
-  const title = basename(file, extname(file));
-  const escaped = title.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escaped}</title><style>body{max-width:48rem;margin:3rem auto;padding:0 1rem;font:18px/1.6 system-ui;color:#222}img{max-width:100%}pre{overflow:auto;padding:1rem;background:#f5f5f5}code{font-family:ui-monospace,monospace}</style></head><body>${marked.parse(source)}</body></html>`;
 }
 
 /** @template T @param {string} path @param {T} fallback @returns {Promise<T>} */
@@ -218,25 +201,50 @@ async function install() {
   const installedManifest = JSON.parse(await readFile(join(installedRoot, "package.json"), "utf8"));
   console.log(`CLI: installed ${installedManifest.name}@${installedManifest.version}`);
   const agents = await detectAgents();
-  await installSkills(agents, join(installedRoot, "skill", "openartifacts", "SKILL.md"));
+  await installSkills(agents, join(installedRoot, "skill", "openartifacts"));
   for (const agent of agents) {
     console.log(`${agent.name}: ${agent.detected ? `installed ${agent.target}` : "not detected"}`);
   }
 }
 
-const HELP = `Usage: openartifacts <command> [argument]
+const HELP = `Usage: openartifacts <command> [argument] [options]
 
 Commands:
   install            Install or upgrade the CLI and detected agent skills
   login              Approve this machine and store its token
-  preview <file>     Print rendered HTML locally without publishing or signing in
-  publish <file> [--reviewed-sha256 <hash>]
-                     Publish Markdown or HTML; repeat to update the same document
+  publish <file.html> [--title <title>] [--doc-id <docId>]
+                     Publish an HTML file; pass --doc-id to update an existing document
   list               List published documents
   get <docId>        Print a document's current HTML
   unshare <docId>    Withdraw a public document
   tokens             List this account's machine tokens
   revoke <tokenId>   Revoke a machine token`;
+
+/**
+ * Read the HTML file and the publish options before any authentication. A create
+ * defaults the title to the file name; an update omits it so the server keeps the
+ * current title unless --title was given.
+ * @param {string} file @param {string[]} options
+ * @returns {Promise<{docId?: string, body: {title?: string, html: string}}>}
+ */
+export async function preparePublish(file, options) {
+  if (![".html", ".htm"].includes(extname(file).toLowerCase())) {
+    throw new Error("Publish an HTML file (.html, .htm). Render other formats to HTML first.");
+  }
+  /** @type {{title?: string, docId?: string}} */
+  const flags = {};
+  for (let index = 0; index < options.length; index += 2) {
+    const [flag, value] = [options[index], options[index + 1]];
+    if (!value || value.startsWith("--")) throw new Error(HELP);
+    if (flag === "--title" && flags.title === undefined) flags.title = value;
+    else if (flag === "--doc-id" && flags.docId === undefined) flags.docId = value;
+    else throw new Error(HELP);
+  }
+  const path = resolve(file);
+  const html = await readFile(path, "utf8");
+  const title = flags.title ?? (flags.docId ? undefined : basename(path, extname(path)));
+  return { docId: flags.docId, body: title === undefined ? { html } : { title, html } };
+}
 
 /** CLI entry point. */
 /** @param {string[]} args */
@@ -246,22 +254,16 @@ export async function main(args) {
     console.log(HELP);
     return;
   }
-  if (!["install", "login", "preview", "publish", "list", "get", "unshare", "tokens", "revoke"].includes(command)) {
+  if (!["install", "login", "publish", "list", "get", "unshare", "tokens", "revoke"].includes(command)) {
     throw new Error(HELP);
   }
-  const needsArgument = ["preview", "publish", "get", "unshare", "revoke"].includes(command);
-  const reviewedHash = command === "publish" && extra.length === 2 && extra[0] === "--reviewed-sha256" && /^[a-f0-9]{64}$/.test(extra[1] ?? "") ? extra[1] : undefined;
-  if ((extra.length && !reviewedHash) || (needsArgument && !argument) || (!needsArgument && argument)) {
+  const needsArgument = ["publish", "get", "unshare", "revoke"].includes(command);
+  if ((extra.length && command !== "publish") || (needsArgument && !argument) || (!needsArgument && argument)) {
     throw new Error(HELP);
   }
   const value = argument ?? "";
   if (command === "install") return install();
-  if (command === "preview") {
-    const html = await renderFile(await realpath(resolve(value)));
-    process.stdout.write(createBrowserPreview(html));
-    console.error(`Reviewed SHA-256: ${createHash("sha256").update(html).digest("hex")}`);
-    return;
-  }
+  const prepared = command === "publish" ? await preparePublish(value, extra) : undefined;
 
   const host = (process.env.OPENARTIFACTS_API_HOST ?? DEFAULT_HOST).replace(/\/$/, "");
   const directory = configDir();
@@ -270,42 +272,21 @@ export async function main(args) {
     return;
   }
 
-  /** @type {{file: string, body: {title: string, html: string}} | undefined} */
-  let preparedPublish;
-  if (command === "publish") {
-    const file = await realpath(resolve(value));
-    const html = await renderFile(file);
-    if (reviewedHash && createHash("sha256").update(html).digest("hex") !== reviewedHash) {
-      throw new Error("The source changed after review. Generate a new preview and obtain approval again.");
-    }
-    preparedPublish = {
-      file,
-      body: { title: basename(file, extname(file)), html },
-    };
-  }
-
   const token = await credential(host, directory);
   const client = createClient({ host, token });
 
-  if (command === "publish") {
-    if (!preparedPublish) throw new Error("Publish input was not prepared.");
-    const { file, body } = preparedPublish;
-    const fileKey = `${host}\n${file}`;
-    const statePath = join(directory, "state.json");
-    const state = await readJson(statePath, /** @type {PublishState} */ ({ files: {} }));
-    const previous = state.files[fileKey];
-    let published;
+  if (prepared) {
     try {
-      published = previous ? await client.updateDoc(previous.docId, body) : await client.createDoc(body);
+      const published = prepared.docId
+        ? await client.updateDoc(prepared.docId, prepared.body)
+        : await client.createDoc(prepared.body);
+      console.log(JSON.stringify(published));
     } catch (error) {
-      if (previous && error instanceof APIError && error.status === 404) {
-        error.message += ` To intentionally replace it, run \`openartifacts unshare ${previous.docId}\`, then publish again.`;
+      if (prepared.docId && error instanceof APIError && error.status === 404) {
+        error.message += ` No document ${prepared.docId} is in this account. Publish without --doc-id to create a new document.`;
       }
       throw error;
     }
-    state.files[fileKey] = { docId: published.docId, url: published.url };
-    await writePrivateJson(statePath, state);
-    console.log(published.url);
   } else if (command === "list") {
     console.log(JSON.stringify(await client.listDocs(), null, 2));
   } else if (command === "get") {
@@ -314,12 +295,6 @@ export async function main(args) {
     process.stdout.write(await client.readDocument(doc.url));
   } else if (command === "unshare") {
     await client.unshare(value);
-    const statePath = join(directory, "state.json");
-    const state = await readJson(statePath, /** @type {PublishState} */ ({ files: {} }));
-    for (const [fileKey, entry] of Object.entries(state.files)) {
-      if (fileKey.startsWith(`${host}\n`) && entry.docId === value) delete state.files[fileKey];
-    }
-    await writePrivateJson(statePath, state);
     console.log(`Unshared ${value}.`);
   } else if (command === "tokens") {
     console.log(JSON.stringify((await client.listTokens()).tokens, null, 2));

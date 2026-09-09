@@ -1,7 +1,7 @@
 {
   "name": "openartifacts",
-  "version": "0.2.1",
-  "description": "Install the OpenArtifacts agent skill and publish files from the terminal",
+  "version": "0.2.2",
+  "description": "Install the OpenArtifacts agent skill and publish agent-rendered HTML from the terminal",
   "keywords": [
     "agent-skills",
     "publishing",
@@ -41,8 +41,5 @@
   "scripts": {
     "test": "node --test test/cli.node.js",
     "typecheck": "tsc -p tsconfig.json"
-  },
-  "dependencies": {
-    "marked": "^18.0.11"
   }
 }
