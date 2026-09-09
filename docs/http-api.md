@@ -55,9 +55,9 @@ accept an account id to select whose documents to access; ownership is derived
 from the credential. The separate admin API and optional account-token upgrade
 link expose account ids for routing, not as publisher credentials.
 
-**License-key publishing requires a paid plan.** Both current license-server
-paid plans are entitled: `PLUS` subscriptions and the lifetime `BELIEVER` plan (sold as
-Supporter). An unknown or otherwise ineligible plan is refused with `401
+**License-key publishing requires a paid plan.** Eligible `PLUS` subscriptions
+and `BELIEVER` accounts (sold as Supporter) can publish with a license key,
+subject to their hosted-access period. An unknown or otherwise ineligible plan is refused with `401
 unauthorized` like every other auth failure, so only the human-readable
 `message` distinguishes it.
 
