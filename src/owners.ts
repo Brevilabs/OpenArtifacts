@@ -17,6 +17,15 @@ export const OWNER_SCOPE_SQL = `WITH canonical AS (
   SELECT external_owner FROM owner_links JOIN canonical ON account_id = id
 )`;
 
+export const UNSUSPENDED_SQL = `NOT EXISTS (
+  SELECT 1 FROM publisher_suspensions WHERE owner IN (SELECT owner FROM owner_scope)
+)`;
+
+export async function publisherSuspended(db: D1Database, owner: string): Promise<boolean> {
+  return await db.prepare(`${OWNER_SCOPE_SQL} SELECT 1 WHERE NOT (${UNSUSPENDED_SQL})`)
+    .bind(owner, owner).first() !== null;
+}
+
 export type OwnerLinkResult = "linked" | "conflict" | "invalid" | "account_not_found";
 
 /**

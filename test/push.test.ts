@@ -845,7 +845,8 @@ describe("races the review found", () => {
                       const result = await bt.run();
                       if (!raced) {
                         raced = true;
-                        const docId = String(args[0]);
+                        // The first two bindings resolve the joined publisher scope.
+                        const docId = String(args[2]);
                         await env.DB.prepare("UPDATE docs SET deleted_at = ? WHERE id = ?")
                           .bind(Date.now(), docId)
                           .run();

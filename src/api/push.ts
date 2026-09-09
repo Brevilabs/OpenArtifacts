@@ -18,6 +18,7 @@
  * the failure may equally be the version insert *after* a successful write, and
  * a rollback there would strand the object it names.
  */
+import { publisherSuspended } from "../owners.js";
 import type { Publisher } from "../auth.js";
 import { MAX_DOCS_PER_PUBLISHER, MAX_DOC_BYTES, MAX_PUSHES_PER_DAY } from "../config.js";
 import { limitReached, planLimits, type PlanLimits } from "../plans.js";
@@ -155,8 +156,8 @@ function planHtmlExceeded(env: Env, publisher: Publisher, limits: PlanLimits): R
  * writes cannot collide with another push and the object it writes is never
  * read back or rewritten.
  *
- * Returns false when a concurrent delete won the race and this version was
- * rolled back; see below.
+ * Rejects when deletion or suspension wins before insertion; a later deletion
+ * is compensated below. Suspension after insertion keeps the committed version.
  */
 async function storeVersion(
   env: Env,
@@ -165,7 +166,8 @@ async function storeVersion(
   html: string,
   title: string | null,
   atMs: number,
-): Promise<boolean> {
+  owner: string,
+): Promise<"stored" | "rejected"> {
   // The publisher's own bytes, unmodified. OpenArtifacts' additions go in when the
   // document is served, so a byline change — or a plan that removes one —
   // reaches documents already published. `size` is therefore the size of what
@@ -177,7 +179,7 @@ async function storeVersion(
     httpMetadata: { contentType: STORED_CONTENT_TYPE },
   });
 
-  await insertVersion(env.DB, {
+  const committed = await insertVersion(env.DB, {
     doc_id: docId,
     n: version,
     size: bytes.byteLength,
@@ -185,7 +187,12 @@ async function storeVersion(
     // nothing, which is how the doc's title survives a push that omits one.
     title,
     created_at: atMs,
-  });
+  }, owner);
+
+  if (!committed) {
+    await env.DOCS.delete(key);
+    return "rejected";
+  }
 
   // A delete that lands between the version reservation and this write has
   // already finished its prefix scan, so it never saw these bytes: unshare
@@ -198,10 +205,19 @@ async function storeVersion(
   if (await docIsDeleted(env.DB, docId)) {
     await env.DOCS.delete(key);
     await deleteVersionRow(env.DB, docId, version);
-    return false;
+    return "rejected";
   }
 
-  return true;
+  return "stored";
+}
+
+function suspended(): Response {
+  return errorResponse("publisher_suspended", "Publishing is suspended. Contact support.");
+}
+
+async function rejectedPush(env: Env, owner: string, docId: string): Promise<Response> {
+  if (!(await ownsLiveDoc(env.DB, docId, owner))) return docNotFound(docId);
+  return await publisherSuspended(env.DB, owner) ? suspended() : docNotFound(docId);
 }
 
 function pushed(env: Env, requestUrl: URL, docId: string, version: number, status: number) {
@@ -223,6 +239,8 @@ export async function createDoc(
   if (limits && parsed.body.htmlBytes > limits.htmlBytes) {
     return planHtmlExceeded(env, publisher, limits);
   }
+
+  if (await publisherSuspended(env.DB, publisher.owner)) return suspended();
 
   const maxDocs = limits?.documents ?? MAX_DOCS_PER_PUBLISHER;
   const now = Date.now();
@@ -248,6 +266,7 @@ export async function createDoc(
     maxDocs,
   );
   if (!inserted) {
+    if (await publisherSuspended(env.DB, publisher.owner)) return suspended();
     if (limits) {
       return limitReached(
         env, publisher, "documents",
@@ -271,9 +290,11 @@ export async function createDoc(
   // while its first version is still being written. Same answer as an update
   // that loses that race — the doc is gone, and the push is given back rather
   // than spent on a url that would serve 410.
-  if (!(await storeVersion(env, docId, FIRST_VERSION, parsed.body.html, title, now))) {
+  if (await storeVersion(env, docId, FIRST_VERSION, parsed.body.html, title, now, publisher.owner) !== "stored") {
+    const response = await rejectedPush(env, publisher.owner, docId);
     await refundDailyPush(env.DB, publisher.owner, day);
-    return docNotFound(docId);
+    await deleteDocRow(env.DB, docId);
+    return response;
   }
   return pushed(env, requestUrl, docId, FIRST_VERSION, 201);
 }
@@ -299,6 +320,7 @@ export async function updateDoc(
   if (!(await ownsLiveDoc(env.DB, docId, publisher.owner))) {
     return docNotFound(docId);
   }
+  if (await publisherSuspended(env.DB, publisher.owner)) return suspended();
   if (limits && parsed.body.htmlBytes > limits.htmlBytes) {
     return planHtmlExceeded(env, publisher, limits);
   }
@@ -315,7 +337,7 @@ export async function updateDoc(
   const version = await reserveNextVersion(env.DB, docId, publisher.owner);
   if (version === null) {
     await refundDailyPush(env.DB, publisher.owner, day);
-    return docNotFound(docId);
+    return await rejectedPush(env, publisher.owner, docId);
   }
 
   // Absent title keeps the doc's current one; a blank one resets it, same as on
@@ -326,9 +348,9 @@ export async function updateDoc(
   // The doc can still be deleted while this version is being written. Answering
   // 200 would hand back a url that serves 410, so a lost race reads as what it
   // is from the caller's side: the doc is gone.
-  if (!(await storeVersion(env, docId, version, parsed.body.html, title, now))) {
+  if (await storeVersion(env, docId, version, parsed.body.html, title, now, publisher.owner) !== "stored") {
     await refundDailyPush(env.DB, publisher.owner, day);
-    return docNotFound(docId);
+    return await rejectedPush(env, publisher.owner, docId);
   }
 
   // Only now: the title and timestamp in "my docs" describe what the public url

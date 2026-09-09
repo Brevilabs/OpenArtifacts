@@ -3,6 +3,7 @@
  * The code is stable for clients to match; the message stays free to change.
  */
 export type ErrorCode =
+  | "publisher_suspended"
   | "conflict"
   | "bad_request"
   | "unauthorized"
@@ -23,6 +24,7 @@ export type ErrorCode =
   | "access_denied";
 
 const ERROR_STATUS: Record<ErrorCode, number> = {
+  publisher_suspended: 403,
   conflict: 409,
   bad_request: 400,
   unauthorized: 401,

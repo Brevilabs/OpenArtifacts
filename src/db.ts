@@ -5,7 +5,7 @@
  * every row here is reconstructible from it, so a lost D1 is a rebuild rather
  * than a data loss. Queries land here as the phase that needs them arrives.
  */
-import { OWNER_SCOPE_SQL } from "./owners.js";
+import { OWNER_SCOPE_SQL, UNSUSPENDED_SQL } from "./owners.js";
 
 /** Publisher row, which doubles as the license-validation cache (phase 2). */
 export interface PublisherRow {
@@ -227,7 +227,7 @@ export async function insertDocWithinQuota(
       `${OWNER_SCOPE_SQL}
        INSERT INTO docs (id, owner, title, latest_version, created_at, updated_at)
        SELECT ?, ?, ?, ?, ?, ?
-        WHERE (SELECT COUNT(*) FROM docs WHERE owner IN (SELECT owner FROM owner_scope) AND deleted_at IS NULL) < ?`,
+        WHERE (SELECT COUNT(*) FROM docs WHERE owner IN (SELECT owner FROM owner_scope) AND deleted_at IS NULL) < ? AND ${UNSUSPENDED_SQL}`,
     )
     .bind(
       doc.owner,
@@ -247,14 +247,14 @@ export async function insertDocWithinQuota(
 
 /**
  * Hard-delete a `docs` row. Only for rolling back a create that failed after the
- * row existed: the id was minted this request and nothing else can have seen it,
- * so there are no versions, no objects, and no url to leave behind.
+ * row existed. Only an empty live placeholder can be removed: a concurrent
+ * writer or takedown may already have made the row permanent.
  *
  * Unsharing a *published* doc is a soft delete (`softDeleteDoc`) — that row has
  * to survive so its url keeps answering 410 rather than pretending it never was.
  */
 export async function deleteDocRow(db: D1Database, docId: string): Promise<void> {
-  await db.prepare("DELETE FROM docs WHERE id = ?").bind(docId).run();
+  await db.prepare("DELETE FROM docs WHERE id = ? AND deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM versions WHERE doc_id = docs.id)").bind(docId).run();
 }
 
 /** Whether a doc has been soft-deleted since a push started writing to it. */
@@ -311,6 +311,7 @@ export async function reserveNextVersion(
        UPDATE docs
           SET latest_version = latest_version + 1
         WHERE id = ? AND owner IN (SELECT owner FROM owner_scope) AND deleted_at IS NULL
+          AND ${UNSUSPENDED_SQL}
         RETURNING latest_version`,
     )
     .bind(owner, owner, docId)
@@ -382,11 +383,14 @@ export async function commitVersionMetadata(
  * ordering chooses to allow: it costs storage, where a row with no object would
  * be a doc that 500s.
  */
-export async function insertVersion(db: D1Database, version: VersionRow): Promise<void> {
-  await db
-    .prepare("INSERT INTO versions (doc_id, n, size, title, created_at) VALUES (?, ?, ?, ?, ?)")
-    .bind(version.doc_id, version.n, version.size, version.title, version.created_at)
-    .run();
+export async function insertVersion(db: D1Database, version: VersionRow, owner: string): Promise<boolean> {
+  const result = await db.prepare(`${OWNER_SCOPE_SQL}
+    INSERT INTO versions (doc_id, n, size, title, created_at)
+    SELECT ?, ?, ?, ?, ? FROM docs WHERE id = ? AND owner IN (SELECT owner FROM owner_scope)
+      AND deleted_at IS NULL AND ${UNSUSPENDED_SQL}`)
+    .bind(owner, owner, version.doc_id, version.n, version.size,
+      version.title, version.created_at, version.doc_id).run();
+  return (result.meta.changes ?? 0) > 0;
 }
 
 /** What the serving path needs to know about a doc, in one read. */

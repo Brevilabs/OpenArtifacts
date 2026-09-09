@@ -817,3 +817,22 @@ has no association, or `404` when the account is unknown. This read supports
 recovery when association succeeds but a trusted caller's subsequent local
 write fails. It does not require retaining a raw external credential or
 replaying a consumed handoff. Responses use `cache-control: no-store`.
+
+### Operator controls (trusted service only)
+
+On the configured API host, `PUT /admin/v1/publishers/:owner/suspension`
+accepts exactly `{"suspended":true}` or `{"suspended":false}` and returns
+`{owner,suspended}`. It uses the same service bearer credential as the account
+admin routes; an unset credential disables the route. A suspension covers the
+owner's joined identities, including later links; restoration clears the current
+joined scope. Suspended publishers retain read, list, token and unshare access.
+Publishing returns `403` with error code `publisher_suspended`. Foreign or
+withdrawn documents retain the existing `404` response. Writes rejected before
+version commit refund their daily reservation; earlier committed versions remain.
+
+`DELETE /admin/v1/docs/:docId` permanently withdraws a document and returns `204`
+after paginated object cleanup. Unknown IDs return `404`. Cleanup failure returns
+`500 internal`; the current and pinned URLs already return `410`, and repeating
+the DELETE retries cleanup. Tombstones are never erased. Publisher-facing DELETE
+behavior is unchanged. See [the operator runbook](operator-runbook.md) for target
+verification and secret handling.

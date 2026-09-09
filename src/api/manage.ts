@@ -55,7 +55,7 @@ export interface DeleteDeps {
  * can hold more than a page of versions — 100 pushes a day compounds — so this
  * pages rather than assuming one listing covers it.
  */
-async function deleteDocObjects(env: Env, docId: string, objectBatch: number): Promise<void> {
+export async function deleteDocObjects(env: Env, docId: string, objectBatch = OBJECT_BATCH): Promise<void> {
   const prefix = docObjectPrefix(docId);
   let cursor: string | undefined;
 
