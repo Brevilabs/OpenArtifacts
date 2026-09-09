@@ -5,6 +5,7 @@
  * every row here is reconstructible from it, so a lost D1 is a rebuild rather
  * than a data loss. Queries land here as the phase that needs them arrives.
  */
+import { OWNER_SCOPE_SQL } from "./owners.js";
 
 /** Publisher row, which doubles as the license-validation cache (phase 2). */
 export interface PublisherRow {
@@ -223,18 +224,20 @@ export async function insertDocWithinQuota(
 ): Promise<boolean> {
   const result = await db
     .prepare(
-      `INSERT INTO docs (id, owner, title, latest_version, created_at, updated_at)
+      `${OWNER_SCOPE_SQL}
+       INSERT INTO docs (id, owner, title, latest_version, created_at, updated_at)
        SELECT ?, ?, ?, ?, ?, ?
-        WHERE (SELECT COUNT(*) FROM docs WHERE owner = ? AND deleted_at IS NULL) < ?`,
+        WHERE (SELECT COUNT(*) FROM docs WHERE owner IN (SELECT owner FROM owner_scope) AND deleted_at IS NULL) < ?`,
     )
     .bind(
+      doc.owner,
+      doc.owner,
       doc.id,
       doc.owner,
       doc.title,
       FIRST_VERSION,
       doc.created_at,
       doc.updated_at,
-      doc.owner,
       maxDocs,
     )
     .run();
@@ -304,12 +307,13 @@ export async function reserveNextVersion(
 ): Promise<number | null> {
   const reserved = await db
     .prepare(
-      `UPDATE docs
+      `${OWNER_SCOPE_SQL}
+       UPDATE docs
           SET latest_version = latest_version + 1
-        WHERE id = ? AND owner = ? AND deleted_at IS NULL
+        WHERE id = ? AND owner IN (SELECT owner FROM owner_scope) AND deleted_at IS NULL
         RETURNING latest_version`,
     )
-    .bind(docId, owner)
+    .bind(owner, owner, docId)
     .first<{ latest_version: number }>();
 
   return reserved?.latest_version ?? null;
@@ -445,8 +449,8 @@ export async function ownsLiveDoc(
   owner: string,
 ): Promise<boolean> {
   const row = await db
-    .prepare("SELECT 1 FROM docs WHERE id = ? AND owner = ? AND deleted_at IS NULL")
-    .bind(docId, owner)
+    .prepare(`${OWNER_SCOPE_SQL} SELECT 1 FROM docs WHERE id = ? AND owner IN (SELECT owner FROM owner_scope) AND deleted_at IS NULL`)
+    .bind(owner, owner, docId)
     .first();
 
   return row !== null;
@@ -474,12 +478,13 @@ export async function softDeleteDoc(
 ): Promise<boolean> {
   const deleted = await db
     .prepare(
-      `UPDATE docs
+      `${OWNER_SCOPE_SQL}
+       UPDATE docs
           SET deleted_at = ?
-        WHERE id = ? AND owner = ? AND deleted_at IS NULL
+        WHERE id = ? AND owner IN (SELECT owner FROM owner_scope) AND deleted_at IS NULL
         RETURNING id`,
     )
-    .bind(atMs, docId, owner)
+    .bind(owner, owner, atMs, docId)
     .first<{ id: string }>();
 
   return deleted !== null;
@@ -551,19 +556,21 @@ export async function listPublisherDocs(
     after === null
       ? db
           .prepare(
-            `SELECT ${columns} FROM docs d
-              WHERE d.owner = ? AND d.deleted_at IS NULL
+            `${OWNER_SCOPE_SQL}
+             SELECT ${columns} FROM docs d
+              WHERE d.owner IN (SELECT owner FROM owner_scope) AND d.deleted_at IS NULL
               ${order}`,
           )
-          .bind(owner, limit)
+          .bind(owner, owner, limit)
       : db
           .prepare(
-            `SELECT ${columns} FROM docs d
-              WHERE d.owner = ? AND d.deleted_at IS NULL
+            `${OWNER_SCOPE_SQL}
+             SELECT ${columns} FROM docs d
+              WHERE d.owner IN (SELECT owner FROM owner_scope) AND d.deleted_at IS NULL
                 AND (d.created_at, d.id) < (?, ?)
               ${order}`,
           )
-          .bind(owner, after.created_at, after.id, limit);
+          .bind(owner, owner, after.created_at, after.id, limit);
 
   return (await statement.all<DocListRow>()).results;
 }

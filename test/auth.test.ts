@@ -673,7 +673,7 @@ function fakeD1(): D1Database & { rows: Map<string, PublisherRow> } {
       // first handler on the other side of it, and all it wants to know is that
       // this publisher holds no docs. Auth is what these tests are about.
       async all() {
-        if (!/^\s*SELECT/i.test(sql)) throw new Error(`all() on non-select: ${sql}`);
+        if (!/^\s*(SELECT|WITH)/i.test(sql)) throw new Error(`all() on non-select: ${sql}`);
         return { results: [] };
       },
     };

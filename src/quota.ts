@@ -5,6 +5,7 @@
  * Copilot user never reaches any of them. The numbers themselves live in
  * `config.ts`; this file is how they are counted.
  */
+import { OWNER_SCOPE_SQL } from "./owners.js";
 import { MAX_DOC_BYTES, MAX_PUSHES_PER_DAY } from "./config.js";
 
 /**
@@ -88,9 +89,10 @@ export function utcDay(atMs: number): string {
  *
  * Claim rather than check: the count is read and incremented by a single
  * statement, so two concurrent pushes cannot both see 99 and both proceed. The
- * `WHERE` on the upsert's update branch is what enforces the limit — when it
- * fails SQLite leaves the row alone and `RETURNING` yields nothing, which is
- * the rejection.
+ * insert's predicate sums both linked owners before either insert or update.
+ * When it fails SQLite leaves the row alone and `RETURNING` yields nothing.
+ * The bucket retains the credential owner so refunds crossing a link still
+ * return the exact reservation, without moving or resetting either counter.
  */
 export async function reserveDailyPush(
   db: D1Database,
@@ -100,12 +102,16 @@ export async function reserveDailyPush(
 ): Promise<boolean> {
   const claimed = await db
     .prepare(
-      `INSERT INTO push_quota (owner, day, pushes) VALUES (?, ?, 1)
+      `${OWNER_SCOPE_SQL}
+       INSERT INTO push_quota (owner, day, pushes)
+       SELECT ?, ?, 1 WHERE (
+         SELECT COALESCE(SUM(pushes), 0) FROM push_quota
+          WHERE owner IN (SELECT owner FROM owner_scope) AND day = ?
+       ) < ?
        ON CONFLICT(owner, day) DO UPDATE SET pushes = push_quota.pushes + 1
-         WHERE push_quota.pushes < ?
        RETURNING pushes`,
     )
-    .bind(owner, day, limit)
+    .bind(owner, owner, owner, day, day, limit)
     .first<{ pushes: number }>();
 
   return claimed !== null;
