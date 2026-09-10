@@ -37,8 +37,8 @@ async function send(method: string, path: string, credential: string, body?: unk
 }
 const consume = (code: string, credential = SERVICE) => send("POST", "/admin/v1/handoffs/consume", credential, { code });
 const count = async () => (await env.DB.prepare("SELECT COUNT(*) AS n FROM account_handoffs").first<{ n: number }>())!.n;
-async function mint(purpose = "upgrade", credential = token) {
-  const response = await send("POST", "/api/v1/account/handoffs", credential, { purpose });
+async function mint(credential = token) {
+  const response = await send("POST", "/api/v1/account/handoffs", credential);
   expect(response.status).toBe(200);
   expect(response.headers.get("cache-control")).toBe("no-store");
   const result = await response.json() as { url: string; expiresAt: number };
@@ -53,16 +53,16 @@ it("reports account plan, limits, combined usage and association without reveali
   }
   const response = await send("GET", "/api/v1/account", token);
   expect(response.status).toBe(200);
-  expect(await response.json()).toEqual({ accountId: ACCOUNT, plan: "free", limits: { documents: 1, pushesPerDay: 6, htmlBytes: 1048576 }, usage: { documents: 2, pushesToday: 4 }, externalLinked: true });
+  expect(await response.json()).toEqual({ accountId: ACCOUNT, plan: "free", limits: { documents: 1, pushesPerDay: 6, htmlBytes: 1048576 }, usage: { documents: 2, pushesToday: 4 }, externalLinked: true, refresh: { status: "unavailable", checkedAt: null, expiresAt: null } });
   const other = await (await send("GET", "/api/v1/account", otherToken)).json();
   expect(other).toMatchObject({ accountId: OTHER, usage: { documents: 0, pushesToday: 0 }, externalLinked: false });
 });
 
-it("preserves each purpose, consumes once, stores only hashes and returns linked identity to the service", async () => {
+it("consumes once only on POST, stores hashes and returns linked identity to the service", async () => {
   await send("PUT", `/admin/v1/accounts/${ACCOUNT}/external-owner`, SERVICE, { externalOwner: EXTERNAL });
-  for (const purpose of ["upgrade", "billing", "link"]) {
+  {
     const before = Date.now();
-    const handoff = await mint(purpose);
+    const handoff = await mint();
     expect(handoff.expiresAt).toBeGreaterThanOrEqual(before + 600000);
     expect(handoff.expiresAt).toBeLessThanOrEqual(Date.now() + 600000);
     const stored = await env.DB.prepare("SELECT * FROM account_handoffs").all();
@@ -71,7 +71,7 @@ it("preserves each purpose, consumes once, stores only hashes and returns linked
     const response = await consume(handoff.code);
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("no-store");
-    expect(await response.json()).toEqual({ accountId: ACCOUNT, email: `${ACCOUNT}@example.test`, purpose, externalOwner: EXTERNAL });
+    expect(await response.json()).toEqual({ accountId: ACCOUNT, email: `${ACCOUNT}@example.test`, externalOwner: EXTERNAL });
     expect((await consume(handoff.code)).status).toBe(404);
   }
 });
@@ -84,7 +84,7 @@ it("allows one concurrent consumption and at most five concurrent outstanding ac
   const code = new URL(body.url).searchParams.get("code")!;
   expect((await Promise.all([consume(code), consume(code)])).map((r) => r.status).sort()).toEqual([200, 404]);
   expect(await count()).toBe(4);
-  await mint("billing", otherToken);
+  await mint(otherToken);
   expect(await count()).toBe(5);
 });
 
@@ -92,7 +92,7 @@ it("refuses expired and revoked originating credentials and clears only the owne
   const expired = await mint();
   await env.DB.prepare("UPDATE account_handoffs SET expires_at = 0").run();
   expect((await consume(expired.code)).status).toBe(404);
-  await mint("link", otherToken);
+  await mint(otherToken);
   const revoked = await mint();
   expect(await count()).toBe(2);
   await env.DB.prepare("DELETE FROM tokens WHERE id = ?").bind(tokenId).run();
@@ -108,9 +108,6 @@ it("requires the service credential and does not consume proof on an unauthorize
 });
 
 it("rejects extra fields, forged purposes, oversized input and malformed codes", async () => {
-  for (const body of [{ purpose: "delete" }, { purpose: "link", accountId: OTHER }, { purpose: 1 }, [], null, { purpose: "x".repeat(2000) }]) {
-    expect((await send("POST", "/api/v1/account/handoffs", token, body)).status).toBe(400);
-  }
   for (const body of [{ code: "x" }, { code: "a".repeat(64), purpose: "link" }, { code: 1 }]) {
     expect((await send("POST", "/admin/v1/handoffs/consume", SERVICE, body)).status).toBe(400);
   }
@@ -144,13 +141,9 @@ it("associates only through service authorization, repeats safely, rejects confl
   expect((await send("PUT", path, SERVICE, { externalOwner: EXTERNAL, plan: "pro" })).status).toBe(400);
 });
 
-it("lets only the trusted service recover the current owner association", async () => {
-  const path = `/admin/v1/accounts/${ACCOUNT}/external-owner`;
-  expect((await send("GET", path, token)).status).toBe(401);
-  expect((await send("GET", "/admin/v1/accounts/missing/external-owner", SERVICE)).status).toBe(404);
-  const empty = await send("GET", path, SERVICE);
-  expect(empty.headers.get("cache-control")).toBe("no-store");
-  expect(await empty.json()).toEqual({ accountId: ACCOUNT, externalOwner: null });
-  await send("PUT", path, SERVICE, { externalOwner: EXTERNAL });
-  expect(await (await send("GET", path, SERVICE)).json()).toEqual({ accountId: ACCOUNT, externalOwner: EXTERNAL });
+it("does not consume on GET or expose a separate external-owner recovery route", async () => {
+  const handoff = await mint();
+  expect((await send("GET", `/admin/v1/handoffs/consume?code=${handoff.code}`, SERVICE)).status).toBe(404);
+  expect((await send("GET", `/admin/v1/accounts/${ACCOUNT}/external-owner`, SERVICE)).status).toBe(404);
+  expect((await consume(handoff.code)).status).toBe(200);
 });

@@ -169,17 +169,20 @@ describe("Authorization: Bearer <token>", () => {
       token,
       local({ LICENSE_API_URL: "https://license.test", LICENSE_API_KEY: "ours" }),
       {
-        fetch: async () => {
+        fetch: async (url, init) => {
+          expect(String(url).endsWith("license.openArtifactsEntitlement")).toBe(true);
+          expect(JSON.stringify(init)).not.toContain(token);
+          expect(new Headers(init?.headers).get("authorization")).toBe("Bearer ours");
           calls += 1;
           return Response.json({});
         },
       },
     );
 
-    expect(calls).toBe(0);
+    expect(calls).toBe(1);
     expect(resolved).toEqual({
       ok: true,
-      publisher: { owner: ACCOUNT_A, plan: "free", authKind: "account" },
+      publisher: { owner: ACCOUNT_A, plan: "free", authKind: "account", accountRefresh: "unavailable" },
     });
   });
 
@@ -251,6 +254,7 @@ describe("free account document limit", () => {
         message: "Your account can hold 1 published document. Unshare enough documents to get below this limit before publishing another.",
         limit: "documents",
         plan: "free",
+        upgrade_url: "https://openartifacts.ai/account",
       },
     });
     expect(await storage()).toEqual(before);

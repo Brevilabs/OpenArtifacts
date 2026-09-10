@@ -114,6 +114,8 @@
     "LEGACY_SERVING_HOST": "symposium.site",
     "RETIRED_API_HOST": "api.symposium.md",
     "DEFAULT_PLAN": "free",
+    "ACCOUNT_ACTION_URL": "https://openartifacts.ai/account",
+    "UPGRADE_URL": "https://openartifacts.ai/account",
     "PLAN_LIMITS": "{\"free\":{\"documents\":1,\"pushesPerDay\":6,\"htmlBytes\":1048576},\"pro\":{\"documents\":500,\"pushesPerDay\":100,\"htmlBytes\":10485760}}"
   }
 }

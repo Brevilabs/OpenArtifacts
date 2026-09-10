@@ -353,3 +353,25 @@ the repo page will name the commit that was deployed forward until the next
 merge corrects them.
 
 All changes ship through a pull request; never push to `main`.
+
+
+## Standalone account launch order
+
+Apply additive D1 migrations through `0008_plan_cache.sql` before this Worker.
+The unshipped revision/purpose migrations were replaced; do not apply their old
+draft versions. Hosted `ACCOUNT_ACTION_URL` and `UPGRADE_URL` must both be
+`https://openartifacts.ai/account`; CI and `npm run deploy` check this. Self-hosted
+origins can omit the browser service and retain local plans.
+
+Before enabling the landing offer, verify the private read-only entitlement
+procedure and account page are deployed with matching server credentials, then
+deploy this Worker and verify its one-document free limit. Publish the approved
+`v0.2.3` CLI release and verify npm `latest` is `0.2.3` and a clean install exposes
+`account --open`. Only then enable the landing entry point. No deploy, npm publish,
+or payment-provider operation is authorized by these instructions alone.
+
+A successful `openartifacts account` refresh is the paid-access verification step.
+Its `refresh.status` reports failure explicitly. No background synchronization is
+required. An outage retains a finite paid snapshot only until expiry; a lifetime
+snapshot remains paid until a later successful pull. Withdrawals and listing do
+not wait on the entitlement service.

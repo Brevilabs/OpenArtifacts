@@ -57,7 +57,7 @@ export function limitReached(env: Env, publisher: Publisher, limit: string, mess
       throw new Error("UPGRADE_URL must be an absolute HTTP(S) URL without credentials.");
     }
     // This routes checkout, never authenticates it. Billing must prove account ownership.
-    url.searchParams.set("owner", publisher.owner);
+    url.searchParams.delete("owner");
     upgradeUrl = url.toString();
   }
   return errorResponse("limit_reached", message, undefined, {

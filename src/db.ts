@@ -606,11 +606,11 @@ export async function findOrCreateAccount(
 ): Promise<AccountRow> {
   const inserted = await db
     .prepare(
-      `INSERT INTO accounts (id, email, created_at, plan) VALUES (?, ?, ?, ?)
+      `INSERT INTO accounts (id, email, created_at, plan, plan_checked_at) VALUES (?, ?, ?, ?, ?)
        ON CONFLICT(email) DO NOTHING
        RETURNING id, email, created_at`,
     )
-    .bind(id, email, atMs, plan)
+    .bind(id, email, atMs, plan, atMs)
     .first<AccountRow>();
   if (inserted !== null) return inserted;
 
@@ -1150,15 +1150,15 @@ export async function collectDeviceToken(
 export async function findLiveToken(
   db: D1Database,
   tokenHash: string,
-): Promise<(Pick<TokenRow, "id" | "account_id" | "last_used_at"> & { plan: string; plan_expires_at: number | null }) | null> {
+): Promise<(Pick<TokenRow, "id" | "account_id" | "last_used_at">) | null> {
   // `return await`: see the note on the router's catch in index.ts.
   return await db
     .prepare(
-      `SELECT t.id, t.account_id, t.last_used_at, a.plan, a.plan_expires_at
+      `SELECT t.id, t.account_id, t.last_used_at
          FROM tokens t JOIN accounts a ON a.id = t.account_id WHERE t.token_hash = ?`,
     )
     .bind(tokenHash)
-    .first<Pick<TokenRow, "id" | "account_id" | "last_used_at"> & { plan: string; plan_expires_at: number | null }>();
+    .first<Pick<TokenRow, "id" | "account_id" | "last_used_at">>();
 }
 
 /**

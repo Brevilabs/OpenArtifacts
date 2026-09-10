@@ -78,8 +78,7 @@ the user to paste a credential into the chat.
 
 Use `openartifacts account` to report the current plan, limits, usage, and linked
 status. When the user asks to upgrade, manage billing, or link their existing
-Copilot account, run `openartifacts upgrade`, `openartifacts billing`, or
-`openartifacts link-copilot`. Relay the returned short-lived browser URL. The user
+Copilot account, run `openartifacts account --open`. Relay the returned short-lived browser URL. The user
 enters a license key and confirms linking only on that page, never in chat or
 command arguments. These commands require an OAuth-issued account token; follow
 the CLI guidance if an environment license key overrides the stored token.
@@ -88,5 +87,5 @@ the CLI guidance if an environment license key overrides the stored token.
 
 Relay the CLI's message verbatim and do not retry blindly. For `quota_exceeded`, say
 whether to wait or unshare an unused page. For `limit_reached`, show the limit and the
-guidance to run `openartifacts upgrade`. Generate that browser link when the user
+guidance to run `openartifacts account --open`. Generate that browser link when the user
 asks to upgrade; do not treat a limit error as purchase authorization.

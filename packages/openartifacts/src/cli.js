@@ -221,10 +221,7 @@ const HELP = `Usage: openartifacts <command> [argument] [options]
 Commands:
   install            Install or upgrade the CLI and detected agent skills
   login              Approve this machine and store its token
-  account            Show this account's plan, limits, and usage as JSON
-  upgrade            Open account upgrade options
-  billing            Open account billing management
-  link-copilot       Open secure browser confirmation to link an existing license
+  account [--open]   Refresh plan, limits, and usage; open account management with --open
   publish <file.html> [--title <title>] [--doc-id <docId>]
                      Publish an HTML file; pass --doc-id to update an existing document
   list               List published documents
@@ -267,11 +264,11 @@ export async function main(args) {
     console.log(HELP);
     return;
   }
-  if (!["install", "login", "account", "upgrade", "billing", "link-copilot", "publish", "list", "get", "unshare", "tokens", "revoke"].includes(command)) {
+  if (!["install", "login", "account", "publish", "list", "get", "unshare", "tokens", "revoke"].includes(command)) {
     throw new Error(HELP);
   }
   const needsArgument = ["publish", "get", "unshare", "revoke"].includes(command);
-  if ((extra.length && command !== "publish") || (needsArgument && !argument) || (!needsArgument && argument)) {
+  if ((extra.length && command !== "publish") || (needsArgument && !argument) || (!needsArgument && argument && !(command === "account" && argument === "--open"))) {
     throw new Error(HELP);
   }
   const value = argument ?? "";
@@ -287,21 +284,19 @@ export async function main(args) {
 
   const token = await credential(host, directory);
   const client = createClient({ host, token });
-  /** @type {Record<string, "upgrade" | "billing" | "link">} */
-  const actions = { upgrade: "upgrade", billing: "billing", "link-copilot": "link" };
-  const purpose = actions[command];
-  if ((command === "account" || purpose) && !token.startsWith("oat_")) {
+  if (command === "account" && !token.startsWith("oat_")) {
     throw new Error("This command needs an OpenArtifacts account token. Run `openartifacts login`; unset OPENARTIFACTS_TOKEN if it contains a license key.");
   }
-  if (command === "account") {
+  if (command === "account" && !argument) {
     const result = await client.account();
     console.log(JSON.stringify({ accountId: result.accountId, plan: result.plan,
       limits: { documents: result.limits.documents, pushesPerDay: result.limits.pushesPerDay, htmlBytes: result.limits.htmlBytes },
-      usage: { documents: result.usage.documents, pushesToday: result.usage.pushesToday }, externalLinked: result.externalLinked }));
+      usage: { documents: result.usage.documents, pushesToday: result.usage.pushesToday }, externalLinked: result.externalLinked,
+      refresh: { status: result.refresh.status, checkedAt: result.refresh.checkedAt, expiresAt: result.refresh.expiresAt } }));
     return;
   }
-  if (purpose) {
-    const result = await client.createHandoff(purpose);
+  if (command === "account") {
+    const result = await client.createHandoff();
     const url = new URL(result.url);
     const local = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
     if (url.username || url.password || url.hash || url.href.includes(token) ||
@@ -366,7 +361,7 @@ export function presentError(error) {
     }
     if (error.code === "limit_reached") {
       if (error.detail.limit) console.error(`Limit: ${error.detail.limit}`);
-      console.error("Run `openartifacts upgrade` to get a secure account upgrade link.");
+      console.error("Run `openartifacts account --open` to get a secure account upgrade link.");
     }
   } else {
     console.error(error instanceof Error ? error.message : String(error));

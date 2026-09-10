@@ -113,3 +113,13 @@ test("publication rejects non-patch candidates using registry metadata and prese
   }
   assert.equal(recheck("0.2.3", true), "exists=true\n");
 });
+
+const { checkHostedAccountActions } = require("../scripts/check-account-actions.cjs");
+test("hosted deploy requires both account URLs without imposing them on self-hosts", () => {
+  const config = readFileSync(new URL("../wrangler.jsonc", `file://${__filename}`), "utf8");
+  assert.doesNotThrow(() => checkHostedAccountActions(config));
+  for (const name of ["ACCOUNT_ACTION_URL", "UPGRADE_URL"]) {
+    assert.throws(() => checkHostedAccountActions(config.replace(`"${name}": "https://openartifacts.ai/account"`, `"${name}": ""`)), /must point/);
+  }
+  assert.doesNotThrow(() => checkHostedAccountActions('{"API_HOST":"self.example"}'));
+});

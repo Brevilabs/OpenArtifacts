@@ -42,7 +42,7 @@ import { LICENSE_CACHE_TTL_MS, TOKEN_LAST_USED_RESOLUTION_MS, type Env } from ".
 import { d1PublisherStore, findLiveToken, touchTokenUse, type PublisherStore } from "./db.js";
 import { errorResponse, type ErrorCode } from "./errors.js";
 import { sha256Hex } from "./hash.js";
-import { effectivePlan } from "./plans.js";
+import { accountPlan, type RefreshStatus } from "./entitlement.js";
 import { TOKEN_PREFIX } from "./ids.js";
 
 /** tRPC endpoint on the license server, appended to `LICENSE_API_URL`. */
@@ -109,6 +109,7 @@ export interface Publisher {
   plan: string;
   /** Present only for our own tokens; never infer identity type from a plan name. */
   authKind?: "account";
+  accountRefresh?: RefreshStatus;
 }
 
 export type PublisherFailure =
@@ -135,6 +136,8 @@ export interface AuthDeps {
   /** Injected by tests so they never touch the network. */
   fetch?: typeof fetch;
   now?: () => number;
+  forceAccountRefresh?: boolean;
+  skipAccountRefresh?: boolean;
   store?: PublisherStore;
 }
 
@@ -162,7 +165,10 @@ export async function authenticateRequest(
     };
   }
   // `return await`: see the note on the router's catch in index.ts.
-  return await resolvePublisher(token, env, deps);
+  const path = new URL(request.url).pathname;
+  const account = request.method === "GET" && path === "/api/v1/account";
+  const publishing = ["POST", "PUT"].includes(request.method) && /^\/api\/v1\/docs(?:\/|$)/.test(path);
+  return await resolvePublisher(token, env, { ...deps, forceAccountRefresh: account, skipAccountRefresh: !account && !publishing });
 }
 
 export async function resolvePublisher(
@@ -235,9 +241,8 @@ export async function resolvePublisher(
 /**
  * Resolve one of this deployment's own tokens to the account it publishes as.
  *
- * There is no cache and no outage story, because there is nothing to be out:
- * the token's owner is a row in this database rather than an answer from
- * another service. That is also why a revoked token stops working on its very
+ * Identity is always local; only paid entitlement has a remote cache.
+ * A remote outage never invalidates the token or blocks management. That is also why a revoked token stops working on its very
  * next request, where a revoked license key keeps working until its cached
  * validation ages out.
  */
@@ -265,7 +270,8 @@ async function resolveAccountToken(
     await touchTokenUse(env.DB, live.id, at, at - TOKEN_LAST_USED_RESOLUTION_MS);
   }
 
-  return { ok: true, publisher: { owner: live.account_id, plan: effectivePlan(env, live.plan, live.plan_expires_at, at), authKind: "account" } };
+  const result = await accountPlan(env, live.account_id, deps);
+  return { ok: true, publisher: { owner: live.account_id, plan: result.plan, accountRefresh: result.status, authKind: "account" } };
 }
 
 const FAILURE_STATUS: Record<PublisherFailure, ErrorCode> = {

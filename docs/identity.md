@@ -27,7 +27,7 @@ to the license server to be identified, handing this deployment's own secret to
 another service on every request.
 
 An account here holds an id, one verified email address, and the time it was
-created, alongside its configured plan, expiry and revision. One further thing
+created, alongside its configured plan, expiry and last entitlement-check time. One further thing
 about a person is stored, and it lives in `identities`: the provider's own permanent id for them,
 which is what returns a later sign-in to the right account. Beyond those,
 nothing is read, requested or stored, so no name and no avatar.

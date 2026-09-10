@@ -351,7 +351,7 @@ test("prints guidance for current quota and future plan limits", () => {
   }
   assert(lines.some((line) => line.includes("quota window")));
   assert(lines.includes("Limit: 10 documents"));
-  assert(lines.some((line) => line.includes("openartifacts upgrade")));
+  assert(lines.some((line) => line.includes("openartifacts account --open")));
   assert(!lines.some((line) => line.includes("https://example.test/upgrade")));
 });
 
@@ -368,7 +368,7 @@ async function accountServer() {
       if (control.status !== 200) {
         response.end(JSON.stringify({ error: { code: "unauthorized", message: "Sign in again." } }));
       } else if (request.url === "/api/v1/account") {
-        response.end(JSON.stringify({ accountId: "oa_account", plan: "free", limits: { documents: 1, pushesPerDay: 6, htmlBytes: 1048576 }, usage: { documents: 0, pushesToday: 0 }, externalLinked: false, access_token: "never-print-response-extra" }));
+        response.end(JSON.stringify({ accountId: "oa_account", plan: "free", limits: { documents: 1, pushesPerDay: 6, htmlBytes: 1048576 }, usage: { documents: 0, pushesToday: 0 }, externalLinked: false, refresh: { status: "refreshed", checkedAt: 123, expiresAt: null }, access_token: "never-print-response-extra" }));
       } else if (request.url === "/api/v1/account/handoffs") {
         response.end(JSON.stringify({ url: control.unsafeUrl ? "javascript:alert(1)" : `https://actions.example.test/continue?code=${"a".repeat(64)}`, expiresAt: Date.now() + 600000, token: "never-print-response-extra" }));
       } else {
@@ -404,9 +404,9 @@ test("account commands use host-scoped stored OAuth tokens and print only safe J
   try {
     const account = await cliProcess(["account"], env);
     assert.equal(account.code, 0, account.stderr);
-    assert.deepEqual(JSON.parse(account.stdout), { accountId: "oa_account", plan: "free", limits: { documents: 1, pushesPerDay: 6, htmlBytes: 1048576 }, usage: { documents: 0, pushesToday: 0 }, externalLinked: false });
-    for (const command of ["upgrade", "billing", "link-copilot"]) {
-      const result = await cliProcess([command], env);
+    assert.deepEqual(JSON.parse(account.stdout), { accountId: "oa_account", plan: "free", limits: { documents: 1, pushesPerDay: 6, htmlBytes: 1048576 }, usage: { documents: 0, pushesToday: 0 }, externalLinked: false, refresh: { status: "refreshed", checkedAt: 123, expiresAt: null } });
+    for (const args of [["account", "--open"]]) {
+      const result = await cliProcess(args, env);
       assert.equal(result.code, 0, result.stderr);
       const parsed = JSON.parse(result.stdout);
       assert.deepEqual(Object.keys(parsed).sort(), ["expiresAt", "url"]);
@@ -416,9 +416,7 @@ test("account commands use host-scoped stored OAuth tokens and print only safe J
     }
     assert.deepEqual(remote.requests.map(({ method, path, body }) => [method, path, body]), [
       ["GET", "/api/v1/account", undefined],
-      ["POST", "/api/v1/account/handoffs", { purpose: "upgrade" }],
-      ["POST", "/api/v1/account/handoffs", { purpose: "billing" }],
-      ["POST", "/api/v1/account/handoffs", { purpose: "link" }],
+      ["POST", "/api/v1/account/handoffs", undefined],
     ]);
     assert(remote.requests.every((r) => r.authorization === "Bearer oat_stored-secret"));
   } finally { remote.server.close(); }
@@ -438,7 +436,7 @@ test("account actions honor environment credentials, refuse license arguments, a
       assert.match(result.stderr, /Usage: openartifacts/);
       assert(!result.stderr.includes("license-secret-must-not-leak"));
     }
-    const license = await cliProcess(["link-copilot"], { ...env, OPENARTIFACTS_TOKEN: "license-secret" });
+    const license = await cliProcess(["account", "--open"], { ...env, OPENARTIFACTS_TOKEN: "license-secret" });
     assert.equal(license.code, 1);
     assert.match(license.stderr, /unset OPENARTIFACTS_TOKEN/);
     assert.equal(remote.requests.length, 1);
@@ -458,7 +456,7 @@ test("account actions reject unsafe browser URLs without printing them", async (
   const remote = await accountServer();
   remote.control.unsafeUrl = true;
   try {
-    const result = await cliProcess(["upgrade"], { OPENARTIFACTS_CONFIG_DIR: directory, OPENARTIFACTS_API_HOST: remote.host, OPENARTIFACTS_TOKEN: "oat_test-secret" });
+    const result = await cliProcess(["account", "--open"], { OPENARTIFACTS_CONFIG_DIR: directory, OPENARTIFACTS_API_HOST: remote.host, OPENARTIFACTS_TOKEN: "oat_test-secret" });
     assert.equal(result.code, 1);
     assert.equal(result.stdout, "");
     assert.match(result.stderr, /invalid account action link/);

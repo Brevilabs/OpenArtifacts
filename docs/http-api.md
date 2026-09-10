@@ -52,8 +52,8 @@ published with it. So every key on one account sees one list, and any of them
 can push a new version of, or unshare, a document another one created. Replacing
 a key changes nothing about which documents you have. Publisher operations never
 accept an account id to select whose documents to access; ownership is derived
-from the credential. The separate admin API and optional account-token upgrade
-link expose account ids for routing, not as publisher credentials.
+from the credential. The separate admin API uses account ids for routing, not as publisher
+credentials.
 
 **License-key publishing requires a paid plan.** Eligible `PLUS` subscriptions
 and `BELIEVER` accounts (sold as Supporter) can publish with a license key,
@@ -609,10 +609,9 @@ No configured secret disables the route (`404`); incorrect credentials return
 `401`, an unknown plan `400`, and a missing account `404`. Retrying the same
 change is safe. Every account token sees the new plan on its next request.
 
-Optional `UPGRADE_URL` adds an absolute HTTP(S) link to plan-limit errors, with
-the account's `owner` query parameter. That ID routes checkout; it does **not**
-authorize access. Billing must independently verify account ownership. Leave
-this variable unset until checkout exists. No billing or admin secret belongs
+Optional `UPGRADE_URL` adds a generic absolute HTTP(S) account-page link to
+plan-limit errors. It carries no account identity. The account page requires a
+fresh `openartifacts account --open` handoff before any authenticated action. No billing or admin secret belongs
 in a CLI, skill, public link, or this repository.
 
 ## Quotas
@@ -657,7 +656,8 @@ For example, the current account-token document-cap response is:
 
 Waiting until tomorrow only resets daily pushes, not document capacity.
 Signing in on another machine resets neither. The CLI displays the refusal
-and upgrade link when present. Hosted checkout remains separate work.
+and account link when present. Run `openartifacts account --open` to manage
+hosted access.
 
 Two further limits sit outside all of this. On `POST /device/code`, a single
 client address may ask for five sign-in codes a minute, and past that the mint
@@ -727,15 +727,15 @@ These additive routes are served on the API host. They use no browser cookies.
 cannot access it. It returns `200` with `cache-control: no-store`:
 
 ```json
-{"accountId":"oa_…","plan":"free","limits":{"documents":1,"pushesPerDay":6,"htmlBytes":1048576},"usage":{"documents":1,"pushesToday":2},"externalLinked":false}
+{"accountId":"oa_…","plan":"free","limits":{"documents":1,"pushesPerDay":6,"htmlBytes":1048576},"usage":{"documents":1,"pushesToday":2},"externalLinked":false,"refresh":{"status":"refreshed","checkedAt":1800000000000,"expiresAt":null}}
 ```
 
 Limits reflect the deployment configuration. Usage counts live documents and
 UTC-day reservations across linked owners, including uploads still pending.
 The external identity and email are not included in this publisher response.
 
-`POST /api/v1/account/handoffs` requires the same token and exactly one JSON
-field: `{"purpose":"upgrade"}`, `{"purpose":"billing"}`, or `{"purpose":"link"}`.
+`POST /api/v1/account/handoffs` requires the same token and opens a generic
+account action. It needs no request body; identity comes only from the token.
 It returns `200` with `{"url":"https://trusted.example/actions?code=…","expiresAt":1800000600000}`
 and `cache-control: no-store`. The timestamp is epoch milliseconds. The URL is
 configured by `ACCOUNT_ACTION_URL`; it must be absolute HTTPS without credentials
@@ -747,8 +747,7 @@ Codes contain 256 random bits, expire after ten minutes, and are stored only as
 hashes. At most five actions may remain outstanding per account; the sixth
 returns `429 quota_exceeded`. Minting clears that account's expired entries.
 Revoking the originating machine token also invalidates its unconsumed codes.
-Unknown purposes, extra fields, malformed JSON, and bodies over 1024 bytes
-return `400 bad_request`. Account routes reject license credentials with `401`.
+There are no action-purpose fields. Account routes reject license credentials with `401`.
 
 ### Trusted service endpoints
 
@@ -760,11 +759,11 @@ incorrect credential. Successful responses use `cache-control: no-store`.
 consumes a live code once and returns:
 
 ```json
-{"accountId":"oa_…","email":"user@example.test","purpose":"link","externalOwner":null}
+{"accountId":"oa_…","email":"user@example.test","externalOwner":null}
 ```
 
-`externalOwner` is the linked identity or null. The service must dispatch only
-the returned purpose and preserve this server-verified account identity through
+`externalOwner` is the linked identity or null. The service must consume only after
+an explicit browser POST and preserve this server-verified account identity through
 its confirmation flow; email is informational, never account proof. Replayed,
 expired, unknown, or originating-token-revoked codes all return `404 not_found`.
 Malformed codes or extra body fields return `400`. A failed authorization does
@@ -782,38 +781,39 @@ A conflicting association returns `409 conflict`; invalid identities return
 `400`; a missing local account returns `404`. Associations are permanent and do
 not change plans, credential permissions, document IDs, or stored versions.
 
-### Ordered plan snapshots
+### Pulled account entitlement
 
-The existing service-only `PUT /admin/v1/accounts/{accountId}/plan` also accepts
-exactly `{"plan":"pro","expiresAt":1800000600000,"revision":1}`. `expiresAt` is
-null for unlimited validity or a nonnegative safe-integer epoch millisecond
-value. `revision` is a positive safe integer. Both fields must be supplied
-together; missing fields, additional fields, invalid numbers, and unconfigured
-plan names return `400`.
+OAuth identity remains local. On publishing, an hour-old plan cache or an expired
+paid snapshot triggers a read-only entitlement pull. `GET /api/v1/account` always
+tries to refresh; listing, withdrawal and token administration never call the
+entitlement service. A new account starts with a fresh default-plan cache, so its
+first free publication needs no remote call.
 
-A larger revision atomically replaces the stored snapshot. An identical retry
-of the current revision succeeds; a lower revision, or the same revision with
-different contents, returns `409 conflict`. Missing accounts return `404`.
-Success returns the stored snapshot, not its time-dependent effective plan:
-`{"owner":"oa_…","plan":"pro","expiresAt":1800000600000,"revision":1}`.
-The caller must allocate revisions durably per account and deliver reconciled
-snapshots in increasing order. A newer reconciliation can supersede a manual
-operator assignment; retries must never send changed contents under an old
-revision.
+The Worker POSTs `{"json":{"accountId":"oa_…","externalOwner":"…"}}` to
+`${LICENSE_API_URL}/api/trpc/license.openArtifactsEntitlement`, authenticating with
+its existing server `LICENSE_API_KEY`. `externalOwner` is omitted when unlinked;
+no user token, license key, email or document content is sent. The superjson result
+`result.data.json` is `{plan:"default"|"plus",expiresAt:number|null}`. Timestamps
+are Unix milliseconds. `default` maps to `DEFAULT_PLAN`, `plus` to configured `pro`.
+No automatic retry is made; the request times out after eight seconds.
 
-At `expiresAt <= now`, account authentication and status use the configured
-default plan. This requires no remote call or database mutation. The stored
-snapshot, documents, versions, credentials, and usage remain intact. Existing
-above-limit collections remain listable, editable within the effective daily
-and byte limits, and removable; additional documents are refused at the cap.
+`plan_checked_at` records fetch-start time, independently of `plan_expires_at`.
+Only a newer fetch may replace the cached plan, and the association must still
+match the one observed before that fetch. Losing or failed requests reread the
+winning stored state. Linking clears freshness; manual `{plan}` assignments reset
+expiry and advance freshness to prevent an older pending response overwriting them.
+Neither operation changes document ownership, usage, or tokens.
 
-The original `{"plan":"…"}` manual operation and `{owner,plan}` response remain
-supported. It clears expiration but preserves the latest revision fence. The
-next service reconciliation must use a larger revision to replace that override.
+Failed refreshes preserve the last snapshot only until its paid expiry, then the
+local default plan applies. Free publishing, listing and withdrawal remain usable.
+A lifetime snapshot has no expiry: during a prolonged outage it remains paid until
+a successful refresh. Refunds or cancellations may therefore lag by the one-hour
+TTL, or longer during an outage. Account output includes
+`refresh:{status:"refreshed"|"cached"|"unavailable",checkedAt:number|null,expiresAt:number|null}`;
+`cached` can mean a concurrent refresh or manual assignment won. An unavailable
+refresh is never represented as proof of a completed upgrade.
 
-`GET /admin/v1/accounts/{accountId}/external-owner` uses the same service
-credential and returns `{accountId,externalOwner}` with null when the account
-has no association, or `404` when the account is unknown. This read supports
-recovery when association succeeds but a trusted caller's subsequent local
-write fails. It does not require retaining a raw external credential or
-replaying a consumed handoff. Responses use `cache-control: no-store`.
+Self-hosts without the entitlement service retain configured local plans and
+manual assignment. Missing or invalid paid-plan configuration never grants access.
+Apply `0008_plan_cache.sql` before deploying this code; the previous unshipped
+revision migration is replaced, not upgraded in place.
