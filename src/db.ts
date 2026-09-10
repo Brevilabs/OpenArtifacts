@@ -5,6 +5,7 @@
  * every row here is reconstructible from it, so a lost D1 is a rebuild rather
  * than a data loss. Queries land here as the phase that needs them arrives.
  */
+import { OWNER_SCOPE_SQL } from "./owners.js";
 
 /** Publisher row, which doubles as the license-validation cache (phase 2). */
 export interface PublisherRow {
@@ -161,6 +162,7 @@ export type ListedTokenRow = Pick<TokenRow, "id" | "label" | "created_at" | "las
 export interface PublisherStore {
   read(keyHash: string): Promise<PublisherRow | null>;
   save(row: PublisherRow): Promise<void>;
+  remove(keyHash: string): Promise<void>;
 }
 
 /** Version numbers start at 1; a `docs` row at 0 has never been pushed to. */
@@ -173,6 +175,10 @@ export function d1PublisherStore(db: D1Database): PublisherStore {
         .prepare("SELECT key_hash, plan, validated_at, owner FROM publishers WHERE key_hash = ?")
         .bind(keyHash)
         .first<PublisherRow>();
+    },
+
+    async remove(keyHash) {
+      await db.prepare("DELETE FROM publishers WHERE key_hash = ?").bind(keyHash).run();
     },
 
     // `owner` is written on every validation, like `plan` is. That is a refresh,
@@ -223,18 +229,20 @@ export async function insertDocWithinQuota(
 ): Promise<boolean> {
   const result = await db
     .prepare(
-      `INSERT INTO docs (id, owner, title, latest_version, created_at, updated_at)
+      `${OWNER_SCOPE_SQL}
+       INSERT INTO docs (id, owner, title, latest_version, created_at, updated_at)
        SELECT ?, ?, ?, ?, ?, ?
-        WHERE (SELECT COUNT(*) FROM docs WHERE owner = ? AND deleted_at IS NULL) < ?`,
+        WHERE (SELECT COUNT(*) FROM docs WHERE owner IN (SELECT owner FROM owner_scope) AND deleted_at IS NULL) < ?`,
     )
     .bind(
+      doc.owner,
+      doc.owner,
       doc.id,
       doc.owner,
       doc.title,
       FIRST_VERSION,
       doc.created_at,
       doc.updated_at,
-      doc.owner,
       maxDocs,
     )
     .run();
@@ -304,12 +312,13 @@ export async function reserveNextVersion(
 ): Promise<number | null> {
   const reserved = await db
     .prepare(
-      `UPDATE docs
+      `${OWNER_SCOPE_SQL}
+       UPDATE docs
           SET latest_version = latest_version + 1
-        WHERE id = ? AND owner = ? AND deleted_at IS NULL
+        WHERE id = ? AND owner IN (SELECT owner FROM owner_scope) AND deleted_at IS NULL
         RETURNING latest_version`,
     )
-    .bind(docId, owner)
+    .bind(owner, owner, docId)
     .first<{ latest_version: number }>();
 
   return reserved?.latest_version ?? null;
@@ -445,8 +454,8 @@ export async function ownsLiveDoc(
   owner: string,
 ): Promise<boolean> {
   const row = await db
-    .prepare("SELECT 1 FROM docs WHERE id = ? AND owner = ? AND deleted_at IS NULL")
-    .bind(docId, owner)
+    .prepare(`${OWNER_SCOPE_SQL} SELECT 1 FROM docs WHERE id = ? AND owner IN (SELECT owner FROM owner_scope) AND deleted_at IS NULL`)
+    .bind(owner, owner, docId)
     .first();
 
   return row !== null;
@@ -474,12 +483,13 @@ export async function softDeleteDoc(
 ): Promise<boolean> {
   const deleted = await db
     .prepare(
-      `UPDATE docs
+      `${OWNER_SCOPE_SQL}
+       UPDATE docs
           SET deleted_at = ?
-        WHERE id = ? AND owner = ? AND deleted_at IS NULL
+        WHERE id = ? AND owner IN (SELECT owner FROM owner_scope) AND deleted_at IS NULL
         RETURNING id`,
     )
-    .bind(atMs, docId, owner)
+    .bind(owner, owner, atMs, docId)
     .first<{ id: string }>();
 
   return deleted !== null;
@@ -551,19 +561,21 @@ export async function listPublisherDocs(
     after === null
       ? db
           .prepare(
-            `SELECT ${columns} FROM docs d
-              WHERE d.owner = ? AND d.deleted_at IS NULL
+            `${OWNER_SCOPE_SQL}
+             SELECT ${columns} FROM docs d
+              WHERE d.owner IN (SELECT owner FROM owner_scope) AND d.deleted_at IS NULL
               ${order}`,
           )
-          .bind(owner, limit)
+          .bind(owner, owner, limit)
       : db
           .prepare(
-            `SELECT ${columns} FROM docs d
-              WHERE d.owner = ? AND d.deleted_at IS NULL
+            `${OWNER_SCOPE_SQL}
+             SELECT ${columns} FROM docs d
+              WHERE d.owner IN (SELECT owner FROM owner_scope) AND d.deleted_at IS NULL
                 AND (d.created_at, d.id) < (?, ?)
               ${order}`,
           )
-          .bind(owner, after.created_at, after.id, limit);
+          .bind(owner, owner, after.created_at, after.id, limit);
 
   return (await statement.all<DocListRow>()).results;
 }
@@ -1138,15 +1150,15 @@ export async function collectDeviceToken(
 export async function findLiveToken(
   db: D1Database,
   tokenHash: string,
-): Promise<(Pick<TokenRow, "id" | "account_id" | "last_used_at"> & { plan: string }) | null> {
+): Promise<(Pick<TokenRow, "id" | "account_id" | "last_used_at"> & { plan: string; plan_expires_at: number | null }) | null> {
   // `return await`: see the note on the router's catch in index.ts.
   return await db
     .prepare(
-      `SELECT t.id, t.account_id, t.last_used_at, a.plan
+      `SELECT t.id, t.account_id, t.last_used_at, a.plan, a.plan_expires_at
          FROM tokens t JOIN accounts a ON a.id = t.account_id WHERE t.token_hash = ?`,
     )
     .bind(tokenHash)
-    .first<Pick<TokenRow, "id" | "account_id" | "last_used_at"> & { plan: string }>();
+    .first<Pick<TokenRow, "id" | "account_id" | "last_used_at"> & { plan: string; plan_expires_at: number | null }>();
 }
 
 /**

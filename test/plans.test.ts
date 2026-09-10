@@ -1,5 +1,6 @@
 import { createExecutionContext, env, waitOnExecutionContext } from "cloudflare:test";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { resolvePublisher } from "../src/auth.js";
 import type { Env } from "../src/config.js";
 import { MAX_DOC_BYTES } from "../src/config.js";
 import { findOrCreateAccount, resolveAccountForIdentity } from "../src/db.js";
@@ -54,7 +55,7 @@ describe("configured account plans", () => {
   });
 
   it("loads the agreed hosted values from wrangler, not a separate test copy", () => {
-    expect(planLimits(local(), "free")).toEqual({ documents: 3, pushesPerDay: 6, htmlBytes: 1048576 });
+    expect(planLimits(local(), "free")).toEqual({ documents: 1, pushesPerDay: 6, htmlBytes: 1048576 });
     expect(planLimits(local(), "pro")).toEqual({ documents: 500, pushesPerDay: 100, htmlBytes: 10485760 });
     for (const PLAN_LIMITS of [undefined, ""]) {
       expect(planLimits(local({ PLAN_LIMITS }), "free")).toEqual(planLimits(local(), "free"));
@@ -74,7 +75,7 @@ describe("configured account plans", () => {
     const other = await issue();
     const doc = await (await create()).json<{ docId: string }>();
     for (let i = 0; i < 5; i++) expect((await send("PUT", `/api/v1/docs/${doc.docId}`, { html: "updated" }, {}, other)).status).toBe(200);
-    const rejected = await create();
+    const rejected = await send("PUT", `/api/v1/docs/${doc.docId}`, { html: "one too many" });
     expect(rejected.status).toBe(402);
     expect(await error(rejected)).toMatchObject({ error: { limit: "pushesPerDay", plan: "free" } });
     expect(await usage()).toBe(6);
@@ -196,5 +197,80 @@ describe("service-only plan changes", () => {
     }
     expect(await env.DB.prepare("SELECT plan FROM accounts WHERE id = ?").bind(OWNER).first()).toEqual({ plan: "free" });
     expect((await send("PUT", `/admin/v1/accounts/${OWNER}/plan`, { plan: "pro" }, hosts, ADMIN, "https://api.test")).status).toBe(200);
+  });
+});
+
+const snapshot = (plan: string, expiresAt: number | null, revision: number) =>
+  send("PUT", `/admin/v1/accounts/${OWNER}/plan`, { plan, expiresAt, revision }, {}, ADMIN);
+const storedSnapshot = () => env.DB.prepare("SELECT plan, plan_expires_at AS expiresAt, plan_revision AS revision FROM accounts WHERE id = ?")
+  .bind(OWNER).first();
+
+describe("ordered and expiring account plans", () => {
+  it("applies newer snapshots, accepts identical retries, and refuses old or changed revisions", async () => {
+    const state = { plan: "pro", expiresAt: 123456789, revision: 2 };
+    expect(await (await snapshot(state.plan, state.expiresAt, state.revision)).json()).toEqual({ owner: OWNER, ...state });
+    expect(await (await snapshot(state.plan, state.expiresAt, state.revision)).json()).toEqual({ owner: OWNER, ...state });
+    expect((await snapshot("free", null, 1)).status).toBe(409);
+    expect((await snapshot("free", state.expiresAt, 2)).status).toBe(409);
+    expect((await snapshot("pro", null, 2)).status).toBe(409);
+    expect(await storedSnapshot()).toEqual(state);
+    expect((await snapshot("free", null, 3)).status).toBe(200);
+    expect((await send("PUT", "/admin/v1/accounts/missing/plan", { plan: "pro", expiresAt: null, revision: 1 }, {}, ADMIN)).status).toBe(404);
+  });
+
+  it("keeps the highest revision when two snapshots arrive concurrently", async () => {
+    const results = await Promise.all([snapshot("pro", null, 10), snapshot("free", 0, 11)]);
+    expect([200, 409]).toContain(results[0]!.status);
+    expect(results[1]!.status).toBe(200);
+    expect(await storedSnapshot()).toEqual({ plan: "free", expiresAt: 0, revision: 11 });
+  });
+
+  it("rejects partial, extra, noninteger and unsafe snapshot fields without modifying the account", async () => {
+    for (const body of [
+      { plan: "pro", revision: 1 }, { plan: "pro", expiresAt: null },
+      ...[0, -1, 1.5, "2", Number.MAX_SAFE_INTEGER + 1, null].map((revision) => ({ plan: "pro", expiresAt: null, revision })),
+      ...[-1, 1.5, "2", Number.MAX_SAFE_INTEGER + 1].map((expiresAt) => ({ plan: "pro", expiresAt, revision: 1 })),
+      { plan: "pro", expiresAt: null, revision: 1, owner: OWNER },
+    ]) expect((await send("PUT", `/admin/v1/accounts/${OWNER}/plan`, body, {}, ADMIN)).status).toBe(400);
+    expect(await storedSnapshot()).toEqual({ plan: "free", expiresAt: null, revision: 0 });
+  });
+
+  it("expires at the exact boundary in authentication and account status without changing the snapshot", async () => {
+    await snapshot("pro", 1000, 1);
+    for (const [at, plan] of [[999, "pro"], [1000, "free"], [1001, "free"]] as const) {
+      expect(await resolvePublisher(token, local(), { now: () => at })).toMatchObject({ ok: true, publisher: { plan } });
+      const clock = vi.spyOn(Date, "now").mockReturnValue(at);
+      try {
+        const status = await send("GET", "/api/v1/account");
+        expect(await status.json()).toMatchObject({ plan, limits: planLimits(local(), plan) });
+      } finally { clock.mockRestore(); }
+    }
+    expect(await storedSnapshot()).toEqual({ plan: "pro", expiresAt: 1000, revision: 1 });
+    await snapshot("pro", null, 2);
+    expect(await resolvePublisher(token, local(), { now: () => Number.MAX_SAFE_INTEGER })).toMatchObject({ ok: true, publisher: { plan: "pro" } });
+    await snapshot("pro", 0, 3);
+    expect(await resolvePublisher(token, local({ DEFAULT_PLAN: "trial", PLAN_LIMITS: JSON.stringify({ trial: { documents: 2, pushesPerDay: 3, htmlBytes: 1024 } }) }), { now: () => 1 }))
+      .toMatchObject({ ok: true, publisher: { plan: "trial" } });
+  });
+
+  it("preserves manual response shape and revision fence while clearing expiry", async () => {
+    await snapshot("pro", 0, 4);
+    expect(await (await setPlan("free")).json()).toEqual({ owner: OWNER, plan: "free" });
+    expect(await storedSnapshot()).toEqual({ plan: "free", expiresAt: null, revision: 4 });
+    expect((await snapshot("pro", 0, 4)).status).toBe(409);
+    expect((await snapshot("pro", null, 5)).status).toBe(200);
+  });
+
+  it("preserves over-limit history, updating and unsharing when a snapshot expires", async () => {
+    await snapshot("pro", null, 1);
+    const docs: string[] = [];
+    for (let n = 0; n < 4; n++) docs.push((await (await create()).json<{ docId: string }>()).docId);
+    await snapshot("pro", 0, 2);
+    const listing = await send("GET", "/api/v1/docs");
+    expect(await listing.json()).toMatchObject({ docs: expect.arrayContaining(docs.map((docId) => expect.objectContaining({ docId }))) });
+    expect((await create()).status).toBe(402);
+    expect((await send("PUT", `/api/v1/docs/${docs[0]}`, { html: "still editable" })).status).toBe(200);
+    expect((await send("DELETE", `/api/v1/docs/${docs[1]}`)).status).toBe(204);
+    expect(await env.DB.prepare("SELECT deleted_at FROM docs WHERE id = ?").bind(docs[1]).first()).toMatchObject({ deleted_at: expect.any(Number) });
   });
 });

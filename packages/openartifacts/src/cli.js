@@ -90,12 +90,21 @@ async function writePrivateJson(path, value) {
   await chmod(path, 0o600);
 }
 
+/** Keep browser URLs as data, including Windows shell metacharacters.
+ * @param {string} url @param {NodeJS.Platform} [os]
+ */
+export function browserProcess(url, os = platform()) {
+  return os === "win32"
+    ? { command: "powershell.exe", args: ["-NoProfile", "-NonInteractive", "-Command", "Start-Process -FilePath $env:OPENARTIFACTS_BROWSER_URL"],
+      env: { ...process.env, OPENARTIFACTS_BROWSER_URL: url } }
+    : { command: os === "darwin" ? "open" : "xdg-open", args: [url], env: process.env };
+}
+
 /** @param {string} url */
 function openBrowser(url) {
-  const command = platform() === "darwin" ? "open" : platform() === "win32" ? "cmd" : "xdg-open";
-  const args = platform() === "win32" ? ["/c", "start", "", url] : [url];
+  const opener = browserProcess(url);
   try {
-    const child = spawn(command, args, { detached: true, stdio: "ignore" });
+    const child = spawn(opener.command, opener.args, { env: opener.env, shell: false, detached: true, stdio: "ignore" });
     child.on("error", () => {});
     child.unref();
   } catch {}
@@ -212,6 +221,10 @@ const HELP = `Usage: openartifacts <command> [argument] [options]
 Commands:
   install            Install or upgrade the CLI and detected agent skills
   login              Approve this machine and store its token
+  account            Show this account's plan, limits, and usage as JSON
+  upgrade            Open account upgrade options
+  billing            Open account billing management
+  link-copilot       Open secure browser confirmation to link an existing license
   publish <file.html> [--title <title>] [--doc-id <docId>]
                      Publish an HTML file; pass --doc-id to update an existing document
   list               List published documents
@@ -254,7 +267,7 @@ export async function main(args) {
     console.log(HELP);
     return;
   }
-  if (!["install", "login", "publish", "list", "get", "unshare", "tokens", "revoke"].includes(command)) {
+  if (!["install", "login", "account", "upgrade", "billing", "link-copilot", "publish", "list", "get", "unshare", "tokens", "revoke"].includes(command)) {
     throw new Error(HELP);
   }
   const needsArgument = ["publish", "get", "unshare", "revoke"].includes(command);
@@ -274,6 +287,33 @@ export async function main(args) {
 
   const token = await credential(host, directory);
   const client = createClient({ host, token });
+  /** @type {Record<string, "upgrade" | "billing" | "link">} */
+  const actions = { upgrade: "upgrade", billing: "billing", "link-copilot": "link" };
+  const purpose = actions[command];
+  if ((command === "account" || purpose) && !token.startsWith("oat_")) {
+    throw new Error("This command needs an OpenArtifacts account token. Run `openartifacts login`; unset OPENARTIFACTS_TOKEN if it contains a license key.");
+  }
+  if (command === "account") {
+    const result = await client.account();
+    console.log(JSON.stringify({ accountId: result.accountId, plan: result.plan,
+      limits: { documents: result.limits.documents, pushesPerDay: result.limits.pushesPerDay, htmlBytes: result.limits.htmlBytes },
+      usage: { documents: result.usage.documents, pushesToday: result.usage.pushesToday }, externalLinked: result.externalLinked }));
+    return;
+  }
+  if (purpose) {
+    const result = await client.createHandoff(purpose);
+    const url = new URL(result.url);
+    const local = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+    if (url.username || url.password || url.hash || url.href.includes(token) ||
+      (url.protocol !== "https:" && !(url.protocol === "http:" && local)) ||
+      !/^[0-9a-f]{64}$/.test(url.searchParams.get("code") ?? "") ||
+      !Number.isSafeInteger(result.expiresAt) || result.expiresAt <= Date.now()) {
+      throw new Error("The server returned an invalid account action link.");
+    }
+    console.log(JSON.stringify({ url: url.toString(), expiresAt: result.expiresAt }));
+    openBrowser(url.toString());
+    return;
+  }
 
   if (prepared) {
     try {
@@ -326,7 +366,7 @@ export function presentError(error) {
     }
     if (error.code === "limit_reached") {
       if (error.detail.limit) console.error(`Limit: ${error.detail.limit}`);
-      if (error.detail.upgrade_url) console.error(`Upgrade: ${error.detail.upgrade_url}`);
+      console.error("Run `openartifacts upgrade` to get a secure account upgrade link.");
     }
   } else {
     console.error(error instanceof Error ? error.message : String(error));

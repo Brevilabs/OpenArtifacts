@@ -9,7 +9,7 @@ export interface PlanLimits {
 }
 
 const DEFAULT_PLANS: Record<string, PlanLimits> = {
-  free: { documents: 3, pushesPerDay: 6, htmlBytes: 1024 * 1024 },
+  free: { documents: 1, pushesPerDay: 6, htmlBytes: 1024 * 1024 },
 };
 
 /** Finite positive ceilings only; the HTML memory safety bound is never configurable. */
@@ -42,6 +42,11 @@ export function defaultPlan(env: Env): string {
   const plan = env.DEFAULT_PLAN ?? "free";
   planLimits(env, plan);
   return plan;
+}
+
+/** Expiration changes access on the next request, never ownership or stored history. */
+export function effectivePlan(env: Env, plan: string, expiresAt: number | null, now = Date.now()): string {
+  return expiresAt !== null && expiresAt <= now ? defaultPlan(env) : plan;
 }
 
 export function limitReached(env: Env, publisher: Publisher, limit: string, message: string): Response {

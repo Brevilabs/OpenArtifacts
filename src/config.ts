@@ -94,6 +94,8 @@ export interface Env {
   UPGRADE_URL?: string;
   /** Server-to-server bearer credential. Unset disables the admin surface. */
   ADMIN_API_KEY?: string;
+  /** Trusted browser action endpoint. HTTPS, or loopback HTTP for development. */
+  ACCOUNT_ACTION_URL?: string;
 
   /**
    * OAuth client credentials for the approval page, one pair per provider.

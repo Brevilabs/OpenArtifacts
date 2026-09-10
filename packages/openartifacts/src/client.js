@@ -42,6 +42,11 @@ export function createClient({ host, token, fetcher = fetch }) {
   }
 
   return {
+    account: () => request("/api/v1/account"),
+    /** @param {"upgrade" | "billing" | "link"} purpose */
+    createHandoff: (purpose) => request("/api/v1/account/handoffs", {
+      method: "POST", body: JSON.stringify({ purpose }),
+    }),
     /** @param {string} label */
     deviceCode: (label) =>
       request("/device/code", { method: "POST", body: JSON.stringify({ label }) }),

@@ -1,6 +1,6 @@
 {
   "name": "openartifacts",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Install the OpenArtifacts agent skill and publish agent-rendered HTML from the terminal",
   "keywords": [
     "agent-skills",

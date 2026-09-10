@@ -13,7 +13,7 @@ having never made one — and see the same documents throughout.
 
 `docs.owner` is an opaque string. Nothing parses it, and every query only ever
 compares it for equality. Two things put a value there, and they are deliberately
-never mixed:
+stored with their original provenance:
 
 | Credential | Owner id | Where it comes from |
 | --- | --- | --- |
@@ -27,8 +27,8 @@ to the license server to be identified, handing this deployment's own secret to
 another service on every request.
 
 An account here holds an id, one verified email address, and the time it was
-created. That is the whole `accounts` table. One further thing about a person is
-stored, and it lives in `identities`: the provider's own permanent id for them,
+created, alongside its configured plan, expiry and revision. One further thing
+about a person is stored, and it lives in `identities`: the provider's own permanent id for them,
 which is what returns a later sign-in to the right account. Beyond those,
 nothing is read, requested or stored, so no name and no avatar.
 
@@ -37,17 +37,36 @@ two id spaces cannot collide, and no equality test between them can accidentally
 succeed and hand one account another's documents. That property is what makes it
 safe for one column to carry both.
 
-### Why they are not merged
+### Joining document ownership without changing credentials
 
-A Copilot user who approves with the address on their license gets a *new*
-account, not the one their license key resolves to. Merging them would mean
-treating a verified email as proof of holding a particular license, which is a
-claim OAuth cannot make and the license server was never asked. So a Copilot user
-who wants their plugin documents from the CLI presents the same license key the
-plugin does — the API accepts it — and the two shelves stay separate until there
-is a deliberate exchange between them. That exchange is the follow-up named in
-[#55](https://github.com/Brevilabs/OpenArtifacts/issues/55), and it is also what
-eventually moves the license code out of this repo.
+OAuth email matching never proves control of an external account. The two
+identities stay separate until a trusted caller proves both and confirms a
+permanent association through `linkExternalOwner`. No public linking route is
+provided by this database primitive. It must not accept stale outage validation
+as proof or infer external ownership from an email address.
+
+`owner_links` pairs one external owner with one existing local account. Both
+columns are unique, the ID spaces are disjoint, and associations cannot be
+updated or deleted. Reconfirming the same pair is idempotent; conflicting pairs
+are refused. Account deletion must therefore preserve the ownership record or
+use a separately designed operator process, never cascade an unlink.
+
+The local account is the canonical collection, but document rows retain their
+original `owner` as provenance. Each ownership query derives the joined owner
+set inside its SQL statement. New documents and daily reservations also retain
+the authenticated credential's owner. A request that started before linking
+cannot escape the combined limits after linking: the next reservation counts
+both owners atomically. A refund still returns its original `(owner, day)`
+reservation even when the association was created while the upload was pending.
+Previously over-limit collections are preserved; new reservations fail until
+there is room. Linking itself consumes no publishing allowance.
+
+No document IDs, versions, deletion tombstones, or stored objects move. Existing
+keys and tokens therefore reach the joined collection without relogin or URL
+changes. Credential identity remains unchanged for token administration: an
+external key does not gain permission to list or revoke a local account's tokens.
+An association grants document access, not a plan or a new authentication method;
+entitlement reconciliation belongs to the trusted integration using it.
 
 ## How an account comes into existence
 
@@ -250,6 +269,6 @@ and that is only acceptable while there is nothing on it for them to steal.
   documents would simply stop being reachable by anyone. Worth solving before
   there are accounts worth deleting.
 - **It does not decide what an account may do.** Entitlement is a separate
-  question, answered per operation — today by the license key's plan, next by
-  [#60](https://github.com/Brevilabs/OpenArtifacts/issues/60)'s plan config. An
-  account exists before it is allowed to do anything.
+  question, answered per operation by the license key's entitlement or the
+  local account's configured plan. Hosted OAuth accounts start with one free
+  published document; listing and unsharing remain available over the limit.

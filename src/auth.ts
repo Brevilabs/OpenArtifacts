@@ -42,6 +42,7 @@ import { LICENSE_CACHE_TTL_MS, TOKEN_LAST_USED_RESOLUTION_MS, type Env } from ".
 import { d1PublisherStore, findLiveToken, touchTokenUse, type PublisherStore } from "./db.js";
 import { errorResponse, type ErrorCode } from "./errors.js";
 import { sha256Hex } from "./hash.js";
+import { effectivePlan } from "./plans.js";
 import { TOKEN_PREFIX } from "./ids.js";
 
 /** tRPC endpoint on the license server, appended to `LICENSE_API_URL`. */
@@ -201,29 +202,33 @@ export async function resolvePublisher(
       return { ok: true, publisher: { owner: check.owner, plan: check.plan } };
 
     case "denied":
-      // Deliberately no row write and no row delete. A previously valid key that
-      // has since lapsed keeps its `publishers` row — that row is what an
-      // outage falls back to, and throwing it away would turn a revoked key
-      // into a lost account. It simply stops resolving.
+      // This row caches a credential, not ownership: docs belong to `owner`
+      // independently. Forget rejected credentials so an outage cannot revive
+      // their last successful validation. A fresh valid response may restore it.
+      await store.remove(id);
       return {
         ok: false,
         reason: "invalid_license",
         message: "That license key is not valid for publishing.",
       };
 
-    case "unreachable":
-      if (cached) {
+    case "unreachable": {
+      // Another request may have rejected this key while our check was pending.
+      // Only the current cache can authorize fallback, never the earlier snapshot.
+      const fallback = await store.read(id);
+      if (fallback) {
         // Stale but real. An outage must not lock out a publisher who has
         // published before. The plan rides along, so a publisher downgraded
         // since their last successful validation loses publishing here too
         // while keeping list and delete.
-        return { ok: true, publisher: { owner: cached.owner, plan: cached.plan } };
+        return { ok: true, publisher: { owner: fallback.owner, plan: fallback.plan } };
       }
       return {
         ok: false,
         reason: "license_unavailable",
         message: "License validation is temporarily unavailable. Please try again shortly.",
       };
+    }
   }
 }
 
@@ -260,7 +265,7 @@ async function resolveAccountToken(
     await touchTokenUse(env.DB, live.id, at, at - TOKEN_LAST_USED_RESOLUTION_MS);
   }
 
-  return { ok: true, publisher: { owner: live.account_id, plan: live.plan, authKind: "account" } };
+  return { ok: true, publisher: { owner: live.account_id, plan: effectivePlan(env, live.plan, live.plan_expires_at, at), authKind: "account" } };
 }
 
 const FAILURE_STATUS: Record<PublisherFailure, ErrorCode> = {

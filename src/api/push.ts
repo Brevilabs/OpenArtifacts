@@ -251,7 +251,7 @@ export async function createDoc(
     if (limits) {
       return limitReached(
         env, publisher, "documents",
-        `Your account can hold ${maxDocs} published documents. Unshare one to publish another.`,
+        `Your account can hold ${maxDocs} published ${maxDocs === 1 ? "document" : "documents"}. Unshare enough documents to get below this limit before publishing another.`,
       );
     }
     return errorResponse(

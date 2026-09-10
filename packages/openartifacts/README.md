@@ -4,7 +4,7 @@ Install the CLI and the OpenArtifacts skill into detected Claude Code, Codex, Op
 and pi installations:
 
 ```bash
-npx openartifacts install
+npx --yes openartifacts@latest install
 ```
 
 Hermes Agent needs only its native skill install:
@@ -49,6 +49,35 @@ The first authenticated command opens the browser device flow and stores the res
 token with owner-only permissions. Set `OPENARTIFACTS_TOKEN` to supply a credential
 without browser sign-in; it accepts an OpenArtifacts token or a Brevilabs license key.
 Set `OPENARTIFACTS_API_HOST` to target a self-hosted deployment.
+
+## Account and browser actions
+
+An OpenArtifacts account can publish within the deployment's free limits.
+Signing in is separate from purchasing an upgrade. Check current access with:
+
+```bash
+openartifacts account
+openartifacts upgrade
+openartifacts billing
+openartifacts link-copilot
+```
+
+`account` prints JSON with the plan, limits, current usage, and whether an external
+account is linked. The other commands print `{"url":"…","expiresAt":…}` and open
+the browser. These links expire after ten minutes and can be used once. Their
+availability depends on the deployment's configured account-action service.
+
+These four commands require an OAuth-issued OpenArtifacts token. The CLI uses
+the current API host's stored token, or `OPENARTIFACTS_TOKEN` when set. Without a
+credential it starts the normal sign-in flow. If the environment contains a
+license key, unset it and run `openartifacts login` before these account commands.
+A rejected credential is reported; it does not silently start another sign-in.
+
+For linking, enter the license key only on the trusted browser page and confirm
+the association there. Never put the key in command arguments or chat. Linking
+joins document history while preserving published URLs and existing machine tokens.
+It does not itself complete a purchase. On a publishing limit, run `upgrade` to
+obtain authenticated browser access; an owner ID in a URL is not account proof.
 
 ## Hosts
 

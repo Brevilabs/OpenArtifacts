@@ -3,6 +3,15 @@ const { execFileSync } = require("node:child_process");
 
 const stableVersion = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
 
+function checkNextPatch(baseVersion, version) {
+  const base = stableVersion.exec(baseVersion ?? "");
+  const next = stableVersion.exec(version ?? "");
+  if (!base || !next || base[1] !== next[1] || base[2] !== next[2] ||
+      BigInt(next[3]) !== BigInt(base[3]) + 1n) {
+    throw new Error(`OpenArtifacts releases must use the next patch version after ${baseVersion}; received ${version}.`);
+  }
+}
+
 function checkReleasePR({ title, baseVersion, version, lockVersion }) {
   if (version !== lockVersion) {
     throw new Error("OpenArtifacts package.json and package-lock.json versions must match.");
@@ -12,6 +21,7 @@ function checkReleasePR({ title, baseVersion, version, lockVersion }) {
     if (!stableVersion.test(version) || title !== `v${version}`) {
       throw new Error(`An OpenArtifacts version change requires the exact PR title v${version}.`);
     }
+    checkNextPatch(baseVersion, version);
   }
 }
 
@@ -25,4 +35,4 @@ if (require.main === module) {
   console.log("OpenArtifacts release title and versions are consistent.");
 }
 
-module.exports = { checkReleasePR };
+module.exports = { checkReleasePR, checkNextPatch };
