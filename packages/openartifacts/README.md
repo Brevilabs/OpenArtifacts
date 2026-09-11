@@ -1,7 +1,16 @@
 # OpenArtifacts CLI
 
-Install the CLI and the OpenArtifacts skill into detected Claude Code, Codex, OpenCode,
-and pi installations:
+Install the skill from your project folder and select your agent:
+
+```bash
+npx skills add Brevilabs/OpenArtifacts
+```
+
+This installs the skill and bundled themes. The agent can run the CLI through
+`npx --yes openartifacts@latest`; a global CLI installation is optional.
+Add `--global` to install the skill across projects.
+
+To install the CLI globally and copy the skill into detected agents instead:
 
 ```bash
 npx --yes openartifacts@latest install
