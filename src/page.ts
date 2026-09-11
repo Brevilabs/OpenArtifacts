@@ -70,6 +70,9 @@ ${FAVICON_LINK}
   .signup { margin-top: 1.5rem; }
   .newsletter { display: flex; align-items: flex-start; gap: 0.6rem; color: #e9ebee; font-size: 0.95rem; line-height: 1.5; }
   .newsletter input { accent-color: #f6ae52; width: 1rem; height: 1rem; margin: 0.2rem 0 0; flex-shrink: 0; }
+  .signup .actions { flex-direction: column; gap: 0.75rem; margin-top: 2rem; }
+  .signup .actions button { display: flex; align-items: center; justify-content: center; gap: 0.75rem; width: 100%; margin-top: 0; }
+  .signup .actions button svg { width: 1.25rem; height: 1.25rem; flex-shrink: 0; }
   .signup .actions button:disabled { border-color: #292d35; background: #191c22; color: #636b78; cursor: not-allowed; }
   .terms-consent { margin-top: 1.5rem; }
   .terms-consent a { display: inline; margin: 0; }

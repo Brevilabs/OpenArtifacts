@@ -242,11 +242,15 @@ async function chooser(
   // through their provider and lands them on a confirmation they never asked
   // for is the first half of the attack the confirm step exists to stop, and
   // there is no reason to leave it lying around.
+  const providerIcons = {
+    google: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M12.48 10.92v3.28h7.84c-.24 1.84-.853 3.187-1.787 4.133-1.147 1.147-2.933 2.4-6.053 2.4-4.827 0-8.6-3.893-8.6-8.72s3.773-8.72 8.6-8.72c2.6 0 4.507 1.027 5.907 2.347l2.307-2.307C18.747 1.44 16.133 0 12.48 0 5.867 0 .307 5.387.307 12s5.56 12 12.173 12c3.573 0 6.267-1.173 8.373-3.36 2.16-2.16 2.84-5.213 2.84-7.667 0-.76-.053-1.467-.173-2.053H12.48z"/></svg>',
+    github: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M12 .75a11.25 11.25 0 0 0-3.558 21.922c.563.104.77-.244.77-.542 0-.267-.01-.975-.015-1.913-3.13.68-3.79-1.508-3.79-1.508-.512-1.3-1.25-1.646-1.25-1.646-1.022-.7.077-.686.077-.686 1.13.08 1.724 1.16 1.724 1.16 1.005 1.723 2.637 1.225 3.28.937.102-.728.393-1.225.715-1.507-2.498-.284-5.124-1.249-5.124-5.56 0-1.228.44-2.233 1.16-3.02-.116-.285-.503-1.429.11-2.979 0 0 .945-.303 3.094 1.154A10.8 10.8 0 0 1 12 6.184c.956.004 1.918.13 2.817.379 2.148-1.457 3.091-1.154 3.091-1.154.615 1.55.228 2.694.112 2.979.722.787 1.159 1.792 1.159 3.02 0 4.322-2.63 5.272-5.135 5.55.403.35.762 1.041.762 2.1 0 1.516-.014 2.739-.014 3.111 0 .3.203.65.774.54A11.251 11.251 0 0 0 12 .75Z"/></svg>',
+  };
   const providers = configuredProviders(env);
   const buttons = providers
     .map(
       (provider) =>
-        `<button type="submit" formaction="${APPROVAL_PREFIX}/start/${provider}" disabled>Sign in with ${PROVIDER_LABELS[provider]}</button>`,
+        `<button type="submit" formaction="${APPROVAL_PREFIX}/start/${provider}" disabled>${providerIcons[provider]}<span>Sign in with ${PROVIDER_LABELS[provider]}</span></button>`,
     )
     .join("\n");
   const signup = `<form class="signup" method="post" action="${APPROVAL_PREFIX}/start/${providers[0]}">
