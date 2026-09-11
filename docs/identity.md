@@ -276,7 +276,10 @@ and that is only acceptable while there is nothing on it for them to steal.
 ## Newsletter preference at signup
 
 The browser sign-in page explains free account creation and links the terms and
-privacy policy. Its optional newsletter checkbox starts checked. The choice travels
+privacy policy. Its required Terms checkbox starts unchecked; sign-in buttons stay
+disabled until it is checked. The server rejects sign-in attempts without explicit
+agreement before creating an OAuth handshake. Its optional newsletter checkbox
+starts checked. The choice travels
 through the device handshake and is shown again, editable, after OAuth. Only the
 confirmation POST records it on the account, atomically with device approval.
 A callback, denied request, expired request or replay cannot enroll an address.

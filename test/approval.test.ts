@@ -133,7 +133,7 @@ async function startedState(userCode = USER_CODE): Promise<string> {
 
 /** Start a handshake the way the chooser's button does. */
 function begin(provider: ProviderId = "google", userCode = USER_CODE): Promise<Response> {
-  return post(`/approve/start/${provider}`, { user_code: userCode });
+  return post(`/approve/start/${provider}`, { user_code: userCode, terms: "yes" });
 }
 
 /**
@@ -379,7 +379,7 @@ describe("guessing a user code", () => {
       {
         method: "POST",
         headers: { "cf-connecting-ip": address },
-        body: new URLSearchParams({ user_code: USER_CODE }),
+        body: new URLSearchParams({ user_code: USER_CODE, terms: "yes" }),
       },
       { APPROVAL_LOOKUP_LIMITER: env.APPROVAL_LOOKUP_LIMITER },
     );
@@ -447,7 +447,7 @@ describe("a lookup a page made rather than a person", () => {
       {
         method: "POST",
         headers: { "cf-connecting-ip": "198.51.100.23", "sec-fetch-dest": "iframe" },
-        body: new URLSearchParams({ user_code: USER_CODE }),
+        body: new URLSearchParams({ user_code: USER_CODE, terms: "yes" }),
       },
       { APPROVAL_LOOKUP_LIMITER: env.APPROVAL_LOOKUP_LIMITER },
     );
@@ -458,6 +458,19 @@ describe("a lookup a page made rather than a person", () => {
 });
 
 describe("POST /approve/start/{provider}", () => {
+  it.each([undefined, "no"])(
+    "requires explicit terms agreement before starting a handshake (%s)",
+    async (terms) => {
+      const response = await post("/approve/start/google", {
+        user_code: USER_CODE,
+        ...(terms ? { terms } : {}),
+      });
+      expect(response.status).toBe(400);
+      expect(await response.text()).toContain("Agree to the Terms before signing in.");
+      expect((await readCode())?.state).toBeNull();
+      expect(await accountCount()).toBe(0);
+    },
+  );
   it("sends the browser to Google with PKCE and records the handshake on the code", async () => {
     const response = await begin("google");
 
@@ -500,10 +513,14 @@ describe("POST /approve/start/{provider}", () => {
   });
 
   it("has no route for a provider this deployment cannot use", async () => {
-    expect((await post("/approve/start/gitlab", { user_code: USER_CODE })).status).toBe(404);
+    expect((await post("/approve/start/gitlab", { user_code: USER_CODE, terms: "yes" })).status).toBe(404);
     expect(
       (
-        await post("/approve/start/github", { user_code: USER_CODE }, { OAUTH_GITHUB_CLIENT_ID: "" })
+        await post(
+          "/approve/start/github",
+          { user_code: USER_CODE, terms: "yes" },
+          { OAUTH_GITHUB_CLIENT_ID: "" },
+        )
       ).status,
     ).toBe(404);
   });
@@ -512,7 +529,9 @@ describe("POST /approve/start/{provider}", () => {
     expect((await post("/approve/start/google", {})).status).toBe(400);
 
     await seedCode("EXPIRED-2", NOW - 1);
-    expect((await post("/approve/start/google", { user_code: "EXPIRED-2" })).status).toBe(404);
+    expect(
+      (await post("/approve/start/google", { user_code: "EXPIRED-2", terms: "yes" })).status,
+    ).toBe(404);
   });
 });
 
@@ -771,7 +790,7 @@ describe("approving more than once", () => {
     await approve();
     const owner = (await readCode())?.account_id;
 
-    expect((await post("/approve/start/google", { user_code: USER_CODE })).status).toBe(404);
+    expect((await post("/approve/start/google", { user_code: USER_CODE, terms: "yes" })).status).toBe(404);
     expect((await send(`/approve?user_code=${USER_CODE}`)).status).toBe(404);
     expect((await readCode())?.account_id).toBe(owner);
   });
@@ -823,7 +842,7 @@ describe("the approval surface inside the router", () => {
     const response = await send("/approve/start/google", {
       method: "POST",
       headers: { "content-type": "multipart/form-data; boundary=x" },
-      body: new URLSearchParams({ user_code: USER_CODE }),
+      body: new URLSearchParams({ user_code: USER_CODE, terms: "yes" }),
     });
 
     expect(response.status).toBe(404);
@@ -949,6 +968,7 @@ describe("signup newsletter choice", () => {
   async function startChoice(checked: boolean) {
     await post("/approve/start/google", {
       user_code: USER_CODE,
+      terms: "yes",
       ...(checked ? { newsletter: "yes" } : {}),
     });
     return confirmToken(await (await callback()).text());
@@ -957,6 +977,10 @@ describe("signup newsletter choice", () => {
     const html = await (await send(`/approve?user_code=${USER_CODE}`)).text();
     expect(html).toContain("Create your free account.");
     expect(html).toContain('href="https://openartifacts.ai/terms"');
+    expect(html).toContain('name="terms" value="yes" required');
+    expect(html).not.toContain('name="terms" value="yes" checked');
+    expect(html).toContain('formaction="/approve/start/google" disabled');
+    expect(html).toContain('formaction="/approve/start/github" disabled');
     expect(html).toContain('name="newsletter" value="yes" checked');
     expect(html).toContain('formaction="/approve/start/github"');
     expect(html).not.toContain('name="newsletter" value="yes" checked required');
@@ -1020,6 +1044,7 @@ describe("signup newsletter choice", () => {
 it("lets the proven browser opt out of the handshake newsletter choice", async () => {
   await post("/approve/start/google", {
     user_code: USER_CODE,
+    terms: "yes",
     newsletter: "yes",
   });
   const html = await (await callback()).text();

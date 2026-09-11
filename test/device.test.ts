@@ -864,7 +864,9 @@ describe("the whole flow, from an empty terminal to a token", () => {
     expect(chooser.status).toBe(200);
     expect(await chooser.text()).toContain(minted.user_code);
 
-    expect((await form("/approve/start/google", { user_code: minted.user_code })).status).toBe(303);
+    expect(
+      (await form("/approve/start/google", { user_code: minted.user_code, terms: "yes" })).status,
+    ).toBe(303);
 
     const state = (
       await env.DB.prepare("SELECT state FROM device_codes WHERE user_code = ?")
@@ -907,7 +909,7 @@ describe("the whole flow, from an empty terminal to a token", () => {
 
   it("lets the person deny instead, which kills the code the terminal is waiting on", async () => {
     const minted = await mint({ label: "A terminal that is not mine" });
-    await form("/approve/start/google", { user_code: minted.user_code });
+    await form("/approve/start/google", { user_code: minted.user_code, terms: "yes" });
     const state = (
       await env.DB.prepare("SELECT state FROM device_codes WHERE user_code = ?")
         .bind(minted.user_code)

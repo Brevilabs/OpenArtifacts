@@ -246,16 +246,29 @@ async function chooser(
   const buttons = providers
     .map(
       (provider) =>
-        `<button type="submit" formaction="${APPROVAL_PREFIX}/start/${provider}">Sign in with ${PROVIDER_LABELS[provider]}</button>`,
+        `<button type="submit" formaction="${APPROVAL_PREFIX}/start/${provider}" disabled>Sign in with ${PROVIDER_LABELS[provider]}</button>`,
     )
     .join("\n");
   const signup = `<form class="signup" method="post" action="${APPROVAL_PREFIX}/start/${providers[0]}">
     <input type="hidden" name="${USER_CODE_PARAM}" value="${escapeHtml(userCode)}">
     <label class="newsletter"><input type="checkbox" name="newsletter" value="yes" checked> <span>Send me product updates via the Brevilabs newsletter.</span></label>
     <p class="terms">For your first sign-in only. Existing newsletter preferences stay unchanged.</p>
-    <p class="terms">By clicking Sign in, you agree to our <a href="https://openartifacts.ai/terms">Terms</a> and create a free account if you’re new. See our <a href="https://openartifacts.ai/privacy">Privacy Policy</a>.</p>
+    <label class="newsletter terms-consent"><input type="checkbox" name="terms" value="yes" required> <span>I agree to the <a href="https://openartifacts.ai/terms">Terms</a>.</span></label>
+    <p class="terms">Signing in creates a free account if you’re new. See our <a href="https://openartifacts.ai/privacy">Privacy Policy</a>.</p>
     <div class="actions">${buttons}</div>
-  </form>`;
+  </form>
+  <script>
+    const signup = document.querySelector('form.signup');
+    const terms = signup.elements.namedItem('terms');
+    const updateButtons = () => {
+      for (const button of signup.querySelectorAll('button[type="submit"]')) {
+        button.disabled = !terms.checked;
+      }
+    };
+    terms.addEventListener('change', updateButtons);
+    window.addEventListener('pageshow', updateButtons);
+    updateButtons();
+  </script>`;
   return page({ ...CHOOSE, detail: codeDetail(userCode), actions: signup }, 200);
 }
 
@@ -284,6 +297,17 @@ async function begin(
 
   const limiter = deps.limiter ?? env.APPROVAL_LOOKUP_LIMITER;
   if (!(await withinClientLimit(limiter, request))) return page(CODE_GONE, 404);
+
+  if (submitted.get("terms") !== "yes") {
+    return page(
+      {
+        ...CHOOSE,
+        message: "Agree to the Terms before signing in.",
+        actions: `<a href="${APPROVAL_PREFIX}?${USER_CODE_PARAM}=${encodeURIComponent(userCode)}">Back to sign in</a>`,
+      },
+      400,
+    );
+  }
 
   const now = (deps.now ?? Date.now)();
   const state = newHandshakeToken();
