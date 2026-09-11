@@ -65,6 +65,13 @@ ${FAVICON_LINK}
   .actions input { margin-top: 2rem; padding: 0.85rem 1.25rem; min-width: 11rem; border: 1px solid #2c313b; border-radius: 0.75rem; background: #07080b; color: #f4f5f7; font-family: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace; font-size: 1rem; letter-spacing: 0.16em; text-transform: uppercase; }
   .actions input::placeholder { color: #5b626e; }
   .actions input:focus { outline: none; border-color: #f6ae52; }
+  .actions form.confirm-signup { display: block; width: 100%; margin-top: 1.5rem; }
+  .confirm-signup .newsletter input { padding: 0; min-width: 0; margin: 0.2rem 0 0; }
+  .signup { margin-top: 1.5rem; }
+  .newsletter { display: flex; align-items: flex-start; gap: 0.6rem; color: #e9ebee; font-size: 0.95rem; line-height: 1.5; }
+  .newsletter input { accent-color: #f6ae52; width: 1rem; height: 1rem; margin: 0.2rem 0 0; flex-shrink: 0; }
+  .terms { font-size: 0.85rem; line-height: 1.6; }
+  .terms a { display: inline; margin: 0; }
 </style>
 </head>
 <body>

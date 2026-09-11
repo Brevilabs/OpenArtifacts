@@ -242,17 +242,21 @@ async function chooser(
   // through their provider and lands them on a confirmation they never asked
   // for is the first half of the attack the confirm step exists to stop, and
   // there is no reason to leave it lying around.
-  const buttons = configuredProviders(env)
-    .map((provider) =>
-      form(
-        `${APPROVAL_PREFIX}/start/${provider}`,
-        { [USER_CODE_PARAM]: userCode },
-        `Continue with ${PROVIDER_LABELS[provider]}`,
-      ),
+  const providers = configuredProviders(env);
+  const buttons = providers
+    .map(
+      (provider) =>
+        `<button type="submit" formaction="${APPROVAL_PREFIX}/start/${provider}">Sign in with ${PROVIDER_LABELS[provider]}</button>`,
     )
-    .join("\n    ");
-
-  return page({ ...CHOOSE, detail: codeDetail(userCode), actions: actions(buttons) }, 200);
+    .join("\n");
+  const signup = `<form class="signup" method="post" action="${APPROVAL_PREFIX}/start/${providers[0]}">
+    <input type="hidden" name="${USER_CODE_PARAM}" value="${escapeHtml(userCode)}">
+    <label class="newsletter"><input type="checkbox" name="newsletter" value="yes" checked> <span>Send me product updates via the Brevilabs newsletter.</span></label>
+    <p class="terms">For your first sign-in only. Existing newsletter preferences stay unchanged.</p>
+    <p class="terms">By clicking Sign in, you agree to our <a href="https://openartifacts.ai/terms">Terms</a> and create a free account if you’re new. See our <a href="https://openartifacts.ai/privacy">Privacy Policy</a>.</p>
+    <div class="actions">${buttons}</div>
+  </form>`;
+  return page({ ...CHOOSE, detail: codeDetail(userCode), actions: signup }, 200);
 }
 
 /** Start a handshake: mint its state and verifier, and record them on the code. */
@@ -284,7 +288,17 @@ async function begin(
   const now = (deps.now ?? Date.now)();
   const state = newHandshakeToken();
   const verifier = newHandshakeToken();
-  if (!(await startDeviceHandshake(env.DB, userCode, chosen, state, verifier, now))) {
+  if (
+    !(await startDeviceHandshake(
+      env.DB,
+      userCode,
+      chosen,
+      state,
+      verifier,
+      now,
+      submitted.get("newsletter") === "yes",
+    ))
+  ) {
     return page(CODE_GONE, 404);
   }
 
@@ -308,12 +322,7 @@ async function begin(
  * come out of that row rather than off the url, so neither can be swapped by
  * whoever follows the link.
  */
-async function prove(
-  url: URL,
-  env: Env,
-  provider: string,
-  deps: ApprovalDeps,
-): Promise<Response> {
+async function prove(url: URL, env: Env, provider: string, deps: ApprovalDeps): Promise<Response> {
   if (!approvalIsConfigured(env)) return page(NOT_CONFIGURED, 503);
 
   const now = (deps.now ?? Date.now)();
@@ -386,6 +395,14 @@ async function prove(
   const device =
     handshake.label === null ? UNNAMED_DEVICE : `<b><bdi>${escapeHtml(handshake.label)}</bdi></b>`;
 
+  const preference = await env.DB.prepare("SELECT newsletter_choice_at FROM accounts WHERE id = ?")
+    .bind(account.id)
+    .first<{ newsletter_choice_at: number | null }>();
+  const newsletter =
+    preference?.newsletter_choice_at == null
+      ? `<label class="newsletter"><input type="checkbox" name="newsletter" value="yes"${handshake.newsletter_opt_in ? " checked" : ""}> <span>Send me product updates via the Brevilabs newsletter.</span></label>`
+      : `<p class="terms">Your existing newsletter preference stays unchanged.</p>`;
+
   return page(
     {
       ...CONFIRM,
@@ -393,11 +410,9 @@ async function prove(
       detail: codeDetail(handshake.user_code),
       actions: actions(
         [
-          form(
-            `${APPROVAL_PREFIX}/confirm`,
-            { [CONFIRM_TOKEN_FIELD]: confirmToken },
-            "Approve this device",
-          ),
+          `<form class="confirm-signup" method="post" action="${APPROVAL_PREFIX}/confirm">
+            <input type="hidden" name="${CONFIRM_TOKEN_FIELD}" value="${confirmToken}">
+            ${newsletter}<button type="submit">Approve this device</button></form>`,
           form(`${APPROVAL_PREFIX}/deny`, { [CONFIRM_TOKEN_FIELD]: confirmToken }, "Deny"),
         ].join(""),
       ),
@@ -424,7 +439,10 @@ async function confirm(request: Request, env: Env, deps: ApprovalDeps): Promise<
   const token = submitted.get(CONFIRM_TOKEN_FIELD);
   const now = (deps.now ?? Date.now)();
 
-  const userCode = token === null ? null : await confirmDeviceApproval(env.DB, token, now);
+  const userCode =
+    token === null
+      ? null
+      : await confirmDeviceApproval(env.DB, token, now, submitted.get("newsletter") === "yes");
   if (userCode === null) return page(EXPIRED, 400);
 
   return page({ ...APPROVED, detail: codeDetail(userCode) }, 200);
@@ -561,10 +579,9 @@ function page(copy: BrandPage, status: number): Response {
 }
 
 const CHOOSE: BrandPage = {
-  title: "Approve a device",
-  heading: "Approve this device.",
-  message:
-    "Your terminal is waiting on the code below. Sign in to continue. The first time creates your account, which stores your verified email address and the id your provider uses for you. Nothing else.",
+  title: "Create your free account",
+  heading: "Create your free account.",
+  message: "Publish your first document free. Already have an account? Sign in below to continue.",
 };
 
 const CONFIRM: BrandPage = {
@@ -595,7 +612,7 @@ const ENTER_CODE: BrandPage = {
   heading: "Enter your code.",
   /** Always rendered with the form as its actions, and sometimes with a note. */
   message:
-    "Your terminal is waiting on a short code. Type it in exactly as it appears there. Signing in on the next page creates your account the first time, which stores your verified email address and the id your provider uses for you. Nothing else.",
+    "Your terminal is waiting on a short code. Type it in exactly as it appears there. Continue to create your free account or sign in.",
 };
 
 const CODE_GONE: BrandPage = {

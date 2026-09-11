@@ -272,3 +272,18 @@ and that is only acceptable while there is nothing on it for them to steal.
   question, answered per operation by the license key's entitlement or the
   local account's configured plan. Hosted OAuth accounts start with one free
   published document; listing and unsharing remain available over the limit.
+
+## Newsletter preference at signup
+
+The browser sign-in page explains free account creation and links the terms and
+privacy policy. Its optional newsletter checkbox starts checked. The choice travels
+through the device handshake and is shown again, editable, after OAuth. Only the
+confirmation POST records it on the account, atomically with device approval.
+A callback, denied request, expired request or replay cannot enroll an address.
+The first confirmed choice and its timestamp are retained; later sign-ins do not
+overwrite it, including an earlier opt-out. Existing accounts start with no choice.
+
+This is preference capture only. The existing Brevilabs campaign sender reads
+app-sites users, not these D1 accounts; delivery and unsubscribe integration must
+be connected before sending newsletters to this audience. No campaign is sent by
+signing in, and no Copilot user is manufactured for newsletter enrollment.

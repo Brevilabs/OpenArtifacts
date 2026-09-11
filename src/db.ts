@@ -122,6 +122,7 @@ export interface DeviceCodeRow {
   label: string | null;
   /** Epoch ms of a refusal on the approval page, and null until one is given. */
   denied_at: number | null;
+  newsletter_opt_in: number;
   expires_at: number;
   created_at: number;
 }
@@ -133,7 +134,7 @@ export interface DeviceCodeRow {
  */
 export type PendingHandshake = Pick<
   DeviceCodeRow,
-  "user_code" | "provider" | "verifier" | "label"
+  "user_code" | "provider" | "verifier" | "label" | "newsletter_opt_in"
 >;
 
 /**
@@ -448,13 +449,11 @@ export async function findServableVersion(
  * for the same reason, and answered identically for all three so the shape of
  * the reply cannot confirm another publisher's doc exists.
  */
-export async function ownsLiveDoc(
-  db: D1Database,
-  docId: string,
-  owner: string,
-): Promise<boolean> {
+export async function ownsLiveDoc(db: D1Database, docId: string, owner: string): Promise<boolean> {
   const row = await db
-    .prepare(`${OWNER_SCOPE_SQL} SELECT 1 FROM docs WHERE id = ? AND owner IN (SELECT owner FROM owner_scope) AND deleted_at IS NULL`)
+    .prepare(
+      `${OWNER_SCOPE_SQL} SELECT 1 FROM docs WHERE id = ? AND owner IN (SELECT owner FROM owner_scope) AND deleted_at IS NULL`,
+    )
     .bind(owner, owner, docId)
     .first();
 
@@ -762,17 +761,18 @@ export async function startDeviceHandshake(
   state: string,
   verifier: string,
   nowMs: number,
+  newsletter = false,
 ): Promise<boolean> {
   const started = await db
     .prepare(
       `UPDATE device_codes
           SET provider = ?, state = ?, verifier = ?,
-              account_id = NULL, confirm_token = NULL
+              account_id = NULL, confirm_token = NULL, newsletter_opt_in = ?
         WHERE user_code = ? AND confirm_token IS NULL
           AND approved_at IS NULL AND denied_at IS NULL AND expires_at > ?
         RETURNING user_code`,
     )
-    .bind(provider, state, verifier, userCode, nowMs)
+    .bind(provider, state, verifier, newsletter ? 1 : 0, userCode, nowMs)
     .first<{ user_code: string }>();
 
   return started !== null;
@@ -795,7 +795,7 @@ export async function findPendingHandshake(
   // `return await`: see the note on the router's catch in index.ts.
   return await db
     .prepare(
-      `SELECT user_code, provider, verifier, label FROM device_codes
+      `SELECT user_code, provider, verifier, label, newsletter_opt_in FROM device_codes
         WHERE state = ? AND approved_at IS NULL AND denied_at IS NULL AND expires_at > ?`,
     )
     .bind(state, nowMs)
@@ -880,22 +880,34 @@ export async function confirmDeviceApproval(
   db: D1Database,
   confirmToken: string,
   atMs: number,
+  newsletter = false,
 ): Promise<string | null> {
-  const approved = await db
-    .prepare(
-      `UPDATE device_codes
-          SET approved_at = ?, state = NULL, confirm_token = NULL
-        WHERE confirm_token = ?
-          AND approved_at IS NULL
-          AND denied_at IS NULL
-          AND account_id IS NOT NULL
-          AND expires_at > ?
-        RETURNING user_code`,
-    )
-    .bind(atMs, confirmToken, atMs)
-    .first<{ user_code: string }>();
-
-  return approved?.user_code ?? null;
+  // Both writes commit together. Only a browser holding the confirmation secret
+  // can enroll an account; OAuth callbacks alone never record newsletter consent.
+  // A later sign-in cannot overwrite a previous choice (including opting out).
+  const results = await db.batch([
+    db
+      .prepare(
+        `UPDATE accounts
+      SET newsletter_opt_in = ?,
+          newsletter_choice_at = ?
+      WHERE newsletter_choice_at IS NULL AND id IN (
+        SELECT account_id FROM device_codes WHERE confirm_token = ?
+          AND approved_at IS NULL AND denied_at IS NULL AND expires_at > ?
+      )`,
+      )
+      .bind(newsletter ? 1 : 0, atMs, confirmToken, atMs),
+    db
+      .prepare(
+        `UPDATE device_codes
+      SET approved_at = ?, state = NULL, confirm_token = NULL
+      WHERE confirm_token = ? AND approved_at IS NULL AND denied_at IS NULL
+        AND account_id IS NOT NULL AND expires_at > ?
+      RETURNING user_code`,
+      )
+      .bind(atMs, confirmToken, atMs),
+  ]);
+  return (results[1]?.results[0] as { user_code: string } | undefined)?.user_code ?? null;
 }
 
 /**
@@ -1150,7 +1162,7 @@ export async function collectDeviceToken(
 export async function findLiveToken(
   db: D1Database,
   tokenHash: string,
-): Promise<(Pick<TokenRow, "id" | "account_id" | "last_used_at">) | null> {
+): Promise<Pick<TokenRow, "id" | "account_id" | "last_used_at"> | null> {
   // `return await`: see the note on the router's catch in index.ts.
   return await db
     .prepare(

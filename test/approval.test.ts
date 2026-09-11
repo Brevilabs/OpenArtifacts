@@ -220,8 +220,8 @@ describe("GET /approve", () => {
 
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("no-store");
-    expect(html).toContain("Continue with Google");
-    expect(html).toContain("Continue with GitHub");
+    expect(html).toContain("Sign in with Google");
+    expect(html).toContain("Sign in with GitHub");
     expect(html).toContain(`>${USER_CODE}</div>`);
     expect(response.headers.has("set-cookie")).toBe(false);
   });
@@ -235,7 +235,7 @@ describe("GET /approve", () => {
   it("starts a handshake from a form, never from a link", async () => {
     const html = await (await send(`/approve?user_code=${USER_CODE}`)).text();
 
-    expect(html).toContain('<form method="post" action="/approve/start/google">');
+    expect(html).toContain('<form class="signup" method="post" action="/approve/start/google">');
     expect(html).toContain(`name="user_code" value="${USER_CODE}"`);
     expect(html).not.toContain('href="/approve/start');
     expect((await send(`/approve/start/google?user_code=${USER_CODE}`)).status).toBe(404);
@@ -246,8 +246,8 @@ describe("GET /approve", () => {
       await send(`/approve?user_code=${USER_CODE}`, {}, { OAUTH_GITHUB_CLIENT_SECRET: "" })
     ).text();
 
-    expect(html).toContain("Continue with Google");
-    expect(html).not.toContain("Continue with GitHub");
+    expect(html).toContain("Sign in with Google");
+    expect(html).not.toContain("Sign in with GitHub");
   });
 
   it("accepts the code in the case the terminal printed it or the user typed it", async () => {
@@ -284,7 +284,7 @@ describe("GET /approve", () => {
     const response = await send(`/approve?user_code=${USER_CODE.toLowerCase()}`);
 
     expect(response.status).toBe(200);
-    expect(await response.text()).toContain("Continue with Google");
+    expect(await response.text()).toContain("Sign in with Google");
   });
 
   it("asks again rather than dead-ending when the code is malformed", async () => {
@@ -367,7 +367,7 @@ describe("guessing a user code", () => {
 
     const other = await lookupFrom("198.51.100.8");
     expect(other.status).toBe(200);
-    expect(await other.text()).toContain("Continue with Google");
+    expect(await other.text()).toContain("Sign in with Google");
   });
 
   it("counts starting a handshake too, since that also says whether a code is live", async () => {
@@ -415,7 +415,7 @@ describe("a lookup a page made rather than a person", () => {
     // was never charged on their behalf.
     const mine = await lookupFrom(address);
     expect(mine.status).toBe(200);
-    expect(await mine.text()).toContain("Continue with Google");
+    expect(await mine.text()).toContain("Sign in with Google");
   });
 
   it("lets a person opening the link through, and counts that", async () => {
@@ -933,4 +933,100 @@ describe("the serving origin", () => {
     expect(redirected.status).toBe(307);
     expect(redirected.headers.has("set-cookie")).toBe(false);
   });
+});
+
+describe("signup newsletter choice", () => {
+  async function preference() {
+    return env.DB.prepare(
+      "SELECT newsletter_opt_in, newsletter_choice_at FROM accounts WHERE email = ?",
+    )
+      .bind("ada@example.com")
+      .first<{
+        newsletter_opt_in: number | null;
+        newsletter_choice_at: number | null;
+      }>();
+  }
+  async function startChoice(checked: boolean) {
+    await post("/approve/start/google", {
+      user_code: USER_CODE,
+      ...(checked ? { newsletter: "yes" } : {}),
+    });
+    return confirmToken(await (await callback()).text());
+  }
+  it("shows the free account disclosure, terms and optional checked newsletter field", async () => {
+    const html = await (await send(`/approve?user_code=${USER_CODE}`)).text();
+    expect(html).toContain("Create your free account.");
+    expect(html).toContain('href="https://openartifacts.ai/terms"');
+    expect(html).toContain('name="newsletter" value="yes" checked');
+    expect(html).toContain('formaction="/approve/start/github"');
+    expect(html).not.toContain('name="newsletter" value="yes" checked required');
+  });
+  it.each([true, false])(
+    "records checked=%s only on confirmation and preserves it on later sign-ins",
+    async (checked) => {
+      const token = await startChoice(checked);
+      expect(await preference()).toEqual({
+        newsletter_opt_in: null,
+        newsletter_choice_at: null,
+      });
+      expect(
+        (
+          await post("/approve/confirm", {
+            confirm_token: token,
+            ...(checked ? { newsletter: "yes" } : {}),
+          })
+        ).status,
+      ).toBe(200);
+      const saved = await preference();
+      expect(saved?.newsletter_opt_in).toBe(checked ? 1 : 0);
+      expect(saved?.newsletter_choice_at).toBeTypeOf("number");
+      expect((await post("/approve/confirm", { confirm_token: token })).status).toBe(400);
+      await seedCode();
+      const next = await startChoice(!checked);
+      expect((await post("/approve/confirm", { confirm_token: next })).status).toBe(200);
+      expect(await preference()).toEqual(saved);
+    },
+  );
+  it("does not record a choice for a denied or expired confirmation", async () => {
+    let token = await startChoice(true);
+    expect((await post("/approve/deny", { confirm_token: token })).status).toBe(200);
+    expect(await preference()).toEqual({
+      newsletter_opt_in: null,
+      newsletter_choice_at: null,
+    });
+    await seedCode();
+    token = await startChoice(true);
+    await env.DB.prepare("UPDATE device_codes SET expires_at = 0").run();
+    expect((await post("/approve/confirm", { confirm_token: token })).status).toBe(400);
+    expect(await preference()).toEqual({
+      newsletter_opt_in: null,
+      newsletter_choice_at: null,
+    });
+  });
+  it("rolls the preference back when the approval write fails", async () => {
+    const token = await startChoice(true);
+    await env.DB.prepare(
+      "CREATE TRIGGER fail_approval BEFORE UPDATE OF approved_at ON device_codes BEGIN SELECT RAISE(ABORT, 'test failure'); END",
+    ).run();
+    expect((await post("/approve/confirm", { confirm_token: token })).status).toBe(500);
+    expect(await preference()).toEqual({
+      newsletter_opt_in: null,
+      newsletter_choice_at: null,
+    });
+    expect((await readCode())?.approved_at).toBeNull();
+  });
+});
+
+it("lets the proven browser opt out of the handshake newsletter choice", async () => {
+  await post("/approve/start/google", {
+    user_code: USER_CODE,
+    newsletter: "yes",
+  });
+  const html = await (await callback()).text();
+  expect(html).toContain('name="newsletter" value="yes" checked');
+  await post("/approve/confirm", { confirm_token: confirmToken(html) });
+  const row = await env.DB.prepare("SELECT newsletter_opt_in FROM accounts").first<{
+    newsletter_opt_in: number;
+  }>();
+  expect(row?.newsletter_opt_in).toBe(0);
 });

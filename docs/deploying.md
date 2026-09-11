@@ -357,7 +357,7 @@ All changes ship through a pull request; never push to `main`.
 
 ## Standalone account launch order
 
-Apply additive D1 migrations through `0008_plan_cache.sql` before this Worker.
+Apply additive D1 migrations through `0009_newsletter_preference.sql` before this Worker.
 The unshipped revision/purpose migrations were replaced; do not apply their old
 draft versions. Hosted `ACCOUNT_ACTION_URL` and `UPGRADE_URL` must both be
 `https://openartifacts.ai/account`; CI and `npm run deploy` check this. Self-hosted

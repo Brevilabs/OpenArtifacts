@@ -235,6 +235,7 @@ describe("startDeviceHandshake", () => {
       provider: "github",
       verifier: "v2",
       label: null,
+      newsletter_opt_in: 0,
     });
   });
 
@@ -271,6 +272,7 @@ describe("findPendingHandshake", () => {
       provider: "github",
       verifier: "verifier-find",
       label: null,
+      newsletter_opt_in: 0,
     });
   });
 
