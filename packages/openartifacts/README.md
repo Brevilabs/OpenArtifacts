@@ -1,20 +1,20 @@
 # OpenArtifacts CLI
 
-Install the skill from your project folder and select your agent:
+Install the CLI and bundled skill into detected agents:
+
+```bash
+npx openartifacts@latest install
+```
+
+Alternatively, install only the skill from your project folder using the standard
+skills manager:
 
 ```bash
 npx skills add Brevilabs/OpenArtifacts
 ```
 
-This installs the skill and bundled themes. The agent can run the CLI through
-`npx --yes openartifacts@latest`; a global CLI installation is optional.
-Add `--global` to install the skill across projects.
-
-To install the CLI globally and copy the skill into detected agents instead:
-
-```bash
-npx --yes openartifacts@latest install
-```
+The skill can run the CLI through `npx --yes openartifacts@latest` when it is not
+installed globally. Add `--global` to the skills command to install across projects.
 
 Hermes Agent needs only its native skill install:
 
