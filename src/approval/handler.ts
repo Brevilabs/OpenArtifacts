@@ -404,9 +404,9 @@ async function prove(url: URL, env: Env, provider: string, deps: ApprovalDeps): 
         detail: codeDetail(handshake.user_code),
         actions: `<form class="signup" method="post" action="${APPROVAL_PREFIX}/confirm">
         <input type="hidden" name="${CONFIRM_TOKEN_FIELD}" value="${confirmToken}">
-        <label class="newsletter terms-consent"><input type="checkbox" name="terms" value="yes" required> <span>I agree to the <a href="https://openartifacts.ai/terms">Terms</a>.</span></label>
         <p class="terms">One published document is free. See our <a href="https://openartifacts.ai/privacy">Privacy Policy</a>.</p>
         <label class="newsletter"><input type="checkbox" name="newsletter" value="yes" checked> <span>Send me product updates via the Brevilabs newsletter.</span></label>
+        <label class="newsletter terms-consent"><input type="checkbox" name="terms" value="yes" required> <span>I agree to the <a href="https://openartifacts.ai/terms">Terms</a>.</span></label>
         <div class="actions"><button type="submit" disabled>Create account and approve device</button></div>
       </form>
       <script>
