@@ -45,7 +45,7 @@
  * constants in this file, so the thing that changes them is an edit to this
  * file, and a reviewer can see whether the number moved with it.
  */
-export const RENDER_REVISION = 6;
+export const RENDER_REVISION = 7;
 
 /**
  * Belt to the `X-Robots-Tag` header's braces (D9). The header is the
@@ -217,12 +217,81 @@ const BYLINE_LINK =
   "all:initial;font:inherit;display:inline;cursor:pointer;" +
   'color:#888;text-decoration:underline"';
 
-/** Hosting attribution only: the publishing app is not recorded. */
+/** The Copilot mark's outline, from `mark-mono-cream.svg` in the product site. */
+const MARK_PATH =
+  "M75.9 6.9c-6.8 1.4-12.5 6-35.5 29.3-33.5 33.8-33.5 33.9-34.2 62.2-0.3 12.4 0 20.2 0.7 22.7 " +
+  "2.4 7.8 10.8 11.2 17.6 7.1 1.7-1.1 14.9-14.1 29.5-29.1 14.5-14.9 26.7-27 27-26.9 0.3 0.2 12.4 12.4 " +
+  "27 27.3 14.6 14.8 27.6 27.8 29 28.7 5.1 3.6 13.6 1.4 16.5-4.2 1.2-2.3 1.5-6.9 1.5-22.3 0-22.9-1.2-28.6-8.3-37.9-7.6-10.2-50-52.3-54.9-54.6-5.1-2.4-10.9-3.2-15.9-2.3z";
+
+/**
+ * The mark as a data URI, not as an element.
+ *
+ * Inlined rather than linked, because a byline that depends on another host's
+ * uptime is a byline that is sometimes a broken-image icon, and the document
+ * may be read from a mirror or a cache long after this deploy. `img-src` on the
+ * serving surface admits `data:`, so nothing in the CSP has to move.
+ *
+ * A data URI rather than an inline `<svg>` because the mark shares the DOM with
+ * an interactive document (D6). Prepending the header puts our element *first*,
+ * so a figure that opens with `d3.select("svg")` or `document.querySelector(
+ * "svg")` — the ordinary way to grab a chart's root — would find the logo and
+ * draw into it. That is a real document breaking on a real selector, not a
+ * hostile one. The byline's own grey is baked in place of `currentColor`, which
+ * costs nothing: `BYLINE_BASE` pins the colour anyway.
+ */
+const COPILOT_MARK_SRC =
+  "data:image/svg+xml," +
+  encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="4 4 152 127" fill="#888">' +
+      `<path d="${MARK_PATH}"/></svg>`,
+  );
+
+/**
+ * And a `<span>` rather than an `<img>`, for the same reason one step further:
+ * `querySelectorAll("img")` is how a lightbox or a caption pass finds a
+ * document's figures, and the mark must not be one of them. A background image
+ * on an empty span answers to neither selector.
+ */
+const COPILOT_MARK =
+  '<span aria-hidden="true" style="all:initial;display:inline-block;' +
+  "width:17px;height:14px;vertical-align:-0.15em;flex:none;" +
+  // `url()` unquoted: `encodeURIComponent` leaves nothing in the value that
+  // would close the CSS function or the HTML attribute around it.
+  `background:url(${COPILOT_MARK_SRC}) center/contain no-repeat"></span>`;
+
+/**
+ * The header's link carries the mark as well as the name, so both are clickable.
+ * `inline-flex` to keep them on one line at a shared baseline, and the underline
+ * moves to the text — an underlined logo reads as a rendering fault.
+ */
+const BYLINE_LINK_WITH_MARK =
+  'target="_blank" rel="noopener noreferrer" style="' +
+  "all:initial;font:inherit;display:inline-flex;align-items:center;gap:0.4em;" +
+  'cursor:pointer;color:#888;text-decoration:none"';
+
+/**
+ * The two spans the header needs for layout, each reset like everything else it
+ * adds.
+ *
+ * The rule is one per element, without exception: `all:initial` on the container
+ * does not reach descendants, so a span left bare is a span a document's
+ * `span { font-size: 0 }` or `span { position: absolute }` reaches — and a
+ * stylesheet with a broad `span` rule is ordinary rather than hostile. `font`
+ * and `color` come straight back, since the point is to inherit the byline's,
+ * not the document's.
+ */
+const SPAN_RESET = "all:initial;font:inherit;color:inherit;";
+
+/** Where the document came from. Injected at the top of the body. */
 export const OPENARTIFACTS_HEADER =
   '<div class="openartifacts-header" style="' +
   BYLINE_BASE +
   ";margin:0 0 2rem;padding:0.75rem 0;border-bottom:1px solid rgba(128,128,128,0.25)\">" +
-  `Shared with <a href="https://openartifacts.ai" ${BYLINE_LINK}>OpenArtifacts</a></div>`;
+  `<span style="${SPAN_RESET}display:inline-flex;align-items:center;gap:0.4em">Shared from ` +
+  `<a href="https://obsidiancopilot.com" ${BYLINE_LINK_WITH_MARK}>` +
+  COPILOT_MARK +
+  `<span style="${SPAN_RESET}text-decoration:underline">Copilot for Obsidian</span>` +
+  "</a></span></div>";
 
 /** What served it. Injected immediately before `</body>`. */
 export const OPENARTIFACTS_FOOTER =
@@ -296,6 +365,7 @@ const AS_HTML = { html: true } as const;
  */
 export function renderServedHtml(response: Response, branding = true): Response {
   const head = branding ? NOINDEX_META + FAVICON_LINK + SOCIAL_CARD_META : NOINDEX_META;
+  let fromCopilot = false;
   let headPlaced = false;
   let cardTitlePlaced = false;
   let headerPlaced = false;
@@ -308,6 +378,11 @@ export function renderServedHtml(response: Response, branding = true): Response 
   let titleClosed = false;
 
   return new HTMLRewriter()
+    // Copilot's existing HTML renderer emits this marker. It describes the
+    // document format, not authenticated identity or publishing entitlement.
+    .on('style[id="openartifacts-obsidian-publish-baseline"]', {
+      element() { fromCopilot = true; },
+    })
     // `head > title` and not `title`: an inline `<svg>` may carry a `<title>`
     // of its own as its accessible name, and a chart's "Revenue by quarter" is
     // not what the document is called.
@@ -357,7 +432,7 @@ export function renderServedHtml(response: Response, branding = true): Response 
         // before `c`.
         if (headerPlaced) return;
         headerPlaced = true;
-        if (branding) body.prepend(OPENARTIFACTS_HEADER, AS_HTML);
+        if (branding && fromCopilot) body.prepend(OPENARTIFACTS_HEADER, AS_HTML);
         body.onEndTag((endTag) => {
           footerPlaced = true;
           if (branding) endTag.before(OPENARTIFACTS_FOOTER, AS_HTML);
@@ -371,7 +446,7 @@ export function renderServedHtml(response: Response, branding = true): Response 
           const titleMeta = socialTitleMeta(documentTitle);
           if (titleMeta.length > 0) end.append(titleMeta, AS_HTML);
         }
-        if (branding && !headerPlaced) end.append(OPENARTIFACTS_HEADER, AS_HTML);
+        if (branding && fromCopilot && !headerPlaced) end.append(OPENARTIFACTS_HEADER, AS_HTML);
         if (branding && !footerPlaced) end.append(OPENARTIFACTS_FOOTER, AS_HTML);
       },
     })

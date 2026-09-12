@@ -11,7 +11,7 @@ import {
 } from "../src/render.js";
 
 const bake = async (html: string, branding = true): Promise<string> =>
-  await renderServedHtml(new Response(html), branding).text();
+  await renderServedHtml(new Response(html.replace(/^(<!doctype[^>]*>)?/i, '$&<style id="openartifacts-obsidian-publish-baseline"></style>')), branding).text();
 
 /** A document shaped like the ones Obsidian renders. */
 const page = (body: string) =>
@@ -138,12 +138,11 @@ describe("renderServedHtml — what gets injected", () => {
     expect(baked).toContain("<title>Revenue by quarter</title>");
   });
 
-  it("attributes hosting without claiming which app published the document", async () => {
+  it("attributes documents carrying the Copilot renderer marker", async () => {
     const baked = await bake(page("<p>hello</p>"));
 
-    expect(baked).toContain("Shared with ");
-    expect(baked).not.toContain("Copilot for Obsidian");
-    expect(baked).toContain(">OpenArtifacts</a>");
+    expect(baked).toContain("Shared from ");
+    expect(baked).toContain(">Copilot for Obsidian</span>");
   });
 
   // The header is prepended, so anything it adds is the *first* of its kind in
@@ -168,7 +167,7 @@ describe("renderServedHtml — what gets injected", () => {
   });
 
   it("links both bylines out, which is the whole point of carrying them", async () => {
-    expect(OPENARTIFACTS_HEADER).toContain('href="https://openartifacts.ai"');
+    expect(OPENARTIFACTS_HEADER).toContain('href="https://obsidiancopilot.com"');
     expect(OPENARTIFACTS_FOOTER).toContain('href="https://openartifacts.ai"');
   });
 
@@ -187,7 +186,7 @@ describe("renderServedHtml — what gets injected", () => {
 
     // Both links use inline layout.
     expect(OPENARTIFACTS_FOOTER).toContain("display:inline;");
-    expect(OPENARTIFACTS_HEADER).toContain("display:inline;");
+    expect(OPENARTIFACTS_HEADER).toContain("display:inline-flex");
 
     // One reset per element the byline adds — no exceptions, since a bare span
     // is one a document's `span { font-size: 0 }` reaches. Counted against the
@@ -443,4 +442,11 @@ describe("renderServedHtml — branding off", () => {
     expect(bare).toContain(NOINDEX_META);
     expect(bare).not.toContain(OPENARTIFACTS_HEADER);
   });
+});
+
+it("omits the top header for unmarked agent HTML while retaining the footer", async () => {
+  const html = await renderServedHtml(new Response(page("<p>Codex publication</p>"))).text();
+  expect(html).not.toContain(OPENARTIFACTS_HEADER);
+  expect(html).not.toContain("Shared from");
+  expect(html).toContain(OPENARTIFACTS_FOOTER);
 });
