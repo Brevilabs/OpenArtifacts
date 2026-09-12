@@ -31,7 +31,7 @@ describe("renderServedHtml — what gets injected", () => {
     expect(NOINDEX_META).toBe('<meta name="robots" content="noindex,nofollow">');
   });
 
-  // Inline for the reason the Copilot mark is: an icon fetched from another
+  // Keep the favicon inline: an icon fetched from another
   // host is a blank tab whenever that host is unreachable, and these bytes
   // outlive the deploy that produced them.
   it("carries the tab icon inline, in the brand's own colours", () => {
@@ -138,25 +138,12 @@ describe("renderServedHtml — what gets injected", () => {
     expect(baked).toContain("<title>Revenue by quarter</title>");
   });
 
-  it("says where the document came from, in text a reader can see", async () => {
+  it("attributes hosting without claiming which app published the document", async () => {
     const baked = await bake(page("<p>hello</p>"));
 
-    expect(baked).toContain("Shared from ");
-    expect(baked).toContain(">Copilot for Obsidian</span>");
-  });
-
-  // Inlined rather than linked: a byline that fetches its logo from another host
-  // is a broken-image icon whenever that host is unreachable, and these bytes
-  // outlive the deploy that produced them.
-  it("carries the Copilot mark inline, in the byline's own grey", () => {
-    // Inline, so the mark does not depend on another host being up, and no
-    // request leaves the page to fetch it.
-    expect(OPENARTIFACTS_HEADER).toContain("background:url(data:image/svg+xml,");
-    expect(OPENARTIFACTS_HEADER).toContain(encodeURIComponent('fill="#888"'));
-    // Decorative: the link text already names the product.
-    expect(OPENARTIFACTS_HEADER).toContain('aria-hidden="true"');
-    expect(OPENARTIFACTS_HEADER).toContain("width:17px");
-    expect(OPENARTIFACTS_HEADER).toContain("height:14px");
+    expect(baked).toContain("Shared with ");
+    expect(baked).not.toContain("Copilot for Obsidian");
+    expect(baked).toContain(">OpenArtifacts</a>");
   });
 
   // The header is prepended, so anything it adds is the *first* of its kind in
@@ -181,7 +168,7 @@ describe("renderServedHtml — what gets injected", () => {
   });
 
   it("links both bylines out, which is the whole point of carrying them", async () => {
-    expect(OPENARTIFACTS_HEADER).toContain('href="https://obsidiancopilot.com"');
+    expect(OPENARTIFACTS_HEADER).toContain('href="https://openartifacts.ai"');
     expect(OPENARTIFACTS_FOOTER).toContain('href="https://openartifacts.ai"');
   });
 
@@ -194,15 +181,13 @@ describe("renderServedHtml — what gets injected", () => {
       for (const restored of ["font:inherit", "cursor:pointer", "color:#888"]) {
         expect(byline).toContain(restored);
       }
-      // Underlined either way, but the header puts it on the text rather than
-      // the anchor, so the mark beside it is not underlined too.
+      // Both hosting links remain visibly underlined.
       expect(byline).toContain("text-decoration:underline");
     }
 
-    // Asserted apart, because a shared `display:inline` check would pass for the
-    // header only by being a prefix of `inline-flex`.
+    // Both links use inline layout.
     expect(OPENARTIFACTS_FOOTER).toContain("display:inline;");
-    expect(OPENARTIFACTS_HEADER).toContain("display:inline-flex");
+    expect(OPENARTIFACTS_HEADER).toContain("display:inline;");
 
     // One reset per element the byline adds — no exceptions, since a bare span
     // is one a document's `span { font-size: 0 }` reaches. Counted against the
