@@ -1,7 +1,7 @@
 import { createExecutionContext, env, waitOnExecutionContext } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 import { deleteDoc } from "../src/api/manage.js";
-import type { Publisher } from "../src/auth.js";
+import { resolvePublisher, type Publisher } from "../src/auth.js";
 import type { Env } from "../src/config.js";
 import type { DocRow } from "../src/db.js";
 import { DOC_ID_LENGTH } from "../src/ids.js";
@@ -733,4 +733,33 @@ describe("a publisher whose plan may no longer publish", () => {
     expect(await objectKeys(created.docId)).toEqual([versionObjectKey(created.docId, 1)]);
     expect((await docRow(created.docId))?.latest_version).toBe(1);
   });
+});
+
+it("marks a rejected credential without losing its documents or another key's access", async () => {
+  await seedPublisher(KEY_B, ownerA);
+  const doc = await publish(KEY_A, "Keep this document");
+  const before = await docRow(doc.docId);
+  const keys = await objectKeys(doc.docId);
+  await env.DB.prepare("UPDATE publishers SET validated_at = 0 WHERE key_hash = ?")
+    .bind(await sha256Hex(KEY_A)).run();
+
+  const rejected = await resolvePublisher(KEY_A, {
+    ...env, LICENSE_API_URL: "https://license.test", LICENSE_API_KEY: "test-server-key",
+  }, {
+    fetch: (async () => Response.json({
+      error: { json: { data: { code: "NOT_FOUND" } } },
+    }, { status: 404 })) as typeof fetch,
+  });
+  expect(rejected).toMatchObject({ ok: false, reason: "invalid_license" });
+  expect(await env.DB.prepare("SELECT rejected_at FROM publishers WHERE key_hash = ?")
+    .bind(await sha256Hex(KEY_A)).first()).toEqual({ rejected_at: expect.any(Number) });
+  expect(await docRow(doc.docId)).toEqual(before);
+  expect(await objectKeys(doc.docId)).toEqual(keys);
+  expect(await env.DB.prepare("SELECT n FROM versions WHERE doc_id = ?")
+    .bind(doc.docId).first()).toEqual({ n: 1 });
+  const response = await list(KEY_B);
+  expect(response.status).toBe(200);
+  expect(await response.text()).toContain(doc.docId);
+  expect(await resolvePublisher(KEY_A, { ...env, LICENSE_API_URL: "" }))
+    .toMatchObject({ ok: false, reason: "license_unavailable" });
 });

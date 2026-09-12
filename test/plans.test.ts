@@ -14,7 +14,7 @@ const ADMIN = "test-service-secret";
 let token: string;
 const local = (overrides: Partial<Env> = {}): Env => ({
   ...env, SERVING_HOST: "", API_HOST: "", LEGACY_SERVING_HOST: "", RETIRED_API_HOST: "",
-  ADMIN_API_KEY: ADMIN, ...overrides,
+  ADMIN_API_KEY: ADMIN, UPGRADE_URL: undefined, ...overrides,
 });
 async function issue(owner = OWNER) {
   const value = newApiToken();
@@ -54,7 +54,7 @@ describe("configured account plans", () => {
   });
 
   it("loads the agreed hosted values from wrangler, not a separate test copy", () => {
-    expect(planLimits(local(), "free")).toEqual({ documents: 3, pushesPerDay: 6, htmlBytes: 1048576 });
+    expect(planLimits(local(), "free")).toEqual({ documents: 1, pushesPerDay: 6, htmlBytes: 1048576 });
     expect(planLimits(local(), "pro")).toEqual({ documents: 500, pushesPerDay: 100, htmlBytes: 10485760 });
     for (const PLAN_LIMITS of [undefined, ""]) {
       expect(planLimits(local({ PLAN_LIMITS }), "free")).toEqual(planLimits(local(), "free"));
@@ -74,7 +74,7 @@ describe("configured account plans", () => {
     const other = await issue();
     const doc = await (await create()).json<{ docId: string }>();
     for (let i = 0; i < 5; i++) expect((await send("PUT", `/api/v1/docs/${doc.docId}`, { html: "updated" }, {}, other)).status).toBe(200);
-    const rejected = await create();
+    const rejected = await send("PUT", `/api/v1/docs/${doc.docId}`, { html: "one too many" });
     expect(rejected.status).toBe(402);
     expect(await error(rejected)).toMatchObject({ error: { limit: "pushesPerDay", plan: "free" } });
     expect(await usage()).toBe(6);
@@ -129,10 +129,10 @@ describe("configured account plans", () => {
     expect(await usage()).toBe(5);
   });
 
-  it("returns an optional checkout URL carrying only the authenticated owner", async () => {
-    const response = await create("x".repeat(1048577), { UPGRADE_URL: "https://billing.test/upgrade?owner=forged&source=cli" });
+  it("returns a generic optional account URL without adding identity", async () => {
+    const response = await create("x".repeat(1048577), { UPGRADE_URL: "https://billing.test/account?source=cli" });
     const details = (await error(response)).error;
-    expect(details.upgrade_url).toBe(`https://billing.test/upgrade?owner=${OWNER}&source=cli`);
+    expect(details.upgrade_url).toBe("https://billing.test/account?source=cli");
     expect(details).not.toHaveProperty("upgradeUrl");
     expect(JSON.stringify(details)).not.toContain(token);
     expect((await error(await create("x".repeat(1048577)))).error).not.toHaveProperty("upgrade_url");

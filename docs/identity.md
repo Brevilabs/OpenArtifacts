@@ -13,7 +13,7 @@ having never made one — and see the same documents throughout.
 
 `docs.owner` is an opaque string. Nothing parses it, and every query only ever
 compares it for equality. Two things put a value there, and they are deliberately
-never mixed:
+stored with their original provenance:
 
 | Credential | Owner id | Where it comes from |
 | --- | --- | --- |
@@ -27,27 +27,45 @@ to the license server to be identified, handing this deployment's own secret to
 another service on every request.
 
 An account here holds an id, one verified email address, and the time it was
-created. That is the whole `accounts` table. One further thing about a person is
-stored, and it lives in `identities`: the provider's own permanent id for them,
-which is what returns a later sign-in to the right account. Beyond those,
-nothing is read, requested or stored, so no name and no avatar.
+created, alongside its configured plan, expiry and last entitlement-check time. One further thing
+about a person is stored, and it lives in `identities`: the provider's own permanent id for them,
+which is what returns a later sign-in to the right account. New accounts also store their optional newsletter choice. No name or avatar is requested.
 
 **The prefix is load-bearing.** An app-sites uuid cannot start with `oa_`, so the
 two id spaces cannot collide, and no equality test between them can accidentally
 succeed and hand one account another's documents. That property is what makes it
 safe for one column to carry both.
 
-### Why they are not merged
+### Joining document ownership without changing credentials
 
-A Copilot user who approves with the address on their license gets a *new*
-account, not the one their license key resolves to. Merging them would mean
-treating a verified email as proof of holding a particular license, which is a
-claim OAuth cannot make and the license server was never asked. So a Copilot user
-who wants their plugin documents from the CLI presents the same license key the
-plugin does — the API accepts it — and the two shelves stay separate until there
-is a deliberate exchange between them. That exchange is the follow-up named in
-[#55](https://github.com/Brevilabs/OpenArtifacts/issues/55), and it is also what
-eventually moves the license code out of this repo.
+OAuth email matching never proves control of an external account. The two
+identities stay separate until a trusted caller proves both and confirms a
+permanent association through `linkExternalOwner`. No public linking route is
+provided by this database primitive. It must not accept stale outage validation
+as proof or infer external ownership from an email address.
+
+`owner_links` pairs one external owner with one existing local account. Both
+columns are unique, the ID spaces are disjoint, and associations cannot be
+updated or deleted. Reconfirming the same pair is idempotent; conflicting pairs
+are refused. Account deletion must therefore preserve the ownership record or
+use a separately designed operator process, never cascade an unlink.
+
+The local account is the canonical collection, but document rows retain their
+original `owner` as provenance. Each ownership query derives the joined owner
+set inside its SQL statement. New documents and daily reservations also retain
+the authenticated credential's owner. A request that started before linking
+cannot escape the combined limits after linking: the next reservation counts
+both owners atomically. A refund still returns its original `(owner, day)`
+reservation even when the association was created while the upload was pending.
+Previously over-limit collections are preserved; new reservations fail until
+there is room. Linking itself consumes no publishing allowance.
+
+No document IDs, versions, deletion tombstones, or stored objects move. Existing
+keys and tokens therefore reach the joined collection without relogin or URL
+changes. Credential identity remains unchanged for token administration: an
+external key does not gain permission to list or revoke a local account's tokens.
+An association grants document access, not a plan or a new authentication method;
+entitlement reconciliation belongs to the trusted integration using it.
 
 ## How an account comes into existence
 
@@ -62,13 +80,14 @@ is one approval page.
 4. The provider redirects back to `/approve/callback/{provider}`. The `state`
    finds that row, the authorization code is exchanged, and the provider's
    **verified** address and its permanent **subject** are read.
-5. Those resolve to an account, creating one if the subject is new. The account
-   is recorded against the code, a fresh confirm token is minted, and the page
-   asks whether to approve it.
+5. Those resolve to an existing account if possible. Otherwise the verified
+   identity is held against the code and a fresh confirm token is minted. Existing accounts
+   are asked to approve the device; new users must accept Terms to create their
+   free account and approve it.
 6. They press Approve, which `POST`s that confirm token back and is the only
-   thing that marks the code approved. Deny is the same press with the opposite
-   effect, and it exists so that someone who was sent a link can end the code
-   rather than leaving it live until it expires.
+   thing that marks the code approved. Existing users also have Deny to end the
+   code immediately. New users can close the signup page; no account or token
+   is granted and the unapproved code expires.
 7. The CLI's next poll collects a token, which consumes the device code. The
    token is minted *there* rather than when Approve is pressed, so a raw token
    is never written to a row and a terminal that never comes back leaves no
@@ -97,10 +116,11 @@ Resolution asks the subject first:
 | Situation | Result |
 | --- | --- |
 | This subject has signed in before | its account, whatever address the provider reports now |
-| A new subject, address free or on an account this provider has never signed in to | that account, and the identity is linked to it |
+| A new subject, address free | registration is deferred until Terms and device approval |
+| A new subject, address on an account this provider has never signed in to | that account, and the identity is linked to it |
 | A new subject, address on an account another subject on **this** provider already signs in with | refused |
 
-The third row is enforced by a uniqueness constraint on `identities`, one
+The refusal is enforced by a uniqueness constraint on `identities`, one
 subject per provider per account, rather than by a check the resolver runs
 first. Two previously unseen subjects can verify one address at the same
 moment, and a read followed by a write would let both through — which is worse
@@ -250,6 +270,40 @@ and that is only acceptable while there is nothing on it for them to steal.
   documents would simply stop being reachable by anyone. Worth solving before
   there are accounts worth deleting.
 - **It does not decide what an account may do.** Entitlement is a separate
-  question, answered per operation — today by the license key's plan, next by
-  [#60](https://github.com/Brevilabs/OpenArtifacts/issues/60)'s plan config. An
-  account exists before it is allowed to do anything.
+  question, answered per operation by the license key's entitlement or the
+  local account's configured plan. Hosted OAuth accounts start with one free
+  published document; listing and unsharing remain available over the limit.
+
+## New-account signup and newsletter preference
+
+The initial browser page offers Google and GitHub sign-in. After OAuth proves the
+identity, existing accounts go directly to device approval, without Terms or
+newsletter prompts. This also applies to accounts with no recorded newsletter
+preference; signing in cannot change that preference.
+
+For a new identity, the callback holds the verified subject and email on the
+expiring device-code row. It creates no account. The next page asks the person to
+accept Terms (unchecked by default), offers optional product updates (checked by
+default), and clearly asks them to create a free account and approve their device.
+The button stays disabled until Terms is checked. A single confirmation POST
+atomically creates the account, links its provider identity, records the newsletter
+choice, and approves the device. The server requires explicit Terms agreement.
+A denied, expired, replayed, or failed confirmation cannot create an account.
+Concurrent signups use the existing unique email and provider-subject constraints;
+only the newly inserted account receives the submitted newsletter preference.
+
+The account stores `newsletter_opt_in` and `newsletter_choice_at`. Existing users
+are not enrolled automatically. When the optional private integration is configured, signup sends the verified
+email to its service-authenticated newsletter endpoint. The private service adds
+only missing newsletter recipients and preserves existing unsubscribe choices;
+it creates no billing customer, provider identity, or session. A failed attempt
+does not fail signup and is retried on a later account-plan refresh. There is no
+queue or scheduled retry, so delivery requires later activity after an outage.
+Self-hosted deployments without that integration make no newsletter request.
+No campaign is sent by signing in.
+
+### Review cache safeguards
+
+Migration 0011 records license rejection completion time. Only validation begun after that rejection may authorize the credential again; delayed older successes cannot restore it, even after a later recovery. Ownership and documents are unchanged.
+
+Failed automatic entitlement refreshes back off for one minute independently of successful-check time and paid expiry. Explicit account refresh bypasses the delay. A successful concurrent refresh is reported as cached by an older failed request.

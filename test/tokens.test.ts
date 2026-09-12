@@ -169,17 +169,20 @@ describe("Authorization: Bearer <token>", () => {
       token,
       local({ LICENSE_API_URL: "https://license.test", LICENSE_API_KEY: "ours" }),
       {
-        fetch: async () => {
+        fetch: async (url, init) => {
+          expect(String(url).endsWith("license.openArtifactsEntitlement")).toBe(true);
+          expect(JSON.stringify(init)).not.toContain(token);
+          expect(new Headers(init?.headers).get("authorization")).toBe("Bearer ours");
           calls += 1;
           return Response.json({});
         },
       },
     );
 
-    expect(calls).toBe(0);
+    expect(calls).toBe(1);
     expect(resolved).toEqual({
       ok: true,
-      publisher: { owner: ACCOUNT_A, plan: "free", authKind: "account" },
+      publisher: { owner: ACCOUNT_A, plan: "free", authKind: "account", accountRefresh: "unavailable" },
     });
   });
 
@@ -237,12 +240,10 @@ describe("free account document limit", () => {
     objects: (await env.DOCS.list()).objects.map((object) => object.key),
   });
 
-  it("allows three across tokens, rejects the fourth without writes, and isolates other accounts", async () => {
+  it("allows one across tokens, rejects the second without writes, and isolates other accounts", async () => {
     const first = await issueToken(ACCOUNT_A);
     const second = await issueToken(ACCOUNT_A);
-    for (const token of [first.token, second.token, first.token]) {
-      expect((await create(token)).status).toBe(201);
-    }
+    expect((await create(first.token)).status).toBe(201);
 
     const before = await storage();
     const refused = await create(second.token);
@@ -250,9 +251,10 @@ describe("free account document limit", () => {
     expect(await refused.json()).toEqual({
       error: {
         code: "limit_reached",
-        message: "Your account can hold 3 published documents. Unshare one to publish another.",
+        message: "Your account can hold 1 published document. Unshare enough documents to get below this limit before publishing another. Run openartifacts account --open to manage your plan.",
         limit: "documents",
         plan: "free",
+        upgrade_url: "https://openartifacts.ai/account",
       },
     });
     expect(await storage()).toEqual(before);
@@ -263,7 +265,7 @@ describe("free account document limit", () => {
 
   it("does not reset document capacity when yesterday's push allowance rolls over", async () => {
     const { token } = await issueToken(ACCOUNT_A);
-    for (let i = 0; i < 3; i++) await publish(token, `Doc ${i}`);
+    await publish(token, "First");
     await env.DB.prepare("UPDATE push_quota SET day = '2000-01-01'").run();
     const before = await storage();
     expect((await create(token)).status).toBe(402);
@@ -273,8 +275,6 @@ describe("free account document limit", () => {
   it("keeps updates and public reads working at the limit, and unshare frees one slot", async () => {
     const { token } = await issueToken(ACCOUNT_A);
     const first = await publish(token, "First");
-    await publish(token, "Second");
-    await publish(token, "Third");
     expect((await send("PUT", `/api/v1/docs/${first.docId}`, token, { html: page("v2") })).status)
       .toBe(200);
     expect((await send("GET", `/d/${first.docId}`, null)).status).toBe(200);
@@ -285,28 +285,26 @@ describe("free account document limit", () => {
     expect((await create(token)).status).toBe(402);
   });
 
-  it("atomically gives concurrent tokens only the remaining slot", async () => {
+  it("atomically gives concurrent first creates from two tokens only one slot", async () => {
     const first = await issueToken(ACCOUNT_A);
     const second = await issueToken(ACCOUNT_A);
-    await publish(first.token, "First");
-    await publish(first.token, "Second");
     const replies = await Promise.all([create(first.token), create(second.token)]);
     expect(replies.map((response) => response.status).sort()).toEqual([201, 402]);
-    expect(await tokensSeeDoc(first.token)).toHaveLength(3);
-    expect((await env.DOCS.list()).objects).toHaveLength(3);
-    expect((await storage()).pushes).toMatchObject([{ pushes: 3 }]);
+    expect(await tokensSeeDoc(first.token)).toHaveLength(1);
+    expect((await env.DOCS.list()).objects).toHaveLength(1);
+    expect((await storage()).pushes).toMatchObject([{ pushes: 1 }]);
   });
 
-  it("preserves existing over-cap documents and blocks creates until below the cap", async () => {
+  it("preserves three preexisting documents and requires all withdrawn before a new create", async () => {
     const { token } = await issueToken(ACCOUNT_A);
     const docs: PushResponse[] = [];
-    for (let i = 0; i < 4; i++) {
-      const response = await create(token, cap(4));
+    for (let i = 0; i < 3; i++) {
+      const response = await create(token, cap(3));
       expect(response.status).toBe(201);
       docs.push(await response.json<PushResponse>());
     }
     expect((await create(token)).status).toBe(402);
-    expect(await tokensSeeDoc(token)).toHaveLength(4);
+    expect(await tokensSeeDoc(token)).toHaveLength(3);
     for (const doc of docs) {
       expect((await send("GET", `/d/${doc.docId}`, null)).status).toBe(200);
     }
@@ -315,13 +313,19 @@ describe("free account document limit", () => {
     await send("DELETE", `/api/v1/docs/${docs[0]!.docId}`, token);
     expect((await create(token)).status).toBe(402);
     await send("DELETE", `/api/v1/docs/${docs[1]!.docId}`, token);
+    expect((await create(token)).status).toBe(402);
+    await send("DELETE", `/api/v1/docs/${docs[2]!.docId}`, token);
+    expect(await tokensSeeDoc(token)).toHaveLength(0);
+    expect((await storage()).pushes).toMatchObject([{ pushes: 4 }]);
     expect((await create(token)).status).toBe(201);
+    expect((await storage()).pushes).toMatchObject([{ pushes: 5 }]);
   });
 
   it("honors a self-hosted account cap without changing paid license limits", async () => {
     const { token } = await issueToken(ACCOUNT_A);
-    expect((await create(token, cap(1))).status).toBe(201);
-    expect((await create(token, cap(1))).status).toBe(402);
+    expect((await create(token, cap(2))).status).toBe(201);
+    expect((await create(token, cap(2))).status).toBe(201);
+    expect((await create(token, cap(2))).status).toBe(402);
     for (let i = 0; i < 4; i++) {
       expect((await create(LICENSE_KEY, cap(1))).status).toBe(201);
     }

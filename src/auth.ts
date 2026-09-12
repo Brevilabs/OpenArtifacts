@@ -42,6 +42,7 @@ import { LICENSE_CACHE_TTL_MS, TOKEN_LAST_USED_RESOLUTION_MS, type Env } from ".
 import { d1PublisherStore, findLiveToken, touchTokenUse, type PublisherStore } from "./db.js";
 import { errorResponse, type ErrorCode } from "./errors.js";
 import { sha256Hex } from "./hash.js";
+import { accountPlan, type RefreshStatus } from "./entitlement.js";
 import { TOKEN_PREFIX } from "./ids.js";
 
 /** tRPC endpoint on the license server, appended to `LICENSE_API_URL`. */
@@ -108,6 +109,7 @@ export interface Publisher {
   plan: string;
   /** Present only for our own tokens; never infer identity type from a plan name. */
   authKind?: "account";
+  accountRefresh?: RefreshStatus;
 }
 
 export type PublisherFailure =
@@ -134,6 +136,8 @@ export interface AuthDeps {
   /** Injected by tests so they never touch the network. */
   fetch?: typeof fetch;
   now?: () => number;
+  forceAccountRefresh?: boolean;
+  skipAccountRefresh?: boolean;
   store?: PublisherStore;
 }
 
@@ -145,6 +149,17 @@ export function parseBearerToken(header: string | null): string | null {
   if (!header) return null;
   const match = /^Bearer[ \t]+(\S+)$/i.exec(header.trim());
   return match?.[1] ?? null;
+}
+
+/** Match the API dispatcher, including its normalization of empty path segments. */
+export function isPublishingRequest(request: Request): boolean {
+  const pathname = new URL(request.url).pathname;
+  if (!pathname.startsWith("/api/v1/")) return false;
+  const [collection, docId, ...extra] = pathname
+    .slice("/api/v1".length).split("/").filter(Boolean);
+  return collection === "docs" && extra.length === 0 &&
+    ((docId === undefined && request.method === "POST") ||
+     (docId !== undefined && request.method === "PUT"));
 }
 
 export async function authenticateRequest(
@@ -161,7 +176,10 @@ export async function authenticateRequest(
     };
   }
   // `return await`: see the note on the router's catch in index.ts.
-  return await resolvePublisher(token, env, deps);
+  const path = new URL(request.url).pathname;
+  const account = request.method === "GET" && path === "/api/v1/account";
+  const publishing = isPublishingRequest(request);
+  return await resolvePublisher(token, env, { ...deps, forceAccountRefresh: account, skipAccountRefresh: !account && !publishing });
 }
 
 export async function resolvePublisher(
@@ -184,55 +202,64 @@ export async function resolvePublisher(
   const cached = await store.read(id);
   const checkedAt = now();
 
-  if (cached && checkedAt - cached.validated_at < LICENSE_CACHE_TTL_MS) {
+  if (cached && (cached.rejected_at == null || cached.validated_at > cached.rejected_at) && checkedAt - cached.validated_at < LICENSE_CACHE_TTL_MS) {
     return { ok: true, publisher: { owner: cached.owner, plan: cached.plan } };
   }
 
   const check = await validateLicense(token, env, deps);
 
   switch (check.status) {
-    case "valid":
-      await store.save({
+    case "valid": {
+      const saved = await store.save({
         key_hash: id,
         plan: check.plan,
         validated_at: checkedAt,
         owner: check.owner,
       });
-      return { ok: true, publisher: { owner: check.owner, plan: check.plan } };
+      // A check begun before a rejection cannot undo that rejection. Recheck
+      // after writing too, so a rejection during the write cannot authorize it.
+      const current = saved ? await store.read(id) : null;
+      if (current && (current.rejected_at == null || current.validated_at > current.rejected_at)) {
+        return { ok: true, publisher: { owner: current.owner, plan: current.plan } };
+      }
+      return { ok: false, reason: "invalid_license", message: "That license key is not valid for publishing." };
+    }
 
     case "denied":
-      // Deliberately no row write and no row delete. A previously valid key that
-      // has since lapsed keeps its `publishers` row — that row is what an
-      // outage falls back to, and throwing it away would turn a revoked key
-      // into a lost account. It simply stops resolving.
+      // This row caches a credential, not ownership: docs belong to `owner`
+      // independently. Retain rejection ordering even after a later check succeeds.
+      await store.reject(id, now());
       return {
         ok: false,
         reason: "invalid_license",
         message: "That license key is not valid for publishing.",
       };
 
-    case "unreachable":
-      if (cached) {
+    case "unreachable": {
+      // Another request may have rejected this key while our check was pending.
+      // Only the current cache can authorize fallback, never the earlier snapshot.
+      const fallback = await store.read(id);
+      if (fallback && (fallback.rejected_at == null || fallback.validated_at > fallback.rejected_at)) {
         // Stale but real. An outage must not lock out a publisher who has
         // published before. The plan rides along, so a publisher downgraded
         // since their last successful validation loses publishing here too
         // while keeping list and delete.
-        return { ok: true, publisher: { owner: cached.owner, plan: cached.plan } };
+        return { ok: true, publisher: { owner: fallback.owner, plan: fallback.plan } };
       }
       return {
         ok: false,
         reason: "license_unavailable",
         message: "License validation is temporarily unavailable. Please try again shortly.",
       };
+    }
   }
 }
 
 /**
  * Resolve one of this deployment's own tokens to the account it publishes as.
  *
- * There is no cache and no outage story, because there is nothing to be out:
- * the token's owner is a row in this database rather than an answer from
- * another service. That is also why a revoked token stops working on its very
+ * Identity is always local; only paid entitlement has a remote cache.
+ * A remote outage never invalidates the token or blocks management. That is also why a revoked token stops working on its very
  * next request, where a revoked license key keeps working until its cached
  * validation ages out.
  */
@@ -260,7 +287,8 @@ async function resolveAccountToken(
     await touchTokenUse(env.DB, live.id, at, at - TOKEN_LAST_USED_RESOLUTION_MS);
   }
 
-  return { ok: true, publisher: { owner: live.account_id, plan: live.plan, authKind: "account" } };
+  const result = await accountPlan(env, live.account_id, deps);
+  return { ok: true, publisher: { owner: live.account_id, plan: result.plan, accountRefresh: result.status, authKind: "account" } };
 }
 
 const FAILURE_STATUS: Record<PublisherFailure, ErrorCode> = {

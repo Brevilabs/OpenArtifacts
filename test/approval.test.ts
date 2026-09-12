@@ -122,7 +122,9 @@ async function readCode(userCode = USER_CODE) {
 }
 
 async function accountCount(): Promise<number> {
-  const row = await env.DB.prepare("SELECT COUNT(*) AS n FROM accounts").first<{ n: number }>();
+  const row = await env.DB.prepare("SELECT COUNT(*) AS n FROM accounts").first<{
+    n: number;
+  }>();
   return row?.n ?? 0;
 }
 
@@ -133,7 +135,10 @@ async function startedState(userCode = USER_CODE): Promise<string> {
 
 /** Start a handshake the way the chooser's button does. */
 function begin(provider: ProviderId = "google", userCode = USER_CODE): Promise<Response> {
-  return post(`/approve/start/${provider}`, { user_code: userCode });
+  return post(`/approve/start/${provider}`, {
+    user_code: userCode,
+    terms: "yes",
+  });
 }
 
 /**
@@ -191,7 +196,10 @@ async function approve(
     state: await startedState(userCode),
     oauth: oauthAnswering(email, subject ?? `sub-${provider}`),
   });
-  return await post("/approve/confirm", { confirm_token: confirmToken(await proven.text()) });
+  return await post("/approve/confirm", {
+    terms: "yes",
+    confirm_token: confirmToken(await proven.text()),
+  });
 }
 
 beforeEach(async () => {
@@ -220,8 +228,8 @@ describe("GET /approve", () => {
 
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("no-store");
-    expect(html).toContain("Continue with Google");
-    expect(html).toContain("Continue with GitHub");
+    expect(html).toContain("Sign in with Google");
+    expect(html).toContain("Sign in with GitHub");
     expect(html).toContain(`>${USER_CODE}</div>`);
     expect(response.headers.has("set-cookie")).toBe(false);
   });
@@ -235,7 +243,7 @@ describe("GET /approve", () => {
   it("starts a handshake from a form, never from a link", async () => {
     const html = await (await send(`/approve?user_code=${USER_CODE}`)).text();
 
-    expect(html).toContain('<form method="post" action="/approve/start/google">');
+    expect(html).toContain('<form class="signup" method="post" action="/approve/start/google">');
     expect(html).toContain(`name="user_code" value="${USER_CODE}"`);
     expect(html).not.toContain('href="/approve/start');
     expect((await send(`/approve/start/google?user_code=${USER_CODE}`)).status).toBe(404);
@@ -246,8 +254,8 @@ describe("GET /approve", () => {
       await send(`/approve?user_code=${USER_CODE}`, {}, { OAUTH_GITHUB_CLIENT_SECRET: "" })
     ).text();
 
-    expect(html).toContain("Continue with Google");
-    expect(html).not.toContain("Continue with GitHub");
+    expect(html).toContain("Sign in with Google");
+    expect(html).not.toContain("Sign in with GitHub");
   });
 
   it("accepts the code in the case the terminal printed it or the user typed it", async () => {
@@ -284,7 +292,7 @@ describe("GET /approve", () => {
     const response = await send(`/approve?user_code=${USER_CODE.toLowerCase()}`);
 
     expect(response.status).toBe(200);
-    expect(await response.text()).toContain("Continue with Google");
+    expect(await response.text()).toContain("Sign in with Google");
   });
 
   it("asks again rather than dead-ending when the code is malformed", async () => {
@@ -367,7 +375,7 @@ describe("guessing a user code", () => {
 
     const other = await lookupFrom("198.51.100.8");
     expect(other.status).toBe(200);
-    expect(await other.text()).toContain("Continue with Google");
+    expect(await other.text()).toContain("Sign in with Google");
   });
 
   it("counts starting a handshake too, since that also says whether a code is live", async () => {
@@ -379,7 +387,7 @@ describe("guessing a user code", () => {
       {
         method: "POST",
         headers: { "cf-connecting-ip": address },
-        body: new URLSearchParams({ user_code: USER_CODE }),
+        body: new URLSearchParams({ user_code: USER_CODE, terms: "yes" }),
       },
       { APPROVAL_LOOKUP_LIMITER: env.APPROVAL_LOOKUP_LIMITER },
     );
@@ -415,7 +423,7 @@ describe("a lookup a page made rather than a person", () => {
     // was never charged on their behalf.
     const mine = await lookupFrom(address);
     expect(mine.status).toBe(200);
-    expect(await mine.text()).toContain("Continue with Google");
+    expect(await mine.text()).toContain("Sign in with Google");
   });
 
   it("lets a person opening the link through, and counts that", async () => {
@@ -446,8 +454,11 @@ describe("a lookup a page made rather than a person", () => {
       "/approve/start/google",
       {
         method: "POST",
-        headers: { "cf-connecting-ip": "198.51.100.23", "sec-fetch-dest": "iframe" },
-        body: new URLSearchParams({ user_code: USER_CODE }),
+        headers: {
+          "cf-connecting-ip": "198.51.100.23",
+          "sec-fetch-dest": "iframe",
+        },
+        body: new URLSearchParams({ user_code: USER_CODE, terms: "yes" }),
       },
       { APPROVAL_LOOKUP_LIMITER: env.APPROVAL_LOOKUP_LIMITER },
     );
@@ -500,10 +511,21 @@ describe("POST /approve/start/{provider}", () => {
   });
 
   it("has no route for a provider this deployment cannot use", async () => {
-    expect((await post("/approve/start/gitlab", { user_code: USER_CODE })).status).toBe(404);
     expect(
       (
-        await post("/approve/start/github", { user_code: USER_CODE }, { OAUTH_GITHUB_CLIENT_ID: "" })
+        await post("/approve/start/gitlab", {
+          user_code: USER_CODE,
+          terms: "yes",
+        })
+      ).status,
+    ).toBe(404);
+    expect(
+      (
+        await post(
+          "/approve/start/github",
+          { user_code: USER_CODE, terms: "yes" },
+          { OAUTH_GITHUB_CLIENT_ID: "" },
+        )
       ).status,
     ).toBe(404);
   });
@@ -512,7 +534,14 @@ describe("POST /approve/start/{provider}", () => {
     expect((await post("/approve/start/google", {})).status).toBe(400);
 
     await seedCode("EXPIRED-2", NOW - 1);
-    expect((await post("/approve/start/google", { user_code: "EXPIRED-2" })).status).toBe(404);
+    expect(
+      (
+        await post("/approve/start/google", {
+          user_code: "EXPIRED-2",
+          terms: "yes",
+        })
+      ).status,
+    ).toBe(404);
   });
 });
 
@@ -531,12 +560,13 @@ describe("GET /approve/callback/{provider}", () => {
 
     expect(response.status).toBe(200);
     const html = await response.text();
-    expect(html).toContain("Approve this code?");
+    expect(html).toContain("Create your free account.");
     expect(html).toContain("ada@example.com");
     expect(html).toContain(`>${USER_CODE}</div>`);
 
     const row = await readCode();
-    expect(row?.account_id?.startsWith(ACCOUNT_ID_PREFIX)).toBe(true);
+    expect(row?.account_id).toBeNull();
+    expect(await accountCount()).toBe(0);
     // The identity is proven and the code is not approved. #57 polls the second.
     expect(row?.approved_at).toBeNull();
     // The token that can approve it exists only here and in the page above.
@@ -555,7 +585,10 @@ describe("GET /approve/callback/{provider}", () => {
 
     const [first, second] = await Promise.all([
       callback({ state, oauth: oauthAnswering("ada@example.com", "sub-ada") }),
-      callback({ state, oauth: oauthAnswering("mallory@example.com", "sub-mallory") }),
+      callback({
+        state,
+        oauth: oauthAnswering("mallory@example.com", "sub-mallory"),
+      }),
     ]);
 
     const statuses = [first.status, second.status].sort();
@@ -565,8 +598,13 @@ describe("GET /approve/callback/{provider}", () => {
     expect(confirmToken(await won.text())).toBe(row?.confirm_token);
   });
 
-  it("creates the account for the address the provider verified", async () => {
-    await callback();
+  it("creates the account for the verified address only after Terms and approval", async () => {
+    const html = await (await callback()).text();
+    expect(await accountCount()).toBe(0);
+    await post("/approve/confirm", {
+      terms: "yes",
+      confirm_token: confirmToken(html),
+    });
 
     const account = await env.DB.prepare("SELECT email FROM accounts WHERE id = ?")
       .bind((await readCode())?.account_id)
@@ -620,7 +658,10 @@ describe("GET /approve/callback/{provider}", () => {
 
   it("says nothing was approved when the user cancelled at the provider", async () => {
     const oauth = oauthAnswering("ada@example.com");
-    const response = await callback({ query: { code: "", error: "access_denied" }, oauth });
+    const response = await callback({
+      query: { code: "", error: "access_denied" },
+      oauth,
+    });
 
     expect(response.status).toBe(400);
     expect(await response.text()).toContain("Nothing was approved.");
@@ -657,7 +698,14 @@ describe("POST /approve/confirm", () => {
     await callback();
 
     expect((await post("/approve/confirm", {})).status).toBe(400);
-    expect((await post("/approve/confirm", { confirm_token: "guessed" })).status).toBe(400);
+    expect(
+      (
+        await post("/approve/confirm", {
+          terms: "yes",
+          confirm_token: "guessed",
+        })
+      ).status,
+    ).toBe(400);
     expect((await readCode())?.approved_at).toBeNull();
   });
 
@@ -675,7 +723,9 @@ describe("POST /approve/confirm", () => {
     await callback({ state });
 
     // The initiator has the state and nothing else.
-    expect((await post("/approve/confirm", { confirm_token: state })).status).toBe(400);
+    expect((await post("/approve/confirm", { terms: "yes", confirm_token: state })).status).toBe(
+      400,
+    );
     expect((await post("/approve/confirm", { state })).status).toBe(400);
     expect((await readCode())?.approved_at).toBeNull();
   });
@@ -683,7 +733,10 @@ describe("POST /approve/confirm", () => {
   it("refuses a press for a handshake whose identity was never proved", async () => {
     await begin();
 
-    const response = await post("/approve/confirm", { confirm_token: await startedState() });
+    const response = await post("/approve/confirm", {
+      terms: "yes",
+      confirm_token: await startedState(),
+    });
 
     expect(response.status).toBe(400);
     expect((await readCode())?.approved_at).toBeNull();
@@ -693,10 +746,14 @@ describe("POST /approve/confirm", () => {
     await begin();
     const token = confirmToken(await (await callback()).text());
 
-    expect((await post("/approve/confirm", { confirm_token: token })).status).toBe(200);
+    expect((await post("/approve/confirm", { terms: "yes", confirm_token: token })).status).toBe(
+      200,
+    );
     const approvedAt = (await readCode())?.approved_at;
 
-    expect((await post("/approve/confirm", { confirm_token: token })).status).toBe(400);
+    expect((await post("/approve/confirm", { terms: "yes", confirm_token: token })).status).toBe(
+      400,
+    );
     expect((await readCode())?.approved_at).toBe(approvedAt);
   });
 
@@ -705,7 +762,14 @@ describe("POST /approve/confirm", () => {
     const confirmation = confirmToken(await (await callback()).text());
 
     expect((await begin("github")).status).toBe(404);
-    expect((await post("/approve/confirm", { confirm_token: confirmation })).status).toBe(200);
+    expect(
+      (
+        await post("/approve/confirm", {
+          terms: "yes",
+          confirm_token: confirmation,
+        })
+      ).status,
+    ).toBe(200);
     expect((await readCode())?.approved_at).toBeGreaterThanOrEqual(NOW);
   });
 
@@ -716,7 +780,9 @@ describe("POST /approve/confirm", () => {
       .bind(NOW - 1, USER_CODE)
       .run();
 
-    expect((await post("/approve/confirm", { confirm_token: token })).status).toBe(400);
+    expect((await post("/approve/confirm", { terms: "yes", confirm_token: token })).status).toBe(
+      400,
+    );
     expect((await readCode())?.approved_at).toBeNull();
   });
 });
@@ -771,7 +837,14 @@ describe("approving more than once", () => {
     await approve();
     const owner = (await readCode())?.account_id;
 
-    expect((await post("/approve/start/google", { user_code: USER_CODE })).status).toBe(404);
+    expect(
+      (
+        await post("/approve/start/google", {
+          user_code: USER_CODE,
+          terms: "yes",
+        })
+      ).status,
+    ).toBe(404);
     expect((await send(`/approve?user_code=${USER_CODE}`)).status).toBe(404);
     expect((await readCode())?.account_id).toBe(owner);
   });
@@ -794,10 +867,14 @@ describe("the approval surface inside the router", () => {
   });
 
   it("has no approval page on the serving host", async () => {
-    const response = await send(`/approve?user_code=${USER_CODE}`, {}, {
-      SERVING_HOST: "openartifacts.workers.dev",
-      API_HOST: "api.openartifacts.ai",
-    });
+    const response = await send(
+      `/approve?user_code=${USER_CODE}`,
+      {},
+      {
+        SERVING_HOST: "openartifacts.workers.dev",
+        API_HOST: "api.openartifacts.ai",
+      },
+    );
 
     expect(response.status).toBe(404);
     expect(await response.text()).toContain("This document isn’t available.");
@@ -823,7 +900,7 @@ describe("the approval surface inside the router", () => {
     const response = await send("/approve/start/google", {
       method: "POST",
       headers: { "content-type": "multipart/form-data; boundary=x" },
-      body: new URLSearchParams({ user_code: USER_CODE }),
+      body: new URLSearchParams({ user_code: USER_CODE, terms: "yes" }),
     });
 
     expect(response.status).toBe(404);
@@ -896,7 +973,10 @@ describe("the serving origin", () => {
    * the promise stays an absolute rather than a per-host argument.
    */
   it("sets no cookie on any response it gives a reader", async () => {
-    const serving = { SERVING_HOST: "openartifacts.workers.dev", API_HOST: "api.openartifacts.ai" };
+    const serving = {
+      SERVING_HOST: "openartifacts.workers.dev",
+      API_HOST: "api.openartifacts.ai",
+    };
     const paths = [
       `/d/${DOC_ID}`,
       `/d/${DOC_ID}/v1`,
@@ -919,18 +999,204 @@ describe("the serving origin", () => {
   it("sets no cookie on a deleted doc or on the legacy host's redirect", async () => {
     await env.DB.prepare("UPDATE docs SET deleted_at = ? WHERE id = ?").bind(NOW, DOC_ID).run();
 
-    const gone = await send(`/d/${DOC_ID}`, {}, {
-      SERVING_HOST: "openartifacts.workers.dev",
-      API_HOST: "api.openartifacts.ai",
-    });
+    const gone = await send(
+      `/d/${DOC_ID}`,
+      {},
+      {
+        SERVING_HOST: "openartifacts.workers.dev",
+        API_HOST: "api.openartifacts.ai",
+      },
+    );
     expect(gone.status).toBe(410);
     expect(gone.headers.has("set-cookie")).toBe(false);
 
-    const redirected = await send(`/d/${DOC_ID}`, {}, {
-      SERVING_HOST: "openartifacts.site",
-      LEGACY_SERVING_HOST: "openartifacts.workers.dev",
-    });
+    const redirected = await send(
+      `/d/${DOC_ID}`,
+      {},
+      {
+        SERVING_HOST: "openartifacts.site",
+        LEGACY_SERVING_HOST: "openartifacts.workers.dev",
+      },
+    );
     expect(redirected.status).toBe(307);
     expect(redirected.headers.has("set-cookie")).toBe(false);
   });
+});
+
+describe("new-account signup", () => {
+  async function preference() {
+    return env.DB.prepare(
+      "SELECT newsletter_opt_in, newsletter_choice_at FROM accounts WHERE email = ?",
+    )
+      .bind("ada@example.com")
+      .first<{
+        newsletter_opt_in: number | null;
+        newsletter_choice_at: number | null;
+      }>();
+  }
+  async function newSignup() {
+    await begin();
+    return await (await callback()).text();
+  }
+  it("starts with enabled providers and no account agreements", async () => {
+    const html = await (await send(`/approve?user_code=${USER_CODE}`)).text();
+    expect(html).toContain("Sign in to OpenArtifacts.");
+    expect(html).not.toContain('name="terms"');
+    expect(html).not.toContain('name="newsletter"');
+    expect(html).not.toContain(" disabled>");
+  });
+  it("asks a new user for unchecked Terms and optional checked newsletter after OAuth", async () => {
+    const html = await newSignup();
+    expect(html).toContain('name="terms" value="yes" required');
+    expect(html).not.toContain('name="terms" value="yes" checked');
+    expect(html).toContain('name="newsletter" value="yes" checked');
+    expect(html).toContain("disabled>Create account and approve device");
+    expect(await accountCount()).toBe(0);
+  });
+  it.each([undefined, "no"])(
+    "cannot create an account without explicit Terms (%s)",
+    async (terms) => {
+      const token = confirmToken(await newSignup());
+      expect(
+        (
+          await post("/approve/confirm", {
+            confirm_token: token,
+            ...(terms ? { terms } : {}),
+          })
+        ).status,
+      ).toBe(400);
+      expect(await accountCount()).toBe(0);
+      expect((await readCode())?.approved_at).toBeNull();
+    },
+  );
+  it.each([true, false])(
+    "records newsletter=%s only when creating the account",
+    async (checked) => {
+      const token = confirmToken(await newSignup());
+      expect(await preference()).toBeNull();
+      expect(
+        (
+          await post("/approve/confirm", {
+            confirm_token: token,
+            terms: "yes",
+            ...(checked ? { newsletter: "yes" } : {}),
+          })
+        ).status,
+      ).toBe(200);
+      const saved = await preference();
+      expect(saved?.newsletter_opt_in).toBe(checked ? 1 : 0);
+      expect(saved?.newsletter_choice_at).toBeTypeOf("number");
+      expect((await post("/approve/confirm", { confirm_token: token, terms: "yes" })).status).toBe(
+        400,
+      );
+      await seedCode();
+      const html = await newSignup();
+      expect(html).not.toContain('name="terms"');
+      expect(html).not.toContain('name="newsletter"');
+      expect(
+        (
+          await post("/approve/confirm", {
+            confirm_token: confirmToken(html),
+            newsletter: checked ? "no" : "yes",
+          })
+        ).status,
+      ).toBe(200);
+      expect(await preference()).toEqual(saved);
+    },
+  );
+  it("skips agreements for an existing account even without a newsletter preference", async () => {
+    await approve("google", USER_CODE, "ada@example.com", "sub-ada@example.com");
+    await env.DB.prepare(
+      "UPDATE accounts SET newsletter_opt_in = NULL, newsletter_choice_at = NULL",
+    ).run();
+    await seedCode();
+    const html = await newSignup();
+    expect(html).not.toContain('name="terms"');
+    expect(html).not.toContain('name="newsletter"');
+    expect(
+      (
+        await post("/approve/confirm", {
+          confirm_token: confirmToken(html),
+          newsletter: "yes",
+        })
+      ).status,
+    ).toBe(200);
+    expect(await preference()).toEqual({
+      newsletter_opt_in: null,
+      newsletter_choice_at: null,
+    });
+  });
+  it.each(["deny", "expire"])("creates nothing after %s", async (outcome) => {
+    const token = confirmToken(await newSignup());
+    if (outcome === "deny") await post("/approve/deny", { confirm_token: token });
+    else await env.DB.prepare("UPDATE device_codes SET expires_at = 0").run();
+    expect(
+      (
+        await post("/approve/confirm", {
+          confirm_token: token,
+          terms: "yes",
+          newsletter: "yes",
+        })
+      ).status,
+    ).toBe(400);
+    expect(await accountCount()).toBe(0);
+  });
+  it("rolls back account creation if approval fails", async () => {
+    const token = confirmToken(await newSignup());
+    await env.DB.prepare(
+      "CREATE TRIGGER fail_approval BEFORE UPDATE OF approved_at ON device_codes BEGIN SELECT RAISE(ABORT, 'test failure'); END",
+    ).run();
+    expect(
+      (
+        await post("/approve/confirm", {
+          confirm_token: token,
+          terms: "yes",
+          newsletter: "yes",
+        })
+      ).status,
+    ).toBe(500);
+    expect(await accountCount()).toBe(0);
+    expect((await readCode())?.approved_at).toBeNull();
+  });
+  it.each([true, false])(
+    "safely resolves overlapping new signups with sameSubject=%s",
+    async (sameSubject) => {
+      await seedCode("SECOND-CODE");
+      await begin("google", USER_CODE);
+      const first = confirmToken(
+        await (
+          await callback({
+            oauth: oauthAnswering("ada@example.com", "subject-first"),
+          })
+        ).text(),
+      );
+      await begin("google", "SECOND-CODE");
+      const second = confirmToken(
+        await (
+          await callback({
+            state: await startedState("SECOND-CODE"),
+            oauth: oauthAnswering(
+              sameSubject ? "other@example.com" : "ada@example.com",
+              sameSubject ? "subject-first" : "subject-second",
+            ),
+          })
+        ).text(),
+      );
+      const results = await Promise.all([
+        post("/approve/confirm", {
+          confirm_token: first,
+          terms: "yes",
+          newsletter: "yes",
+        }),
+        post("/approve/confirm", { confirm_token: second, terms: "yes" }),
+      ]);
+      expect(results.map((r) => r.status).sort()).toEqual(sameSubject ? [200, 200] : [200, 400]);
+      expect(await accountCount()).toBe(1);
+      const ids = [
+        (await readCode())?.account_id,
+        (await readCode("SECOND-CODE"))?.account_id,
+      ].filter(Boolean);
+      expect(new Set(ids).size).toBe(1);
+    },
+  );
 });

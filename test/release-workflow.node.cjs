@@ -45,7 +45,7 @@ test("publication uses pristine source, not files from the test job", () => {
   assert.match(jobs.publish, /if: steps\.recheck\.outputs\.exists != 'true'/);
 });
 
-const { checkReleasePR } = require("../scripts/check-release-pr.cjs");
+const { checkReleasePR, checkNextPatch } = require("../scripts/check-release-pr.cjs");
 const candidate = { baseVersion: "0.2.0", version: "0.2.1", lockVersion: "0.2.1" };
 
 test("version bumps require the exact matching release title", () => {
@@ -58,7 +58,7 @@ test("version bumps require the exact matching release title", () => {
 test("ordinary PRs need no release title, but release titles must match even without a bump", () => {
   const unchanged = { ...candidate, baseVersion: "0.2.1" };
   assert.doesNotThrow(() => checkReleasePR({ ...unchanged, title: "Fix publishing" }));
-  assert.doesNotThrow(() => checkReleasePR({ ...unchanged, title: "v0.2.1" }));
+  assert.throws(() => checkReleasePR({ ...unchanged, title: "v0.2.1" }), /next patch/);
   assert.throws(() => checkReleasePR({ ...unchanged, title: "v0.3.0" }), /exact PR title/);
 });
 
@@ -71,4 +71,58 @@ test("CI reruns title validation on PR edits and retains the base revision", () 
   assert.match(ci, /types: \[opened, synchronize, reopened, edited\]/);
   assert.match(ci, /fetch-depth: 0/);
   assert.match(ci, /if: github.event_name == 'pull_request'\n\s+run: node scripts\/check-release-pr.cjs/);
+});
+
+
+test("releases accept only the next patch, never minor, major, skipped, or older versions", () => {
+  assert.doesNotThrow(() => checkNextPatch("0.2.2", "0.2.3"));
+  assert.doesNotThrow(() => checkNextPatch("0.2.9", "0.2.10"));
+  for (const version of ["0.3.0", "1.0.0", "0.2.4", "0.2.1", "0.2.2", "0.2.3-beta.1"]) {
+    assert.throws(() => checkNextPatch("0.2.2", version), /next patch/);
+    assert.throws(() => checkReleasePR({ baseVersion: "0.2.2", version, lockVersion: version, title: `v${version}` }));
+  }
+  for (const base of [undefined, "latest", "0.02.2", "0.2.2-beta.1"]) {
+    assert.throws(() => checkNextPatch(base, "0.2.3"), /next patch/);
+  }
+});
+
+test("the final publishing boundary reuses the patch rule after the registry recheck", () => {
+  assert.match(jobs.publish, /const \{ checkNextPatch \} = require\("\.\/scripts\/check-release-pr\.cjs"\);\n\s+checkNextPatch\(latest, requested\);/);
+  assert.match(jobs.publish, /if \(exists\) \{[\s\S]*exists=true[\s\S]*\} else \{[\s\S]*checkNextPatch/);
+  assert.doesNotMatch(jobs.publish, /const compare =/);
+});
+
+test("publication rejects non-patch candidates using registry metadata and preserves replay skips", () => {
+  const { runInNewContext } = require("node:vm");
+  const code = /node <<'NODE'\n([\s\S]*?)\n\s+NODE/.exec(jobs.publish)[1];
+  function recheck(version, exists = false) {
+    let output = "";
+    runInNewContext(code, {
+      require: (name) => name === "node:fs" ? {
+        readFileSync: () => JSON.stringify({ "dist-tags": { latest: "0.2.2" }, versions: exists ? { [version]: {} } : {} }),
+        appendFileSync: (_path, value) => { output += value; },
+      } : { checkNextPatch },
+      process: { env: { VERSION: version, GITHUB_OUTPUT: "fixture" } },
+      console: { log() {} },
+    });
+    return output;
+  }
+  assert.equal(recheck("0.2.3"), "exists=false\n");
+  for (const version of ["0.3.0", "1.0.0", "0.2.4", "0.2.1", "0.2.2"]) {
+    assert.throws(() => recheck(version), /next patch/);
+  }
+  assert.equal(recheck("0.2.3", true), "exists=true\n");
+});
+
+const { checkHostedAccountActions } = require("../scripts/check-account-actions.cjs");
+test("hosted deploy requires both account URLs without imposing them on self-hosts", () => {
+  const config = readFileSync(new URL("../wrangler.jsonc", `file://${__filename}`), "utf8");
+  assert.doesNotThrow(() => checkHostedAccountActions(config));
+  for (const name of ["ACCOUNT_ACTION_URL", "UPGRADE_URL"]) {
+    assert.throws(() => checkHostedAccountActions(config.replace(`"${name}": "https://openartifacts.ai/account"`, `"${name}": ""`)), /must point/);
+    assert.throws(() => checkHostedAccountActions(config.replace(`"${name}": "https://openartifacts.ai/account",`, `// "${name}": "https://openartifacts.ai/account",`)), /must point/);
+    assert.throws(() => checkHostedAccountActions(config.replace(`"${name}": "https://openartifacts.ai/account",`, `/* "${name}": "https://openartifacts.ai/account", */`)), /must point/);
+  }
+  assert.doesNotThrow(() => checkHostedAccountActions('{"vars":{"API_HOST":"self.example",}}'));
+  assert.throws(() => checkHostedAccountActions('{"vars":'), /Invalid Wrangler/);
 });

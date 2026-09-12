@@ -9,7 +9,7 @@ export interface PlanLimits {
 }
 
 const DEFAULT_PLANS: Record<string, PlanLimits> = {
-  free: { documents: 3, pushesPerDay: 6, htmlBytes: 1024 * 1024 },
+  free: { documents: 1, pushesPerDay: 6, htmlBytes: 1024 * 1024 },
 };
 
 /** Finite positive ceilings only; the HTML memory safety bound is never configurable. */
@@ -44,6 +44,11 @@ export function defaultPlan(env: Env): string {
   return plan;
 }
 
+/** Expiration changes access on the next request, never ownership or stored history. */
+export function effectivePlan(env: Env, plan: string, expiresAt: number | null, now = Date.now()): string {
+  return expiresAt !== null && expiresAt <= now ? defaultPlan(env) : plan;
+}
+
 export function limitReached(env: Env, publisher: Publisher, limit: string, message: string): Response {
   let upgradeUrl: string | undefined;
   if (env.UPGRADE_URL?.trim()) {
@@ -52,10 +57,12 @@ export function limitReached(env: Env, publisher: Publisher, limit: string, mess
       throw new Error("UPGRADE_URL must be an absolute HTTP(S) URL without credentials.");
     }
     // This routes checkout, never authenticates it. Billing must prove account ownership.
-    url.searchParams.set("owner", publisher.owner);
+    url.searchParams.delete("owner");
     upgradeUrl = url.toString();
   }
-  return errorResponse("limit_reached", message, undefined, {
+  return errorResponse("limit_reached", env.ACCOUNT_ACTION_URL?.trim()
+    ? `${message} Run openartifacts account --open to manage your plan.`
+    : message, undefined, {
     plan: publisher.plan, limit, ...(upgradeUrl ? { upgrade_url: upgradeUrl } : {}),
   });
 }

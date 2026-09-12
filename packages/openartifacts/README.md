@@ -1,11 +1,20 @@
 # OpenArtifacts CLI
 
-Install the CLI and the OpenArtifacts skill into detected Claude Code, Codex, OpenCode,
-and pi installations:
+Install the CLI and bundled skill into detected agents:
 
 ```bash
-npx openartifacts install
+npx openartifacts@latest install
 ```
+
+Alternatively, install only the skill from your project folder using the standard
+skills manager:
+
+```bash
+npx skills add Brevilabs/OpenArtifacts
+```
+
+The skill can run the CLI through `npx --yes openartifacts@latest` when it is not
+installed globally. Add `--global` to the skills command to install across projects.
 
 Hermes Agent needs only its native skill install:
 
@@ -49,6 +58,34 @@ The first authenticated command opens the browser device flow and stores the res
 token with owner-only permissions. Set `OPENARTIFACTS_TOKEN` to supply a credential
 without browser sign-in; it accepts an OpenArtifacts token or a Brevilabs license key.
 Set `OPENARTIFACTS_API_HOST` to target a self-hosted deployment.
+
+## Account and browser actions
+
+An OpenArtifacts account can publish within the deployment's free limits.
+Signing in is separate from purchasing an upgrade. Check current access with:
+
+```bash
+openartifacts account
+openartifacts account --open
+```
+
+`account` prints JSON with the plan, limits, current usage, and whether an external
+account is linked, plus refresh status, last check time and paid expiry.
+`account --open` prints `{"url":"…","expiresAt":…}` and open
+the browser. These links expire after ten minutes and can be used once. Their
+availability depends on the deployment's configured account-action service.
+
+Both forms require an OAuth-issued OpenArtifacts token. The CLI uses
+the current API host's stored token, or `OPENARTIFACTS_TOKEN` when set. Without a
+credential it starts the normal sign-in flow. If the environment contains a
+license key, unset it and run `openartifacts login` before these account commands.
+A rejected credential is reported; it does not silently start another sign-in.
+
+For linking, enter the license key only on the trusted browser page and confirm
+the association there. Never put the key in command arguments or chat. Linking
+joins document history while preserving published URLs and existing machine tokens.
+It does not itself complete a purchase. On a publishing limit, run `account --open` to
+obtain authenticated browser access; an owner ID in a URL is not account proof.
 
 ## Hosts
 

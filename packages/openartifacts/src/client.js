@@ -42,6 +42,8 @@ export function createClient({ host, token, fetcher = fetch }) {
   }
 
   return {
+    account: () => request("/api/v1/account"),
+    createHandoff: () => request("/api/v1/account/handoffs", { method: "POST" }),
     /** @param {string} label */
     deviceCode: (label) =>
       request("/device/code", { method: "POST", body: JSON.stringify({ label }) }),

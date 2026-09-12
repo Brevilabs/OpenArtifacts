@@ -5,6 +5,7 @@
  * every row here is reconstructible from it, so a lost D1 is a rebuild rather
  * than a data loss. Queries land here as the phase that needs them arrives.
  */
+import { OWNER_SCOPE_SQL } from "./owners.js";
 
 /** Publisher row, which doubles as the license-validation cache (phase 2). */
 export interface PublisherRow {
@@ -13,6 +14,8 @@ export interface PublisherRow {
   plan: string;
   /** Epoch ms of the last successful license-server validation. */
   validated_at: number;
+  /** Latest rejection completion time; only a validation begun later can authorize. */
+  rejected_at?: number | null;
   /** The app-sites `User.id` this key belongs to. */
   owner: string;
 }
@@ -130,10 +133,7 @@ export interface DeviceCodeRow {
  * rides along so the confirmation page can name the machine being approved
  * instead of calling it "that terminal".
  */
-export type PendingHandshake = Pick<
-  DeviceCodeRow,
-  "user_code" | "provider" | "verifier" | "label"
->;
+export type PendingHandshake = Pick<DeviceCodeRow, "user_code" | "provider" | "verifier" | "label">;
 
 /**
  * A token an approval issued.
@@ -160,7 +160,8 @@ export type ListedTokenRow = Pick<TokenRow, "id" | "label" | "created_at" | "las
  */
 export interface PublisherStore {
   read(keyHash: string): Promise<PublisherRow | null>;
-  save(row: PublisherRow): Promise<void>;
+  save(row: PublisherRow): Promise<boolean>;
+  reject(keyHash: string, at: number): Promise<void>;
 }
 
 /** Version numbers start at 1; a `docs` row at 0 has never been pushed to. */
@@ -170,9 +171,18 @@ export function d1PublisherStore(db: D1Database): PublisherStore {
   return {
     read(keyHash) {
       return db
-        .prepare("SELECT key_hash, plan, validated_at, owner FROM publishers WHERE key_hash = ?")
+        .prepare("SELECT key_hash, plan, validated_at, owner, rejected_at FROM publishers WHERE key_hash = ?")
         .bind(keyHash)
         .first<PublisherRow>();
+    },
+
+    async reject(keyHash, at) {
+      // Keep the rejection even for a cold key: deleting loses the ordering
+      // evidence that stops an older in-flight success from restoring access.
+      await db.prepare(`INSERT INTO publishers (key_hash, plan, validated_at, owner, rejected_at)
+        VALUES (?, '', 0, '', ?)
+        ON CONFLICT(key_hash) DO UPDATE SET rejected_at = MAX(COALESCE(publishers.rejected_at, 0), excluded.rejected_at)`)
+        .bind(keyHash, at).run();
     },
 
     // `owner` is written on every validation, like `plan` is. That is a refresh,
@@ -181,15 +191,17 @@ export function d1PublisherStore(db: D1Database): PublisherStore {
     // us. If key transfer is ever added there, this cache becomes a hole — see
     // the note in `docs/identity.md`.
     async save(row) {
-      await db
+      const result = await db
         .prepare(
           `INSERT INTO publishers (key_hash, plan, validated_at, owner) VALUES (?, ?, ?, ?)
            ON CONFLICT(key_hash) DO UPDATE SET plan = excluded.plan,
                                                validated_at = excluded.validated_at,
-                                               owner = excluded.owner`,
+                                               owner = excluded.owner
+           WHERE publishers.rejected_at IS NULL OR excluded.validated_at > publishers.rejected_at`,
         )
         .bind(row.key_hash, row.plan, row.validated_at, row.owner)
         .run();
+      return result.meta.changes > 0;
     },
   };
 }
@@ -223,18 +235,20 @@ export async function insertDocWithinQuota(
 ): Promise<boolean> {
   const result = await db
     .prepare(
-      `INSERT INTO docs (id, owner, title, latest_version, created_at, updated_at)
+      `${OWNER_SCOPE_SQL}
+       INSERT INTO docs (id, owner, title, latest_version, created_at, updated_at)
        SELECT ?, ?, ?, ?, ?, ?
-        WHERE (SELECT COUNT(*) FROM docs WHERE owner = ? AND deleted_at IS NULL) < ?`,
+        WHERE (SELECT COUNT(*) FROM docs WHERE owner IN (SELECT owner FROM owner_scope) AND deleted_at IS NULL) < ?`,
     )
     .bind(
+      doc.owner,
+      doc.owner,
       doc.id,
       doc.owner,
       doc.title,
       FIRST_VERSION,
       doc.created_at,
       doc.updated_at,
-      doc.owner,
       maxDocs,
     )
     .run();
@@ -304,12 +318,13 @@ export async function reserveNextVersion(
 ): Promise<number | null> {
   const reserved = await db
     .prepare(
-      `UPDATE docs
+      `${OWNER_SCOPE_SQL}
+       UPDATE docs
           SET latest_version = latest_version + 1
-        WHERE id = ? AND owner = ? AND deleted_at IS NULL
+        WHERE id = ? AND owner IN (SELECT owner FROM owner_scope) AND deleted_at IS NULL
         RETURNING latest_version`,
     )
-    .bind(docId, owner)
+    .bind(owner, owner, docId)
     .first<{ latest_version: number }>();
 
   return reserved?.latest_version ?? null;
@@ -439,14 +454,12 @@ export async function findServableVersion(
  * for the same reason, and answered identically for all three so the shape of
  * the reply cannot confirm another publisher's doc exists.
  */
-export async function ownsLiveDoc(
-  db: D1Database,
-  docId: string,
-  owner: string,
-): Promise<boolean> {
+export async function ownsLiveDoc(db: D1Database, docId: string, owner: string): Promise<boolean> {
   const row = await db
-    .prepare("SELECT 1 FROM docs WHERE id = ? AND owner = ? AND deleted_at IS NULL")
-    .bind(docId, owner)
+    .prepare(
+      `${OWNER_SCOPE_SQL} SELECT 1 FROM docs WHERE id = ? AND owner IN (SELECT owner FROM owner_scope) AND deleted_at IS NULL`,
+    )
+    .bind(owner, owner, docId)
     .first();
 
   return row !== null;
@@ -474,12 +487,13 @@ export async function softDeleteDoc(
 ): Promise<boolean> {
   const deleted = await db
     .prepare(
-      `UPDATE docs
+      `${OWNER_SCOPE_SQL}
+       UPDATE docs
           SET deleted_at = ?
-        WHERE id = ? AND owner = ? AND deleted_at IS NULL
+        WHERE id = ? AND owner IN (SELECT owner FROM owner_scope) AND deleted_at IS NULL
         RETURNING id`,
     )
-    .bind(atMs, docId, owner)
+    .bind(owner, owner, atMs, docId)
     .first<{ id: string }>();
 
   return deleted !== null;
@@ -551,19 +565,21 @@ export async function listPublisherDocs(
     after === null
       ? db
           .prepare(
-            `SELECT ${columns} FROM docs d
-              WHERE d.owner = ? AND d.deleted_at IS NULL
+            `${OWNER_SCOPE_SQL}
+             SELECT ${columns} FROM docs d
+              WHERE d.owner IN (SELECT owner FROM owner_scope) AND d.deleted_at IS NULL
               ${order}`,
           )
-          .bind(owner, limit)
+          .bind(owner, owner, limit)
       : db
           .prepare(
-            `SELECT ${columns} FROM docs d
-              WHERE d.owner = ? AND d.deleted_at IS NULL
+            `${OWNER_SCOPE_SQL}
+             SELECT ${columns} FROM docs d
+              WHERE d.owner IN (SELECT owner FROM owner_scope) AND d.deleted_at IS NULL
                 AND (d.created_at, d.id) < (?, ?)
               ${order}`,
           )
-          .bind(owner, after.created_at, after.id, limit);
+          .bind(owner, owner, after.created_at, after.id, limit);
 
   return (await statement.all<DocListRow>()).results;
 }
@@ -594,11 +610,11 @@ export async function findOrCreateAccount(
 ): Promise<AccountRow> {
   const inserted = await db
     .prepare(
-      `INSERT INTO accounts (id, email, created_at, plan) VALUES (?, ?, ?, ?)
+      `INSERT INTO accounts (id, email, created_at, plan, plan_checked_at) VALUES (?, ?, ?, ?, ?)
        ON CONFLICT(email) DO NOTHING
        RETURNING id, email, created_at`,
     )
-    .bind(id, email, atMs, plan)
+    .bind(id, email, atMs, plan, atMs)
     .first<AccountRow>();
   if (inserted !== null) return inserted;
 
@@ -641,6 +657,8 @@ export async function findOrCreateAccount(
  *
  * @param newId an account id to use if one has to be minted, so this stays
  *   deterministic under test
+ * @param create false on OAuth callbacks: resolve/link existing accounts only;
+ *   an unknown identity must accept Terms before registration.
  */
 export async function resolveAccountForIdentity(
   db: D1Database,
@@ -650,6 +668,7 @@ export async function resolveAccountForIdentity(
   newId: string,
   nowMs: number,
   plan = "free",
+  create = true,
 ): Promise<AccountRow | null> {
   const linked = await db
     .prepare(
@@ -666,6 +685,7 @@ export async function resolveAccountForIdentity(
     .bind(email)
     .first<AccountRow>();
 
+  if (byEmail === null && !create) return null;
   const account = byEmail ?? (await findOrCreateAccount(db, newId, email, nowMs, plan));
 
   // No conflict target, so *either* constraint refuses the insert quietly. The
@@ -755,7 +775,8 @@ export async function startDeviceHandshake(
     .prepare(
       `UPDATE device_codes
           SET provider = ?, state = ?, verifier = ?,
-              account_id = NULL, confirm_token = NULL
+              account_id = NULL, confirm_token = NULL,
+              pending_subject = NULL, pending_email = NULL
         WHERE user_code = ? AND confirm_token IS NULL
           AND approved_at IS NULL AND denied_at IS NULL AND expires_at > ?
         RETURNING user_code`,
@@ -825,14 +846,15 @@ export async function findPendingHandshake(
 export async function holdProvenIdentity(
   db: D1Database,
   state: string,
-  accountId: string,
+  accountId: string | null,
   confirmToken: string,
   nowMs: number,
+  identity?: { subject: string; email: string },
 ): Promise<boolean> {
   const held = await db
     .prepare(
       `UPDATE device_codes
-          SET account_id = ?, confirm_token = ?, verifier = NULL
+          SET account_id = ?, confirm_token = ?, verifier = NULL, pending_subject = ?, pending_email = ?
         WHERE state = ?
           AND verifier IS NOT NULL
           AND approved_at IS NULL
@@ -840,7 +862,7 @@ export async function holdProvenIdentity(
           AND expires_at > ?
         RETURNING user_code`,
     )
-    .bind(accountId, confirmToken, state, nowMs)
+    .bind(accountId, confirmToken, identity?.subject ?? null, identity?.email ?? null, state, nowMs)
     .first<{ user_code: string }>();
 
   return held !== null;
@@ -868,22 +890,56 @@ export async function confirmDeviceApproval(
   db: D1Database,
   confirmToken: string,
   atMs: number,
+  newsletter = false,
+  terms = false,
+  newId = "",
+  plan = "free",
 ): Promise<string | null> {
-  const approved = await db
-    .prepare(
-      `UPDATE device_codes
-          SET approved_at = ?, state = NULL, confirm_token = NULL
-        WHERE confirm_token = ?
-          AND approved_at IS NULL
-          AND denied_at IS NULL
-          AND account_id IS NOT NULL
-          AND expires_at > ?
-        RETURNING user_code`,
-    )
-    .bind(atMs, confirmToken, atMs)
-    .first<{ user_code: string }>();
-
-  return approved?.user_code ?? null;
+  // The whole registration and approval is one transaction. The live secret and
+  // explicit Terms choice guard every insert; a denied/expired/replayed form
+  // cannot create an account. Unique identity constraints decide competing signups.
+  const live = `confirm_token = ? AND approved_at IS NULL AND denied_at IS NULL
+    AND expires_at > ? AND pending_subject IS NOT NULL AND ? = 1`;
+  const results = await db.batch([
+    db
+      .prepare(
+        `INSERT INTO accounts
+      (id, email, created_at, plan, plan_checked_at, newsletter_opt_in, newsletter_choice_at)
+      SELECT ?, pending_email, ?, ?, ?, ?, ? FROM device_codes d
+      WHERE ${live} AND NOT EXISTS (
+        SELECT 1 FROM identities i WHERE i.provider = d.provider AND i.subject = d.pending_subject
+      ) ON CONFLICT DO NOTHING`,
+      )
+      .bind(newId, atMs, plan, atMs, newsletter ? 1 : 0, atMs, confirmToken, atMs, terms ? 1 : 0),
+    db
+      .prepare(
+        `INSERT INTO identities (provider, subject, account_id, created_at)
+      SELECT d.provider, d.pending_subject, a.id, ? FROM device_codes d
+      JOIN accounts a ON a.email = d.pending_email
+      WHERE ${live} ON CONFLICT DO NOTHING`,
+      )
+      .bind(atMs, confirmToken, atMs, terms ? 1 : 0),
+    db
+      .prepare(
+        `UPDATE device_codes SET account_id = (
+        SELECT account_id FROM identities WHERE provider = device_codes.provider
+          AND subject = device_codes.pending_subject
+      ) WHERE ${live}`,
+      )
+      .bind(confirmToken, atMs, terms ? 1 : 0),
+    db
+      .prepare(
+        `UPDATE device_codes
+      SET approved_at = ?, state = NULL, confirm_token = NULL,
+          pending_subject = NULL, pending_email = NULL
+      WHERE confirm_token = ? AND approved_at IS NULL AND denied_at IS NULL
+        AND account_id IS NOT NULL AND expires_at > ?
+        AND (pending_subject IS NULL OR ? = 1)
+      RETURNING user_code`,
+      )
+      .bind(atMs, confirmToken, atMs, terms ? 1 : 0),
+  ]);
+  return (results[3]?.results[0] as { user_code: string } | undefined)?.user_code ?? null;
 }
 
 /**
@@ -910,7 +966,8 @@ export async function denyDeviceApproval(
   const denied = await db
     .prepare(
       `UPDATE device_codes
-          SET denied_at = ?, state = NULL, confirm_token = NULL, verifier = NULL
+          SET denied_at = ?, state = NULL, confirm_token = NULL, verifier = NULL,
+              pending_subject = NULL, pending_email = NULL
         WHERE confirm_token = ?
           AND approved_at IS NULL
           AND denied_at IS NULL
@@ -1138,15 +1195,15 @@ export async function collectDeviceToken(
 export async function findLiveToken(
   db: D1Database,
   tokenHash: string,
-): Promise<(Pick<TokenRow, "id" | "account_id" | "last_used_at"> & { plan: string }) | null> {
+): Promise<Pick<TokenRow, "id" | "account_id" | "last_used_at"> | null> {
   // `return await`: see the note on the router's catch in index.ts.
   return await db
     .prepare(
-      `SELECT t.id, t.account_id, t.last_used_at, a.plan
+      `SELECT t.id, t.account_id, t.last_used_at
          FROM tokens t JOIN accounts a ON a.id = t.account_id WHERE t.token_hash = ?`,
     )
     .bind(tokenHash)
-    .first<Pick<TokenRow, "id" | "account_id" | "last_used_at"> & { plan: string }>();
+    .first<Pick<TokenRow, "id" | "account_id" | "last_used_at">>();
 }
 
 /**

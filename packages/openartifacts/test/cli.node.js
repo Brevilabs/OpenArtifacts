@@ -5,7 +5,7 @@ import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { collectToken, configDir, detectAgents, installSkills, main, npmProcess, preparePublish, presentError } from "../src/cli.js";
+import { browserProcess, collectToken, configDir, detectAgents, installSkills, main, npmProcess, preparePublish, presentError } from "../src/cli.js";
 import { APIError } from "../src/client.js";
 
 /** Point the CLI at a scratch config directory and host for one test. */
@@ -351,5 +351,126 @@ test("prints guidance for current quota and future plan limits", () => {
   }
   assert(lines.some((line) => line.includes("quota window")));
   assert(lines.includes("Limit: 10 documents"));
-  assert(lines.includes("Upgrade: https://example.test/upgrade"));
+  assert(lines.some((line) => line.includes("https://example.test/upgrade")));
+  assert(!lines.some((line) => line.includes("openartifacts account --open")));
+});
+
+async function accountServer() {
+  const requests = [];
+  const control = { status: 200, unsafeUrl: false };
+  const server = createServer((request, response) => {
+    let raw = "";
+    request.on("data", (chunk) => { raw += chunk; });
+    request.on("end", () => {
+      requests.push({ method: request.method, path: request.url, authorization: request.headers.authorization, body: raw ? JSON.parse(raw) : undefined });
+      response.setHeader("content-type", "application/json");
+      response.statusCode = control.status;
+      if (control.status !== 200) {
+        response.end(JSON.stringify({ error: { code: "unauthorized", message: "Sign in again." } }));
+      } else if (request.url === "/api/v1/account") {
+        response.end(JSON.stringify({ accountId: "oa_account", plan: "free", limits: { documents: 1, pushesPerDay: 6, htmlBytes: 1048576 }, usage: { documents: 0, pushesToday: 0 }, externalLinked: false, refresh: { status: "refreshed", checkedAt: 123, expiresAt: null }, access_token: "never-print-response-extra" }));
+      } else if (request.url === "/api/v1/account/handoffs") {
+        response.end(JSON.stringify({ url: control.unsafeUrl ? "javascript:alert(1)" : `https://actions.example.test/continue?code=${"a".repeat(64)}`, expiresAt: Date.now() + 600000, token: "never-print-response-extra" }));
+      } else {
+        response.statusCode = 500;
+        response.end(JSON.stringify({ error: { message: "Unexpected login or request." } }));
+      }
+    });
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  return { server, requests, control, host: `http://127.0.0.1:${server.address().port}` };
+}
+
+async function cliProcess(args, values) {
+  const { spawn } = await import("node:child_process");
+  const env = { ...process.env, ...values, PATH: "" }; // Browser launch fails harmlessly; never open a real browser in tests.
+  if (!values.OPENARTIFACTS_TOKEN) delete env.OPENARTIFACTS_TOKEN;
+  const child = spawn(process.execPath, [new URL("../bin/openartifacts.js", import.meta.url).pathname, ...args], { env });
+  let stdout = "", stderr = "";
+  child.stdout.on("data", (chunk) => { stdout += chunk; });
+  child.stderr.on("data", (chunk) => { stderr += chunk; });
+  const [code] = await once(child, "close");
+  return { code, stdout, stderr };
+}
+
+test("account commands use host-scoped stored OAuth tokens and print only safe JSON fields", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "oa-01a08465-cli-account-"));
+  const remote = await accountServer();
+  await writeFile(join(directory, "credentials.json"), JSON.stringify({ hosts: {
+    [remote.host]: { token: "oat_stored-secret" }, "https://other.test": { token: "oat_other-secret" },
+  } }));
+  const env = { OPENARTIFACTS_CONFIG_DIR: directory, OPENARTIFACTS_API_HOST: remote.host };
+  try {
+    const account = await cliProcess(["account"], env);
+    assert.equal(account.code, 0, account.stderr);
+    assert.deepEqual(JSON.parse(account.stdout), { accountId: "oa_account", plan: "free", limits: { documents: 1, pushesPerDay: 6, htmlBytes: 1048576 }, usage: { documents: 0, pushesToday: 0 }, externalLinked: false, refresh: { status: "refreshed", checkedAt: 123, expiresAt: null } });
+    for (const args of [["account", "--open"]]) {
+      const result = await cliProcess(args, env);
+      assert.equal(result.code, 0, result.stderr);
+      const parsed = JSON.parse(result.stdout);
+      assert.deepEqual(Object.keys(parsed).sort(), ["expiresAt", "url"]);
+      assert.equal(new URL(parsed.url).searchParams.get("code"), "a".repeat(64));
+      assert(!`${result.stdout}${result.stderr}`.includes("secret"));
+      assert(!result.stdout.includes("never-print-response-extra"));
+    }
+    assert.deepEqual(remote.requests.map(({ method, path, body }) => [method, path, body]), [
+      ["GET", "/api/v1/account", undefined],
+      ["POST", "/api/v1/account/handoffs", undefined],
+    ]);
+    assert(remote.requests.every((r) => r.authorization === "Bearer oat_stored-secret"));
+  } finally { remote.server.close(); }
+});
+
+test("account actions honor environment credentials, refuse license arguments, and never silently re-login", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "oa-01a08465-cli-credentials-"));
+  const remote = await accountServer();
+  const env = { OPENARTIFACTS_CONFIG_DIR: directory, OPENARTIFACTS_API_HOST: remote.host, OPENARTIFACTS_TOKEN: "oat_environment-secret" };
+  await writeFile(join(directory, "credentials.json"), JSON.stringify({ hosts: { [remote.host]: { token: "oat_stored-secret" } } }));
+  try {
+    assert.equal((await cliProcess(["account"], env)).code, 0);
+    assert.equal(remote.requests[0].authorization, "Bearer oat_environment-secret");
+    for (const command of ["account", "upgrade", "billing", "link-copilot"]) {
+      const result = await cliProcess([command, "license-secret-must-not-leak"], env);
+      assert.equal(result.code, 1);
+      assert.match(result.stderr, /Usage: openartifacts/);
+      assert(!result.stderr.includes("license-secret-must-not-leak"));
+    }
+    const license = await cliProcess(["account", "--open"], { ...env, OPENARTIFACTS_TOKEN: "license-secret" });
+    assert.equal(license.code, 1);
+    assert.match(license.stderr, /unset OPENARTIFACTS_TOKEN/);
+    assert.equal(remote.requests.length, 1);
+    remote.control.status = 401;
+    const rejected = await cliProcess(["account"], env);
+    assert.equal(rejected.code, 1);
+    assert.match(rejected.stderr, /openartifacts login/);
+    assert.equal(rejected.stdout, "");
+    assert(!rejected.stderr.includes("environment-secret"));
+    assert.deepEqual(remote.requests.map((r) => r.path), ["/api/v1/account", "/api/v1/account"]);
+    assert.equal(JSON.parse(await readFile(join(directory, "credentials.json"), "utf8")).hosts[remote.host].token, "oat_stored-secret");
+  } finally { remote.server.close(); }
+});
+
+test("account actions reject unsafe browser URLs without printing them", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "oa-01a08465-cli-url-"));
+  const remote = await accountServer();
+  remote.control.unsafeUrl = true;
+  try {
+    const result = await cliProcess(["account", "--open"], { OPENARTIFACTS_CONFIG_DIR: directory, OPENARTIFACTS_API_HOST: remote.host, OPENARTIFACTS_TOKEN: "oat_test-secret" });
+    assert.equal(result.code, 1);
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, /invalid account action link/);
+    assert(!result.stderr.includes("javascript:"));
+  } finally { remote.server.close(); }
+});
+
+test("Windows browser launch passes the complete URL as data rather than command text", () => {
+  const url = 'https://actions.example.test/?source=cli&code=abc&x=";Write-Output injected"';
+  const windows = browserProcess(url, "win32");
+  assert.equal(windows.command, "powershell.exe");
+  assert.deepEqual(windows.args, ["-NoProfile", "-NonInteractive", "-Command", "Start-Process -FilePath $env:OPENARTIFACTS_BROWSER_URL"]);
+  assert.equal(windows.env.OPENARTIFACTS_BROWSER_URL, url);
+  assert(!windows.args.some((arg) => arg.includes(url)));
+  assert.deepEqual(browserProcess(url, "darwin").args, [url]);
+  assert.deepEqual(browserProcess(url, "linux").args, [url]);
 });

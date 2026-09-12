@@ -69,7 +69,7 @@ export function isDocId(value: string): boolean {
  *
  * `docs.owner` holds two kinds of value: an app-sites `User.id` that the
  * license server resolved, and an id this repo minted for an account created by
- * approval. They are never merged, and this prefix is what makes that
+ * approval. The credential IDs stay distinct, and this prefix makes that
  * structural rather than a convention — an app-sites uuid cannot start with
  * `oa_`, so no equality test between the two spaces can ever accidentally
  * succeed and hand one account another's documents.

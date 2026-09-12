@@ -10,6 +10,9 @@ status: draft
 
 # openartifacts.ai - Business Feasibility - Cost at Scale
 
+> Historical pricing context: the paid-only publishing assumptions below predate
+> standalone free accounts. Current hosted limits are in [the HTTP API](http-api.md#quotas).
+
 Companion to [[Agent-First Docs - Product Positioning]]. That doc argues *why* the product should exist. This one asks a colder question: **what does it cost to serve, and does the cost curve stay sane from 1k to 100k to 1M users?** (Pricing was revised on 2026-07-25: publishing is paid, reading is free. See §8. Sections written against the earlier free-share plan are flagged where it matters.)
 
 Scope of the launch product being costed: **one-click sharing from Copilot for Obsidian. Push a local md/html file, get a public HTML page on the internet. No accounts for readers, no permissions, no comments.** Later phases (access control, comments, agent APIs) are costed as deltas.

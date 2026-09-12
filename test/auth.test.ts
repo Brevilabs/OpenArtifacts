@@ -1,3 +1,4 @@
+import { env as testEnv } from "cloudflare:test";
 import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -9,7 +10,7 @@ import {
   resolvePublisher,
 } from "../src/auth.js";
 import { LICENSE_CACHE_TTL_MS, type Env } from "../src/config.js";
-import type { PublisherRow, PublisherStore } from "../src/db.js";
+import { d1PublisherStore, type PublisherRow, type PublisherStore } from "../src/db.js";
 import { DOC_ID_LENGTH } from "../src/ids.js";
 import worker from "../src/index.js";
 
@@ -49,8 +50,14 @@ function memoryStore(...seed: PublisherRow[]): MemoryStore {
     async read(keyHash) {
       return rows.get(keyHash) ?? null;
     },
+    async reject(keyHash, at) {
+      rows.set(keyHash, { ...(rows.get(keyHash) ?? { key_hash: keyHash, plan: "", owner: "", validated_at: 0 }), rejected_at: at });
+    },
     async save(row) {
-      rows.set(row.key_hash, { ...row });
+      const rejected = rows.get(row.key_hash)?.rejected_at;
+      if (rejected != null && row.validated_at <= rejected) return false;
+      rows.set(row.key_hash, { ...row, ...(rejected == null ? {} : { rejected_at: rejected }) });
+      return true;
     },
   };
 }
@@ -343,9 +350,8 @@ describe("resolvePublisher — a key the license server rejects", () => {
     });
 
     expect(result).toMatchObject({ ok: false, reason: "invalid_license" });
-    // Nothing is written, so an unauthorized key never gets a publishers row a
-    // later doc insert records as its owner.
-    expect(store.rows.size).toBe(0);
+    // Rejection ordering is retained, but cannot authorize any request.
+    expect(store.rows.get(KEY_HASH)?.rejected_at).toBe(NOW);
   };
 
   // How the real server reports a key it has no row for, or one flagged deleted:
@@ -365,7 +371,7 @@ describe("resolvePublisher — a key the license server rejects", () => {
     denied(answers({ isValid: false, backendAccess: true })),
   );
 
-  it("leaves an existing row untouched when the key has since lapsed", async () => {
+  it("forgets a cached validation when the key has since lapsed", async () => {
     const stale = validatedAt(2 * 60 * 60 * 1000);
     const store = memoryStore(stale);
 
@@ -376,9 +382,7 @@ describe("resolvePublisher — a key the license server rejects", () => {
     });
 
     expect(result).toMatchObject({ ok: false, reason: "invalid_license" });
-    // The row stays: it is the only record of which account owns the docs.
-    // It simply stops resolving.
-    expect(store.rows.get(KEY_HASH)).toEqual(stale);
+    expect(store.rows.get(KEY_HASH)?.rejected_at).toBe(NOW);
   });
 
   it("locks out a revoked key that still has a cached validation", async () => {
@@ -394,6 +398,106 @@ describe("resolvePublisher — a key the license server rejects", () => {
     // If it did, revocation would never take effect: each request would fail to
     // revalidate and be waved through on the stale row, forever.
     expect(result).toMatchObject({ ok: false, reason: "invalid_license" });
+  });
+});
+
+describe("rejected credentials cannot use outage fallback", () => {
+  for (const [label, reply] of [
+    ["NOT_FOUND", trpcError("NOT_FOUND", 404)],
+    ["invalid", answers({ isValid: false })],
+    ["no backend access", answers({ isValid: true, backendAccess: false })],
+  ] as const) {
+    it(`forgets ${label} until a fresh validation succeeds`, async () => {
+      const store = memoryStore(validatedAt(LICENSE_CACHE_TTL_MS));
+      expect(await resolvePublisher(KEY, env(), {
+        store, now, fetch: licenseServer(reply).fetch,
+      })).toMatchObject({ ok: false, reason: "invalid_license" });
+
+      expect(await resolvePublisher(KEY, env(), {
+        store, now, fetch: licenseServer(() => Promise.reject(new Error("down"))).fetch,
+      })).toMatchObject({ ok: false, reason: "license_unavailable" });
+
+      expect(await resolvePublisher(KEY, env(), {
+        store, now: () => NOW + 1, fetch: licenseServer(validBeliever).fetch,
+      })).toEqual({ ok: true, publisher: { owner: ACCOUNT, plan: "believer" } });
+      expect(store.rows.get(KEY_HASH)?.owner).toBe(ACCOUNT);
+    });
+  }
+
+  it("does not reuse an outage request's snapshot after another request rejects the key", async () => {
+    const store = memoryStore(validatedAt(LICENSE_CACHE_TTL_MS));
+    let started!: () => void;
+    const pending = new Promise<void>((resolve) => { started = resolve; });
+    let finish!: (response: Response) => void;
+    const response = new Promise<Response>((resolve) => { finish = resolve; });
+    const outage = resolvePublisher(KEY, env(), {
+      store, now, fetch: licenseServer(() => { started(); return response; }).fetch,
+    });
+    await pending;
+    expect(await resolvePublisher(KEY, env(), {
+      store, now, fetch: licenseServer(trpcError("NOT_FOUND", 404)).fetch,
+    })).toMatchObject({ ok: false, reason: "invalid_license" });
+    finish(new Response("down", { status: 503 }));
+    expect(await outage).toMatchObject({ ok: false, reason: "license_unavailable" });
+  });
+});
+
+describe("license rejection ordering in D1", () => {
+  for (const cold of [false, true]) {
+    it(`blocks an older successful response after rejection (${cold ? "cold" : "cached"} key)`, async () => {
+      const store = d1PublisherStore(testEnv.DB);
+      if (!cold) await store.save(validatedAt(LICENSE_CACHE_TTL_MS));
+      let started!: () => void;
+      const pending = new Promise<void>((resolve) => { started = resolve; });
+      let finish!: (response: Response) => void;
+      const response = new Promise<Response>((resolve) => { finish = resolve; });
+      const older = resolvePublisher(KEY, env({ DB: testEnv.DB }), {
+        now, fetch: licenseServer(() => { started(); return response; }).fetch,
+      });
+      await pending;
+      expect(await resolvePublisher(KEY, env({ DB: testEnv.DB }), {
+        now: () => NOW + 1, fetch: licenseServer(trpcError("NOT_FOUND", 404)).fetch,
+      })).toMatchObject({ ok: false, reason: "invalid_license" });
+      finish(validBeliever());
+      expect(await older).toMatchObject({ ok: false, reason: "invalid_license" });
+      expect((await store.read(KEY_HASH))?.rejected_at).toBe(NOW + 1);
+      expect(await resolvePublisher(KEY, env({ DB: testEnv.DB }), {
+        now: () => NOW + 2, fetch: licenseServer(() => new Response("down", { status: 503 })).fetch,
+      })).toMatchObject({ ok: false, reason: "license_unavailable" });
+      expect(await resolvePublisher(KEY, env({ DB: testEnv.DB }), {
+        now: () => NOW + 3, fetch: licenseServer(validBeliever).fetch,
+      })).toMatchObject({ ok: true, publisher: { owner: ACCOUNT } });
+    });
+  }
+
+  it("retains rejection ordering after a fresh recovery and rejects same-millisecond checks", async () => {
+    const store = d1PublisherStore(testEnv.DB);
+    await store.reject(KEY_HASH, NOW);
+    expect(await store.save({ ...validatedAt(0), validated_at: NOW })).toBe(false);
+    expect(await store.save({ ...validatedAt(0), validated_at: NOW + 1 })).toBe(true);
+    expect(await store.save({ ...validatedAt(0), validated_at: NOW - 1 })).toBe(false);
+    expect(await resolvePublisher(KEY, env({ DB: testEnv.DB }), {
+      now: () => NOW + 2, fetch: licenseServer(() => { throw new Error("must use recovered cache"); }).fetch,
+    })).toMatchObject({ ok: true, publisher: { owner: ACCOUNT } });
+  });
+
+  it("lets an explicit late denial revoke a success that completed first", async () => {
+    let started!: () => void;
+    const pending = new Promise<void>((resolve) => { started = resolve; });
+    let finish!: (response: Response) => void;
+    const response = new Promise<Response>((resolve) => { finish = resolve; });
+    const denial = resolvePublisher(KEY, env({ DB: testEnv.DB }), {
+      now, fetch: licenseServer(() => { started(); return response; }).fetch,
+    });
+    await pending;
+    expect(await resolvePublisher(KEY, env({ DB: testEnv.DB }), {
+      now, fetch: licenseServer(validBeliever).fetch,
+    })).toMatchObject({ ok: true });
+    finish(trpcError("NOT_FOUND", 404)());
+    expect(await denial).toMatchObject({ ok: false, reason: "invalid_license" });
+    expect(await resolvePublisher(KEY, env({ DB: testEnv.DB }), {
+      now, fetch: licenseServer(() => new Response("down", { status: 503 })).fetch,
+    })).toMatchObject({ ok: false, reason: "license_unavailable" });
   });
 });
 
@@ -628,6 +732,7 @@ describe("authenticateRequest", () => {
     const store = {
       read: () => Promise.reject(new Error("must not be read")),
       save: () => Promise.reject(new Error("must not be written")),
+      reject: () => Promise.reject(new Error("must not be rejected")),
     } satisfies PublisherStore;
 
     for (const header of [undefined, "", "Basic hunter2", "Bearer", `Token ${KEY}`]) {
@@ -660,6 +765,11 @@ function fakeD1(): D1Database & { rows: Map<string, PublisherRow> } {
         return rows.get(String(args[0])) ?? null;
       },
       async run() {
+        if (sql.includes("MAX(COALESCE")) {
+          const id = String(args[0]);
+          rows.set(id, { ...(rows.get(id) ?? { key_hash: id, plan: "", owner: "", validated_at: 0 }), rejected_at: Number(args[1]) });
+          return { success: true, meta: { changes: 1 } };
+        }
         if (!/^\s*INSERT/i.test(sql)) throw new Error(`run() on non-insert: ${sql}`);
         rows.set(String(args[0]), {
           key_hash: String(args[0]),
@@ -667,13 +777,13 @@ function fakeD1(): D1Database & { rows: Map<string, PublisherRow> } {
           validated_at: Number(args[2]),
           owner: String(args[3]),
         });
-        return { success: true };
+        return { success: true, meta: { changes: 1 } };
       },
       // Reached only once a request is past the gate: `GET /api/v1/docs` is the
       // first handler on the other side of it, and all it wants to know is that
       // this publisher holds no docs. Auth is what these tests are about.
       async all() {
-        if (!/^\s*SELECT/i.test(sql)) throw new Error(`all() on non-select: ${sql}`);
+        if (!/^\s*(SELECT|WITH)/i.test(sql)) throw new Error(`all() on non-select: ${sql}`);
         return { results: [] };
       },
     };

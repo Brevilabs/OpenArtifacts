@@ -71,12 +71,23 @@ The CLI reads `OPENARTIFACTS_TOKEN` from the environment. It accepts an OpenArti
 token or a Brevilabs license key. Without it, the first authenticated command starts a
 browser sign-in: relay both urls and the code the CLI prints, then keep waiting.
 
-Publishing needs a paid OpenArtifacts plan. On `unauthorized`, tell the user they need a
-credential with publishing access before anything can be published. Never read
-credential files, print tokens, or ask the user to paste a credential into the chat.
+OpenArtifacts accounts can publish within their free limits. Sign-in does not
+require buying a plan. On `unauthorized`, relay the sign-in guidance rather than
+claiming payment is required. Never read credential files, print tokens, or ask
+the user to paste a credential into the chat.
+
+Use `openartifacts account` to report the current plan, limits, usage, and linked
+status. When the user asks to upgrade, manage billing, or link their existing
+Copilot account, run `openartifacts account --open`. Relay the returned short-lived browser URL. The user
+enters a license key and confirms linking only on that page, never in chat or
+command arguments. These commands require an OAuth-issued account token; follow
+the CLI guidance if an environment license key overrides the stored token.
 
 ## Errors
 
 Relay the CLI's message verbatim and do not retry blindly. For `quota_exceeded`, say
-whether to wait or unshare an unused page. For `limit_reached`, show the limit and the
-upgrade link the CLI prints.
+whether to wait or unshare an unused page. For `limit_reached`, show the limit.
+Relay guidance to run `openartifacts account --open` only when the CLI response
+includes it; self-hosted servers may not offer browser account management. Generate
+that browser link only when supported and the user asks to upgrade; do not treat
+a limit error as purchase authorization.

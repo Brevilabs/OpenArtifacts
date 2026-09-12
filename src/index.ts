@@ -1,9 +1,11 @@
+import { handleAccount } from "./account.js";
 import { deleteDoc, listDocs } from "./api/manage.js";
 import { ADMIN_PREFIX, handleAdmin } from "./admin.js";
 import { APPROVAL_PREFIX, handleApproval } from "./approval/handler.js";
 import { createDoc, updateDoc } from "./api/push.js";
 import {
   authenticateRequest,
+  isPublishingRequest,
   INELIGIBLE_PLAN,
   mayPublish,
   publisherErrorResponse,
@@ -112,6 +114,10 @@ async function handleApi(request: Request, url: URL, env: Env): Promise<Response
     .split("/")
     .filter(Boolean);
 
+  if (collection === "account" && extra.length === 0) {
+    return await handleAccount(request, env, auth.publisher);
+  }
+
   // Entitlement is per operation. Authentication above says *who* this is;
   // only publishing asks whether their plan may. Applying it to the whole
   // surface instead would refuse `GET` and `DELETE`, stranding a downgraded
@@ -120,11 +126,7 @@ async function handleApi(request: Request, url: URL, env: Env): Promise<Response
   //
   // Scoped to the two routes that actually publish, not to the method: a
   // `POST` at a path no route claims stays `404`, as the contract says.
-  const publishing =
-    collection === "docs" &&
-    extra.length === 0 &&
-    ((docId === undefined && request.method === "POST") ||
-      (docId !== undefined && request.method === "PUT"));
+  const publishing = isPublishingRequest(request);
   if (publishing && auth.publisher.authKind !== "account" && !mayPublish(auth.publisher.plan)) {
     return publisherErrorResponse(INELIGIBLE_PLAN);
   }
