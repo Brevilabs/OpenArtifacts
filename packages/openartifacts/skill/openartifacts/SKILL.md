@@ -86,6 +86,8 @@ the CLI guidance if an environment license key overrides the stored token.
 ## Errors
 
 Relay the CLI's message verbatim and do not retry blindly. For `quota_exceeded`, say
-whether to wait or unshare an unused page. For `limit_reached`, show the limit and the
-guidance to run `openartifacts account --open`. Generate that browser link when the user
-asks to upgrade; do not treat a limit error as purchase authorization.
+whether to wait or unshare an unused page. For `limit_reached`, show the limit.
+Relay guidance to run `openartifacts account --open` only when the CLI response
+includes it; self-hosted servers may not offer browser account management. Generate
+that browser link only when supported and the user asks to upgrade; do not treat
+a limit error as purchase authorization.
