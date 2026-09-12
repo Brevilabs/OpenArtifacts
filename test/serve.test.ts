@@ -195,8 +195,8 @@ describe("GET /d/{docId}", () => {
   // document they pushed. Documents stored before injection moved carry their
   // own baked copy and would show two footers until re-pushed; nothing pushed
   // through this path can, because nothing is ever baked into the bytes.
-  it("adds exactly one of each to a freshly pushed document", async () => {
-    const docId = await push({ title: "A note", html: page("<p>hello</p>") });
+  it("adds exactly one of each to a freshly pushed Copilot document", async () => {
+    const docId = await push({ title: "A note", html: page("<p>hello</p>").replace("</head>", '<style id="openartifacts-obsidian-publish-baseline"></style></head>') });
 
     const html = await (await get(`/d/${docId}`)).text();
 

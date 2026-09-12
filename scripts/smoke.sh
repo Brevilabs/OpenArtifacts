@@ -122,7 +122,7 @@ MARKER="openartifacts-smoke-$(date -u +%Y%m%dT%H%M%SZ)-$$"
 
 cat >"$WORK/push.json" <<EOF
 {"title":"OpenArtifacts smoke check $MARKER",
- "html":"<!doctype html><html lang=en><head><meta charset=utf-8><title>smoke</title></head><body><p>$MARKER</p></body></html>"}
+ "html":"<!doctype html><html lang=en><head><meta charset=utf-8><title>smoke</title><style id=\"openartifacts-obsidian-publish-baseline\"></style></head><body><p>$MARKER</p></body></html>"}
 EOF
 
 printf 'smoke: %s\n\n' "$BASE_URL"

@@ -78,7 +78,13 @@ the user to paste a credential into the chat.
 
 Use `openartifacts account` to report the current plan, limits, usage, and linked
 status. When the user asks to upgrade, manage billing, or link their existing
-Copilot account, run `openartifacts account --open`. Relay the returned short-lived browser URL. The user
+Copilot account, run `openartifacts account --open`. The command opens the browser
+and prints a short-lived account URL. Show that exact URL as a clickable Markdown
+link; never use a placeholder or substitute the plain `/account` address. If the
+link cannot be clicked or the browser does not open, provide the full URL in a code
+block so the user can copy it into their browser. If it expires, run the command
+again and share the fresh link. Treat these URLs as private account access links;
+do not put them in published documents, issues, or logs. The user
 enters a license key and confirms linking only on that page, never in chat or
 command arguments. These commands require an OAuth-issued account token; follow
 the CLI guidance if an environment license key overrides the stored token.
@@ -87,7 +93,12 @@ the CLI guidance if an environment license key overrides the stored token.
 
 Relay the CLI's message verbatim and do not retry blindly. For `quota_exceeded`, say
 whether to wait or unshare an unused page. For `limit_reached`, show the limit.
-Relay guidance to run `openartifacts account --open` only when the CLI response
-includes it; self-hosted servers may not offer browser account management. Generate
-that browser link only when supported and the user asks to upgrade; do not treat
-a limit error as purchase authorization.
+When a `limit_reached` response includes guidance to run
+`openartifacts account --open`, run it automatically and share the returned account
+link using the instructions above. Tell the user they have reached their publishing
+limit and can choose a plan on that page. Do not require a separate request to
+generate the link. If generating it fails, relay the error and the command so the
+user can try it themselves; never invent a URL. Self-hosted servers may not offer
+browser account management, so do not assume support when the response lacks this
+guidance. Opening the account page is not authorization to choose a plan, start
+checkout, pay, or retry publishing automatically.

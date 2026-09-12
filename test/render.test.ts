@@ -11,7 +11,7 @@ import {
 } from "../src/render.js";
 
 const bake = async (html: string, branding = true): Promise<string> =>
-  await renderServedHtml(new Response(html), branding).text();
+  await renderServedHtml(new Response(html.replace(/^(<!doctype[^>]*>)?/i, '$&<style id="openartifacts-obsidian-publish-baseline"></style>')), branding).text();
 
 /** A document shaped like the ones Obsidian renders. */
 const page = (body: string) =>
@@ -138,7 +138,7 @@ describe("renderServedHtml — what gets injected", () => {
     expect(baked).toContain("<title>Revenue by quarter</title>");
   });
 
-  it("says where the document came from, in text a reader can see", async () => {
+  it("attributes documents carrying the Copilot renderer marker", async () => {
     const baked = await bake(page("<p>hello</p>"));
 
     expect(baked).toContain("Shared from ");
@@ -458,4 +458,25 @@ describe("renderServedHtml — branding off", () => {
     expect(bare).toContain(NOINDEX_META);
     expect(bare).not.toContain(OPENARTIFACTS_HEADER);
   });
+});
+
+// Copilot 4.0.0-4.0.4 published through the Symposium path, which emitted the
+// same baseline stylesheet under the `symposium-` id. Those pages are still
+// served from R2, so the marker they carry has to keep earning the byline.
+it("attributes pre-cutover Symposium-marked documents too", async () => {
+  const marked = page("<p>hello</p>").replace(
+    "<title>A note</title>",
+    '<title>A note</title>\n<style id="symposium-obsidian-publish-baseline"></style>',
+  );
+  const html = await renderServedHtml(new Response(marked)).text();
+
+  expect(html).toContain(OPENARTIFACTS_HEADER);
+  expect(html).toContain("Shared from ");
+});
+
+it("omits the top header for unmarked agent HTML while retaining the footer", async () => {
+  const html = await renderServedHtml(new Response(page("<p>Codex publication</p>"))).text();
+  expect(html).not.toContain(OPENARTIFACTS_HEADER);
+  expect(html).not.toContain("Shared from");
+  expect(html).toContain(OPENARTIFACTS_FOOTER);
 });

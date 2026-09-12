@@ -45,7 +45,7 @@
  * constants in this file, so the thing that changes them is an edit to this
  * file, and a reviewer can see whether the number moved with it.
  */
-export const RENDER_REVISION = 5;
+export const RENDER_REVISION = 6;
 
 /**
  * Belt to the `X-Robots-Tag` header's braces (D9). The header is the
@@ -365,6 +365,7 @@ const AS_HTML = { html: true } as const;
  */
 export function renderServedHtml(response: Response, branding = true): Response {
   const head = branding ? NOINDEX_META + FAVICON_LINK + SOCIAL_CARD_META : NOINDEX_META;
+  let fromCopilot = false;
   let headPlaced = false;
   let cardTitlePlaced = false;
   let headerPlaced = false;
@@ -377,6 +378,18 @@ export function renderServedHtml(response: Response, branding = true): Response 
   let titleClosed = false;
 
   return new HTMLRewriter()
+    // Copilot's existing HTML renderer emits this marker. It describes the
+    // document format, not authenticated identity or publishing entitlement.
+    // Two ids, because the renderer was renamed at the OpenArtifacts cutover
+    // (Copilot 4.0.5): pages published by 4.0.0-4.0.4 through the Symposium
+    // path carry the `symposium-` id and this Worker still serves them, so
+    // dropping it would strip the byline off every pre-cutover document.
+    .on(
+      'style[id="openartifacts-obsidian-publish-baseline"], style[id="symposium-obsidian-publish-baseline"]',
+      {
+        element() { fromCopilot = true; },
+      },
+    )
     // `head > title` and not `title`: an inline `<svg>` may carry a `<title>`
     // of its own as its accessible name, and a chart's "Revenue by quarter" is
     // not what the document is called.
@@ -426,7 +439,7 @@ export function renderServedHtml(response: Response, branding = true): Response 
         // before `c`.
         if (headerPlaced) return;
         headerPlaced = true;
-        if (branding) body.prepend(OPENARTIFACTS_HEADER, AS_HTML);
+        if (branding && fromCopilot) body.prepend(OPENARTIFACTS_HEADER, AS_HTML);
         body.onEndTag((endTag) => {
           footerPlaced = true;
           if (branding) endTag.before(OPENARTIFACTS_FOOTER, AS_HTML);
@@ -440,7 +453,7 @@ export function renderServedHtml(response: Response, branding = true): Response 
           const titleMeta = socialTitleMeta(documentTitle);
           if (titleMeta.length > 0) end.append(titleMeta, AS_HTML);
         }
-        if (branding && !headerPlaced) end.append(OPENARTIFACTS_HEADER, AS_HTML);
+        if (branding && fromCopilot && !headerPlaced) end.append(OPENARTIFACTS_HEADER, AS_HTML);
         if (branding && !footerPlaced) end.append(OPENARTIFACTS_FOOTER, AS_HTML);
       },
     })
