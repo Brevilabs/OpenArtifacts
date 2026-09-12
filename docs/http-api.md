@@ -363,11 +363,15 @@ why the client uploads HTML at all. What the policy forbids is a doc using the
 origin against its readers: no form submission, no framing, no `<base>`
 retargeting. The origin is cookieless and holds nothing but already-public docs.
 
-Four things are injected as the document is served: a
+The following are injected as the document is served: a
 `<meta name="robots" content="noindex,nofollow">` in the head, a
 `<link rel="icon">` beside it carrying the OpenArtifacts mark as a `data:` URI, a
-`Shared from Copilot for Obsidian` byline at the top of the body, and a
-`Powered by openartifacts.ai` byline before `</body>`. A document that ships its own
+`Shared from Copilot for Obsidian` byline at the top of the body only for
+Copilot-rendered HTML (identified by the
+`style#openartifacts-obsidian-publish-baseline` marker in the head), and a
+`Powered by openartifacts.ai` byline before `</body>`. Unmarked HTML gets no
+source header. The marker identifies a document format, not authenticated
+uploader identity. A document that ships its own
 icon keeps that markup — both links are then in the head, and which one the tab
 shows is the browser's choice. Nothing else is touched — the
 markup is never sanitized, rewritten or reformatted, and what R2 stores is the
