@@ -85,9 +85,9 @@ is one approval page.
    are asked to approve the device; new users must accept Terms to create their
    free account and approve it.
 6. They press Approve, which `POST`s that confirm token back and is the only
-   thing that marks the code approved. Deny is the same press with the opposite
-   effect, and it exists so that someone who was sent a link can end the code
-   rather than leaving it live until it expires.
+   thing that marks the code approved. Existing users also have Deny to end the
+   code immediately. New users can close the signup page; no account or token
+   is granted and the unapproved code expires.
 7. The CLI's next poll collects a token, which consumes the device code. The
    token is minted *there* rather than when Approve is pressed, so a raw token
    is never written to a row and a terminal that never comes back leaves no

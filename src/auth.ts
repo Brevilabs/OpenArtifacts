@@ -151,6 +151,15 @@ export function parseBearerToken(header: string | null): string | null {
   return match?.[1] ?? null;
 }
 
+/** Match the API dispatcher, including its normalization of empty path segments. */
+export function isPublishingRequest(request: Request): boolean {
+  const [collection, docId, ...extra] = new URL(request.url).pathname
+    .slice("/api/v1".length).split("/").filter(Boolean);
+  return collection === "docs" && extra.length === 0 &&
+    ((docId === undefined && request.method === "POST") ||
+     (docId !== undefined && request.method === "PUT"));
+}
+
 export async function authenticateRequest(
   request: Request,
   env: Env,
@@ -167,7 +176,7 @@ export async function authenticateRequest(
   // `return await`: see the note on the router's catch in index.ts.
   const path = new URL(request.url).pathname;
   const account = request.method === "GET" && path === "/api/v1/account";
-  const publishing = ["POST", "PUT"].includes(request.method) && /^\/api\/v1\/docs(?:\/|$)/.test(path);
+  const publishing = isPublishingRequest(request);
   return await resolvePublisher(token, env, { ...deps, forceAccountRefresh: account, skipAccountRefresh: !account && !publishing });
 }
 

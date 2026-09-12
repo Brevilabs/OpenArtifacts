@@ -169,3 +169,16 @@ it("malformed publishing configuration cannot block expired-account management",
     await expect(accountPlan({ ...env, ...config }, OWNER, { now: () => NOW })).rejects.toThrow();
   }
 });
+
+
+it("unsupported document methods return 404 without publishing-plan resolution", async () => {
+  await seed("pro", NOW - 1, NOW);
+  for (const [method, path] of [["POST", "/api/v1/docs/id"], ["PUT", "/api/v1/docs"], ["PUT", "/api/v1/docs/id/extra"]]) {
+    const ctx = createExecutionContext();
+    const response = await worker.fetch(new Request(`https://local.test${path}`, {
+      method, headers: { authorization: `Bearer ${token}` },
+    }), { ...env, PLAN_LIMITS: "broken", SERVING_HOST: "", API_HOST: "", LEGACY_SERVING_HOST: "", RETIRED_API_HOST: "" }, ctx);
+    await waitOnExecutionContext(ctx);
+    expect(response.status).toBe(404);
+  }
+});
