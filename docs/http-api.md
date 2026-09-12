@@ -368,7 +368,9 @@ The following are injected as the document is served: a
 `<link rel="icon">` beside it carrying the OpenArtifacts mark as a `data:` URI, a
 `Shared from Copilot for Obsidian` byline at the top of the body only for
 Copilot-rendered HTML (identified by the
-`style#openartifacts-obsidian-publish-baseline` marker in the head), and a
+`style#openartifacts-obsidian-publish-baseline` marker in the head, or
+`style#symposium-obsidian-publish-baseline` from before the OpenArtifacts
+rename), and a
 `Powered by openartifacts.ai` byline before `</body>`. Unmarked HTML gets no
 source header. The marker identifies a document format, not authenticated
 uploader identity. A document that ships its own
