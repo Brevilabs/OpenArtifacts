@@ -120,6 +120,9 @@ test("hosted deploy requires both account URLs without imposing them on self-hos
   assert.doesNotThrow(() => checkHostedAccountActions(config));
   for (const name of ["ACCOUNT_ACTION_URL", "UPGRADE_URL"]) {
     assert.throws(() => checkHostedAccountActions(config.replace(`"${name}": "https://openartifacts.ai/account"`, `"${name}": ""`)), /must point/);
+    assert.throws(() => checkHostedAccountActions(config.replace(`"${name}": "https://openartifacts.ai/account",`, `// "${name}": "https://openartifacts.ai/account",`)), /must point/);
+    assert.throws(() => checkHostedAccountActions(config.replace(`"${name}": "https://openartifacts.ai/account",`, `/* "${name}": "https://openartifacts.ai/account", */`)), /must point/);
   }
-  assert.doesNotThrow(() => checkHostedAccountActions('{"API_HOST":"self.example"}'));
+  assert.doesNotThrow(() => checkHostedAccountActions('{"vars":{"API_HOST":"self.example",}}'));
+  assert.throws(() => checkHostedAccountActions('{"vars":'), /Invalid Wrangler/);
 });
