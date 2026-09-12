@@ -153,7 +153,9 @@ export function parseBearerToken(header: string | null): string | null {
 
 /** Match the API dispatcher, including its normalization of empty path segments. */
 export function isPublishingRequest(request: Request): boolean {
-  const [collection, docId, ...extra] = new URL(request.url).pathname
+  const pathname = new URL(request.url).pathname;
+  if (!pathname.startsWith("/api/v1/")) return false;
+  const [collection, docId, ...extra] = pathname
     .slice("/api/v1".length).split("/").filter(Boolean);
   return collection === "docs" && extra.length === 0 &&
     ((docId === undefined && request.method === "POST") ||
