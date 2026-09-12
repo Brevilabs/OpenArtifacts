@@ -400,7 +400,7 @@ async function prove(url: URL, env: Env, provider: string, deps: ApprovalDeps): 
       {
         title: "Create your free account",
         heading: "Create your free account.",
-        message: `Continue as ${escapeHtml(email)}. Create a free account and allow ${device} to publish as you until you revoke it. If this is not your terminal, choose Deny.`,
+        message: `Continue as ${escapeHtml(email)}. Create a free account and allow ${device} to publish as you until you revoke it. If this is not your terminal, close this page.`,
         detail: codeDetail(handshake.user_code),
         actions: `<form class="signup" method="post" action="${APPROVAL_PREFIX}/confirm">
         <input type="hidden" name="${CONFIRM_TOKEN_FIELD}" value="${confirmToken}">
@@ -409,7 +409,6 @@ async function prove(url: URL, env: Env, provider: string, deps: ApprovalDeps): 
         <label class="newsletter"><input type="checkbox" name="newsletter" value="yes" checked> <span>Send me product updates via the Brevilabs newsletter.</span></label>
         <div class="actions"><button type="submit" disabled>Create account and approve device</button></div>
       </form>
-      ${actions(form(`${APPROVAL_PREFIX}/deny`, { [CONFIRM_TOKEN_FIELD]: confirmToken }, "Deny"))}
       <script>
         const signup = document.querySelector('form.signup');
         const terms = signup.elements.namedItem('terms');
