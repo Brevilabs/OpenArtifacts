@@ -29,8 +29,7 @@ another service on every request.
 An account here holds an id, one verified email address, and the time it was
 created, alongside its configured plan, expiry and last entitlement-check time. One further thing
 about a person is stored, and it lives in `identities`: the provider's own permanent id for them,
-which is what returns a later sign-in to the right account. Beyond those,
-nothing is read, requested or stored, so no name and no avatar.
+which is what returns a later sign-in to the right account. New accounts also store their optional newsletter choice. No name or avatar is requested.
 
 **The prefix is load-bearing.** An app-sites uuid cannot start with `oa_`, so the
 two id spaces cannot collide, and no equality test between them can accidentally
@@ -81,9 +80,10 @@ is one approval page.
 4. The provider redirects back to `/approve/callback/{provider}`. The `state`
    finds that row, the authorization code is exchanged, and the provider's
    **verified** address and its permanent **subject** are read.
-5. Those resolve to an account, creating one if the subject is new. The account
-   is recorded against the code, a fresh confirm token is minted, and the page
-   asks whether to approve it.
+5. Those resolve to an existing account if possible. Otherwise the verified
+   identity is held against the code and a fresh confirm token is minted. Existing accounts
+   are asked to approve the device; new users must accept Terms to create their
+   free account and approve it.
 6. They press Approve, which `POST`s that confirm token back and is the only
    thing that marks the code approved. Deny is the same press with the opposite
    effect, and it exists so that someone who was sent a link can end the code
@@ -116,10 +116,11 @@ Resolution asks the subject first:
 | Situation | Result |
 | --- | --- |
 | This subject has signed in before | its account, whatever address the provider reports now |
-| A new subject, address free or on an account this provider has never signed in to | that account, and the identity is linked to it |
+| A new subject, address free | registration is deferred until Terms and device approval |
+| A new subject, address on an account this provider has never signed in to | that account, and the identity is linked to it |
 | A new subject, address on an account another subject on **this** provider already signs in with | refused |
 
-The third row is enforced by a uniqueness constraint on `identities`, one
+The refusal is enforced by a uniqueness constraint on `identities`, one
 subject per provider per account, rather than by a check the resolver runs
 first. Two previously unseen subjects can verify one address at the same
 moment, and a read followed by a write would let both through — which is worse
@@ -273,20 +274,25 @@ and that is only acceptable while there is nothing on it for them to steal.
   local account's configured plan. Hosted OAuth accounts start with one free
   published document; listing and unsharing remain available over the limit.
 
-## Newsletter preference at signup
+## New-account signup and newsletter preference
 
-The browser sign-in page explains free account creation and links the terms and
-privacy policy. Its required Terms checkbox starts unchecked; sign-in buttons stay
-disabled until it is checked. The server rejects sign-in attempts without explicit
-agreement before creating an OAuth handshake. Its optional newsletter checkbox
-starts checked. The choice travels
-through the device handshake and is shown again, editable, after OAuth. Only the
-confirmation POST records it on the account, atomically with device approval.
-A callback, denied request, expired request or replay cannot enroll an address.
-The first confirmed choice and its timestamp are retained; later sign-ins do not
-overwrite it, including an earlier opt-out. Existing accounts start with no choice.
+The initial browser page offers Google and GitHub sign-in. After OAuth proves the
+identity, existing accounts go directly to device approval, without Terms or
+newsletter prompts. This also applies to accounts with no recorded newsletter
+preference; signing in cannot change that preference.
 
-This is preference capture only. The existing Brevilabs campaign sender reads
-app-sites users, not these D1 accounts; delivery and unsubscribe integration must
+For a new identity, the callback holds the verified subject and email on the
+expiring device-code row. It creates no account. The next page asks the person to
+accept Terms (unchecked by default), offers optional product updates (checked by
+default), and clearly asks them to create a free account and approve their device.
+The button stays disabled until Terms is checked. A single confirmation POST
+atomically creates the account, links its provider identity, records the newsletter
+choice, and approves the device. The server requires explicit Terms agreement.
+A denied, expired, replayed, or failed confirmation cannot create an account.
+Concurrent signups use the existing unique email and provider-subject constraints;
+only the newly inserted account receives the submitted newsletter preference.
+
+The account stores `newsletter_opt_in` and `newsletter_choice_at`. Existing users
+are not enrolled automatically. The existing newsletter sender still needs to
 be connected before sending newsletters to this audience. No campaign is sent by
 signing in, and no Copilot user is manufactured for newsletter enrollment.

@@ -122,7 +122,6 @@ export interface DeviceCodeRow {
   label: string | null;
   /** Epoch ms of a refusal on the approval page, and null until one is given. */
   denied_at: number | null;
-  newsletter_opt_in: number;
   expires_at: number;
   created_at: number;
 }
@@ -132,10 +131,7 @@ export interface DeviceCodeRow {
  * rides along so the confirmation page can name the machine being approved
  * instead of calling it "that terminal".
  */
-export type PendingHandshake = Pick<
-  DeviceCodeRow,
-  "user_code" | "provider" | "verifier" | "label" | "newsletter_opt_in"
->;
+export type PendingHandshake = Pick<DeviceCodeRow, "user_code" | "provider" | "verifier" | "label">;
 
 /**
  * A token an approval issued.
@@ -652,6 +648,8 @@ export async function findOrCreateAccount(
  *
  * @param newId an account id to use if one has to be minted, so this stays
  *   deterministic under test
+ * @param create false on OAuth callbacks: resolve/link existing accounts only;
+ *   an unknown identity must accept Terms before registration.
  */
 export async function resolveAccountForIdentity(
   db: D1Database,
@@ -661,6 +659,7 @@ export async function resolveAccountForIdentity(
   newId: string,
   nowMs: number,
   plan = "free",
+  create = true,
 ): Promise<AccountRow | null> {
   const linked = await db
     .prepare(
@@ -677,6 +676,7 @@ export async function resolveAccountForIdentity(
     .bind(email)
     .first<AccountRow>();
 
+  if (byEmail === null && !create) return null;
   const account = byEmail ?? (await findOrCreateAccount(db, newId, email, nowMs, plan));
 
   // No conflict target, so *either* constraint refuses the insert quietly. The
@@ -761,18 +761,18 @@ export async function startDeviceHandshake(
   state: string,
   verifier: string,
   nowMs: number,
-  newsletter = false,
 ): Promise<boolean> {
   const started = await db
     .prepare(
       `UPDATE device_codes
           SET provider = ?, state = ?, verifier = ?,
-              account_id = NULL, confirm_token = NULL, newsletter_opt_in = ?
+              account_id = NULL, confirm_token = NULL,
+              pending_subject = NULL, pending_email = NULL
         WHERE user_code = ? AND confirm_token IS NULL
           AND approved_at IS NULL AND denied_at IS NULL AND expires_at > ?
         RETURNING user_code`,
     )
-    .bind(provider, state, verifier, newsletter ? 1 : 0, userCode, nowMs)
+    .bind(provider, state, verifier, userCode, nowMs)
     .first<{ user_code: string }>();
 
   return started !== null;
@@ -795,7 +795,7 @@ export async function findPendingHandshake(
   // `return await`: see the note on the router's catch in index.ts.
   return await db
     .prepare(
-      `SELECT user_code, provider, verifier, label, newsletter_opt_in FROM device_codes
+      `SELECT user_code, provider, verifier, label FROM device_codes
         WHERE state = ? AND approved_at IS NULL AND denied_at IS NULL AND expires_at > ?`,
     )
     .bind(state, nowMs)
@@ -837,14 +837,15 @@ export async function findPendingHandshake(
 export async function holdProvenIdentity(
   db: D1Database,
   state: string,
-  accountId: string,
+  accountId: string | null,
   confirmToken: string,
   nowMs: number,
+  identity?: { subject: string; email: string },
 ): Promise<boolean> {
   const held = await db
     .prepare(
       `UPDATE device_codes
-          SET account_id = ?, confirm_token = ?, verifier = NULL
+          SET account_id = ?, confirm_token = ?, verifier = NULL, pending_subject = ?, pending_email = ?
         WHERE state = ?
           AND verifier IS NOT NULL
           AND approved_at IS NULL
@@ -852,7 +853,7 @@ export async function holdProvenIdentity(
           AND expires_at > ?
         RETURNING user_code`,
     )
-    .bind(accountId, confirmToken, state, nowMs)
+    .bind(accountId, confirmToken, identity?.subject ?? null, identity?.email ?? null, state, nowMs)
     .first<{ user_code: string }>();
 
   return held !== null;
@@ -881,33 +882,55 @@ export async function confirmDeviceApproval(
   confirmToken: string,
   atMs: number,
   newsletter = false,
+  terms = false,
+  newId = "",
+  plan = "free",
 ): Promise<string | null> {
-  // Both writes commit together. Only a browser holding the confirmation secret
-  // can enroll an account; OAuth callbacks alone never record newsletter consent.
-  // A later sign-in cannot overwrite a previous choice (including opting out).
+  // The whole registration and approval is one transaction. The live secret and
+  // explicit Terms choice guard every insert; a denied/expired/replayed form
+  // cannot create an account. Unique identity constraints decide competing signups.
+  const live = `confirm_token = ? AND approved_at IS NULL AND denied_at IS NULL
+    AND expires_at > ? AND pending_subject IS NOT NULL AND ? = 1`;
   const results = await db.batch([
     db
       .prepare(
-        `UPDATE accounts
-      SET newsletter_opt_in = ?,
-          newsletter_choice_at = ?
-      WHERE newsletter_choice_at IS NULL AND id IN (
-        SELECT account_id FROM device_codes WHERE confirm_token = ?
-          AND approved_at IS NULL AND denied_at IS NULL AND expires_at > ?
-      )`,
+        `INSERT INTO accounts
+      (id, email, created_at, plan, plan_checked_at, newsletter_opt_in, newsletter_choice_at)
+      SELECT ?, pending_email, ?, ?, ?, ?, ? FROM device_codes d
+      WHERE ${live} AND NOT EXISTS (
+        SELECT 1 FROM identities i WHERE i.provider = d.provider AND i.subject = d.pending_subject
+      ) ON CONFLICT DO NOTHING`,
       )
-      .bind(newsletter ? 1 : 0, atMs, confirmToken, atMs),
+      .bind(newId, atMs, plan, atMs, newsletter ? 1 : 0, atMs, confirmToken, atMs, terms ? 1 : 0),
+    db
+      .prepare(
+        `INSERT INTO identities (provider, subject, account_id, created_at)
+      SELECT d.provider, d.pending_subject, a.id, ? FROM device_codes d
+      JOIN accounts a ON a.email = d.pending_email
+      WHERE ${live} ON CONFLICT DO NOTHING`,
+      )
+      .bind(atMs, confirmToken, atMs, terms ? 1 : 0),
+    db
+      .prepare(
+        `UPDATE device_codes SET account_id = (
+        SELECT account_id FROM identities WHERE provider = device_codes.provider
+          AND subject = device_codes.pending_subject
+      ) WHERE ${live}`,
+      )
+      .bind(confirmToken, atMs, terms ? 1 : 0),
     db
       .prepare(
         `UPDATE device_codes
-      SET approved_at = ?, state = NULL, confirm_token = NULL
+      SET approved_at = ?, state = NULL, confirm_token = NULL,
+          pending_subject = NULL, pending_email = NULL
       WHERE confirm_token = ? AND approved_at IS NULL AND denied_at IS NULL
         AND account_id IS NOT NULL AND expires_at > ?
+        AND (pending_subject IS NULL OR ? = 1)
       RETURNING user_code`,
       )
-      .bind(atMs, confirmToken, atMs),
+      .bind(atMs, confirmToken, atMs, terms ? 1 : 0),
   ]);
-  return (results[1]?.results[0] as { user_code: string } | undefined)?.user_code ?? null;
+  return (results[3]?.results[0] as { user_code: string } | undefined)?.user_code ?? null;
 }
 
 /**
@@ -934,7 +957,8 @@ export async function denyDeviceApproval(
   const denied = await db
     .prepare(
       `UPDATE device_codes
-          SET denied_at = ?, state = NULL, confirm_token = NULL, verifier = NULL
+          SET denied_at = ?, state = NULL, confirm_token = NULL, verifier = NULL,
+              pending_subject = NULL, pending_email = NULL
         WHERE confirm_token = ?
           AND approved_at IS NULL
           AND denied_at IS NULL

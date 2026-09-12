@@ -2,13 +2,11 @@
  * The approval page: the only place a human ever interacts with OpenArtifacts,
  * and the only way an account comes into existence.
  *
- * There is no sign-up form, no sign-in page and no session. A CLI prints a url
- * carrying the user code it is waiting on, the person opens it, proves
- * an email with Google or GitHub, and presses a button to approve. The first
- * approval an address makes is the registration; every one after it finds the
- * same account. When the page is done, nothing about the browser is remembered
- * — the token the CLI receives is the credential from then on, which is why
- * there is nothing here for a session to be for.
+ * A CLI prints a device-approval URL. The person chooses Google or GitHub,
+ * then an existing account approves the device. A new user accepts Terms and
+ * optionally subscribes to product updates before a single POST creates their
+ * free account and approves the device. No browser session is retained; the
+ * token the CLI receives is the credential from then on.
  *
  * **Proving who you are and approving a terminal are two steps, and the second
  * is a `POST` a person presses.** RFC 8628 §5.4 is the reason. A provider's
@@ -243,36 +241,22 @@ async function chooser(
   // for is the first half of the attack the confirm step exists to stop, and
   // there is no reason to leave it lying around.
   const providerIcons = {
-    google: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M12.48 10.92v3.28h7.84c-.24 1.84-.853 3.187-1.787 4.133-1.147 1.147-2.933 2.4-6.053 2.4-4.827 0-8.6-3.893-8.6-8.72s3.773-8.72 8.6-8.72c2.6 0 4.507 1.027 5.907 2.347l2.307-2.307C18.747 1.44 16.133 0 12.48 0 5.867 0 .307 5.387.307 12s5.56 12 12.173 12c3.573 0 6.267-1.173 8.373-3.36 2.16-2.16 2.84-5.213 2.84-7.667 0-.76-.053-1.467-.173-2.053H12.48z"/></svg>',
-    github: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M12 .75a11.25 11.25 0 0 0-3.558 21.922c.563.104.77-.244.77-.542 0-.267-.01-.975-.015-1.913-3.13.68-3.79-1.508-3.79-1.508-.512-1.3-1.25-1.646-1.25-1.646-1.022-.7.077-.686.077-.686 1.13.08 1.724 1.16 1.724 1.16 1.005 1.723 2.637 1.225 3.28.937.102-.728.393-1.225.715-1.507-2.498-.284-5.124-1.249-5.124-5.56 0-1.228.44-2.233 1.16-3.02-.116-.285-.503-1.429.11-2.979 0 0 .945-.303 3.094 1.154A10.8 10.8 0 0 1 12 6.184c.956.004 1.918.13 2.817.379 2.148-1.457 3.091-1.154 3.091-1.154.615 1.55.228 2.694.112 2.979.722.787 1.159 1.792 1.159 3.02 0 4.322-2.63 5.272-5.135 5.55.403.35.762 1.041.762 2.1 0 1.516-.014 2.739-.014 3.111 0 .3.203.65.774.54A11.251 11.251 0 0 0 12 .75Z"/></svg>',
+    google:
+      '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M12.48 10.92v3.28h7.84c-.24 1.84-.853 3.187-1.787 4.133-1.147 1.147-2.933 2.4-6.053 2.4-4.827 0-8.6-3.893-8.6-8.72s3.773-8.72 8.6-8.72c2.6 0 4.507 1.027 5.907 2.347l2.307-2.307C18.747 1.44 16.133 0 12.48 0 5.867 0 .307 5.387.307 12s5.56 12 12.173 12c3.573 0 6.267-1.173 8.373-3.36 2.16-2.16 2.84-5.213 2.84-7.667 0-.76-.053-1.467-.173-2.053H12.48z"/></svg>',
+    github:
+      '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M12 .75a11.25 11.25 0 0 0-3.558 21.922c.563.104.77-.244.77-.542 0-.267-.01-.975-.015-1.913-3.13.68-3.79-1.508-3.79-1.508-.512-1.3-1.25-1.646-1.25-1.646-1.022-.7.077-.686.077-.686 1.13.08 1.724 1.16 1.724 1.16 1.005 1.723 2.637 1.225 3.28.937.102-.728.393-1.225.715-1.507-2.498-.284-5.124-1.249-5.124-5.56 0-1.228.44-2.233 1.16-3.02-.116-.285-.503-1.429.11-2.979 0 0 .945-.303 3.094 1.154A10.8 10.8 0 0 1 12 6.184c.956.004 1.918.13 2.817.379 2.148-1.457 3.091-1.154 3.091-1.154.615 1.55.228 2.694.112 2.979.722.787 1.159 1.792 1.159 3.02 0 4.322-2.63 5.272-5.135 5.55.403.35.762 1.041.762 2.1 0 1.516-.014 2.739-.014 3.111 0 .3.203.65.774.54A11.251 11.251 0 0 0 12 .75Z"/></svg>',
   };
   const providers = configuredProviders(env);
   const buttons = providers
     .map(
       (provider) =>
-        `<button type="submit" formaction="${APPROVAL_PREFIX}/start/${provider}" disabled>${providerIcons[provider]}<span>Sign in with ${PROVIDER_LABELS[provider]}</span></button>`,
+        `<button type="submit" formaction="${APPROVAL_PREFIX}/start/${provider}">${providerIcons[provider]}<span>Sign in with ${PROVIDER_LABELS[provider]}</span></button>`,
     )
     .join("\n");
   const signup = `<form class="signup" method="post" action="${APPROVAL_PREFIX}/start/${providers[0]}">
     <input type="hidden" name="${USER_CODE_PARAM}" value="${escapeHtml(userCode)}">
-    <label class="newsletter"><input type="checkbox" name="newsletter" value="yes" checked> <span>Send me product updates via the Brevilabs newsletter.</span></label>
-    <p class="terms">For your first sign-in only. Existing newsletter preferences stay unchanged.</p>
-    <label class="newsletter terms-consent"><input type="checkbox" name="terms" value="yes" required> <span>I agree to the <a href="https://openartifacts.ai/terms">Terms</a>.</span></label>
-    <p class="terms">Signing in creates a free account if you’re new. See our <a href="https://openartifacts.ai/privacy">Privacy Policy</a>.</p>
     <div class="actions">${buttons}</div>
-  </form>
-  <script>
-    const signup = document.querySelector('form.signup');
-    const terms = signup.elements.namedItem('terms');
-    const updateButtons = () => {
-      for (const button of signup.querySelectorAll('button[type="submit"]')) {
-        button.disabled = !terms.checked;
-      }
-    };
-    terms.addEventListener('change', updateButtons);
-    window.addEventListener('pageshow', updateButtons);
-    updateButtons();
-  </script>`;
+  </form>`;
   return page({ ...CHOOSE, detail: codeDetail(userCode), actions: signup }, 200);
 }
 
@@ -302,31 +286,10 @@ async function begin(
   const limiter = deps.limiter ?? env.APPROVAL_LOOKUP_LIMITER;
   if (!(await withinClientLimit(limiter, request))) return page(CODE_GONE, 404);
 
-  if (submitted.get("terms") !== "yes") {
-    return page(
-      {
-        ...CHOOSE,
-        message: "Agree to the Terms before signing in.",
-        actions: `<a href="${APPROVAL_PREFIX}?${USER_CODE_PARAM}=${encodeURIComponent(userCode)}">Back to sign in</a>`,
-      },
-      400,
-    );
-  }
-
   const now = (deps.now ?? Date.now)();
   const state = newHandshakeToken();
   const verifier = newHandshakeToken();
-  if (
-    !(await startDeviceHandshake(
-      env.DB,
-      userCode,
-      chosen,
-      state,
-      verifier,
-      now,
-      submitted.get("newsletter") === "yes",
-    ))
-  ) {
+  if (!(await startDeviceHandshake(env.DB, userCode, chosen, state, verifier, now))) {
     return page(CODE_GONE, 404);
   }
 
@@ -342,8 +305,8 @@ async function begin(
 }
 
 /**
- * The provider's redirect back, where the email is proved and the account is
- * created — and where nothing is approved.
+ * The provider's redirect back, where the identity is proved, without creating
+ * an account or approving a device.
  *
  * The `state` is the only thing this request carries that this page put there,
  * so it is what the handshake is looked up by. The device code and the provider
@@ -401,19 +364,28 @@ async function prove(url: URL, env: Env, provider: string, deps: ApprovalDeps): 
     newAccountId(),
     now,
     defaultPlan(env),
+    false,
   );
-  if (account === null) return page(EMAIL_CLAIMED, 409);
+  if (
+    account === null &&
+    (await env.DB.prepare("SELECT 1 FROM accounts WHERE email = ?").bind(email).first())
+  ) {
+    return page(EMAIL_CLAIMED, 409);
+  }
 
-  // An account created a moment ago whose code has since expired is left behind
-  // on purpose: it costs one row, it is the same account the person's next
-  // approval will find, and undoing it would mean deleting an account that may
-  // already own documents.
-  // Also the point at which one handshake is settled on one identity: two
-  // people completing the same authorization url race here, and the loser is
-  // told to start again rather than overwriting a confirmation page that has
-  // already been rendered for somebody else.
+  // Only the first callback can hold a proven identity. New identities remain
+  // on the expiring device row until the person accepts Terms in a POST.
   const confirmToken = newHandshakeToken();
-  if (!(await holdProvenIdentity(env.DB, state, account.id, confirmToken, now))) {
+  if (
+    !(await holdProvenIdentity(
+      env.DB,
+      state,
+      account?.id ?? null,
+      confirmToken,
+      now,
+      account === null ? { subject: asserted.subject, email } : undefined,
+    ))
+  ) {
     return page(EXPIRED, 400);
   }
 
@@ -423,13 +395,37 @@ async function prove(url: URL, env: Env, provider: string, deps: ApprovalDeps): 
   const device =
     handshake.label === null ? UNNAMED_DEVICE : `<b><bdi>${escapeHtml(handshake.label)}</bdi></b>`;
 
-  const preference = await env.DB.prepare("SELECT newsletter_choice_at FROM accounts WHERE id = ?")
-    .bind(account.id)
-    .first<{ newsletter_choice_at: number | null }>();
-  const newsletter =
-    preference?.newsletter_choice_at == null
-      ? `<label class="newsletter"><input type="checkbox" name="newsletter" value="yes"${handshake.newsletter_opt_in ? " checked" : ""}> <span>Send me product updates via the Brevilabs newsletter.</span></label>`
-      : `<p class="terms">Your existing newsletter preference stays unchanged.</p>`;
+  if (account === null) {
+    return page(
+      {
+        title: "Create your free account",
+        heading: "Create your free account.",
+        message: `Continue as ${escapeHtml(email)}. Create a free account and allow ${device} to publish as you until you revoke it. If this is not your terminal, choose Deny.`,
+        detail: codeDetail(handshake.user_code),
+        actions: `<form class="signup" method="post" action="${APPROVAL_PREFIX}/confirm">
+        <input type="hidden" name="${CONFIRM_TOKEN_FIELD}" value="${confirmToken}">
+        <label class="newsletter terms-consent"><input type="checkbox" name="terms" value="yes" required> <span>I agree to the <a href="https://openartifacts.ai/terms">Terms</a>.</span></label>
+        <p class="terms">One published document is free. See our <a href="https://openartifacts.ai/privacy">Privacy Policy</a>.</p>
+        <label class="newsletter"><input type="checkbox" name="newsletter" value="yes" checked> <span>Send me product updates via the Brevilabs newsletter.</span></label>
+        <div class="actions"><button type="submit" disabled>Create account and approve device</button></div>
+      </form>
+      ${actions(form(`${APPROVAL_PREFIX}/deny`, { [CONFIRM_TOKEN_FIELD]: confirmToken }, "Deny"))}
+      <script>
+        const signup = document.querySelector('form.signup');
+        const terms = signup.elements.namedItem('terms');
+        const updateButtons = () => {
+          for (const button of signup.querySelectorAll('button[type="submit"]')) {
+            button.disabled = !terms.checked;
+          }
+        };
+        terms.addEventListener('change', updateButtons);
+        window.addEventListener('pageshow', updateButtons);
+        updateButtons();
+      </script>`,
+      },
+      200,
+    );
+  }
 
   return page(
     {
@@ -438,9 +434,11 @@ async function prove(url: URL, env: Env, provider: string, deps: ApprovalDeps): 
       detail: codeDetail(handshake.user_code),
       actions: actions(
         [
-          `<form class="confirm-signup" method="post" action="${APPROVAL_PREFIX}/confirm">
-            <input type="hidden" name="${CONFIRM_TOKEN_FIELD}" value="${confirmToken}">
-            ${newsletter}<button type="submit">Approve this device</button></form>`,
+          form(
+            `${APPROVAL_PREFIX}/confirm`,
+            { [CONFIRM_TOKEN_FIELD]: confirmToken },
+            "Approve this device",
+          ),
           form(`${APPROVAL_PREFIX}/deny`, { [CONFIRM_TOKEN_FIELD]: confirmToken }, "Deny"),
         ].join(""),
       ),
@@ -470,7 +468,15 @@ async function confirm(request: Request, env: Env, deps: ApprovalDeps): Promise<
   const userCode =
     token === null
       ? null
-      : await confirmDeviceApproval(env.DB, token, now, submitted.get("newsletter") === "yes");
+      : await confirmDeviceApproval(
+          env.DB,
+          token,
+          now,
+          submitted.get("newsletter") === "yes",
+          submitted.get("terms") === "yes",
+          newAccountId(),
+          defaultPlan(env),
+        );
   if (userCode === null) return page(EXPIRED, 400);
 
   return page({ ...APPROVED, detail: codeDetail(userCode) }, 200);
@@ -607,9 +613,9 @@ function page(copy: BrandPage, status: number): Response {
 }
 
 const CHOOSE: BrandPage = {
-  title: "Create your free account",
-  heading: "Create your free account.",
-  message: "Publish your first document free. Already have an account? Sign in below to continue.",
+  title: "Sign in to OpenArtifacts",
+  heading: "Sign in to OpenArtifacts.",
+  message: "Choose Google or GitHub to continue.",
 };
 
 const CONFIRM: BrandPage = {

@@ -882,7 +882,7 @@ describe("the whole flow, from an empty terminal to a token", () => {
     expect(html).toContain("Deny");
 
     const confirmToken = /name="confirm_token" value="([^"]+)"/.exec(html)?.[1] ?? "";
-    expect((await form("/approve/confirm", { confirm_token: confirmToken })).status).toBe(200);
+    expect((await form("/approve/confirm", { terms: "yes", confirm_token: confirmToken })).status).toBe(200);
 
     const issued = await (await device("/device/token", { device_code: minted.device_code }))
       .json<Issued>();
@@ -920,7 +920,7 @@ describe("the whole flow, from an empty terminal to a token", () => {
     ).text();
     const confirmToken = /name="confirm_token" value="([^"]+)"/.exec(html)?.[1] ?? "";
 
-    const denied = await form("/approve/deny", { confirm_token: confirmToken });
+    const denied = await form("/approve/deny", { terms: "yes", confirm_token: confirmToken });
     expect(denied.status).toBe(200);
     expect(await denied.text()).toContain("Denied");
 
@@ -928,7 +928,7 @@ describe("the whole flow, from an empty terminal to a token", () => {
       "access_denied",
     );
     // The same press cannot then approve it: the confirm token is spent either way.
-    expect((await form("/approve/confirm", { confirm_token: confirmToken })).status).toBe(400);
+    expect((await form("/approve/confirm", { terms: "yes", confirm_token: confirmToken })).status).toBe(400);
     expect((await codeRow(minted.user_code))?.approved_at).toBeNull();
   });
 });
