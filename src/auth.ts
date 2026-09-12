@@ -191,27 +191,33 @@ export async function resolvePublisher(
   const cached = await store.read(id);
   const checkedAt = now();
 
-  if (cached && checkedAt - cached.validated_at < LICENSE_CACHE_TTL_MS) {
+  if (cached && (cached.rejected_at == null || cached.validated_at > cached.rejected_at) && checkedAt - cached.validated_at < LICENSE_CACHE_TTL_MS) {
     return { ok: true, publisher: { owner: cached.owner, plan: cached.plan } };
   }
 
   const check = await validateLicense(token, env, deps);
 
   switch (check.status) {
-    case "valid":
-      await store.save({
+    case "valid": {
+      const saved = await store.save({
         key_hash: id,
         plan: check.plan,
         validated_at: checkedAt,
         owner: check.owner,
       });
-      return { ok: true, publisher: { owner: check.owner, plan: check.plan } };
+      // A check begun before a rejection cannot undo that rejection. Recheck
+      // after writing too, so a rejection during the write cannot authorize it.
+      const current = saved ? await store.read(id) : null;
+      if (current && (current.rejected_at == null || current.validated_at > current.rejected_at)) {
+        return { ok: true, publisher: { owner: current.owner, plan: current.plan } };
+      }
+      return { ok: false, reason: "invalid_license", message: "That license key is not valid for publishing." };
+    }
 
     case "denied":
       // This row caches a credential, not ownership: docs belong to `owner`
-      // independently. Forget rejected credentials so an outage cannot revive
-      // their last successful validation. A fresh valid response may restore it.
-      await store.remove(id);
+      // independently. Retain rejection ordering even after a later check succeeds.
+      await store.reject(id, now());
       return {
         ok: false,
         reason: "invalid_license",
@@ -222,7 +228,7 @@ export async function resolvePublisher(
       // Another request may have rejected this key while our check was pending.
       // Only the current cache can authorize fallback, never the earlier snapshot.
       const fallback = await store.read(id);
-      if (fallback) {
+      if (fallback && (fallback.rejected_at == null || fallback.validated_at > fallback.rejected_at)) {
         // Stale but real. An outage must not lock out a publisher who has
         // published before. The plan rides along, so a publisher downgraded
         // since their last successful validation loses publishing here too

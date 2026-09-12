@@ -361,7 +361,7 @@ export function presentError(error) {
     }
     if (error.code === "limit_reached") {
       if (error.detail.limit) console.error(`Limit: ${error.detail.limit}`);
-      console.error("Run `openartifacts account --open` to get a secure account upgrade link.");
+      if (error.detail.upgrade_url) console.error(`Upgrade: ${error.detail.upgrade_url}`);
     }
   } else {
     console.error(error instanceof Error ? error.message : String(error));

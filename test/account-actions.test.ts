@@ -126,7 +126,9 @@ it("fails closed before writing for unconfigured or unsafe action destinations",
 it("requires OAuth credentials and confines service routes to the API host", async () => {
   const key = "license-test-key";
   await env.DB.prepare("INSERT INTO publishers (key_hash, owner, plan, validated_at) VALUES (?, ?, 'plus', ?)").bind(await sha256Hex(key), EXTERNAL, Date.now()).run();
-  expect((await send("GET", "/api/v1/account", key)).status).toBe(401);
+  const rejected = await send("GET", "/api/v1/account", key);
+  expect(rejected.status).toBe(401);
+  expect(rejected.headers.get("www-authenticate")).toBe("Bearer");
   expect((await send("POST", "/api/v1/account/handoffs", key, { purpose: "link" })).status).toBe(401);
   expect((await send("POST", "/admin/v1/handoffs/consume", SERVICE, { code: "a".repeat(64) }, { API_HOST: "other.test", SERVING_HOST: "api.local.test" })).status).toBe(404);
 });
@@ -146,4 +148,13 @@ it("does not consume on GET or expose a separate external-owner recovery route",
   expect((await send("GET", `/admin/v1/handoffs/consume?code=${handoff.code}`, SERVICE)).status).toBe(404);
   expect((await send("GET", `/admin/v1/accounts/${ACCOUNT}/external-owner`, SERVICE)).status).toBe(404);
   expect((await consume(handoff.code)).status).toBe(200);
+});
+
+it("revoked-token proofs do not consume another live token's pending allowance", async () => {
+  for (let i = 0; i < 5; i++) await mint();
+  const replacement = newApiToken();
+  await env.DB.prepare("INSERT INTO tokens (id, token_hash, account_id, created_at) VALUES (?, ?, ?, 0)")
+    .bind(newTokenId(), await sha256Hex(replacement), ACCOUNT).run();
+  await env.DB.prepare("DELETE FROM tokens WHERE id = ?").bind(tokenId).run();
+  await mint(replacement);
 });

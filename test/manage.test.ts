@@ -735,7 +735,7 @@ describe("a publisher whose plan may no longer publish", () => {
   });
 });
 
-it("evicts a rejected credential without losing its documents or another key's access", async () => {
+it("marks a rejected credential without losing its documents or another key's access", async () => {
   await seedPublisher(KEY_B, ownerA);
   const doc = await publish(KEY_A, "Keep this document");
   const before = await docRow(doc.docId);
@@ -751,8 +751,8 @@ it("evicts a rejected credential without losing its documents or another key's a
     }, { status: 404 })) as typeof fetch,
   });
   expect(rejected).toMatchObject({ ok: false, reason: "invalid_license" });
-  expect(await env.DB.prepare("SELECT key_hash FROM publishers WHERE key_hash = ?")
-    .bind(await sha256Hex(KEY_A)).first()).toBeNull();
+  expect(await env.DB.prepare("SELECT rejected_at FROM publishers WHERE key_hash = ?")
+    .bind(await sha256Hex(KEY_A)).first()).toEqual({ rejected_at: expect.any(Number) });
   expect(await docRow(doc.docId)).toEqual(before);
   expect(await objectKeys(doc.docId)).toEqual(keys);
   expect(await env.DB.prepare("SELECT n FROM versions WHERE doc_id = ?")

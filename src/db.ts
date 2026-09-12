@@ -14,6 +14,8 @@ export interface PublisherRow {
   plan: string;
   /** Epoch ms of the last successful license-server validation. */
   validated_at: number;
+  /** Latest rejection completion time; only a validation begun later can authorize. */
+  rejected_at?: number | null;
   /** The app-sites `User.id` this key belongs to. */
   owner: string;
 }
@@ -158,8 +160,8 @@ export type ListedTokenRow = Pick<TokenRow, "id" | "label" | "created_at" | "las
  */
 export interface PublisherStore {
   read(keyHash: string): Promise<PublisherRow | null>;
-  save(row: PublisherRow): Promise<void>;
-  remove(keyHash: string): Promise<void>;
+  save(row: PublisherRow): Promise<boolean>;
+  reject(keyHash: string, at: number): Promise<void>;
 }
 
 /** Version numbers start at 1; a `docs` row at 0 has never been pushed to. */
@@ -169,13 +171,18 @@ export function d1PublisherStore(db: D1Database): PublisherStore {
   return {
     read(keyHash) {
       return db
-        .prepare("SELECT key_hash, plan, validated_at, owner FROM publishers WHERE key_hash = ?")
+        .prepare("SELECT key_hash, plan, validated_at, owner, rejected_at FROM publishers WHERE key_hash = ?")
         .bind(keyHash)
         .first<PublisherRow>();
     },
 
-    async remove(keyHash) {
-      await db.prepare("DELETE FROM publishers WHERE key_hash = ?").bind(keyHash).run();
+    async reject(keyHash, at) {
+      // Keep the rejection even for a cold key: deleting loses the ordering
+      // evidence that stops an older in-flight success from restoring access.
+      await db.prepare(`INSERT INTO publishers (key_hash, plan, validated_at, owner, rejected_at)
+        VALUES (?, '', 0, '', ?)
+        ON CONFLICT(key_hash) DO UPDATE SET rejected_at = MAX(COALESCE(publishers.rejected_at, 0), excluded.rejected_at)`)
+        .bind(keyHash, at).run();
     },
 
     // `owner` is written on every validation, like `plan` is. That is a refresh,
@@ -184,15 +191,17 @@ export function d1PublisherStore(db: D1Database): PublisherStore {
     // us. If key transfer is ever added there, this cache becomes a hole — see
     // the note in `docs/identity.md`.
     async save(row) {
-      await db
+      const result = await db
         .prepare(
           `INSERT INTO publishers (key_hash, plan, validated_at, owner) VALUES (?, ?, ?, ?)
            ON CONFLICT(key_hash) DO UPDATE SET plan = excluded.plan,
                                                validated_at = excluded.validated_at,
-                                               owner = excluded.owner`,
+                                               owner = excluded.owner
+           WHERE publishers.rejected_at IS NULL OR excluded.validated_at > publishers.rejected_at`,
         )
         .bind(row.key_hash, row.plan, row.validated_at, row.owner)
         .run();
+      return result.meta.changes > 0;
     },
   };
 }

@@ -357,7 +357,7 @@ All changes ship through a pull request; never push to `main`.
 
 ## Standalone account launch order
 
-Apply additive D1 migrations through `0010_pending_signup.sql` before this Worker.
+Apply additive D1 migrations through `0011_review_cache_state.sql` before this Worker.
 The unshipped revision/purpose migrations were replaced; do not apply their old
 draft versions. Hosted `ACCOUNT_ACTION_URL` and `UPGRADE_URL` must both be
 `https://openartifacts.ai/account`; CI and `npm run deploy` check this. Self-hosted
@@ -375,3 +375,7 @@ Its `refresh.status` reports failure explicitly. No background synchronization i
 required. An outage retains a finite paid snapshot only until expiry; a lifetime
 snapshot remains paid until a later successful pull. Withdrawals and listing do
 not wait on the entitlement service.
+
+### Linked-account rollback floor
+
+Before enabling permanent owner links, record the first link-aware Worker version ID in the deployment record. After any owner link exists, never roll back below that version: older Workers ignore the associations and split histories and quotas. Later credential-rejection markers also require a rejection-aware rollback target; record the first version supporting migration 0011 as the new floor. Keep the additive schema when rolling back compatible code.

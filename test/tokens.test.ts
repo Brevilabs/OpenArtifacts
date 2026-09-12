@@ -251,7 +251,7 @@ describe("free account document limit", () => {
     expect(await refused.json()).toEqual({
       error: {
         code: "limit_reached",
-        message: "Your account can hold 1 published document. Unshare enough documents to get below this limit before publishing another.",
+        message: "Your account can hold 1 published document. Unshare enough documents to get below this limit before publishing another. Run openartifacts account --open to manage your plan.",
         limit: "documents",
         plan: "free",
         upgrade_url: "https://openartifacts.ai/account",

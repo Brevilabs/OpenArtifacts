@@ -129,3 +129,28 @@ it("unavailable or malformed responses preserve snapshots and self-hosted defaul
   expect(await linkExternalOwner(env.DB, "external", OTHER, NOW)).toBe("linked");
   expect((await env.DB.prepare("SELECT plan_checked_at FROM accounts WHERE id = ?").bind(OTHER).first())).toEqual({ plan_checked_at: null });
 });
+
+it("backs off automatic retries without extending expired access; forced refresh retries immediately", async () => {
+  await seed("pro", NOW - 1, NOW - 3_600_000);
+  const fetcher = vi.fn<typeof fetch>(async () => { throw new Error("offline"); });
+  expect(await accountPlan(remote(), OWNER, { now: () => NOW, fetch: fetcher })).toEqual({ plan: "free", status: "unavailable" });
+  expect((await accountPlan(remote(), OWNER, { now: () => NOW + 1, fetch: fetcher })).plan).toBe("free");
+  expect(fetcher).toHaveBeenCalledTimes(1);
+  await accountPlan(remote(), OWNER, { now: () => NOW + 2, fetch: fetcher, forceAccountRefresh: true });
+  expect(fetcher).toHaveBeenCalledTimes(2);
+  await accountPlan(remote(), OWNER, { now: () => NOW + 60_002, fetch: fetcher });
+  expect(fetcher).toHaveBeenCalledTimes(3);
+});
+
+it("reports a successful concurrent refresh when an older request fails", async () => {
+  await seed("free", null, null);
+  let fail!: (error: Error) => void, started!: () => void;
+  const ready = new Promise<void>(resolve => { started = resolve; });
+  const first = accountPlan(remote(), OWNER, { now: () => NOW, forceAccountRefresh: true,
+    fetch: async () => { started(); return await new Promise<Response>((_, reject) => { fail = reject; }); } });
+  await ready;
+  await accountPlan(remote(), OWNER, { now: () => NOW + 1, forceAccountRefresh: true, fetch: async () => answer("plus", NOW + 10_000) });
+  fail(new Error("offline"));
+  expect(await first).toEqual({ plan: "pro", status: "cached" });
+  expect(await env.DB.prepare("SELECT plan_retry_after FROM accounts WHERE id = ?").bind(OWNER).first()).toEqual({ plan_retry_after: null });
+});

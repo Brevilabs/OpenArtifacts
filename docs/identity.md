@@ -301,3 +301,9 @@ does not fail signup and is retried on a later account-plan refresh. There is no
 queue or scheduled retry, so delivery requires later activity after an outage.
 Self-hosted deployments without that integration make no newsletter request.
 No campaign is sent by signing in.
+
+### Review cache safeguards
+
+Migration 0011 records license rejection completion time. Only validation begun after that rejection may authorize the credential again; delayed older successes cannot restore it, even after a later recovery. Ownership and documents are unchanged.
+
+Failed automatic entitlement refreshes back off for one minute independently of successful-check time and paid expiry. Explicit account refresh bypasses the delay. A successful concurrent refresh is reported as cached by an older failed request.

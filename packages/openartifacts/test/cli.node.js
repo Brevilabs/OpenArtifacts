@@ -351,8 +351,8 @@ test("prints guidance for current quota and future plan limits", () => {
   }
   assert(lines.some((line) => line.includes("quota window")));
   assert(lines.includes("Limit: 10 documents"));
-  assert(lines.some((line) => line.includes("openartifacts account --open")));
-  assert(!lines.some((line) => line.includes("https://example.test/upgrade")));
+  assert(lines.some((line) => line.includes("https://example.test/upgrade")));
+  assert(!lines.some((line) => line.includes("openartifacts account --open")));
 });
 
 async function accountServer() {

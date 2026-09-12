@@ -34,7 +34,7 @@ function actionUrl(env: Env): URL | null {
 }
 
 export async function handleAccount(request: Request, env: Env, publisher: Publisher): Promise<Response> {
-  if (publisher.authKind !== "account") return errorResponse("unauthorized", "Sign in with an account token.");
+  if (publisher.authKind !== "account") return errorResponse("unauthorized", "Sign in with an account token.", { "www-authenticate": "Bearer" });
   const path = new URL(request.url).pathname;
   if (path === "/api/v1/account" && request.method === "GET") {
     const row = await env.DB.prepare(`${OWNER_SCOPE_SQL}
@@ -45,7 +45,7 @@ export async function handleAccount(request: Request, env: Env, publisher: Publi
       FROM accounts a WHERE a.id = ?`)
       .bind(publisher.owner, publisher.owner, utcDay(Date.now()), publisher.owner)
       .first<{ accountId: string; plan: string; plan_expires_at: number | null; plan_checked_at: number | null; documents: number; pushesToday: number; externalLinked: number }>();
-    if (!row) return errorResponse("unauthorized", "Sign in again.");
+    if (!row) return errorResponse("unauthorized", "Sign in again.", { "www-authenticate": "Bearer" });
     const plan = effectivePlan(env, row.plan, row.plan_expires_at);
     return Response.json({ accountId: row.accountId, plan, limits: planLimits(env, plan),
       usage: { documents: row.documents, pushesToday: row.pushesToday }, externalLinked: !!row.externalLinked,
@@ -63,7 +63,7 @@ export async function handleAccount(request: Request, env: Env, publisher: Publi
     env.DB.prepare(`INSERT INTO account_handoffs (code_hash, account_id, token_id, expires_at)
       SELECT ?, a.id, t.id, ? FROM tokens t JOIN accounts a ON a.id = t.account_id
       WHERE t.token_hash = ? AND a.id = ?
-        AND (SELECT COUNT(*) FROM account_handoffs WHERE account_id = a.id) < 5
+        AND (SELECT COUNT(*) FROM account_handoffs h JOIN tokens live ON live.id = h.token_id AND live.account_id = h.account_id WHERE h.account_id = a.id) < 5
       RETURNING code_hash`).bind(await sha256Hex(code), expiresAt, tokenHash, publisher.owner),
   ]);
   if (results[1]!.results.length === 0) return errorResponse("quota_exceeded", "Too many pending account actions, or token revoked. Sign in again or wait ten minutes.");

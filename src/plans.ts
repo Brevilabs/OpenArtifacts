@@ -60,7 +60,9 @@ export function limitReached(env: Env, publisher: Publisher, limit: string, mess
     url.searchParams.delete("owner");
     upgradeUrl = url.toString();
   }
-  return errorResponse("limit_reached", message, undefined, {
+  return errorResponse("limit_reached", env.ACCOUNT_ACTION_URL?.trim()
+    ? `${message} Run openartifacts account --open to manage your plan.`
+    : message, undefined, {
     plan: publisher.plan, limit, ...(upgradeUrl ? { upgrade_url: upgradeUrl } : {}),
   });
 }
