@@ -154,3 +154,18 @@ it("reports a successful concurrent refresh when an older request fails", async 
   expect(await first).toEqual({ plan: "pro", status: "cached" });
   expect(await env.DB.prepare("SELECT plan_retry_after FROM accounts WHERE id = ?").bind(OWNER).first()).toEqual({ plan_retry_after: null });
 });
+
+
+it("malformed publishing configuration cannot block expired-account management", async () => {
+  await seed("pro", NOW - 1, NOW);
+  for (const config of [{ PLAN_LIMITS: "broken" }, { DEFAULT_PLAN: "missing" }]) {
+    expect(await accountPlan({ ...env, ...config }, OWNER, { skipAccountRefresh: true, now: () => NOW })).toEqual({ plan: "pro", status: "cached" });
+    const ctx = createExecutionContext();
+    const response = await worker.fetch(new Request("https://local.test/api/v1/docs", {
+      headers: { authorization: `Bearer ${token}` },
+    }), { ...env, ...config, SERVING_HOST: "", API_HOST: "", LEGACY_SERVING_HOST: "", RETIRED_API_HOST: "" }, ctx);
+    await waitOnExecutionContext(ctx);
+    expect(response.status).toBe(200);
+    await expect(accountPlan({ ...env, ...config }, OWNER, { now: () => NOW })).rejects.toThrow();
+  }
+});

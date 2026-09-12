@@ -61,5 +61,5 @@ export async function accountPlan(env: Env, owner: string, deps: {
     if (status === "unavailable" && cached.checkedAt !== null &&
         cached.checkedAt !== original.checkedAt) status = "cached";
   }
-  return { plan: effectivePlan(env, cached.plan, cached.expiresAt, now()), status };
+  return { plan: deps.skipAccountRefresh ? cached.plan : effectivePlan(env, cached.plan, cached.expiresAt, now()), status };
 }
