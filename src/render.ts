@@ -45,7 +45,7 @@
  * constants in this file, so the thing that changes them is an edit to this
  * file, and a reviewer can see whether the number moved with it.
  */
-export const RENDER_REVISION = 7;
+export const RENDER_REVISION = 6;
 
 /**
  * Belt to the `X-Robots-Tag` header's braces (D9). The header is the
