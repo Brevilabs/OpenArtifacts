@@ -20,6 +20,10 @@ it("only stored opt-in is delivered, and later plan refresh retries without bloc
     : Response.json({ result: { data: { json: { plan: "default", expiresAt: null } } } }));
   expect(await accountPlan(configured, id, { forceAccountRefresh: true, fetch: fetcher })).toMatchObject({ plan: "free", status: "refreshed" });
   expect(fetcher.mock.calls.filter(([url]) => String(url).endsWith("openArtifactsNewsletter"))).toHaveLength(2);
+  fetcher.mockClear();
+  await syncNewsletter(configured, id, fetcher);
+  expect(fetcher).not.toHaveBeenCalled();
+  expect(await env.DB.prepare("SELECT newsletter_opt_in, newsletter_synced_at FROM accounts WHERE id = ?").bind(id).first()).toMatchObject({ newsletter_opt_in: 1, newsletter_synced_at: expect.any(Number) });
   await env.DB.prepare("UPDATE accounts SET newsletter_opt_in = 0 WHERE id = ?").bind(id).run();
   fetcher.mockClear();
   await syncNewsletter(configured, id, fetcher);
