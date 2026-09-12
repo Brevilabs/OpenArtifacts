@@ -31,7 +31,7 @@ describe("renderServedHtml — what gets injected", () => {
     expect(NOINDEX_META).toBe('<meta name="robots" content="noindex,nofollow">');
   });
 
-  // Keep the favicon inline: an icon fetched from another
+  // Inline for the reason the Copilot mark is: an icon fetched from another
   // host is a blank tab whenever that host is unreachable, and these bytes
   // outlive the deploy that produced them.
   it("carries the tab icon inline, in the brand's own colours", () => {
@@ -145,6 +145,20 @@ describe("renderServedHtml — what gets injected", () => {
     expect(baked).toContain(">Copilot for Obsidian</span>");
   });
 
+  // Inlined rather than linked: a byline that fetches its logo from another host
+  // is a broken-image icon whenever that host is unreachable, and these bytes
+  // outlive the deploy that produced them.
+  it("carries the Copilot mark inline, in the byline's own grey", () => {
+    // Inline, so the mark does not depend on another host being up, and no
+    // request leaves the page to fetch it.
+    expect(OPENARTIFACTS_HEADER).toContain("background:url(data:image/svg+xml,");
+    expect(OPENARTIFACTS_HEADER).toContain(encodeURIComponent('fill="#888"'));
+    // Decorative: the link text already names the product.
+    expect(OPENARTIFACTS_HEADER).toContain('aria-hidden="true"');
+    expect(OPENARTIFACTS_HEADER).toContain("width:17px");
+    expect(OPENARTIFACTS_HEADER).toContain("height:14px");
+  });
+
   // The header is prepended, so anything it adds is the *first* of its kind in
   // the document. A figure that opens with `d3.select("svg")` or
   // `querySelectorAll("img")[0]` would then find the logo and draw into it, and
@@ -180,11 +194,13 @@ describe("renderServedHtml — what gets injected", () => {
       for (const restored of ["font:inherit", "cursor:pointer", "color:#888"]) {
         expect(byline).toContain(restored);
       }
-      // Both hosting links remain visibly underlined.
+      // Underlined either way, but the header puts it on the text rather than
+      // the anchor, so the mark beside it is not underlined too.
       expect(byline).toContain("text-decoration:underline");
     }
 
-    // Both links use inline layout.
+    // Asserted apart, because a shared `display:inline` check would pass for the
+    // header only by being a prefix of `inline-flex`.
     expect(OPENARTIFACTS_FOOTER).toContain("display:inline;");
     expect(OPENARTIFACTS_HEADER).toContain("display:inline-flex");
 
