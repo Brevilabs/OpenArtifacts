@@ -27,6 +27,7 @@
  * browser with a person behind it, not a client matching on an error code, so
  * `docs/http-api.md`'s JSON envelope would be the wrong answer to give them.
  */
+import { syncNewsletter } from "../newsletter.js";
 import { type Env } from "../config.js";
 import {
   confirmDeviceApproval,
@@ -101,6 +102,7 @@ export interface ApprovalDeps {
   now?: () => number;
   /** Injected by tests, since arctic's handshake reaches the network. */
   oauth?: OAuthClient;
+  fetch?: typeof fetch;
   /**
    * Injected by tests that need a limiter a deployment has not declared, or a
    * verdict they choose. Production reads `env.APPROVAL_LOOKUP_LIMITER`.
@@ -464,6 +466,7 @@ async function confirm(request: Request, env: Env, deps: ApprovalDeps): Promise<
   const token = submitted.get(CONFIRM_TOKEN_FIELD);
   const now = (deps.now ?? Date.now)();
 
+  const accountId = newAccountId();
   const userCode =
     token === null
       ? null
@@ -473,11 +476,12 @@ async function confirm(request: Request, env: Env, deps: ApprovalDeps): Promise<
           now,
           submitted.get("newsletter") === "yes",
           submitted.get("terms") === "yes",
-          newAccountId(),
+          accountId,
           defaultPlan(env),
         );
   if (userCode === null) return page(EXPIRED, 400);
 
+  await syncNewsletter(env, accountId, deps.fetch);
   return page({ ...APPROVED, detail: codeDetail(userCode) }, 200);
 }
 

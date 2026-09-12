@@ -1,3 +1,4 @@
+import { syncNewsletter } from "./newsletter.js";
 import { LICENSE_CACHE_TTL_MS, type Env } from "./config.js";
 import { configuredPlans, defaultPlan, effectivePlan } from "./plans.js";
 
@@ -18,6 +19,7 @@ export async function accountPlan(env: Env, owner: string, deps: {
   let status: RefreshStatus = "cached";
   if (!deps.skipAccountRefresh && (deps.forceAccountRefresh || cached.checkedAt === null || cached.checkedAt <= at - LICENSE_CACHE_TTL_MS ||
       (cached.expiresAt !== null && cached.expiresAt <= at))) {
+    await syncNewsletter(env, owner, deps.fetch);
     status = "unavailable";
     if (env.LICENSE_API_URL && env.LICENSE_API_KEY) {
       // Distinguish same-millisecond refreshes from the stored snapshot without a revision counter.

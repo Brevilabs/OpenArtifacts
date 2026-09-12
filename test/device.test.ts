@@ -879,7 +879,8 @@ describe("the whole flow, from an empty terminal to a token", () => {
     // terminal waiting on this code is theirs. `bdi` keeps natural RTL labels
     // from changing the direction of the surrounding warning.
     expect(html).toContain("<b><bdi>Claude Code on loganmac</bdi></b>");
-    expect(html).toContain("Deny");
+    expect(html).toContain("If this is not your terminal, close this page.");
+    expect(html).not.toContain('value="deny"');
 
     const confirmToken = /name="confirm_token" value="([^"]+)"/.exec(html)?.[1] ?? "";
     expect((await form("/approve/confirm", { terms: "yes", confirm_token: confirmToken })).status).toBe(200);

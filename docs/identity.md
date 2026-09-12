@@ -293,6 +293,11 @@ Concurrent signups use the existing unique email and provider-subject constraint
 only the newly inserted account receives the submitted newsletter preference.
 
 The account stores `newsletter_opt_in` and `newsletter_choice_at`. Existing users
-are not enrolled automatically. The existing newsletter sender still needs to
-be connected before sending newsletters to this audience. No campaign is sent by
-signing in, and no Copilot user is manufactured for newsletter enrollment.
+are not enrolled automatically. When the optional private integration is configured, signup sends the verified
+email to its service-authenticated newsletter endpoint. The private service adds
+only missing newsletter recipients and preserves existing unsubscribe choices;
+it creates no billing customer, provider identity, or session. A failed attempt
+does not fail signup and is retried on a later account-plan refresh. There is no
+queue or scheduled retry, so delivery requires later activity after an outage.
+Self-hosted deployments without that integration make no newsletter request.
+No campaign is sent by signing in.
