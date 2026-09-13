@@ -177,12 +177,23 @@ jobs:
         if: steps.recheck.outputs.exists != 'true'
         run: npm publish --workspace packages/openartifacts --ignore-scripts --access public --provenance
 
+      # Five minutes, because a successful publish step only means the registry
+      # accepted the write: the version stays 404 to readers until replication
+      # catches up. Measured from the end of that step, 0.2.3 took 75s to appear
+      # and 0.2.4 took 126s (runs 34674797705 and 34709093524), so the previous
+      # 10x3s window gave up long before either was visible and turned two good
+      # releases red. Still `--fail`, so a version that never appears is still a
+      # failure: this waits longer, it does not stop checking.
+      #
+      # Phrasing note: release-workflow.node.cjs requires --ignore-scripts on
+      # every line in this job naming the publish command, comments included, so
+      # this one deliberately does not spell that command out.
       - name: Verify published version
         env:
           VERSION: ${{ needs.gate.outputs.version }}
         run: |
-          curl --fail --silent --show-error --location --retry 10 \
-            --retry-all-errors --retry-delay 3 \
+          curl --fail --silent --show-error --location --retry 60 \
+            --retry-all-errors --retry-delay 5 \
             "https://registry.npmjs.org/openartifacts/$VERSION" \
             --output /dev/null
           echo "openartifacts $VERSION is available from npm"
