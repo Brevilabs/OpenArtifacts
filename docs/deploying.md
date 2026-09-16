@@ -71,6 +71,27 @@ two plan values currently allowed to publish. With the Brevilabs license
 variables absent, unknown keys fail closed and seeded keys continue through the
 existing license-outage fallback.
 
+### The product-analytics secret
+
+The Worker can report publishing and readership counts to PostHog. It is off
+until one secret is set, and setting it is the only step:
+
+```bash
+npx wrangler secret put POSTHOG_PROJECT_API_KEY   # the project's phc_ ingest key
+```
+
+Use the project's `phc_` ingest key, which authorizes capture and nothing else;
+a `phx_` personal API key reads and writes the whole PostHog account and must
+never go here. `POSTHOG_HOST` and `ANALYTICS_ENVIRONMENT` are ordinary vars in
+`wrangler.jsonc`, so a self-hoster who wants a different region or a name other
+than `production` edits them there rather than holding a second secret.
+
+**Skipping this is supported and changes nothing else.** With no secret the
+Worker makes no analytics request at all, which is the right default for an
+installation nobody else is measuring. [Product analytics](analytics.md) is what
+the events carry, what they deliberately never carry, and how to read a delivery
+failure.
+
 ### The sign-in limiters
 
 Four request shapes answer without a credential, because the caller has none

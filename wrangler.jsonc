@@ -116,6 +116,20 @@
     "DEFAULT_PLAN": "free",
     "ACCOUNT_ACTION_URL": "https://openartifacts.ai/account",
     "UPGRADE_URL": "https://openartifacts.ai/account",
-    "PLAN_LIMITS": "{\"free\":{\"documents\":3,\"pushesPerDay\":6,\"htmlBytes\":1048576},\"pro\":{\"documents\":500,\"pushesPerDay\":100,\"htmlBytes\":10485760},\"pro_lifetime\":{\"documents\":500,\"pushesPerDay\":100,\"htmlBytes\":10485760,\"storageBytes\":5368709120}}"
+    "PLAN_LIMITS": "{\"free\":{\"documents\":3,\"pushesPerDay\":6,\"htmlBytes\":1048576},\"pro\":{\"documents\":500,\"pushesPerDay\":100,\"htmlBytes\":10485760},\"pro_lifetime\":{\"documents\":500,\"pushesPerDay\":100,\"htmlBytes\":10485760,\"storageBytes\":5368709120}}",
+
+    // Product analytics. The ingest key is a secret and is deliberately not
+    // here: `npx wrangler secret put POSTHOG_PROJECT_API_KEY` sets it, and
+    // delivery is gated on it alone, so a checkout with these two vars and no
+    // secret — which is every local run and the whole test suite — sends
+    // nothing. See docs/analytics.md.
+    //
+    // ANALYTICS_ENVIRONMENT labels every event and is what business queries
+    // filter on. It says `production` because these vars describe the deployed
+    // Worker; a local run that deliberately turns delivery on must override it
+    // (`--var ANALYTICS_ENVIRONMENT:development`) or its synthetic events land
+    // in the business totals.
+    "POSTHOG_HOST": "https://us.i.posthog.com",
+    "ANALYTICS_ENVIRONMENT": "production"
   }
 }

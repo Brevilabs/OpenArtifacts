@@ -14,6 +14,7 @@
  * mistyped the link. It costs a few dozen bytes; the content, which is the part
  * that actually had to disappear, is gone.
  */
+import type { AnalyticsSink } from "../analytics.js";
 import type { Publisher } from "../auth.js";
 import type { Env } from "../config.js";
 import { listPublisherDocs, softDeleteDoc, type DocListCursor, type DocListRow } from "../db.js";
@@ -93,6 +94,7 @@ export async function deleteDoc(
   env: Env,
   publisher: Publisher,
   docId: string,
+  analytics: AnalyticsSink,
   deps: DeleteDeps = {},
 ): Promise<Response> {
   // An id that cannot exist is answered without touching D1.
