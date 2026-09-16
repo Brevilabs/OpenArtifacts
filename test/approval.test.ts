@@ -1047,6 +1047,7 @@ describe("new-account signup", () => {
   });
   it("asks a new user for unchecked Terms and optional checked newsletter after OAuth", async () => {
     const html = await newSignup();
+    expect(html).toContain("Three published documents are free.");
     expect(html).toContain('name="terms" value="yes" required');
     expect(html).not.toContain('name="terms" value="yes" checked');
     expect(html).toContain('name="newsletter" value="yes" checked');

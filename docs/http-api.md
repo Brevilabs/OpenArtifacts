@@ -98,7 +98,7 @@ to the account that issued the token. Existing document URLs do not change.
 **Publishing follows the account's plan.** First approval uses the deployment's
 default plan. Every token shares its account's limits, and a plan change takes
 effect on the next request without signing in again. The hosted free plan has
-one live document, six publishes/updates per UTC day, and 1 MiB HTML per doc.
+three live documents, six publishes/updates per UTC day, and 1 MiB HTML per doc.
 Listing and unsharing never require available publishing quota.
 
 **Revocation is immediate.** A revoked token fails on its very next request,
@@ -592,7 +592,7 @@ Worker var `PLAN_LIMITS` is a JSON string mapping plan names to positive integer
 ceilings. HTML is measured in UTF-8 bytes and cannot exceed the 10 MiB safety bound:
 
 ```json
-{"free":{"documents":1,"pushesPerDay":6,"htmlBytes":1048576},"pro":{"documents":500,"pushesPerDay":100,"htmlBytes":10485760}}
+{"free":{"documents":3,"pushesPerDay":6,"htmlBytes":1048576},"pro":{"documents":500,"pushesPerDay":100,"htmlBytes":10485760}}
 ```
 
 `DEFAULT_PLAN` (default `free`) selects the plan for newly created accounts.
@@ -601,7 +601,7 @@ Apply `0005_account_plans.sql` before deploying this version, following the
 `free`; their tokens and documents remain valid. Unknown plans or malformed
 configuration fail closed for publishing, but do not block listing or unsharing.
 Absent or blank `PLAN_LIMITS` uses the built-in map with one `free` entry:
-1 document, 6 pushes/day and 1 MiB HTML. `PLAN_LIMITS` replaces that map.
+3 documents, 6 pushes/day and 1 MiB HTML. `PLAN_LIMITS` replaces that map.
 
 ### Change an account's plan
 
@@ -630,7 +630,7 @@ collection and usage; linking does not grant a second allowance.
 | --- | --- | --- |
 | HTML per doc | 1 MiB | 10 MiB |
 | Pushes per UTC day | 6 | 100 |
-| Live docs held | 1 | 500 |
+| Live docs held | 3 | 500 |
 
 Account plan refusals use `402 limit_reached`. License-key refusals are unchanged:
 `413 too_large` for HTML size, `429 quota_exceeded` for document/daily limits.
@@ -733,7 +733,7 @@ These additive routes are served on the API host. They use no browser cookies.
 cannot access it. It returns `200` with `cache-control: no-store`:
 
 ```json
-{"accountId":"oa_…","plan":"free","limits":{"documents":1,"pushesPerDay":6,"htmlBytes":1048576},"usage":{"documents":1,"pushesToday":2},"externalLinked":false,"refresh":{"status":"refreshed","checkedAt":1800000000000,"expiresAt":null}}
+{"accountId":"oa_…","plan":"free","limits":{"documents":3,"pushesPerDay":6,"htmlBytes":1048576},"usage":{"documents":1,"pushesToday":2},"externalLinked":false,"refresh":{"status":"refreshed","checkedAt":1800000000000,"expiresAt":null}}
 ```
 
 Limits reflect the deployment configuration. Usage counts live documents and
