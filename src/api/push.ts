@@ -23,7 +23,7 @@ import { MAX_DOCS_PER_PUBLISHER, MAX_DOC_BYTES, MAX_PUSHES_PER_DAY } from "../co
 import { limitReached, planLimits, type PlanLimits } from "../plans.js";
 import type { Env } from "../config.js";
 import {
-  deleteDocRow,
+  rollbackCreate,
   deleteVersionRow,
   commitVersionMetadata,
   docIsDeleted,
@@ -274,7 +274,7 @@ export async function createDoc(
 
   const day = utcDay(now);
   if (!(await reserveDailyPush(env.DB, publisher.owner, day, limits?.pushesPerDay))) {
-    await deleteDocRow(env.DB, docId);
+    await rollbackCreate(env.DB, docId);
     return dailyQuotaExceeded(env, publisher, limits);
   }
 
@@ -287,7 +287,7 @@ export async function createDoc(
   if (result !== "stored") {
     await refundDailyPush(env.DB, publisher.owner, day);
     if (result === "full") {
-      await deleteDocRow(env.DB, docId);
+      await rollbackCreate(env.DB, docId);
       return storageFull(env, publisher, limits!);
     }
     return docNotFound(docId);

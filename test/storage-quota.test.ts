@@ -1,9 +1,9 @@
 import { createExecutionContext, env, waitOnExecutionContext } from "cloudflare:test";
 import { beforeEach, expect, it, vi } from "vitest";
 import type { Env } from "../src/config.js";
-import { findOrCreateAccount } from "../src/db.js";
+import { findOrCreateAccount, insertDocWithinQuota, rollbackCreate } from "../src/db.js";
 import { sha256Hex } from "../src/hash.js";
-import { newApiToken, newTokenId } from "../src/ids.js";
+import { newApiToken, newDocId, newTokenId } from "../src/ids.js";
 import { linkExternalOwner } from "../src/owners.js";
 import { reserveStorage, storedBytes } from "../src/storage-quota.js";
 import worker from "../src/index.js";
@@ -188,4 +188,25 @@ it("concurrent linked-identity reservations use one canonical total", async () =
   expect(reserved.filter(Boolean)).toHaveLength(1);
   expect(await storedBytes(env.DB, OWNER)).toBe(10);
   expect(await storedBytes(env.DB, "external-owner")).toBe(10);
+});
+
+
+it("rejected creates cannot erase a concurrent update or its byte reservation", async () => {
+  await create("123456789");
+  const id = newDocId(), now = Date.now();
+  await insertDocWithinQuota(env.DB, { id, owner: OWNER, title: "pending", created_at: now, updated_at: now }, 500);
+  // An owner can list the pending create and update it before its rejection rolls back.
+  expect((await request("PUT", `/api/v1/docs/${id}`, "x")).status).toBe(200);
+  await rollbackCreate(env.DB, id);
+  expect(await storedBytes(env.DB, OWNER)).toBe(10);
+  expect((await request("GET", `/d/${id}`)).status).toBe(200);
+  expect((await request("POST", "/api/v1/docs", "x")).status).toBe(402);
+});
+
+it("rejected creates preserve a withdrawal already observed by the owner", async () => {
+  const id = newDocId(), now = Date.now();
+  await insertDocWithinQuota(env.DB, { id, owner: OWNER, title: "pending", created_at: now, updated_at: now }, 500);
+  expect((await request("DELETE", `/api/v1/docs/${id}`)).status).toBe(204);
+  await rollbackCreate(env.DB, id);
+  expect((await request("GET", `/d/${id}`)).status).toBe(410);
 });
