@@ -94,6 +94,8 @@ export interface Env {
   UPGRADE_URL?: string;
   /** Server-to-server bearer credential. Unset disables the admin surface. */
   ADMIN_API_KEY?: string;
+  /** Narrow service credential accepted only for Copilot browser identity proof. */
+  COPILOT_SSO_SECRET?: string;
   /** Trusted browser action endpoint. HTTPS, or loopback HTTP for development. */
   ACCOUNT_ACTION_URL?: string;
 

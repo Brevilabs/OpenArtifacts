@@ -341,3 +341,37 @@ then deploy the website consumer. Existing Google/GitHub redirect registrations
 and `ACCOUNT_ACTION_URL` are reused; no new credentials are required. Reverting
 the Worker disables new browser sign-ins while existing device sign-in remains
 available; the additive table can remain and its rows expire naturally.
+
+### Continue with Copilot
+
+`provider: "copilot"` starts at the fixed
+`https://obsidiancopilot.com/openartifacts/authorize` page. That server verifies
+its own signed-in user and calls `POST /api/v1/copilot/prove` with
+`{state, subject: User.id, email}`. This endpoint accepts only the dedicated
+`COPILOT_SSO_SECRET` bearer credential, not the admin credential. Set the same
+new secret on the Worker and Copilot server before enabling the button; missing
+configuration refuses the flow. The secret grants neither account linking nor
+publishing access. Proof returns `{url}` for the fixed website callback.
+
+The normal cookie-bound consume returns account access only for an existing
+permanent `owner_links` association. Otherwise it returns `{needsLink: true,
+email}` and preserves the proof. The website must display explicit permanent
+link consent and then call the admin endpoint
+`POST /admin/v1/browser-logins/copilot/confirm` with `{state, code, secret,
+confirmPermanent: true}`. It may include `accountId` only from a separately
+verified OpenArtifacts session, never from browser form input.
+
+Without a target account, confirmation creates and links a new account only if
+that email is unused. An existing email returns `{needsAccountSignIn: true,
+email}` without granting access: the person must sign in to OpenArtifacts and
+confirm the permanent association. A verified target may have a different
+email. Existing association conflicts return 409 and leave both accounts
+unchanged. Account creation, association, and proof consumption form one D1
+transaction; a raced or replayed request cannot leave an orphan account.
+
+Apply `0015_copilot_browser_logins.sql` before deploying this extension. It
+preserves pending Google/GitHub flows while allowing Copilot proofs. Deploy the
+Copilot proof producer before advertising its website sign-in option. No
+license key is transported through the browser, and no publishing token is
+minted. Permanent associations survive rollback; rollback only disables new
+Copilot browser sign-ins.
