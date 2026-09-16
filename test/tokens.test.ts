@@ -240,10 +240,10 @@ describe("free account document limit", () => {
     objects: (await env.DOCS.list()).objects.map((object) => object.key),
   });
 
-  it("allows one across tokens, rejects the second without writes, and isolates other accounts", async () => {
+  it("allows three across tokens, rejects the fourth without writes, and isolates other accounts", async () => {
     const first = await issueToken(ACCOUNT_A);
     const second = await issueToken(ACCOUNT_A);
-    expect((await create(first.token)).status).toBe(201);
+    for (const key of [first.token, second.token, first.token]) expect((await create(key)).status).toBe(201);
 
     const before = await storage();
     const refused = await create(second.token);
@@ -251,7 +251,7 @@ describe("free account document limit", () => {
     expect(await refused.json()).toEqual({
       error: {
         code: "limit_reached",
-        message: "Your account can hold 1 published document. Unshare enough documents to get below this limit before publishing another. Run openartifacts account --open to manage your plan.",
+        message: "Your account can hold 3 published documents. Unshare enough documents to get below this limit before publishing another. Run openartifacts account --open to manage your plan.",
         limit: "documents",
         plan: "free",
         upgrade_url: "https://openartifacts.ai/account",
@@ -265,7 +265,7 @@ describe("free account document limit", () => {
 
   it("does not reset document capacity when yesterday's push allowance rolls over", async () => {
     const { token } = await issueToken(ACCOUNT_A);
-    await publish(token, "First");
+    for (let i = 0; i < 3; i++) await publish(token, "Existing");
     await env.DB.prepare("UPDATE push_quota SET day = '2000-01-01'").run();
     const before = await storage();
     expect((await create(token)).status).toBe(402);
@@ -275,6 +275,7 @@ describe("free account document limit", () => {
   it("keeps updates and public reads working at the limit, and unshare frees one slot", async () => {
     const { token } = await issueToken(ACCOUNT_A);
     const first = await publish(token, "First");
+    for (let i = 0; i < 2; i++) await publish(token, "Other");
     expect((await send("PUT", `/api/v1/docs/${first.docId}`, token, { html: page("v2") })).status)
       .toBe(200);
     expect((await send("GET", `/d/${first.docId}`, null)).status).toBe(200);
@@ -285,17 +286,18 @@ describe("free account document limit", () => {
     expect((await create(token)).status).toBe(402);
   });
 
-  it("atomically gives concurrent first creates from two tokens only one slot", async () => {
+  it("atomically gives concurrent creates from two tokens only the last slot", async () => {
     const first = await issueToken(ACCOUNT_A);
     const second = await issueToken(ACCOUNT_A);
+    for (let i = 0; i < 2; i++) expect((await create(first.token)).status).toBe(201);
     const replies = await Promise.all([create(first.token), create(second.token)]);
     expect(replies.map((response) => response.status).sort()).toEqual([201, 402]);
-    expect(await tokensSeeDoc(first.token)).toHaveLength(1);
-    expect((await env.DOCS.list()).objects).toHaveLength(1);
-    expect((await storage()).pushes).toMatchObject([{ pushes: 1 }]);
+    expect(await tokensSeeDoc(first.token)).toHaveLength(3);
+    expect((await env.DOCS.list()).objects).toHaveLength(3);
+    expect((await storage()).pushes).toMatchObject([{ pushes: 3 }]);
   });
 
-  it("preserves three preexisting documents and requires all withdrawn before a new create", async () => {
+  it("preserves preexisting documents when a self-hosted cap is reduced to one", async () => {
     const { token } = await issueToken(ACCOUNT_A);
     const docs: PushResponse[] = [];
     for (let i = 0; i < 3; i++) {
@@ -303,7 +305,7 @@ describe("free account document limit", () => {
       expect(response.status).toBe(201);
       docs.push(await response.json<PushResponse>());
     }
-    expect((await create(token)).status).toBe(402);
+    expect((await create(token, cap(1))).status).toBe(402);
     expect(await tokensSeeDoc(token)).toHaveLength(3);
     for (const doc of docs) {
       expect((await send("GET", `/d/${doc.docId}`, null)).status).toBe(200);
@@ -311,13 +313,13 @@ describe("free account document limit", () => {
     expect((await send("PUT", `/api/v1/docs/${docs[0]!.docId}`, token, { html: page("v2") })).status)
       .toBe(200);
     await send("DELETE", `/api/v1/docs/${docs[0]!.docId}`, token);
-    expect((await create(token)).status).toBe(402);
+    expect((await create(token, cap(1))).status).toBe(402);
     await send("DELETE", `/api/v1/docs/${docs[1]!.docId}`, token);
-    expect((await create(token)).status).toBe(402);
+    expect((await create(token, cap(1))).status).toBe(402);
     await send("DELETE", `/api/v1/docs/${docs[2]!.docId}`, token);
     expect(await tokensSeeDoc(token)).toHaveLength(0);
     expect((await storage()).pushes).toMatchObject([{ pushes: 4 }]);
-    expect((await create(token)).status).toBe(201);
+    expect((await create(token, cap(1))).status).toBe(201);
     expect((await storage()).pushes).toMatchObject([{ pushes: 5 }]);
   });
 

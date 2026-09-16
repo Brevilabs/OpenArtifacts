@@ -54,11 +54,44 @@ describe("configured account plans", () => {
   });
 
   it("loads the agreed hosted values from wrangler, not a separate test copy", () => {
-    expect(planLimits(local(), "free")).toEqual({ documents: 1, pushesPerDay: 6, htmlBytes: 1048576 });
+    expect(planLimits(local(), "free")).toEqual({ documents: 3, pushesPerDay: 6, htmlBytes: 1048576 });
     expect(planLimits(local(), "pro")).toEqual({ documents: 500, pushesPerDay: 100, htmlBytes: 10485760 });
     for (const PLAN_LIMITS of [undefined, ""]) {
       expect(planLimits(local({ PLAN_LIMITS }), "free")).toEqual(planLimits(local(), "free"));
     }
+  });
+
+  it("shares three slots across existing tokens, updates at capacity and replaces an unshared doc", async () => {
+    const other = await issue();
+    const first = await (await create()).json<{ docId: string }>();
+    expect((await create("second", {}, other)).status).toBe(201);
+    const lastSlot = await Promise.all([token, other].map((key) => create("last slot", {}, key)));
+    expect(lastSlot.map((response) => response.status).sort()).toEqual([201, 402]);
+    expect(await error(lastSlot.find((response) => response.status === 402)!)).toMatchObject({
+      error: { code: "limit_reached", limit: "documents", plan: "free" },
+    });
+    expect((await create("fourth")).status).toBe(402);
+    expect(await usage()).toBe(3);
+    expect((await send("PUT", `/api/v1/docs/${first.docId}`, { html: "updated at capacity" }, {}, other)).status).toBe(200);
+    expect((await send("DELETE", `/api/v1/docs/${first.docId}`, undefined, {}, other)).status).toBe(204);
+    expect((await create("replacement")).status).toBe(201);
+    expect((await send("GET", `/d/${first.docId}`)).status).toBe(410);
+    const account = await send("GET", "/api/v1/account");
+    expect(await account.json()).toMatchObject({
+      limits: { documents: 3, pushesPerDay: 6, htmlBytes: 1048576 },
+      usage: { documents: 3, pushesToday: 5 },
+    });
+  });
+
+  it("gives an existing token new default capacity while honoring an explicit self-hosted override", async () => {
+    const old = { PLAN_LIMITS: JSON.stringify({ free: { documents: 1, pushesPerDay: 6, htmlBytes: 1048576 } }) };
+    expect((await create("existing", old)).status).toBe(201);
+    expect((await create("over old cap", old)).status).toBe(402);
+    expect((await create("second", { PLAN_LIMITS: undefined })).status).toBe(201);
+    expect((await create("third", { PLAN_LIMITS: "" })).status).toBe(201);
+    expect((await create("fourth", { PLAN_LIMITS: undefined })).status).toBe(402);
+    expect((await create("custom limit still applies", old)).status).toBe(402);
+    expect(await usage()).toBe(3);
   });
 
   it("assigns the configured default once and never resets a returning account", async () => {
