@@ -69,7 +69,7 @@ entitlement reconciliation belongs to the trusted integration using it.
 
 ## How an account comes into existence
 
-There is no sign-up form, no sign-in page and no session. The only human surface
+The CLI uses no browser session. Its human surface
 is one approval page.
 
 1. An agent's CLI has no token, so it asks for a device code and prints a url.
@@ -116,7 +116,7 @@ Resolution asks the subject first:
 | Situation | Result |
 | --- | --- |
 | This subject has signed in before | its account, whatever address the provider reports now |
-| A new subject, address free | registration is deferred until Terms and device approval |
+| A new subject, address free | registration waits for explicit Terms and either device approval or browser-bound account proof |
 | A new subject, address on an account this provider has never signed in to | that account, and the identity is linked to it |
 | A new subject, address on an account another subject on **this** provider already signs in with | refused |
 
@@ -307,3 +307,37 @@ No campaign is sent by signing in.
 Migration 0011 records license rejection completion time. Only validation begun after that rejection may authorize the credential again; delayed older successes cannot restore it, even after a later recovery. Ownership and documents are unchanged.
 
 Failed automatic entitlement refreshes back off for one minute independently of successful-check time and paid expiry. Explicit account refresh bypasses the delay. A successful concurrent refresh is reported as cached by an older failed request.
+
+### Browser account sign-in
+
+The website can sign a person in for account and checkout actions without a
+terminal or publishing token. Its same-origin POST records explicit Terms
+acceptance and sets a signed, HttpOnly, SameSite=Lax cookie with a random state
+and secret. Using the existing admin credential, it calls
+`POST /admin/v1/browser-logins` with `{state, challenge, provider,
+termsAccepted: true}`. `challenge` is the SHA-256 hex digest of the cookie secret;
+state and secret are independently generated 32-byte hex values. Providers are
+`google` or `github`, when configured.
+
+The returned `{url}` uses the existing `/approve/callback/{provider}` OAuth
+redirect and a `browser_` state prefix. The Worker claims that handshake once,
+verifies provider identity, and redirects to the fixed `ACCOUNT_ACTION_URL`
+origin's `/account/login/callback?state=...&code=...`. It creates no account or
+token at this point. Provider refusal returns `error=sign_in_failed` instead.
+The website verifies its signed cookie and matching state before calling
+`POST /admin/v1/browser-logins/consume` with `{state, code, secret}`. That call
+atomically spends the proof, resolves or creates the account using the existing
+provider-subject rules, and returns `{accountId, email, externalOwner}`. The
+website then establishes its own account session. It must not accept an account
+id or email from the callback query as identity proof.
+
+Handshake/proof rows expire after ten minutes; stored state and proof codes are
+hashed, and at most 1,000 active rows are retained. No Worker cookie is set and
+no publishing credential is created. Existing device approvals and token-bound
+CLI handoffs are unchanged. Browser signup does not opt in to the newsletter.
+
+Apply D1 migration `0014_browser_logins.sql` **before** deploying this Worker,
+then deploy the website consumer. Existing Google/GitHub redirect registrations
+and `ACCOUNT_ACTION_URL` are reused; no new credentials are required. Reverting
+the Worker disables new browser sign-ins while existing device sign-in remains
+available; the additive table can remain and its rows expire naturally.

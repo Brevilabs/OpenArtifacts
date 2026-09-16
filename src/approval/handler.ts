@@ -1,6 +1,6 @@
 /**
- * The approval page: the only place a human ever interacts with OpenArtifacts,
- * and the only way an account comes into existence.
+ * Device approval for CLI publishing. Browser account sign-in is handled
+ * separately by browser-login.ts through the shared provider callback URLs.
  *
  * A CLI prints a device-approval URL. The person chooses Google or GitHub,
  * then an existing account approves the device. A new user accepts Terms and
@@ -27,6 +27,7 @@
  * browser with a person behind it, not a client matching on an error code, so
  * `docs/http-api.md`'s JSON envelope would be the wrong answer to give them.
  */
+import { BROWSER_STATE_PREFIX, proveBrowserLogin } from "../browser-login.js";
 import { syncNewsletter } from "../newsletter.js";
 import { type Env } from "../config.js";
 import {
@@ -320,6 +321,7 @@ async function prove(url: URL, env: Env, provider: string, deps: ApprovalDeps): 
 
   const now = (deps.now ?? Date.now)();
   const state = url.searchParams.get("state");
+  if (state?.startsWith(BROWSER_STATE_PREFIX)) return await proveBrowserLogin(url, env, provider, deps);
   const handshake = state === null ? null : await findPendingHandshake(env.DB, state, now);
   // One page for a missing, unknown, expired or mismatched handshake. They are
   // the same thing to the person in front of it — start again — and separating
