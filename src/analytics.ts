@@ -213,12 +213,19 @@ async function deliver(
     headers: { "content-type": "application/json" },
     body: capturePayload(apiKey, environment, event, documentKey, uuid),
     signal: AbortSignal.timeout(ANALYTICS_TIMEOUT_MS),
-    // The body carries the ingest key, so a redirect is a credential leak
-    // waiting for a misconfigured or hijacked `POSTHOG_HOST`: `fetch` would
+    // The body carries the ingest key, so a followed redirect is a credential
+    // leak waiting for a misconfigured or hijacked `POSTHOG_HOST`: `fetch` would
     // re-POST the whole payload, key included, to wherever the 307 pointed.
-    // Refusing to follow one turns that into a logged failure. `syncNewsletter`
-    // refuses redirects on its outbound call for the same reason.
-    redirect: "error",
+    // `manual` hands the 3xx back instead of chasing it, and since a 3xx is not
+    // `ok` it falls into the failure below and is logged with its status. The
+    // credential goes to exactly one host, the one that was configured.
+    //
+    // `error` is the obvious way to say this and it cannot be used: the Workers
+    // runtime rejects that value outright — "won't be implemented since it does
+    // not make sense at the edge; use manual and check the response status
+    // code" — and the `TypeError` it throws is indistinguishable, from the
+    // outside, from an intake that is simply down.
+    redirect: "manual",
   });
 
   if (!response.ok) deliveryFailed(event, response.status);

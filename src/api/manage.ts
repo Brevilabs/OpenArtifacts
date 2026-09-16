@@ -100,9 +100,29 @@ export async function deleteDoc(
   // An id that cannot exist is answered without touching D1.
   if (!isDocId(docId)) return docNotFound(docId);
 
-  if (!(await softDeleteDoc(env.DB, docId, publisher.owner, Date.now()))) {
+  // One clock read for the column and the event alike. `deleted_at` is the
+  // instant the doc stopped being readable, and an event stamped a few
+  // milliseconds later would put the withdrawal in a different interval from the
+  // row that performed it, for no reason but where the call sits.
+  const now = Date.now();
+  if (!(await softDeleteDoc(env.DB, docId, publisher.owner, now))) {
     return docNotFound(docId);
   }
+
+  // Recorded against the row, which is where the withdrawal happened. Past that
+  // `UPDATE` the doc is unreachable whatever R2 does next, which is the whole
+  // reason the catch below still answers 204 — so the sweep is cleanup, and the
+  // count must not depend on it. Inside the `try` is the placement that would:
+  // a sweep failure would skip the event while the publisher was told 204 and a
+  // retry got 404. Here the two can never disagree. The orphaned objects a
+  // failed sweep leaves are a storage problem, reported by the `console.error`
+  // below rather than by a missing event.
+  //
+  // A false return above is the entire no-op set — a second `DELETE`, another
+  // publisher's doc, a doc that never existed — and none of the three withdrew
+  // anything, so none of them reach this line. Repeated withdrawals are not
+  // repeated outcomes.
+  analytics.record({ name: "document_unshared", docId, atMs: now, ownerId: publisher.owner });
 
   try {
     await deleteDocObjects(env, docId, deps.objectBatch ?? OBJECT_BATCH);

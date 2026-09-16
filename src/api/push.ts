@@ -17,6 +17,12 @@
  * anything pointed at it. Rolling the row back is deliberately not attempted:
  * the failure may equally be the version insert *after* a successful write, and
  * a rollback there would strand the object it names.
+ *
+ * Both paths record their outcome last, and with the same `now` the rows carry
+ * rather than a fresh clock read, so a push and the event describing it cannot
+ * fall on opposite sides of an interval boundary. `ownerId` is
+ * `publisher.owner`, the account the credential resolved to: `docs/identity.md`
+ * makes that the only admissible source, and no request field could supply one.
  */
 import type { AnalyticsSink } from "../analytics.js";
 import type { Publisher } from "../auth.js";
@@ -294,6 +300,11 @@ export async function createDoc(
     }
     return docNotFound(docId);
   }
+
+  // The doc becomes a published page here and not a line earlier: `storeVersion`
+  // is the first step whose success cannot be undone by the ones around it, and
+  // the url is handed over on the next line.
+  analytics.record({ name: "document_published", docId, atMs: now, ownerId: publisher.owner });
   return pushed(env, requestUrl, docId, FIRST_VERSION, 201);
 }
 
@@ -355,5 +366,11 @@ export async function updateDoc(
   // Only now: the title and timestamp in "my docs" describe what the public url
   // is serving, so they move after the bytes do, never before.
   await commitVersionMetadata(env.DB, docId, version, now);
+
+  // A name of its own, never a second `document_published`. A page pushed twenty
+  // times is one page, and the epic's "new pages published" counts first
+  // publications alone — emitting the same name twice would make one diligent
+  // author indistinguishable from twenty documents that do not exist.
+  analytics.record({ name: "document_updated", docId, atMs: now, ownerId: publisher.owner });
   return pushed(env, requestUrl, docId, version, 200);
 }
