@@ -33,14 +33,20 @@ export async function accountPlan(env: Env, owner: string, deps: {
           body: JSON.stringify({ json: { accountId: owner, ...(cached.externalOwner ? { externalOwner: cached.externalOwner } : {}) } }),
           signal: AbortSignal.timeout(8000),
         });
-        const body = await response.json() as { result?: { data?: { json?: { plan?: unknown; expiresAt?: unknown } } } };
+        const body = await response.json() as { result?: { data?: { json?: { plan?: unknown; expiresAt?: unknown; storageAllowance?: unknown } } } };
         const value = body.result?.data?.json;
         if (!response.ok || !value || (value.plan !== "default" && value.plan !== "plus") ||
+            (value.storageAllowance != null && (value.storageAllowance !== "lifetime_5gib" || value.plan !== "plus")) ||
             (value.expiresAt !== null && (typeof value.expiresAt !== "number" || !Number.isSafeInteger(value.expiresAt) || value.expiresAt < 0))) {
           throw new Error("Invalid entitlement response");
         }
-        const plan = value.plan === "plus" ? "pro" : defaultPlan(env);
-        if (!Object.hasOwn(configuredPlans(env), plan)) throw new Error("Unconfigured paid plan");
+        const plan = value.plan === "plus"
+          ? (value.storageAllowance === "lifetime_5gib" ? "pro_lifetime" : "pro")
+          : defaultPlan(env);
+        const plans = configuredPlans(env);
+        if (!Object.hasOwn(plans, plan) || (value.storageAllowance === "lifetime_5gib" && plans[plan]!.storageBytes === undefined)) {
+          throw new Error("Unconfigured paid plan");
+        }
         const written = await env.DB.prepare(`UPDATE accounts SET plan = ?, plan_expires_at = ?, plan_checked_at = ?, plan_retry_after = NULL
           WHERE id = ? AND (plan_checked_at IS NULL OR plan_checked_at < ?)
             AND (SELECT external_owner FROM owner_links WHERE account_id = accounts.id) IS ?`)

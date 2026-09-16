@@ -19,6 +19,7 @@ import type { Env } from "../config.js";
 import { listPublisherDocs, softDeleteDoc, type DocListCursor, type DocListRow } from "../db.js";
 import { docNotFound, errorResponse } from "../errors.js";
 import { isDocId } from "../ids.js";
+import { releaseStorage } from "../storage-quota.js";
 import { docObjectPrefix } from "../storage.js";
 import { publicDocUrl } from "../urls.js";
 
@@ -63,6 +64,11 @@ async function deleteDocObjects(env: Env, docId: string, objectBatch: number): P
     const listing = await env.DOCS.list({ prefix, limit: objectBatch, cursor });
     if (listing.objects.length > 0) {
       await env.DOCS.delete(listing.objects.map((object) => object.key));
+      const versions = listing.objects.flatMap((object) => {
+        const match = /^v([1-9][0-9]*)\.html$/.exec(object.key.slice(prefix.length));
+        return match ? [Number(match[1])] : [];
+      });
+      await releaseStorage(env.DB, docId, versions);
     }
     // Cursors are positions in the key order, and everything before this one is
     // already gone, so resuming from it never revisits a deleted key.

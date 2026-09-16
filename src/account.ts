@@ -4,6 +4,7 @@ import { errorResponse } from "./errors.js";
 import { sha256Hex } from "./hash.js";
 import { OWNER_SCOPE_SQL } from "./owners.js";
 import { effectivePlan, planLimits } from "./plans.js";
+import { storedBytes } from "./storage-quota.js";
 import { readBodyWithin, utcDay } from "./quota.js";
 
 const NO_STORE = { "cache-control": "no-store" };
@@ -48,7 +49,7 @@ export async function handleAccount(request: Request, env: Env, publisher: Publi
     if (!row) return errorResponse("unauthorized", "Sign in again.", { "www-authenticate": "Bearer" });
     const plan = effectivePlan(env, row.plan, row.plan_expires_at);
     return Response.json({ accountId: row.accountId, plan, limits: planLimits(env, plan),
-      usage: { documents: row.documents, pushesToday: row.pushesToday }, externalLinked: !!row.externalLinked,
+      usage: { documents: row.documents, pushesToday: row.pushesToday, storedBytes: await storedBytes(env.DB, publisher.owner) }, externalLinked: !!row.externalLinked,
       refresh: { status: publisher.accountRefresh, checkedAt: row.plan_checked_at, expiresAt: row.plan_expires_at } }, { headers: NO_STORE });
   }
   if (path !== "/api/v1/account/handoffs" || request.method !== "POST") return errorResponse("not_found", "No account route.");

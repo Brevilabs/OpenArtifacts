@@ -45,6 +45,7 @@ import {
 } from "../quota.js";
 
 import { STORED_CONTENT_TYPE, versionObjectKey } from "../storage.js";
+import { reserveStorage, releaseStorage } from "../storage-quota.js";
 import { publicDocUrl } from "../urls.js";
 
 /** Titles are display strings in a list, not documents; long ones are noise. */
@@ -155,8 +156,7 @@ function planHtmlExceeded(env: Env, publisher: Publisher, limits: PlanLimits): R
  * writes cannot collide with another push and the object it writes is never
  * read back or rewritten.
  *
- * Returns false when a concurrent delete won the race and this version was
- * rolled back; see below.
+ * Distinguishes a full allowance from a concurrent withdrawal.
  */
 async function storeVersion(
   env: Env,
@@ -165,7 +165,9 @@ async function storeVersion(
   html: string,
   title: string | null,
   atMs: number,
-): Promise<boolean> {
+  publisher: Publisher,
+  limits: PlanLimits | null,
+): Promise<"stored" | "deleted" | "full"> {
   // The publisher's own bytes, unmodified. OpenArtifacts' additions go in when the
   // document is served, so a byline change — or a plan that removes one —
   // reaches documents already published. `size` is therefore the size of what
@@ -173,6 +175,10 @@ async function storeVersion(
   const bytes = new TextEncoder().encode(html);
   const key = versionObjectKey(docId, version);
 
+  if (!(await reserveStorage(env.DB, publisher.owner, docId, version, bytes.byteLength, limits?.storageBytes))) {
+    return "full";
+  }
+  // An uncertain put/metadata failure keeps the reservation until reconciliation.
   await env.DOCS.put(key, bytes, {
     httpMetadata: { contentType: STORED_CONTENT_TYPE },
   });
@@ -198,10 +204,16 @@ async function storeVersion(
   if (await docIsDeleted(env.DB, docId)) {
     await env.DOCS.delete(key);
     await deleteVersionRow(env.DB, docId, version);
-    return false;
+    await releaseStorage(env.DB, docId, [version]);
+    return "deleted";
   }
 
-  return true;
+  return "stored";
+}
+
+function storageFull(env: Env, publisher: Publisher, limits: PlanLimits): Response {
+  return limitReached(env, publisher, "storageBytes",
+    `Your ${limits.storageBytes} byte storage allowance is full, including retained versions and pending uploads. Unshare documents to free space. Existing pages remain available.`);
 }
 
 function pushed(env: Env, requestUrl: URL, docId: string, version: number, status: number) {
@@ -271,8 +283,13 @@ export async function createDoc(
   // while its first version is still being written. Same answer as an update
   // that loses that race — the doc is gone, and the push is given back rather
   // than spent on a url that would serve 410.
-  if (!(await storeVersion(env, docId, FIRST_VERSION, parsed.body.html, title, now))) {
+  const result = await storeVersion(env, docId, FIRST_VERSION, parsed.body.html, title, now, publisher, limits);
+  if (result !== "stored") {
     await refundDailyPush(env.DB, publisher.owner, day);
+    if (result === "full") {
+      await deleteDocRow(env.DB, docId);
+      return storageFull(env, publisher, limits!);
+    }
     return docNotFound(docId);
   }
   return pushed(env, requestUrl, docId, FIRST_VERSION, 201);
@@ -326,9 +343,10 @@ export async function updateDoc(
   // The doc can still be deleted while this version is being written. Answering
   // 200 would hand back a url that serves 410, so a lost race reads as what it
   // is from the caller's side: the doc is gone.
-  if (!(await storeVersion(env, docId, version, parsed.body.html, title, now))) {
+  const result = await storeVersion(env, docId, version, parsed.body.html, title, now, publisher, limits);
+  if (result !== "stored") {
     await refundDailyPush(env.DB, publisher.owner, day);
-    return docNotFound(docId);
+    return result === "full" ? storageFull(env, publisher, limits!) : docNotFound(docId);
   }
 
   // Only now: the title and timestamp in "my docs" describe what the public url

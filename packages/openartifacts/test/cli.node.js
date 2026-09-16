@@ -357,7 +357,7 @@ test("prints guidance for current quota and future plan limits", () => {
 
 async function accountServer() {
   const requests = [];
-  const control = { status: 200, unsafeUrl: false };
+  const control = { status: 200, unsafeUrl: false, storage: false };
   const server = createServer((request, response) => {
     let raw = "";
     request.on("data", (chunk) => { raw += chunk; });
@@ -368,7 +368,7 @@ async function accountServer() {
       if (control.status !== 200) {
         response.end(JSON.stringify({ error: { code: "unauthorized", message: "Sign in again." } }));
       } else if (request.url === "/api/v1/account") {
-        response.end(JSON.stringify({ accountId: "oa_account", plan: "free", limits: { documents: 1, pushesPerDay: 6, htmlBytes: 1048576 }, usage: { documents: 0, pushesToday: 0 }, externalLinked: false, refresh: { status: "refreshed", checkedAt: 123, expiresAt: null }, access_token: "never-print-response-extra" }));
+        response.end(JSON.stringify({ accountId: "oa_account", plan: "free", limits: { documents: 1, pushesPerDay: 6, htmlBytes: 1048576, ...(control.storage ? { storageBytes: 5368709120 } : {}) }, usage: { documents: 0, pushesToday: 0, ...(control.storage ? { storedBytes: 1234 } : {}) }, externalLinked: false, refresh: { status: "refreshed", checkedAt: 123, expiresAt: null }, access_token: "never-print-response-extra" }));
       } else if (request.url === "/api/v1/account/handoffs") {
         response.end(JSON.stringify({ url: control.unsafeUrl ? "javascript:alert(1)" : `https://actions.example.test/continue?code=${"a".repeat(64)}`, expiresAt: Date.now() + 600000, token: "never-print-response-extra" }));
       } else {
@@ -473,4 +473,18 @@ test("Windows browser launch passes the complete URL as data rather than command
   assert(!windows.args.some((arg) => arg.includes(url)));
   assert.deepEqual(browserProcess(url, "darwin").args, [url]);
   assert.deepEqual(browserProcess(url, "linux").args, [url]);
+});
+
+
+test("account output includes additive storage figures without exposing unrelated response fields", async () => {
+  const remote = await accountServer();
+  remote.control.storage = true;
+  try {
+    const result = await cliProcess(["account"], { OPENARTIFACTS_API_HOST: remote.host, OPENARTIFACTS_TOKEN: "oat_storage-test" });
+    assert.equal(result.code, 0, result.stderr);
+    const parsed = JSON.parse(result.stdout);
+    assert.equal(parsed.limits.storageBytes, 5368709120);
+    assert.equal(parsed.usage.storedBytes, 1234);
+    assert(!result.stdout.includes("never-print-response-extra"));
+  } finally { remote.server.close(); }
 });

@@ -182,3 +182,25 @@ it("unsupported document methods return 404 without publishing-plan resolution",
     expect(response.status).toBe(404);
   }
 });
+
+it("only the explicit lifetime allowance changes the cached plan; outages and newer grants preserve it", async () => {
+  const lifetime = () => Response.json({ result: { data: { json: {
+    plan: "plus", expiresAt: null, storageAllowance: "lifetime_5gib",
+  } } } });
+  await seed("pro", null, NOW - 3_600_000);
+  expect(await accountPlan(remote(), OWNER, { now: () => NOW, fetch: async () => lifetime() }))
+    .toEqual({ plan: "pro_lifetime", status: "refreshed" });
+  expect(await accountPlan(remote(), OWNER, { now: () => NOW + 3_600_001, fetch: async () => { throw new Error("outage"); } }))
+    .toEqual({ plan: "pro_lifetime", status: "unavailable" });
+  expect(await accountPlan(remote(), OWNER, { now: () => NOW + 3_700_000, fetch: async () => answer("plus", null) }))
+    .toEqual({ plan: "pro", status: "refreshed" });
+  // A newer uncapped grant wins over an older in-flight lifetime response.
+  expect((await accountPlan(remote(), OWNER, { now: () => NOW + 8_000_000, fetch: async () => {
+    await seed("pro", null, NOW + 8_000_001);
+    return lifetime();
+  } })).plan).toBe("pro");
+  const invalid = () => Response.json({ result: { data: { json: {
+    plan: "plus", expiresAt: null, storageAllowance: "unknown",
+  } } } });
+  expect((await accountPlan(remote(), OWNER, { now: () => NOW + 12_000_000, fetch: async () => invalid() })).status).toBe("unavailable");
+});
