@@ -365,8 +365,9 @@ origins can omit the browser service and retain local plans.
 
 Before enabling the landing offer, verify the private read-only entitlement
 procedure and account page are deployed with matching server credentials, then
-deploy this Worker and verify its one-document free limit. Publish the approved
-`v0.2.3` CLI release and verify npm `latest` is `0.2.3` and a clean install exposes
+deploy this Worker and verify that three Free document creates succeed and a
+fourth is rejected by the document limit. Publish the approved `v0.2.3` CLI release
+and verify npm `latest` is `0.2.3` and a clean install exposes
 `account --open`. Only then enable the landing entry point. No deploy, npm publish,
 or payment-provider operation is authorized by these instructions alone.
 
