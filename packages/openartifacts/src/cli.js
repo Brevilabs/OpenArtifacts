@@ -290,8 +290,10 @@ export async function main(args) {
   if (command === "account" && !argument) {
     const result = await client.account();
     console.log(JSON.stringify({ accountId: result.accountId, plan: result.plan,
-      limits: { documents: result.limits.documents, pushesPerDay: result.limits.pushesPerDay, htmlBytes: result.limits.htmlBytes },
-      usage: { documents: result.usage.documents, pushesToday: result.usage.pushesToday }, externalLinked: result.externalLinked,
+      limits: { documents: result.limits.documents, pushesPerDay: result.limits.pushesPerDay, htmlBytes: result.limits.htmlBytes,
+        ...(Number.isSafeInteger(result.limits.storageBytes) ? { storageBytes: result.limits.storageBytes } : {}) },
+      usage: { documents: result.usage.documents, pushesToday: result.usage.pushesToday,
+        ...(Number.isSafeInteger(result.usage.storedBytes) ? { storedBytes: result.usage.storedBytes } : {}) }, externalLinked: result.externalLinked,
       refresh: { status: result.refresh.status, checkedAt: result.refresh.checkedAt, expiresAt: result.refresh.expiresAt } }));
     return;
   }

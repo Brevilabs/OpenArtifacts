@@ -257,15 +257,13 @@ export async function insertDocWithinQuota(
 }
 
 /**
- * Hard-delete a `docs` row. Only for rolling back a create that failed after the
- * row existed: the id was minted this request and nothing else can have seen it,
- * so there are no versions, no objects, and no url to leave behind.
- *
- * Unsharing a *published* doc is a soft delete (`softDeleteDoc`) — that row has
- * to survive so its url keeps answering 410 rather than pretending it never was.
+ * Roll back an empty create only if nobody claimed another version or withdrew
+ * it after seeing it in their list. Never cascade-delete another upload's byte
+ * reservation or erase a tombstone while that upload may still reach R2.
  */
-export async function deleteDocRow(db: D1Database, docId: string): Promise<void> {
-  await db.prepare("DELETE FROM docs WHERE id = ?").bind(docId).run();
+export async function rollbackCreate(db: D1Database, docId: string): Promise<void> {
+  await db.prepare("DELETE FROM docs WHERE id = ? AND latest_version = ? AND deleted_at IS NULL")
+    .bind(docId, FIRST_VERSION).run();
 }
 
 /** Whether a doc has been soft-deleted since a push started writing to it. */

@@ -823,3 +823,26 @@ Self-hosts without the entitlement service retain configured local plans and
 manual assignment. Missing or invalid paid-plan configuration never grants access.
 Apply `0008_plan_cache.sql` before deploying this code; the previous unshipped
 revision migration is replaced, not upgraded in place.
+
+
+### Explicit retained-content allowance
+
+The trusted entitlement response may additionally include
+`storageAllowance: "lifetime_5gib"` with `plan: "plus"`. Only this explicit
+signal maps to configured `pro_lifetime`; absent/null retains the previous
+mapping. A plain `pro` plan or null expiry never implies a storage allowance.
+The resolved plan follows the same cache, outage and newer-refresh rules above.
+`pro_lifetime` has 500 documents, 100 daily pushes, 10 MiB per upload and
+5,368,709,120 bytes across retained HTML versions and outstanding writes.
+
+Account responses add `usage.storedBytes`; capped plans add `limits.storageBytes`.
+The CLI's `account` command prints these when supplied and remains compatible
+with servers that omit them. Older CLIs can still publish, read, list and unshare;
+they may omit the new figures from their account display.
+
+Exceeding this allowance returns the existing `402 limit_reached` response with
+`limit: "storageBytes"` and cleanup guidance. The exact limit is allowed. All
+versions and concurrent uploads share the linked-owner allowance. Existing
+content remains readable/listable, and `unshare` still withdraws a document.
+Only confirmed object removal releases its bytes. See
+[storage accounting and recovery](storage-allowance.md) before activation.
