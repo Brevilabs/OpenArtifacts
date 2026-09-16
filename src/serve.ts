@@ -17,6 +17,7 @@
  * `form-action` against a document that may rewrite its own DOM) are only
  * honoured as a real header.
  */
+import type { AnalyticsSink } from "./analytics.js";
 import type { Env } from "./config.js";
 import { findServableVersion } from "./db.js";
 import { isDocId } from "./ids.js";
@@ -451,7 +452,12 @@ async function serveObject(
  * looked at, so `GET /d/{id}/v1` on a deleted doc does not leak that v1 once
  * existed by answering differently from `/v99`.
  */
-export async function handleServing(request: Request, url: URL, env: Env): Promise<Response> {
+export async function handleServing(
+  request: Request,
+  url: URL,
+  env: Env,
+  analytics: AnalyticsSink,
+): Promise<Response> {
   // Two verbs, no third. A 405 would need an error code the frozen contract
   // does not have, and nothing that legitimately reads a doc sends anything
   // else — a POST to a doc url is a probe, and it gets what a probe gets.
