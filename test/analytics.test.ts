@@ -166,6 +166,24 @@ describe("the capture payload", () => {
     expect(properties.$process_person_profile).toBe(false);
   });
 
+  it("puts distinct_id at the top level, never inside properties", async () => {
+    const { deliveries } = captureDeliveries();
+
+    for (const name of PUBLICATION_EVENTS) await record(publication(name));
+    await record(VIEW);
+
+    expect(deliveries).toHaveLength(4);
+    for (const delivery of deliveries) {
+      // `/i/v0/e/` requires `distinct_id` as a top-level field. Nesting it is
+      // the `/batch/` spelling, and this is not that endpoint — so an edit that
+      // moves it down into `properties` has to fail here rather than at an
+      // ingestion no test can see.
+      expect(typeof delivery.body.distinct_id).toBe("string");
+      expect(delivery.body.distinct_id).not.toBe("");
+      expect(delivery.body.properties).not.toHaveProperty("distinct_id");
+    }
+  });
+
   it("never sends a raw doc id, and never names the owner on a view", async () => {
     const { deliveries } = captureDeliveries();
 
