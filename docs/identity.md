@@ -342,6 +342,10 @@ and `ACCOUNT_ACTION_URL` are reused; no new credentials are required. Reverting
 the Worker disables new browser sign-ins while existing device sign-in remains
 available; the additive table can remain and its rows expire naturally.
 
+Browser proof consumption accepts only providers this Worker implements. Keep
+that allowlist when adding providers so an older deployment cannot interpret a
+newer proof as an ordinary OAuth identity after rollback.
+
 ### Continue with Copilot
 
 `provider: "copilot"` starts at the fixed
@@ -375,3 +379,9 @@ Copilot proof producer before advertising its website sign-in option. No
 license key is transported through the browser, and no publishing token is
 minted. Permanent associations survive rollback; rollback only disables new
 Copilot browser sign-ins.
+
+A rollback that retains the browser-login endpoint must include the provider
+allowlist introduced in `fc6624a` (PR90). Do not roll back to an earlier
+browser-login revision after Copilot proofs can be stored: that consumer could
+otherwise resolve them by email. Versions predating browser login have no proof
+consumer and safely disable the flow.
