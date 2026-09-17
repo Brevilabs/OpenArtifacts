@@ -146,6 +146,16 @@ export async function documentAnalyticsKey(docId: string): Promise<string> {
  * attributed to the document, because the alternative — any reader-derived
  * value — would be inventing an identifier for someone who never asked for one.
  *
+ * Its placement is the endpoint's contract rather than a style choice. `/i/v0/e/`
+ * requires `api_key`, `event` and `distinct_id` as top-level fields and treats
+ * `properties` as optional, so the identifier belongs at the top and `properties`
+ * carries only the allowlist below. The nested `properties.distinct_id` spelling
+ * belongs to `/batch/`, where every element of the array has to name its own
+ * subject; borrowing it here would move a field this endpoint documents as
+ * required out of the place it is required in, and an intake stub that accepts
+ * any JSON would keep the tests green all the way to an ingestion that drops the
+ * events.
+ *
  * `$process_person_profile` follows from that. It is `false` for a view so
  * PostHog stores the event without ever materialising a person behind it, and
  * `true` for the three publication events, where the person is an account that
