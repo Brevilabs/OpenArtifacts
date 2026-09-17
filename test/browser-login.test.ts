@@ -1,17 +1,19 @@
 import { env } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
-import { startBrowserLogin, proveBrowserLogin, consumeBrowserLogin } from "../src/browser-login.js";
 import { handleAdmin } from "../src/admin.js";
-import { handleApproval } from "../src/approval/handler.js";
+import {
+  BROWSER_USER_CODE_PREFIX,
+  handleApproval,
+  normalizeUserCode,
+} from "../src/approval/handler.js";
+import type { OAuthClient } from "../src/approval/providers.js";
+import { startBrowserLogin, consumeBrowserLogin } from "../src/browser-login.js";
+import type { Env } from "../src/config.js";
+import { handleDevice } from "../src/device.js";
 import { resolveAccountForIdentity } from "../src/db.js";
 import { newAccountId } from "../src/ids.js";
-import { sha256Hex } from "../src/hash.js";
-import type { Env } from "../src/config.js";
-import type { OAuthClient } from "../src/approval/providers.js";
 
-const state = "1".repeat(64),
-  secret = "2".repeat(64),
-  now = Date.now();
+const now = Date.now();
 const configured = {
   ...env,
   ACCOUNT_ACTION_URL: "https://openartifacts.ai/account",
@@ -24,10 +26,14 @@ const oauth: OAuthClient = {
     new URL(
       `https://example.com/oauth?state=${state}&redirect=${encodeURIComponent(redirect)}&verifier=${verifier}`,
     ),
-  verifiedIdentity: vi.fn(async () => ({ subject: "google-subject", email: "person@example.com" })),
+  verifiedIdentity: vi.fn(async () => ({
+    subject: "google-subject",
+    email: "person@example.com",
+  })),
 };
 const deps = { now: () => now, oauth };
-function request(path: string, value: object, token?: string) {
+
+function json(path: string, value: object, token?: string) {
   return new Request(`https://api.openartifacts.ai${path}`, {
     method: "POST",
     headers: {
@@ -37,208 +43,154 @@ function request(path: string, value: object, token?: string) {
     body: JSON.stringify(value),
   });
 }
-async function start(over: Record<string, unknown> = {}) {
-  return startBrowserLogin(
-    request("/admin/v1/browser-logins", {
-      state,
-      challenge: await sha256Hex(secret),
+
+async function start(
+  over: Record<string, unknown> = {},
+  deployment: Env = configured,
+) {
+  return await startBrowserLogin(
+    json("/admin/v1/browser-logins", {
       provider: "google",
       termsAccepted: true,
       ...over,
     }),
-    configured,
+    deployment,
     deps,
   );
 }
-function callback(params = "code=provider-code", provider = "google") {
+
+async function started() {
+  const response = await start();
+  expect(response.status).toBe(200);
+  return await response.json<{ url: string; state: string }>();
+}
+
+function callbackUrl(state: string, params = "code=provider-code", provider = "google") {
   return new URL(
-    `https://api.openartifacts.ai/approve/callback/${provider}?state=browser_${state}&${params}`,
+    `https://api.openartifacts.ai/approve/callback/${provider}?state=${state}&${params}`,
   );
 }
-async function prove() {
-  const response = await proveBrowserLogin(callback(), configured, "google", deps);
-  expect(response.status).toBe(303);
-  return new URL(response.headers.get("location")!).searchParams.get("code")!;
+
+async function callback(
+  state: string,
+  params = "code=provider-code",
+  callbackOauth: OAuthClient = oauth,
+) {
+  const url = callbackUrl(state, params);
+  return await handleApproval(new Request(url), url, configured, {
+    now: () => now,
+    oauth: callbackOauth,
+  });
 }
-function consume(code: string, over: Record<string, unknown> = {}, clock = now) {
+
+function consume(code: string, over: Record<string, unknown> = {}, at = now) {
   return consumeBrowserLogin(
-    request("/admin/v1/browser-logins/consume", { state, code, secret, ...over }),
+    json("/admin/v1/browser-logins/consume", {
+      code,
+      termsAccepted: true,
+      ...over,
+    }),
     configured,
-    { now: () => clock },
+    { now: () => at },
   );
 }
+
+const redirect = (response: Response) => new URL(response.headers.get("location")!);
+const proofCode = (response: Response) => redirect(response).searchParams.get("code")!;
 async function count(table: string) {
   return (await env.DB.prepare(`SELECT COUNT(*) AS n FROM ${table}`).first<{ n: number }>())!.n;
 }
 
 describe("browser account login", () => {
-  it("uses existing callback, binds state and defers creation until one-use browser proof without publishing tokens", async () => {
-    const response = await start();
-    expect(response.status).toBe(200);
-    const target = new URL((await response.json<{ url: string }>()).url);
-    expect(target.searchParams.get("state")).toBe(`browser_${state}`);
+  it("stores an unpollable browser device row and returns the same provider state", async () => {
+    const result = await started();
+    const target = new URL(result.url);
+    expect(target.searchParams.get("state")).toBe(result.state);
     expect(target.searchParams.get("redirect")).toBe(
       "https://api.openartifacts.ai/approve/callback/google",
     );
-    const code = await prove();
-    expect(await count("accounts")).toBe(0);
-    expect(await count("tokens")).toBe(0);
-    for (const over of [
-      { state: "3".repeat(64) },
-      { secret: "4".repeat(64) },
-      { code: "5".repeat(64) },
-    ])
-      expect((await consume(code, over)).status).toBe(400);
-    const consumed = await consume(code);
-    expect(consumed.status).toBe(200);
-    expect(await consumed.json()).toMatchObject({
-      email: "person@example.com",
-      externalOwner: null,
+    const row = await env.DB.prepare(
+      `SELECT user_code, device_code_hash, provider, state, verifier, label
+       FROM device_codes WHERE state = ?`,
+    )
+      .bind(result.state)
+      .first<Record<string, unknown>>();
+    expect(row).toMatchObject({
+      user_code: BROWSER_USER_CODE_PREFIX + result.state,
+      device_code_hash: null,
+      provider: "google",
+      state: result.state,
+      label: null,
     });
-    expect(await count("accounts")).toBe(1);
-    expect(await count("tokens")).toBe(0);
-    expect((await consume(code)).status).toBe(400);
+    expect(row?.verifier).toBeTruthy();
   });
-  it("requires explicit Terms, configured provider, exact bounded input, and refuses duplicate state", async () => {
+
+  it("requires exact configured input and a valid account action destination", async () => {
     for (const over of [
-      { termsAccepted: false },
-      { termsAccepted: "true" },
       { provider: "github" },
-      { state: "invalid" },
+      { provider: "missing" },
+      { termsAccepted: false },
+      { termsAccepted: undefined },
       { extra: true },
     ])
       expect((await start(over)).status).toBe(400);
-    expect((await start()).status).toBe(200);
-    expect((await start()).status).toBe(429);
-  });
-  it("preserves a valid handshake on provider mismatch and refuses replay and concurrent callback claims", async () => {
-    await start();
-    expect(
-      (await proveBrowserLogin(callback("code=x", "github"), configured, "github", deps)).status,
-    ).toBe(400);
-    const responses = await Promise.all([
-      proveBrowserLogin(callback(), configured, "google", deps),
-      proveBrowserLogin(callback(), configured, "google", deps),
-    ]);
-    expect(responses.map((r) => r.status).sort()).toEqual([303, 400]);
-  });
-  it("rejects expired callbacks and expired proofs", async () => {
-    await start();
-    expect(
-      (
-        await proveBrowserLogin(callback(), configured, "google", {
-          ...deps,
-          now: () => now + 600000,
-        })
-      ).status,
-    ).toBe(400);
-    const code = await prove();
-    expect((await consume(code, {}, now + 600000)).status).toBe(400);
-    expect(await count("accounts")).toBe(0);
-  });
-  it("returns provider refusal to fixed account origin without proof or account", async () => {
-    await start();
-    const result = await proveBrowserLogin(
-      callback("error=access_denied&redirect=https://evil.example"),
-      configured,
-      "google",
-      deps,
+    expect((await start({}, { ...configured, ACCOUNT_ACTION_URL: undefined })).status).toBe(503);
+    expect((await start({}, { ...configured, ACCOUNT_ACTION_URL: "javascript:bad" })).status).toBe(
+      503,
     );
-    const location = new URL(result.headers.get("location")!);
-    expect(location.origin).toBe("https://openartifacts.ai");
-    expect(location.pathname).toBe("/account/login/callback");
-    expect(location.searchParams.get("error")).toBe("sign_in_failed");
-    expect(location.searchParams.has("code")).toBe(false);
-    expect(await count("accounts")).toBe(0);
   });
-  it("refuses unverified identity without minting proof", async () => {
-    await start();
-    const result = await proveBrowserLogin(callback(), configured, "google", {
-      ...deps,
-      oauth: { ...oauth, verifiedIdentity: async () => null },
-    });
-    expect(result.headers.get("location")).toContain("error=sign_in_failed");
-    expect(await count("accounts")).toBe(0);
-  });
-  it("routes browser state through the existing approval callback", async () => {
-    await start();
-    const url = callback();
-    const response = await handleApproval(new Request(url), url, configured, deps);
-    expect(response.status).toBe(303);
-    expect(response.headers.get("location")).toContain("/account/login/callback?state=");
-    expect(response.headers.has("set-cookie")).toBe(false);
-  });
-  it("reuses provider identity and returns its linked external owner", async () => {
-    await start();
-    const proof = await (await consume(await prove())).json<{ accountId: string }>();
+
+  it("consumes an existing identity once and returns its linked owner", async () => {
+    const account = await resolveAccountForIdentity(
+      env.DB,
+      "google",
+      "google-subject",
+      "person@example.com",
+      newAccountId(),
+      now,
+    );
     await env.DB.prepare(
       "INSERT INTO owner_links (account_id, external_owner, created_at) VALUES (?, ?, ?)",
     )
-      .bind(proof.accountId, "legacy-owner", now)
+      .bind(account!.id, "copilot-owner", now)
       .run();
-    await start();
-    const result = await (await consume(await prove())).json();
-    expect(result).toMatchObject({ accountId: proof.accountId, externalOwner: "legacy-owner" });
-    expect(await count("accounts")).toBe(1);
-  });
-  it("keeps a valid proof when account resolution fails before consumption", async () => {
-    await start();
-    const code = await prove();
-    let failed = false;
-    const flaky = {
-      ...configured,
-      DB: new Proxy(env.DB, {
-        get(target, property) {
-          if (property !== "prepare")
-            return Reflect.get(target, property, target);
-          return (sql: string) => {
-            if (!failed && sql.includes("FROM identities i JOIN accounts a")) {
-              failed = true;
-              throw new Error("transient account read");
-            }
-            return target.prepare(sql);
-          };
-        },
-      }),
-    } as Env;
-    await expect(
-      consumeBrowserLogin(
-        request("/admin/v1/browser-logins/consume", { state, code, secret }),
-        flaky,
-        deps,
-      ),
-    ).rejects.toThrow("transient account read");
-    expect((await consume(code)).status).toBe(200);
-    expect((await consume(code)).status).toBe(400);
-  });
-  it("returns failed provider exchanges to the website", async () => {
-    await start();
-    const result = await proveBrowserLogin(callback(), configured, "google", {
-      ...deps,
-      oauth: {
-        ...oauth,
-        verifiedIdentity: async () => {
-          throw new Error("provider unavailable");
-        },
-      },
+    const { state } = await started();
+    const proved = await callback(state);
+    expect(proved.status).toBe(303);
+    expect(redirect(proved).origin).toBe("https://openartifacts.ai");
+    const code = proofCode(proved);
+    const result = await consume(code);
+    expect(result.status).toBe(200);
+    expect(await result.json()).toEqual({
+      accountId: account!.id,
+      email: "person@example.com",
+      externalOwner: "copilot-owner",
     });
-    expect(result.headers.get("location")).toContain("error=sign_in_failed");
-    expect(await count("accounts")).toBe(0);
+    expect((await consume(code)).status).toBe(400);
+    expect(await count("device_codes")).toBe(0);
   });
-  it("bounds pending rows and reclaims expired attempts", async () => {
-    await env.DB.prepare(
-      `WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<1000)
-      INSERT INTO browser_logins (state_hash, challenge, provider, expires_at, terms_accepted_at)
-      SELECT CAST(x AS TEXT), 'challenge', 'google', ?, ? FROM n`,
+
+  it("creates a new identity with no newsletter choice and removes its row", async () => {
+    const { state } = await started();
+    const proved = await callback(state);
+    expect(proved.status).toBe(303);
+    const held = await env.DB.prepare(
+      "SELECT pending_subject FROM device_codes WHERE state = ?",
     )
-      .bind(now + 600000, now)
-      .run();
-    expect((await start()).status).toBe(429);
-    await env.DB.prepare("UPDATE browser_logins SET expires_at = ?").bind(now).run();
-    expect((await start()).status).toBe(200);
-    expect(await count("browser_logins")).toBe(1);
+      .bind(state)
+      .first<{ pending_subject: string }>();
+    expect(held?.pending_subject).toBe("google-subject");
+    const result = await consume(proofCode(proved));
+    expect(result.status).toBe(200);
+    const account = await env.DB.prepare(
+      "SELECT newsletter_opt_in, newsletter_choice_at FROM accounts",
+    ).first<{ newsletter_opt_in: number | null; newsletter_choice_at: number | null }>();
+    expect(account).toEqual({ newsletter_opt_in: null, newsletter_choice_at: null });
+    expect(await count("identities")).toBe(1);
+    expect(await count("device_codes")).toBe(0);
   });
-  it("reports an existing provider subject conflict and spends its proof", async () => {
+
+  it("returns a reassigned mailbox as an identity error without creating anything", async () => {
     await resolveAccountForIdentity(
       env.DB,
       "google",
@@ -247,63 +199,100 @@ describe("browser account login", () => {
       newAccountId(),
       now,
     );
-    await start();
-    const code = await prove();
-    const result = await consume(code);
-    expect(result.status).toBe(409);
-    expect(await result.json()).toEqual({
-      error: {
-        code: "conflict",
-        message: "This address already belongs to another sign-in with this provider.",
-      },
-    });
-    expect((await consume(code)).status).toBe(400);
+    const { state } = await started();
+    const result = await callback(state);
+    expect(redirect(result).searchParams.get("error")).toBe("identity");
+    expect(redirect(result).searchParams.has("code")).toBe(false);
     expect(await count("accounts")).toBe(1);
     expect(await count("identities")).toBe(1);
   });
-  it("uses JSON envelopes for malformed, duplicate and spent admin requests", async () => {
-    expect(await (await start({ provider: "copilot" })).json()).toMatchObject({
-      error: { code: "bad_request" },
-    });
-    await start();
-    expect(await (await start()).json()).toMatchObject({ error: { code: "quota_exceeded" } });
-    expect(await (await consume("0".repeat(64))).json()).toMatchObject({
-      error: { code: "bad_request" },
-    });
+
+  it("redirects provider failures, missing codes, spent verifiers and refused exchanges", async () => {
+    let current = await started();
+    expect(redirect(await callback(current.state, "error=access_denied")).searchParams.get("error"))
+      .toBe("sign_in_failed");
+    expect((await callback(current.state)).status).toBe(400);
+
+    current = await started();
+    expect(redirect(await callback(current.state, "")).searchParams.get("error"))
+      .toBe("sign_in_failed");
+    expect((await callback(current.state)).status).toBe(400);
+
+    current = await started();
+    await env.DB.prepare("UPDATE device_codes SET verifier = NULL WHERE state = ?")
+      .bind(current.state)
+      .run();
+    expect(redirect(await callback(current.state)).searchParams.get("error"))
+      .toBe("sign_in_failed");
+    expect((await callback(current.state)).status).toBe(400);
+
+    current = await started();
+    const refused = { ...oauth, verifiedIdentity: vi.fn(async () => null) };
+    expect(redirect(await callback(current.state, undefined, refused)).searchParams.get("error"))
+      .toBe("sign_in_failed");
+    expect((await callback(current.state)).status).toBe(400);
   });
-  it("supports the same browser binding for configured GitHub", async () => {
-    const github = {
-      ...configured,
-      OAUTH_GITHUB_CLIENT_ID: "github-client",
-      OAUTH_GITHUB_CLIENT_SECRET: "github-secret",
-    };
-    const started = await startBrowserLogin(
-      request("/admin/v1/browser-logins", {
-        state,
-        challenge: await sha256Hex(secret),
-        provider: "github",
-        termsAccepted: true,
-      }),
-      github,
-      deps,
-    );
-    expect(started.status).toBe(200);
-    const proved = await proveBrowserLogin(
-      callback("code=github-code", "github"),
-      github,
-      "github",
-      deps,
-    );
-    const code = new URL(proved.headers.get("location")!).searchParams.get("code")!;
-    expect((await consume(code)).status).toBe(200);
-    expect((await env.DB.prepare("SELECT provider FROM identities").first())?.provider).toBe(
-      "github",
-    );
+
+  it("rejects unknown, mismatched, expired, and replayed callbacks", async () => {
+    expect((await callback("unknown")).status).toBe(400);
+    const current = await started();
+    const mismatch = callbackUrl(current.state, "code=x", "github");
+    expect(
+      (await handleApproval(new Request(mismatch), mismatch, configured, deps)).status,
+    ).toBe(400);
+    await env.DB.prepare("UPDATE device_codes SET expires_at = ? WHERE state = ?")
+      .bind(now, current.state)
+      .run();
+    expect((await callback(current.state)).status).toBe(400);
+
+    const fresh = await started();
+    const code = proofCode(await callback(fresh.state));
+    expect((await consume(code, {}, now + 600000)).status).toBe(400);
   });
-  it("requires admin bearer for both browser endpoints", async () => {
+
+  it("cannot enter the approval or publishing-token paths", async () => {
+    const { state } = await started();
+    for (const value of [`browser_${state}`, `BROWSER_${state.toUpperCase()}`])
+      expect(normalizeUserCode(value)).toBeNull();
+
+    const chooserUrl = new URL(
+      `https://api.openartifacts.ai/approve?user_code=browser_${state}`,
+    );
+    expect(
+      (await handleApproval(new Request(chooserUrl), chooserUrl, configured, deps)).status,
+    ).toBe(400);
+    const beginUrl = new URL("https://api.openartifacts.ai/approve/start/google");
+    const begin = new Request(beginUrl, {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        "sec-fetch-dest": "document",
+      },
+      body: new URLSearchParams({ user_code: `browser_${state}` }),
+    });
+    expect((await handleApproval(begin, beginUrl, configured, deps)).status).toBe(400);
+
+    const tokenUrl = new URL("https://api.openartifacts.ai/device/token");
+    const polled = await handleDevice(
+      json("/device/token", { device_code: state }),
+      tokenUrl,
+      configured,
+      { now: () => now },
+    );
+    expect(await polled.json()).toMatchObject({ error: { code: "expired_token" } });
+  });
+
+  it("allows only one concurrent consume", async () => {
+    const { state } = await started();
+    const code = proofCode(await callback(state));
+    const results = await Promise.all([consume(code), consume(code)]);
+    expect(results.map((response) => response.status).sort()).toEqual([200, 400]);
+  });
+
+  it("requires the admin bearer for both endpoints", async () => {
     for (const path of ["/admin/v1/browser-logins", "/admin/v1/browser-logins/consume"]) {
-      const req = request(path, {});
-      expect((await handleAdmin(req, new URL(req.url), configured)).status).toBe(401);
+      const request = json(path, {});
+      expect((await handleAdmin(request, new URL(request.url), configured)).status).toBe(401);
     }
   });
 });

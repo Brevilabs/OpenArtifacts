@@ -383,11 +383,11 @@ Before enabling permanent owner links, record the first link-aware Worker versio
 
 ## Browser account sign-in
 
-Apply `0014_browser_logins.sql` before deploying the Worker, then deploy the
-paired websites. Browser Google/GitHub sign-in reuses the existing OAuth
-provider registrations, `ADMIN_API_KEY`, and `ACCOUNT_ACTION_URL`. It creates
-account access proofs only, not publishing tokens. The migration is additive;
-rolling back the Worker disables browser sign-in while transient rows expire.
+Deploy the Worker before the paired websites. Browser Google/GitHub sign-in
+reuses the existing `device_codes` schema, OAuth provider registrations,
+`ADMIN_API_KEY`, and `ACCOUNT_ACTION_URL`. It creates account access proofs only,
+not publishing tokens, and needs no schema migration. Rolling back the Worker
+disables browser sign-in while transient rows expire.
 
 External account sign-in stays in the websites. The trusted website uses
 `GET /admin/v1/external-owners/{owner}` to look up an association, and after

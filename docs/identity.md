@@ -312,31 +312,32 @@ Failed automatic entitlement refreshes back off for one minute independently of 
 
 The website can sign a person in with Google or GitHub for account and checkout
 actions without a terminal or publishing token. Its same-origin POST records
-explicit Terms acceptance and sets a signed, HttpOnly, SameSite=Lax cookie with
-an independent random state and secret. Using the existing admin credential, it
-calls `POST /admin/v1/browser-logins` with `{state, challenge, provider,
-termsAccepted: true}`. State and secret are 32-byte lowercase hex values;
-`challenge` is the SHA-256 hex digest of the cookie secret. The stored
-`terms_accepted_at` records the admin caller's assertion; the Worker does not
-witness the click.
+explicit Terms acceptance, then calls `POST /admin/v1/browser-logins` with
+`{provider, termsAccepted: true}` using the existing admin credential. The
+Worker stores the OAuth handshake in `device_codes` with a `browser_` user-code
+prefix and no device-code hash, so the row cannot enter the approval page or
+yield a publishing token. It returns `{url, state}`; the website keeps the state
+and intent in a signed, HttpOnly, SameSite=Lax cookie.
 
-The returned `{url}` uses the existing `/approve/callback/{provider}` OAuth
-redirect and a `browser_` state prefix. The Worker claims the handshake once,
-verifies provider identity, and redirects to the fixed `ACCOUNT_ACTION_URL`
-origin's `/account/login/callback?state=...&code=...`. Provider refusal returns
-`error=sign_in_failed` instead. No account or token is created at this point.
+The provider uses the same `/approve/callback/{provider}` route as device
+approval. The shared callback verifies the provider identity, records it with
+`holdProvenIdentity`, and sends its confirm token only to the finishing browser
+at the fixed `ACCOUNT_ACTION_URL` origin. Provider refusal returns
+`error=sign_in_failed`; a reassigned mailbox returns `error=identity`. No account
+or publishing token exists yet.
+
 The website verifies its signed cookie and matching state before calling
-`POST /admin/v1/browser-logins/consume` with `{state, code, secret}`. This
-atomically spends the proof and resolves the account through the existing
-provider-subject rules, returning `{accountId, email, externalOwner}` for the
-website's own account session. A second subject claiming an address already
-held on the same provider returns a JSON `409 conflict`; the proof is spent.
+`POST /admin/v1/browser-logins/consume` with `{code, termsAccepted: true}`.
+Consume spends the confirm token once, creates an account and identity when
+needed, and returns `{accountId, email, externalOwner}` for the website session.
+Browser signup leaves `newsletter_opt_in` and `newsletter_choice_at` null.
 
-Handshake/proof rows expire after ten minutes. State and proof codes are stored
-hashed, expired rows are swept on start, and at most 1,000 active rows are
-retained. The Worker sets no cookie and mints no publishing token. Existing
-device approval and token-bound CLI handoffs remain unchanged. Browser signup
-leaves `newsletter_opt_in` null and records no newsletter choice.
+A browser confirm token also fits `/approve/confirm` and `/approve/deny`. Only
+the finishing browser receives it, so using either route merely finishes or
+cancels that person's own sign-in and leaves browser consume nothing to spend.
+Whichever of confirm, deny, or browser consume lands first wins; every later use
+fails. Rows expire after ten minutes, the Worker sets no cookie, and no schema
+migration is required.
 
 #### Copilot accounts
 
@@ -355,7 +356,8 @@ sign in to the existing account before the website invokes the existing
 require the existing admin bearer credential; no additional Worker secret or
 partner endpoint is involved.
 
-Apply migration `0014_browser_logins.sql` before deploying the Worker, then
-deploy the paired website changes. Existing provider redirect registrations and
+Deploy the Worker before the paired website changes. Browser sign-in needs no
+schema migration; existing provider redirect registrations and
 `ACCOUNT_ACTION_URL` are reused. Rollback disables browser sign-in and leaves
-transient rows to expire; permanent associations and the CLI flow are unaffected.
+transient device-code rows to expire; permanent associations and the CLI flow
+are unaffected.
