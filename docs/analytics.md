@@ -248,6 +248,13 @@ Total views is a sum, so summing days is the correct way to get it. The two
 metrics differ in exactly this way, which is why they are reported together:
 one distinguishes distribution across pages from repeat requests for one page.
 
+Both are floors rather than exact counts. Reads past a document's per-minute
+ceiling are not recorded, and nothing in the data marks where that happened —
+[the bound](#the-bound-sixty-view-events-per-document-per-minute) is what it
+costs and why it is paid. Total views absorbs the loss first; distinct pages is
+the more robust of the two, since a document only has to be read once inside its
+window to appear.
+
 ## Coverage
 
 Event-derived figures are **observed usage since instrumentation began**, and
@@ -274,8 +281,8 @@ write because there is nothing to migrate from.
 eligibility is decided by file extension, and `/d/{docId}` has no extension. The
 serving zone carries no Cache Rule, and the Worker calls no Cache API, so no
 request to a document url is answered without invoking this code. Every
-qualifying read reaches the call site, and `document_viewed` is a count of
-reads.
+qualifying read reaches the call site, and `document_viewed` is a count of reads
+up to the per-document ceiling below — a count of reads, floored.
 
 **An edge cache will change what the number means, not merely how large it is.**
 `CLAUDE.md` owes the serving zone an explicit Cache Rule, and the day it lands a
@@ -402,6 +409,7 @@ counted by the Worker that served them and in no other way.
 | `POSTHOG_PROJECT_API_KEY` | secret | The project's `phc_` ingest key. |
 | `POSTHOG_HOST` | var | Optional. Defaults to `https://us.i.posthog.com` in code. |
 | `ANALYTICS_ENVIRONMENT` | var | `production` on the deployed Worker. |
+| `VIEW_EVENT_LIMITER` | rate limiter binding | 60 per 60s, in `wrangler.jsonc`. Absent records no views. |
 
 Delivery is gated on the ingest key alone:
 
@@ -433,10 +441,11 @@ npx wrangler dev --var POSTHOG_HOST:http://127.0.0.1:8999 \
 PostHog product analytics is priced per event. The three publication events are
 bounded by the per-day push quota that already exists, so their volume is a
 function of how many people publish and cannot run away. `document_viewed` is
-different in kind: `/d/{docId}` is unauthenticated, carries no rate limiter, and
-is read by a population two or three orders of magnitude larger than the
-publisher count. One event per read makes the analytics bill a function of
-audience size.
+different in kind: `/d/{docId}` is unauthenticated and is read by a population
+two or three orders of magnitude larger than the publisher count. One event per
+read, unbounded, makes the analytics bill a function of audience size — and of
+attacker effort, since a loop against one public url would mint billable events
+at line rate, from anywhere, with no credential.
 
 [Cost at scale](cost-at-scale.md) makes the opposite promise — cost scales with
 publishers and bytes, not with audience size — and §6 names analytics as the
@@ -445,39 +454,103 @@ pricing that section forbids, and `$process_person_profile: false` means no
 reader ever becomes a billable person. The failure mode is the same one anyway,
 because the multiplier is the same.
 
-The arithmetic is one event per qualifying read, uniformly. A document read a
-million times costs a million events. Nothing in the Worker refuses the
-millionth, and nothing in the Worker would notice: a loop against one public url
-mints billable events at line rate, from anywhere, without a credential.
+### The bound: sixty view events per document per minute
 
-**A PostHog project billing limit is therefore a deployment prerequisite, not a
-recommendation.** It is the only ceiling in the system, so it is provisioned
-with the ingest secret rather than after it —
-[Deploying](deploying.md#the-product-analytics-secret) carries the step. An unauthenticated
-endpoint with no ceiling is an attacker-controlled bill, and the limit is what
-turns the worst case into lost counts instead of an invoice.
+`VIEW_EVENT_LIMITER` is a Workers rate limiter binding, declared in
+`wrangler.jsonc` and keyed by the document's analytics key. A `GET` that would
+otherwise record a view is counted against that document's bucket first, and a
+read past the bucket is served exactly as it would have been and recorded as
+nothing. The reader is never refused, never delayed and never told a bound
+exists: a refused *event* is not a refused *request*.
 
-### The bound that is deliberately not built
+**Keyed by the document, which is the entire point.** A bound with any wider key
+— one shared bucket, a global sampling rate — would let a loop against a single
+public url spend everybody's allowance, and the first casualty would be
+readership numbers for every other document. Per document, the worst somebody
+holding one link can do is wreck that page's own count.
 
-`CLAUDE.md` asks that quotas ship with the feature they protect. This one ships
-with a spend cap instead of a quota, because the shape of the right quota is not
-yet knowable and the wrong one is expensive to undo: a sampling rate chosen
-before any traffic exists would be a guess baked into the only record of what
-the traffic was. Measure first, and the measurement is cheap to bound.
+Sixty a minute is one event per document per second sustained, with a whole
+minute of burst before it truncates. Readership arrives in clumps — a link
+posted to a channel and opened by thirty people at once — and a sixty-wide
+bucket counts that clump whole, where `limit: 10, period: 10` would truncate it
+for exactly the same sustained ceiling. A looped document's worst case becomes
+86,400 events a day instead of an unbounded number: a ceiling that can be
+watched.
 
-When volume justifies one, the two candidates are:
+Two other shapes were considered and rejected:
 
-- **Sampling.** Record a fixed fraction of qualifying reads and carry the rate
-  as an event property, so totals can be scaled back up and the multiplier stays
-  recoverable from the data rather than from a deploy log. Distinct-page counts
-  degrade first and fastest under this, since a rarely-read page may contribute
-  no event at all.
-- **Per-document aggregation.** Count in the Worker and emit periodically. It
-  preserves distinct-page counts exactly, and costs the per-doc coordinator that
-  `CLAUDE.md` D7 keeps out of v0 on purpose.
+- **Sampling** is cheaper and fails in the way this bound exists to avoid, since
+  a global rate means a looped document still spends everybody's budget. It also
+  loses distinct-page counts first — a page read twice a week contributes no
+  event at all — and the rate would have to be guessed before any traffic
+  existed and then baked into the only record of what that traffic was.
+- **Per-document aggregation** preserves counts exactly and wants the
+  per-document coordinator `CLAUDE.md` D7 keeps out of v0: a stateful object in
+  the read path of every public document. It is the shape to revisit if
+  undercounting a popular page ever costs more than that coordinator does.
 
-Neither is built. Watch the ingestion volume and the delivery-failure rate in
-PostHog, and revisit when either moves — not before.
+### What the bound costs the numbers
+
+**A document read faster than once a second is undercounted, and the shortfall
+is invisible in the data.** A refused event is not sent, and nothing in what is
+sent says a refusal happened: `properties` is a closed allowlist, and the Worker
+cannot read its own limit back out of the binding, so there is no honest
+multiplier to record and none is invented. Treat every view total as a floor.
+
+Three other things make it a floor, and all four compound:
+
+- delivery is best effort, so a PostHog outage costs counts (below);
+- the verdict is consulted, never waited for. The limiter call starts above the
+  D1 lookup and is read below the R2 one, so it has had two round trips to
+  answer — but one that somehow has not answered is read as a refusal rather
+  than waited on, because the alternative is a slow limiter holding up a
+  reader's page;
+- with no `VIEW_EVENT_LIMITER` declared, no view is recorded at all.
+
+Distinct-page counts survive all of this far better than totals do, because a
+document only has to be read once inside its window to appear. That is the main
+reason the bound is a per-document limiter rather than a sampling rate.
+
+`HEAD` requests spend no budget, because they record nothing. Otherwise the
+cheapest way to stop a page being counted would be to flood it with requests
+that were never going to be counted anyway.
+
+### An absent binding records no views
+
+This inverts the four sign-in limiters in `wrangler.jsonc`, where an undeclared
+binding means no limit on that endpoint. Theirs bound a self-hoster's own D1
+write budget, so an absent one costs that installation and nobody else. This one
+stands between an anonymous public url and a metered third-party bill, and
+"absent means no limit" there would mean setting one secret quietly arms an
+unbounded meter that anyone holding a document link can run up. Nothing would
+fail, so nobody would find out until the invoice — or until a tripped spend cap
+started dropping everybody's counts.
+
+So a deployment with the ingest secret and no `VIEW_EVENT_LIMITER` records
+publication events and no view events. Analytics degrades to publication-only,
+which is a complete and fully bounded product rather than a broken one, and a
+deployment cannot have readership counts without their quota — which is what
+`CLAUDE.md` asks of any quota.
+
+Publication events never consult this binding, in any configuration. They stay
+bounded by the per-day push quota and are unaffected by a limiter that is
+absent, refusing or broken.
+
+### The billing limit is the outer backstop
+
+The bound is per document; the bill is not. Documents exist only because
+somebody with a key published one, so the aggregate worst case is the number of
+documents times 86,400 a day, and that is still worth capping. **A PostHog
+project billing limit remains a deployment prerequisite** —
+[Deploying](deploying.md#the-product-analytics-secret) carries it alongside the
+binding.
+
+The two are not interchangeable, and the billing limit is the weaker of them. It
+bounds the invoice and does not protect the feature: a tripped limit makes
+PostHog drop events for *every* document, so on its own it would let one looped
+url take readership analytics down for the whole product. The in-Worker bound is
+what keeps a single url from reaching that state, and what confines the damage
+to one page if anything else does.
 
 ## Delivery is best effort
 
