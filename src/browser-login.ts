@@ -175,22 +175,31 @@ export async function consumeBrowserLogin(
   )
     return errorResponse("bad_request", "Sign-in expired or could not be verified.", HEADERS);
   const now = (deps.now ?? Date.now)();
+  const stateHash = await sha256Hex(value.state);
+  const codeHash = await sha256Hex(value.code);
+  const challenge = await sha256Hex(value.secret);
   const row = await env.DB.prepare(
-    `DELETE FROM browser_logins
+    `SELECT provider, subject, email FROM browser_logins
     WHERE state_hash = ? AND code_hash = ? AND challenge = ? AND expires_at > ?
       AND subject IS NOT NULL AND email IS NOT NULL AND terms_accepted_at IS NOT NULL
-      AND provider IN ('google', 'github')
-    RETURNING provider, subject, email`,
+      AND provider IN ('google', 'github')`,
   )
-    .bind(
-      await sha256Hex(value.state),
-      await sha256Hex(value.code),
-      await sha256Hex(value.secret),
-      now,
-    )
+    .bind(stateHash, codeHash, challenge, now)
     .first<LoginRow>();
   if (!row)
     return errorResponse("bad_request", "Sign-in expired or could not be verified.", HEADERS);
+  // Resolve first so a transient account read/write failure leaves a retryable
+  // proof. The conditional delete below remains the single-response replay gate.
+  const spend = () =>
+    env.DB.prepare(
+      `DELETE FROM browser_logins
+      WHERE state_hash = ? AND code_hash = ? AND challenge = ? AND expires_at > ?
+        AND subject IS NOT NULL AND email IS NOT NULL AND terms_accepted_at IS NOT NULL
+        AND provider IN ('google', 'github')
+      RETURNING state_hash`,
+    )
+      .bind(stateHash, codeHash, challenge, now)
+      .first();
   const account = await resolveAccountForIdentity(
     env.DB,
     row.provider,
@@ -200,15 +209,24 @@ export async function consumeBrowserLogin(
     now,
     defaultPlan(env),
   );
-  if (!account)
+  if (!account) {
+    if (!(await spend()))
+      return errorResponse(
+        "bad_request",
+        "Sign-in expired or could not be verified.",
+        HEADERS,
+      );
     return errorResponse(
       "conflict",
       "This address already belongs to another sign-in with this provider.",
       HEADERS,
     );
+  }
   const link = await env.DB.prepare("SELECT external_owner FROM owner_links WHERE account_id = ?")
     .bind(account.id)
     .first<{ external_owner: string }>();
+  if (!(await spend()))
+    return errorResponse("bad_request", "Sign-in expired or could not be verified.", HEADERS);
   return Response.json(
     { accountId: account.id, email: account.email, externalOwner: link?.external_owner ?? null },
     { headers: HEADERS },

@@ -181,6 +181,36 @@ describe("browser account login", () => {
     expect(result).toMatchObject({ accountId: proof.accountId, externalOwner: "legacy-owner" });
     expect(await count("accounts")).toBe(1);
   });
+  it("keeps a valid proof when account resolution fails before consumption", async () => {
+    await start();
+    const code = await prove();
+    let failed = false;
+    const flaky = {
+      ...configured,
+      DB: new Proxy(env.DB, {
+        get(target, property) {
+          if (property !== "prepare")
+            return Reflect.get(target, property, target);
+          return (sql: string) => {
+            if (!failed && sql.includes("FROM identities i JOIN accounts a")) {
+              failed = true;
+              throw new Error("transient account read");
+            }
+            return target.prepare(sql);
+          };
+        },
+      }),
+    } as Env;
+    await expect(
+      consumeBrowserLogin(
+        request("/admin/v1/browser-logins/consume", { state, code, secret }),
+        flaky,
+        deps,
+      ),
+    ).rejects.toThrow("transient account read");
+    expect((await consume(code)).status).toBe(200);
+    expect((await consume(code)).status).toBe(400);
+  });
   it("returns failed provider exchanges to the website", async () => {
     await start();
     const result = await proveBrowserLogin(callback(), configured, "google", {
