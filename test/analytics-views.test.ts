@@ -310,6 +310,258 @@ describe("which reads record nothing", () => {
 });
 
 /**
+ * The ceiling on view events.
+ *
+ * `VIEW_EVENT_LIMITER` is declared in `wrangler.jsonc`, so everything below runs
+ * against the binding a deployment actually gets: the pool builds the Worker
+ * from that file and workerd serves the real limiter, with the real per-key
+ * buckets, limit and period. Nothing here approximates the bound. The only
+ * stand-ins are the three broken limiters and the refusing one, because no real
+ * binding can be asked to hang or throw on demand.
+ *
+ * What these have to pin is the reviewer's concern rather than the arithmetic:
+ * a loop against one public url must cost that page its count and cost every
+ * other document nothing, and a reader must never be able to tell which side of
+ * the bound their request landed on.
+ */
+describe("the ceiling on view events", () => {
+  /**
+   * `VIEW_EVENT_LIMITER`'s allowance, mirrored from `wrangler.jsonc`.
+   *
+   * A rate limiter binding reports a verdict and no numbers, so nothing in
+   * `src/` reads this and there is no constant there for it to drift from.
+   * These assertions are the only place the figure is needed.
+   */
+  const LIMIT = 60;
+
+  /**
+   * Read one document until its view event is refused, and hand back the
+   * response that refusal produced.
+   *
+   * It stops at the first read that records nothing rather than counting to
+   * `LIMIT`, because the binding's window is wall-clock: a sixty-second bucket
+   * can roll over part-way through the loop and hand back a fresh allowance. A
+   * test that assumed read sixty-one was the refused one would fail a small
+   * fraction of the time for a reason unconnected to this code.
+   */
+  async function readUntilRefused(
+    sink: AnalyticsSink,
+    events: DocumentEvent[],
+    docId: string,
+  ): Promise<{ refused: Response; recorded: number }> {
+    // Two full allowances and a margin. One rollover can happen inside the
+    // fraction of a second this takes; two cannot.
+    for (let attempt = 0; attempt < LIMIT * 2 + 10; attempt += 1) {
+      const before = events.length;
+      const response = await read(sink, `/d/${docId}`);
+      expect(response.status).toBe(200);
+      if (events.length === before) return { refused: response, recorded: before };
+    }
+    throw new Error("the view-event limiter never refused a read");
+  }
+
+  it("records every read inside the document's allowance", async () => {
+    const docId = await readableDoc();
+    const { sink, events } = collectingSink();
+
+    for (let i = 0; i < LIMIT; i += 1) {
+      expect((await read(sink, `/d/${docId}`)).status).toBe(200);
+    }
+
+    // Deterministic despite the wall-clock window, because a rollover can only
+    // hand back budget and never take it away.
+    expect(events).toHaveLength(LIMIT);
+    expect(new Set(names(events))).toEqual(new Set(["document_viewed"]));
+    expect(new Set(events.map((event) => event.docId))).toEqual(new Set([docId]));
+  });
+
+  it("serves a refused read identically to a counted one", async () => {
+    const docId = await readableDoc();
+    const { sink, events } = collectingSink();
+
+    const counted = await read(sink, `/d/${docId}`);
+    expect(events).toHaveLength(1);
+    const countedBody = await counted.text();
+
+    const { refused, recorded } = await readUntilRefused(sink, events, docId);
+    expect(recorded).toBeGreaterThanOrEqual(LIMIT);
+
+    // A refused *event* is not a refused *request*, and this is where that
+    // sentence either holds or does not. Status, body, and the whole header set
+    // rather than a sample of it: the serving surface's security policy and its
+    // caching are both things a reader must not be able to see the bound
+    // through.
+    expect(refused.status).toBe(counted.status);
+    expect(await refused.text()).toBe(countedBody);
+    expect(Object.fromEntries(refused.headers.entries())).toEqual(
+      Object.fromEntries(counted.headers.entries()),
+    );
+    for (const header of ["etag", "cache-control", "content-security-policy", "x-robots-tag"]) {
+      expect(refused.headers.get(header)).not.toBeNull();
+    }
+    // Nothing that would tell a reader a limiter exists at all.
+    expect(refused.headers.get("retry-after")).toBeNull();
+  });
+
+  it("spends one document's budget without touching another's", async () => {
+    const [looped, quiet] = [await readableDoc(), await readableDoc()];
+    const { sink, events } = collectingSink();
+
+    await readUntilRefused(sink, events, looped);
+    const spent = events.length;
+
+    // The assertion the choice of bound exists for. Anyone who knows a public
+    // url can loop it, and the only thing that keeps that from blinding
+    // readership analytics for every other document is that the bucket is the
+    // document's own. A global bound — one shared bucket, or a sampling rate —
+    // could not promise this, and neither can a PostHog billing limit, which
+    // drops everybody's events the moment it trips.
+    expect((await read(sink, `/d/${quiet}`)).status).toBe(200);
+    expect(events).toHaveLength(spent + 1);
+    expect(events.at(-1)!.docId).toBe(quiet);
+  });
+
+  it("gives a document one budget rather than one per url", async () => {
+    const docId = await readableDoc();
+    const { sink, events } = collectingSink();
+
+    await readUntilRefused(sink, events, docId);
+    const spent = events.length;
+
+    // The bucket is keyed by the document, so the pinned url draws on the same
+    // allowance as the shared one. Keying by url instead would hand every
+    // document as many allowances as it has versions, and a loop could pick a
+    // fresh `/v{n}` each time.
+    expect((await read(sink, `/d/${docId}/v1`)).status).toBe(200);
+    expect(events).toHaveLength(spent);
+  });
+
+  it("does not let HEAD requests drain a document's allowance", async () => {
+    const docId = await readableDoc();
+    const { sink, events } = collectingSink();
+
+    // A HEAD never records, so it must never spend. Otherwise the cheapest way
+    // to stop a page being counted would be to flood it with requests that were
+    // never going to be counted anyway.
+    for (let i = 0; i < LIMIT; i += 1) {
+      expect((await read(sink, `/d/${docId}`, { method: "HEAD" })).status).toBe(200);
+    }
+    expect(events).toEqual([]);
+
+    for (let i = 0; i < LIMIT; i += 1) {
+      expect((await read(sink, `/d/${docId}`)).status).toBe(200);
+    }
+    expect(events).toHaveLength(LIMIT);
+  });
+
+  /**
+   * The limiter outages a declared binding cannot be asked to perform.
+   *
+   * A hang is the one that decides the shape of the code: the verdict is
+   * consulted and never awaited, so a limiter that never answers costs a count
+   * and not a reader's page. Awaiting it would have made this test hang.
+   */
+  const BROKEN_LIMITERS: Array<[string, RateLimit]> = [
+    [
+      "throws before it returns a promise",
+      {
+        limit: () => {
+          throw new Error("limiter unavailable");
+        },
+      } as unknown as RateLimit,
+    ],
+    [
+      "rejects",
+      {
+        limit: async () => {
+          throw new Error("limiter unavailable");
+        },
+      },
+    ],
+    ["never answers", { limit: () => new Promise<never>(() => {}) }],
+  ];
+
+  it.each(BROKEN_LIMITERS)("serves the document when the limiter %s", async (_label, limiter) => {
+    const docId = await readableDoc();
+    const { sink, events } = collectingSink();
+
+    const response = await read(sink, `/d/${docId}`, {}, workerEnv({ VIEW_EVENT_LIMITER: limiter }));
+
+    // Fails toward serving the document, and away from spending on an event
+    // whose ceiling has just stopped answering.
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("hi");
+    expect(events).toEqual([]);
+  });
+
+  it("records no view when the binding is not declared", async () => {
+    const docId = await readableDoc();
+    const { sink, events } = collectingSink();
+
+    const response = await read(sink, `/d/${docId}`, {}, workerEnv({ VIEW_EVENT_LIMITER: undefined }));
+
+    // The four sign-in limiters treat an absent binding as no limit, and this
+    // one inverts that on purpose. Theirs bound a self-hoster's own D1 write
+    // budget; this one is the only thing between an anonymous public url and a
+    // metered third-party bill, so "absent means no limit" would mean one
+    // secret quietly arming an unbounded meter anybody with a link can run up.
+    expect(response.status).toBe(200);
+    expect(events).toEqual([]);
+  });
+
+  /**
+   * Publication events are bounded by the per-day push quota and never consult
+   * this binding. They have to keep working in the configurations that stop
+   * views dead, or the absent-binding default would be turning analytics off
+   * rather than degrading it to publication-only.
+   */
+  const VIEWLESS: Array<[string, Partial<Env>]> = [
+    ["with no limiter declared", { VIEW_EVENT_LIMITER: undefined }],
+    [
+      "behind a limiter that refuses everything",
+      { VIEW_EVENT_LIMITER: { limit: async () => ({ success: false }) } },
+    ],
+  ];
+
+  it.each(VIEWLESS)("still records a publication and a withdrawal %s", async (_label, overrides) => {
+    const { sink, events } = collectingSink();
+    const url = new URL(`${ORIGIN}/api/v1/docs`);
+
+    const created = await createDoc(
+      new Request(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(VALID_PUSH),
+      }),
+      url,
+      workerEnv(overrides),
+      PUBLISHER,
+      sink,
+    );
+    expect(created.status).toBe(201);
+    const { docId } = (await created.json()) as { docId: string };
+
+    // A read in the same configuration records nothing, which is the contrast
+    // that makes the two assertions around it mean something.
+    expect((await read(sink, `/d/${docId}`, {}, workerEnv(overrides))).status).toBe(200);
+
+    expect((await deleteDoc(workerEnv(overrides), PUBLISHER, docId, sink)).status).toBe(204);
+    expect(names(events)).toEqual(["document_published", "document_unshared"]);
+  });
+
+  it("still records a withdrawal for a document whose view budget is spent", async () => {
+    const docId = await readableDoc();
+    const { sink, events } = collectingSink();
+
+    await readUntilRefused(sink, events, docId);
+    events.length = 0;
+
+    expect((await deleteDoc(workerEnv(), PUBLISHER, docId, sink)).status).toBe(204);
+    expect(names(events)).toEqual(["document_unshared"]);
+  });
+});
+
+/**
  * Reads through the router, with PostHog stood in for at `globalThis.fetch`.
  *
  * The fake sink above proves which reads record. These prove the wire is
@@ -364,6 +616,20 @@ describe("reads through the router", () => {
     // Repeated reads are separate events with separate identities, so a retry
     // could be deduplicated without collapsing two genuine reads into one.
     expect(new Set(deliveries.map((delivery) => delivery.body.uuid)).size).toBe(3);
+  });
+
+  it("puts nothing on the wire for a read the bound refuses", async () => {
+    const docId = await readableDoc();
+    const { deliveries } = captureDeliveries();
+
+    // With no `VIEW_EVENT_LIMITER` the bound has nothing to consult, so there is
+    // no budget and no event. The point of asserting it here rather than
+    // against the fake sink is that the saving is a POST not made: a bound that
+    // dropped the event after the request had gone out would bound nothing.
+    const response = await serve(`/d/${docId}`, {}, { VIEW_EVENT_LIMITER: undefined });
+
+    expect(response.status).toBe(200);
+    expect(deliveries).toEqual([]);
   });
 
   it("sends nothing about the reader", async () => {

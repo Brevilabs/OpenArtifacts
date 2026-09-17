@@ -86,18 +86,42 @@ never go here. `POSTHOG_HOST` and `ANALYTICS_ENVIRONMENT` are ordinary vars in
 `wrangler.jsonc`, so a self-hoster who wants a different region or a name other
 than `production` edits them there rather than holding a second secret.
 
-**Then set a billing limit on the PostHog project, before the deploy rather than
-after it.** One event is sent per read of a public document, and `/d/{docId}` is
-unauthenticated with no rate limiter — so the event volume is a function of how
-much a document is read, by anyone, including a loop. The billing limit is the
-only ceiling in the system. Without it the worst case is an invoice; with it the
-worst case is lost counts, which is what best-effort delivery already promises.
-Set it in PostHog under **Billing → Set a billing limit**, on product analytics.
-[Product analytics](analytics.md#cost-view-events-need-a-ceiling) has the
-arithmetic and the bound deliberately left unbuilt.
+**Then declare the view-event limiter**, in the same `ratelimits` array as the
+sign-in limiters below:
 
-**Skipping this is supported and changes nothing else.** With no secret the
-Worker makes no analytics request at all, which is the right default for an
+```jsonc
+{ "name": "VIEW_EVENT_LIMITER", "namespace_id": "1005", "simple": { "limit": 60, "period": 60 } }
+```
+
+One event is sent per read of a public document, and `/d/{docId}` is the one
+surface that answers without a credential — so without a bound the event volume
+is a function of how much a document is read by anyone, including a loop. This
+binding caps it at sixty events per document per minute, keyed by the document
+so that a loop against one public url can only spend that page's allowance and
+every other document keeps counting. A refused event never reaches the reader:
+the document is served identically, with no delay and no extra header.
+
+**Unlike the sign-in limiters, deleting this block does not mean "no limit" — it
+means no view events at all.** Those protect your own D1 write budget, so an
+absent one costs only your installation; this one is the only thing between an
+anonymous public url and a metered PostHog bill, so its absence has to refuse
+rather than allow. A deployment without it records publication events and no
+readership. `namespace_id` is unique per account, like the four below.
+
+**Then set a billing limit on the PostHog project, before the deploy rather than
+after it.** The limiter is per document; the bill is not, and the aggregate
+worst case is still the number of published documents times that ceiling. Set it
+in PostHog under **Billing → Set a billing limit**, on product analytics.
+
+The two are not interchangeable and the billing limit is the weaker one: it caps
+the invoice, and a tripped cap makes PostHog drop events for *every* document,
+which is the feature going dark rather than a bill being bounded. The binding is
+what keeps one looped url from reaching that state.
+[Product analytics](analytics.md#cost-view-events-need-a-ceiling) has the
+arithmetic, both rejected alternatives, and what the bound costs the numbers.
+
+**Skipping all of this is supported and changes nothing else.** With no secret
+the Worker makes no analytics request at all, which is the right default for an
 installation nobody else is measuring. [Product analytics](analytics.md) is what
 the events carry, what they deliberately never carry, and how to read a delivery
 failure.
@@ -107,8 +131,8 @@ failure.
 Four request shapes answer without a credential, because the caller has none
 yet: the device-code mint and poll, the approval page's code lookup, and the
 button that starts a handshake. Four Workers rate limiter bindings cover them,
-declared in `wrangler.jsonc`; polling needs both its per-code interval and an
-aggregate ceiling on random misses:
+declared in `wrangler.jsonc` alongside the analytics one above; polling needs
+both its per-code interval and an aggregate ceiling on random misses:
 
 ```jsonc
 "ratelimits": [
@@ -116,6 +140,7 @@ aggregate ceiling on random misses:
   { "name": "APPROVAL_LOOKUP_LIMITER", "namespace_id": "1002", "simple": { "limit": 20, "period": 60 } },
   { "name": "DEVICE_POLL_LIMITER", "namespace_id": "1003", "simple": { "limit": 1, "period": 10 } },
   { "name": "DEVICE_POLL_CLIENT_LIMITER", "namespace_id": "1004", "simple": { "limit": 20, "period": 10 } }
+  // and VIEW_EVENT_LIMITER from the analytics step above, in this same array
 ]
 ```
 
@@ -150,12 +175,13 @@ address every ten seconds. The per-code limiter cannot bound an attacker who
 invents a fresh random code for every request; this aggregate bucket keeps those
 D1 misses finite while remaining generous to devices behind a shared address.
 
-**Deleting any block is supported.** A deployment that declares no limiter puts
-no corresponding limit on that endpoint, which is the right answer for a
-private deployment nobody else can reach. Without `DEVICE_POLL_LIMITER`, the
-returned polling interval is advisory; without `DEVICE_POLL_CLIENT_LIMITER`,
+**Deleting any of these four is supported.** A deployment that declares no
+limiter puts no corresponding limit on that endpoint, which is the right answer
+for a private deployment nobody else can reach. Without `DEVICE_POLL_LIMITER`,
+the returned polling interval is advisory; without `DEVICE_POLL_CLIENT_LIMITER`,
 random misses have no aggregate ceiling. Everything else works the same either
-way.
+way. `VIEW_EVENT_LIMITER` is the exception and reads the other way round, for
+the reason given with it above.
 
 The limiter is not a D1 counter on purpose. A counter in a row costs a write for
 every attempt including every refused one, so under sustained abuse the limiter
