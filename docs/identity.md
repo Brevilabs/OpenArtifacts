@@ -310,81 +310,52 @@ Failed automatic entitlement refreshes back off for one minute independently of 
 
 ### Browser account sign-in
 
-The website can sign a person in for account and checkout actions without a
-terminal or publishing token. Its same-origin POST records explicit Terms
-acceptance and sets a signed, HttpOnly, SameSite=Lax cookie with a random state
-and secret. Using the existing admin credential, it calls
-`POST /admin/v1/browser-logins` with `{state, challenge, provider,
-termsAccepted: true}`. `challenge` is the SHA-256 hex digest of the cookie secret;
-state and secret are independently generated 32-byte hex values. Providers are
-`google` or `github`, when configured.
+The website can sign a person in with Google or GitHub for account and checkout
+actions without a terminal or publishing token. Its same-origin POST records
+explicit Terms acceptance and sets a signed, HttpOnly, SameSite=Lax cookie with
+an independent random state and secret. Using the existing admin credential, it
+calls `POST /admin/v1/browser-logins` with `{state, challenge, provider,
+termsAccepted: true}`. State and secret are 32-byte lowercase hex values;
+`challenge` is the SHA-256 hex digest of the cookie secret. The stored
+`terms_accepted_at` records the admin caller's assertion; the Worker does not
+witness the click.
 
 The returned `{url}` uses the existing `/approve/callback/{provider}` OAuth
-redirect and a `browser_` state prefix. The Worker claims that handshake once,
+redirect and a `browser_` state prefix. The Worker claims the handshake once,
 verifies provider identity, and redirects to the fixed `ACCOUNT_ACTION_URL`
-origin's `/account/login/callback?state=...&code=...`. It creates no account or
-token at this point. Provider refusal returns `error=sign_in_failed` instead.
+origin's `/account/login/callback?state=...&code=...`. Provider refusal returns
+`error=sign_in_failed` instead. No account or token is created at this point.
 The website verifies its signed cookie and matching state before calling
-`POST /admin/v1/browser-logins/consume` with `{state, code, secret}`. That call
-atomically spends the proof, resolves or creates the account using the existing
-provider-subject rules, and returns `{accountId, email, externalOwner}`. The
-website then establishes its own account session. It must not accept an account
-id or email from the callback query as identity proof.
+`POST /admin/v1/browser-logins/consume` with `{state, code, secret}`. This
+atomically spends the proof and resolves the account through the existing
+provider-subject rules, returning `{accountId, email, externalOwner}` for the
+website's own account session. A second subject claiming an address already
+held on the same provider returns a JSON `409 conflict`; the proof is spent.
 
-Handshake/proof rows expire after ten minutes; stored state and proof codes are
-hashed, and at most 1,000 active rows are retained. No Worker cookie is set and
-no publishing credential is created. Existing device approvals and token-bound
-CLI handoffs are unchanged. Browser signup does not opt in to the newsletter.
+Handshake/proof rows expire after ten minutes. State and proof codes are stored
+hashed, expired rows are swept on start, and at most 1,000 active rows are
+retained. The Worker sets no cookie and mints no publishing token. Existing
+device approval and token-bound CLI handoffs remain unchanged. Browser signup
+leaves `newsletter_opt_in` null and records no newsletter choice.
 
-Apply D1 migrations `0014_browser_logins.sql` and
-`0015_copilot_browser_logins.sql`, in order, **before** deploying this Worker,
-then deploy the website changes in app-sites #567. Existing Google/GitHub
-redirect registrations and `ACCOUNT_ACTION_URL` are reused; those providers need
-no new credentials. Reverting the Worker disables new browser sign-ins while
-existing device sign-in remains
-available; the additive table can remain and its rows expire naturally.
+#### Copilot accounts
 
-Browser proof consumption accepts only providers this Worker implements. Keep
-that allowlist when adding providers so an older deployment cannot interpret a
-newer proof as an ordinary OAuth identity after rollback.
+Copilot users are external owners. The Worker never sees a Copilot sign-in; the
+website learns the signed-in `User.id` from the Copilot site and proves it
+through the existing admin trust boundary. `GET /admin/v1/external-owners/{owner}`
+returns `{accountId, email}` or `404 not_found`. After explicit permanent-link
+consent, `POST /admin/v1/accounts` with `{email, externalOwner}` atomically creates
+an account and its association, returning `201 {accountId, email}`.
 
-### Continue with Copilot
+An owner already associated with an account returns `409 conflict`. An address
+already held by an account returns the admin-only JSON code `409 email_taken`;
+email equality is a refusal, never a match or automatic merge. The person must
+sign in to the existing account before the website invokes the existing
+`PUT /admin/v1/accounts/{id}/external-owner` route to link it. All these routes
+require the existing admin bearer credential; no additional Worker secret or
+partner endpoint is involved.
 
-`provider: "copilot"` starts at the fixed
-`https://obsidiancopilot.com/openartifacts/authorize` page. That server verifies
-its own signed-in user and calls `POST /api/v1/copilot/prove` with
-`{state, subject: User.id, email}`. This endpoint accepts only the dedicated
-`COPILOT_SSO_SECRET` bearer credential, not the admin credential. Set the same
-new secret on the Worker and Copilot server before enabling the button; missing
-configuration refuses the flow. The secret grants neither account linking nor
-publishing access. Proof returns `{url}` for the fixed website callback.
-
-The normal cookie-bound consume returns account access only for an existing
-permanent `owner_links` association. Otherwise it returns `{needsLink: true,
-email}` and preserves the proof. The website must display explicit permanent
-link consent and then call the admin endpoint
-`POST /admin/v1/browser-logins/copilot/confirm` with `{state, code, secret,
-confirmPermanent: true}`. It may include `accountId` only from a separately
-verified OpenArtifacts session, never from browser form input.
-
-Without a target account, confirmation creates and links a new account only if
-that email is unused. An existing email returns `{needsAccountSignIn: true,
-email}` without granting access: the person must sign in to OpenArtifacts and
-confirm the permanent association. A verified target may have a different
-email. Existing association conflicts return 409 and leave both accounts
-unchanged. Account creation, association, and proof consumption form one D1
-transaction; a raced or replayed request cannot leave an orphan account.
-
-Migration `0015_copilot_browser_logins.sql` preserves pending Google/GitHub
-flows while allowing Copilot proofs. The paired app-sites change includes both
-the Copilot proof producer and the website sign-in option. Configure the shared
-secret and deploy this Worker before deploying that app-sites change. No
-license key is transported through the browser, and no publishing token is
-minted. Permanent associations survive rollback; rollback only disables new
-Copilot browser sign-ins.
-
-A rollback that retains the browser-login endpoint must include the provider
-allowlist introduced in `fc6624a`, included in this change. Do not roll back to
-an earlier browser-login revision after Copilot proofs can be stored: that consumer could
-otherwise resolve them by email. Versions predating browser login have no proof
-consumer and safely disable the flow.
+Apply migration `0014_browser_logins.sql` before deploying the Worker, then
+deploy the paired website changes. Existing provider redirect registrations and
+`ACCOUNT_ACTION_URL` are reused. Rollback disables browser sign-in and leaves
+transient rows to expire; permanent associations and the CLI flow are unaffected.

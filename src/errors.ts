@@ -4,6 +4,7 @@
  */
 export type ErrorCode =
   | "conflict"
+  | "email_taken"
   | "bad_request"
   | "unauthorized"
   | "not_found"
@@ -24,6 +25,7 @@ export type ErrorCode =
 
 const ERROR_STATUS: Record<ErrorCode, number> = {
   conflict: 409,
+  email_taken: 409,
   bad_request: 400,
   unauthorized: 401,
   not_found: 404,

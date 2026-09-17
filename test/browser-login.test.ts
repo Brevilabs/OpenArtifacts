@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 import { startBrowserLogin, proveBrowserLogin, consumeBrowserLogin } from "../src/browser-login.js";
 import { handleAdmin } from "../src/admin.js";
 import { handleApproval } from "../src/approval/handler.js";
+import { resolveAccountForIdentity } from "../src/db.js";
+import { newAccountId } from "../src/ids.js";
 import { sha256Hex } from "../src/hash.js";
 import type { Env } from "../src/config.js";
 import type { OAuthClient } from "../src/approval/providers.js";
@@ -206,31 +208,67 @@ describe("browser account login", () => {
     expect((await start()).status).toBe(200);
     expect(await count("browser_logins")).toBe(1);
   });
-  it("refuses unknown providers after a newer deployment expands the schema", async () => {
-    // Model a future additive provider migration while running this older consumer.
-    await env.DB.batch([
-      env.DB.prepare("CREATE TABLE browser_logins_future AS SELECT * FROM browser_logins"),
-      env.DB.prepare("DROP TABLE browser_logins"),
-      env.DB.prepare("ALTER TABLE browser_logins_future RENAME TO browser_logins"),
-    ]);
-    const code = "6".repeat(64);
-    await env.DB.prepare(
-      `INSERT INTO browser_logins
-      (state_hash, challenge, provider, expires_at, terms_accepted_at, subject, email, code_hash)
-      VALUES (?, ?, 'future_provider', ?, ?, 'future-subject', 'person@example.com', ?)`,
-    )
-      .bind(
-        await sha256Hex(state),
-        await sha256Hex(secret),
-        now + 600000,
-        now,
-        await sha256Hex(code),
-      )
-      .run();
+  it("reports an existing provider subject conflict and spends its proof", async () => {
+    await resolveAccountForIdentity(
+      env.DB,
+      "google",
+      "first-subject",
+      "person@example.com",
+      newAccountId(),
+      now,
+    );
+    await start();
+    const code = await prove();
+    const result = await consume(code);
+    expect(result.status).toBe(409);
+    expect(await result.json()).toEqual({
+      error: {
+        code: "conflict",
+        message: "This address already belongs to another sign-in with this provider.",
+      },
+    });
     expect((await consume(code)).status).toBe(400);
-    expect(await count("accounts")).toBe(0);
-    expect(await count("identities")).toBe(0);
-    expect(await count("browser_logins")).toBe(1);
+    expect(await count("accounts")).toBe(1);
+    expect(await count("identities")).toBe(1);
+  });
+  it("uses JSON envelopes for malformed, duplicate and spent admin requests", async () => {
+    expect(await (await start({ provider: "copilot" })).json()).toMatchObject({
+      error: { code: "bad_request" },
+    });
+    await start();
+    expect(await (await start()).json()).toMatchObject({ error: { code: "quota_exceeded" } });
+    expect(await (await consume("0".repeat(64))).json()).toMatchObject({
+      error: { code: "bad_request" },
+    });
+  });
+  it("supports the same browser binding for configured GitHub", async () => {
+    const github = {
+      ...configured,
+      OAUTH_GITHUB_CLIENT_ID: "github-client",
+      OAUTH_GITHUB_CLIENT_SECRET: "github-secret",
+    };
+    const started = await startBrowserLogin(
+      request("/admin/v1/browser-logins", {
+        state,
+        challenge: await sha256Hex(secret),
+        provider: "github",
+        termsAccepted: true,
+      }),
+      github,
+      deps,
+    );
+    expect(started.status).toBe(200);
+    const proved = await proveBrowserLogin(
+      callback("code=github-code", "github"),
+      github,
+      "github",
+      deps,
+    );
+    const code = new URL(proved.headers.get("location")!).searchParams.get("code")!;
+    expect((await consume(code)).status).toBe(200);
+    expect((await env.DB.prepare("SELECT provider FROM identities").first())?.provider).toBe(
+      "github",
+    );
   });
   it("requires admin bearer for both browser endpoints", async () => {
     for (const path of ["/admin/v1/browser-logins", "/admin/v1/browser-logins/consume"]) {

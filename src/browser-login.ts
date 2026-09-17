@@ -1,4 +1,4 @@
-import { parseBearerToken } from "./auth.js";
+import { errorResponse } from "./errors.js";
 import type { Env } from "./config.js";
 import { resolveAccountForIdentity } from "./db.js";
 import { sha256Hex } from "./hash.js";
@@ -79,13 +79,11 @@ export async function startBrowserLogin(
     !hex(value.state) ||
     !hex(value.challenge) ||
     value.termsAccepted !== true ||
-    (value.provider !== "copilot" &&
-      !configuredProviders(env).includes(value.provider as ProviderId))
+    !configuredProviders(env).includes(value.provider as ProviderId)
   )
-    return fail();
+    return errorResponse("bad_request", "Invalid browser sign-in request.", HEADERS);
   callbackUrl(env); // Reject a missing/malformed destination before persisting a handshake.
-  const provider = value.provider as ProviderId | "copilot";
-  if (provider === "copilot" && !env.COPILOT_SSO_SECRET?.trim()) return fail(503);
+  const provider = value.provider as ProviderId;
   const now = (deps.now ?? Date.now)();
   const verifier = newHandshakeToken();
   const result = await env.DB.batch([
@@ -96,12 +94,12 @@ export async function startBrowserLogin(
       ON CONFLICT DO NOTHING RETURNING state_hash`,
     ).bind(await sha256Hex(value.state), value.challenge, provider, verifier, now + TTL_MS, now),
   ]);
-  if (!result[1]!.results.length) return fail(429);
-  if (provider === "copilot") {
-    const url = new URL("https://obsidiancopilot.com/openartifacts/authorize");
-    url.searchParams.set("state", value.state);
-    return Response.json({ url: url.toString() }, { headers: HEADERS });
-  }
+  if (!result[1]!.results.length)
+    return errorResponse(
+      "quota_exceeded",
+      "Too many pending sign-ins or duplicate state.",
+      HEADERS,
+    );
   const oauth = deps.oauth ?? arcticOAuthClient(env);
   const url = oauth.authorizationUrl(
     provider,
@@ -120,7 +118,7 @@ export async function proveBrowserLogin(
   deps: BrowserLoginDeps = {},
 ): Promise<Response> {
   const state = url.searchParams.get("state")?.slice(BROWSER_STATE_PREFIX.length);
-  if (!hex(state) || !configuredProviders(env).includes(provider as ProviderId)) return fail();
+  if (!hex(state)) return fail();
   const now = (deps.now ?? Date.now)();
   // The verifier is claimed before exchange, so concurrent callbacks cannot reuse it.
   const stateHash = await sha256Hex(state);
@@ -161,24 +159,6 @@ export async function proveBrowserLogin(
   return new Response(null, { status: 303, headers: { ...HEADERS, location: target.toString() } });
 }
 
-const PROOF_WHERE = `state_hash = ? AND code_hash = ? AND challenge = ? AND expires_at > ?
-  AND subject IS NOT NULL AND email IS NOT NULL AND terms_accepted_at IS NOT NULL`;
-const COPILOT_WHERE = `${PROOF_WHERE} AND provider = 'copilot'`;
-const COPILOT_RESULT = `
-  (SELECT account_id FROM owner_links WHERE external_owner = browser_logins.subject) AS accountId,
-  (SELECT a.email FROM accounts a JOIN owner_links l ON a.id = l.account_id
-    WHERE l.external_owner = browser_logins.subject) AS email, subject AS externalOwner`;
-async function proofBindings(value: Record<string, unknown>, now: number) {
-  return hex(value.state) && hex(value.code) && hex(value.secret)
-    ? [
-        await sha256Hex(value.state),
-        await sha256Hex(value.code),
-        await sha256Hex(value.secret),
-        now,
-      ]
-    : null;
-}
-
 /** Consuming requires the secret held in the initiating app's signed browser cookie. */
 export async function consumeBrowserLogin(
   request: Request,
@@ -186,29 +166,31 @@ export async function consumeBrowserLogin(
   deps: BrowserLoginDeps = {},
 ): Promise<Response> {
   const value = await body(request);
-  const now = (deps.now ?? Date.now)();
-  const bindings = value && Object.keys(value).length === 3 && (await proofBindings(value, now));
-  if (!bindings) return fail();
-  const [consumed, remaining] = await env.DB.batch<{ email: string }>([
-    env.DB.prepare(
-      `DELETE FROM browser_logins WHERE ${COPILOT_WHERE}
-      AND EXISTS(SELECT 1 FROM owner_links WHERE external_owner = browser_logins.subject)
-      RETURNING ${COPILOT_RESULT}`,
-    ).bind(...bindings),
-    env.DB.prepare(`SELECT email FROM browser_logins WHERE ${COPILOT_WHERE}`).bind(...bindings),
-  ]);
-  const proof = consumed!.results[0];
-  if (proof) return Response.json(proof, { headers: HEADERS });
-  const pending = remaining!.results[0];
-  if (pending)
-    return Response.json({ needsLink: true, email: pending.email }, { headers: HEADERS });
-  const row = await env.DB.prepare(
-    `DELETE FROM browser_logins WHERE ${PROOF_WHERE}
-    AND provider IN ('google', 'github') RETURNING provider, subject, email`,
+  if (
+    !value ||
+    Object.keys(value).length !== 3 ||
+    !hex(value.state) ||
+    !hex(value.code) ||
+    !hex(value.secret)
   )
-    .bind(...bindings)
+    return errorResponse("bad_request", "Sign-in expired or could not be verified.", HEADERS);
+  const now = (deps.now ?? Date.now)();
+  const row = await env.DB.prepare(
+    `DELETE FROM browser_logins
+    WHERE state_hash = ? AND code_hash = ? AND challenge = ? AND expires_at > ?
+      AND subject IS NOT NULL AND email IS NOT NULL AND terms_accepted_at IS NOT NULL
+      AND provider IN ('google', 'github')
+    RETURNING provider, subject, email`,
+  )
+    .bind(
+      await sha256Hex(value.state),
+      await sha256Hex(value.code),
+      await sha256Hex(value.secret),
+      now,
+    )
     .first<LoginRow>();
-  if (!row) return fail();
+  if (!row)
+    return errorResponse("bad_request", "Sign-in expired or could not be verified.", HEADERS);
   const account = await resolveAccountForIdentity(
     env.DB,
     row.provider,
@@ -218,7 +200,12 @@ export async function consumeBrowserLogin(
     now,
     defaultPlan(env),
   );
-  if (!account) return fail(409);
+  if (!account)
+    return errorResponse(
+      "conflict",
+      "This address already belongs to another sign-in with this provider.",
+      HEADERS,
+    );
   const link = await env.DB.prepare("SELECT external_owner FROM owner_links WHERE account_id = ?")
     .bind(account.id)
     .first<{ external_owner: string }>();
@@ -226,116 +213,4 @@ export async function consumeBrowserLogin(
     { accountId: account.id, email: account.email, externalOwner: link?.external_owner ?? null },
     { headers: HEADERS },
   );
-}
-
-/** The dedicated Copilot credential can only prove its own signed-in user, never act as admin. */
-export async function proveCopilotLogin(
-  request: Request,
-  env: Env,
-  deps: BrowserLoginDeps = {},
-): Promise<Response> {
-  if (request.method !== "POST" || !env.COPILOT_SSO_SECRET?.trim()) return fail(404);
-  const token = parseBearerToken(request.headers.get("authorization"));
-  const digest = (value: string) =>
-    crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
-  if (
-    !token ||
-    !crypto.subtle.timingSafeEqual(await digest(token), await digest(env.COPILOT_SSO_SECRET))
-  )
-    return fail(401);
-  const value = await body(request);
-  const email = typeof value?.email === "string" ? normalizeEmail(value.email) : null;
-  if (
-    !value ||
-    Object.keys(value).length !== 3 ||
-    !hex(value.state) ||
-    !email ||
-    typeof value.subject !== "string" ||
-    value.subject.length > 256 ||
-    !value.subject ||
-    value.subject.startsWith("oa_") ||
-    /[\u0000-\u0020\u007f]/.test(value.subject)
-  )
-    return fail();
-  const target = callbackUrl(env);
-  const code = randomCode();
-  const row = await env.DB.prepare(
-    `UPDATE browser_logins
-    SET claimed = 1, verifier = NULL, subject = ?, email = ?, code_hash = ?
-    WHERE state_hash = ? AND provider = 'copilot' AND claimed = 0 AND expires_at > ? RETURNING state_hash`,
-  )
-    .bind(
-      value.subject,
-      email,
-      await sha256Hex(code),
-      await sha256Hex(value.state),
-      (deps.now ?? Date.now)(),
-    )
-    .first();
-  if (!row) return fail();
-  target.searchParams.set("state", value.state);
-  target.searchParams.set("code", code);
-  return Response.json({ url: target.toString() }, { headers: HEADERS });
-}
-
-/** The website supplies accountId only from an independently verified OpenArtifacts session. */
-export async function confirmCopilotLogin(
-  request: Request,
-  env: Env,
-  deps: BrowserLoginDeps = {},
-): Promise<Response> {
-  const value = await body(request);
-  const now = (deps.now ?? Date.now)();
-  const bindings = value && (await proofBindings(value, now));
-  const suppliedTarget = value?.accountId;
-  if (
-    !value ||
-    !bindings ||
-    value.confirmPermanent !== true ||
-    Object.keys(value).length !== (suppliedTarget === undefined ? 4 : 5) ||
-    (suppliedTarget !== undefined &&
-      (typeof suppliedTarget !== "string" ||
-        !/^oa_[0-9abcdefghjkmnpqrstvwxyz]{26}$/.test(suppliedTarget)))
-  )
-    return fail();
-  const target = typeof suppliedTarget === "string" ? suppliedTarget : newAccountId();
-  const statements: D1PreparedStatement[] = [];
-  if (suppliedTarget === undefined)
-    statements.push(
-      env.DB.prepare(
-        `
-    INSERT INTO accounts (id, email, created_at, plan, plan_checked_at)
-    SELECT ?, email, ?, ?, ? FROM browser_logins WHERE ${COPILOT_WHERE}
-      AND NOT EXISTS(SELECT 1 FROM accounts WHERE accounts.email = browser_logins.email)
-      AND NOT EXISTS(SELECT 1 FROM owner_links WHERE external_owner = browser_logins.subject)
-    ON CONFLICT(email) DO NOTHING`,
-      ).bind(target, now, defaultPlan(env), now, ...bindings),
-    );
-  statements.push(
-    env.DB.prepare(
-      `INSERT INTO owner_links (external_owner, account_id, created_at)
-    SELECT subject, ?, ? FROM browser_logins WHERE ${COPILOT_WHERE}
-      AND EXISTS(SELECT 1 FROM accounts WHERE id = ?)
-    ON CONFLICT DO NOTHING`,
-    ).bind(target, now, ...bindings, target),
-  );
-  // D1 executes the batch transactionally: no new account can be orphaned by a racing link.
-  statements.push(
-    env.DB.prepare(
-      `DELETE FROM browser_logins WHERE ${COPILOT_WHERE}
-    AND EXISTS(SELECT 1 FROM owner_links WHERE external_owner = browser_logins.subject
-      ${suppliedTarget === undefined ? "" : "AND account_id = ?"}) RETURNING ${COPILOT_RESULT}`,
-    ).bind(...bindings, ...(suppliedTarget === undefined ? [] : [target])),
-  );
-  statements.push(
-    env.DB.prepare(`SELECT email FROM browser_logins WHERE ${COPILOT_WHERE}`).bind(...bindings),
-  );
-  const results = await env.DB.batch<{ email: string }>(statements);
-  const proof = results[results.length - 2]!.results[0];
-  if (proof) return Response.json(proof, { headers: HEADERS });
-  const pending = results[results.length - 1]!.results[0];
-  if (!pending) return fail();
-  if (suppliedTarget === undefined)
-    return Response.json({ needsAccountSignIn: true, email: pending.email }, { headers: HEADERS });
-  return fail(409);
 }

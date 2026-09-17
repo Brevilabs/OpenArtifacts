@@ -1,4 +1,3 @@
-import { proveCopilotLogin } from "./browser-login.js";
 import { handleAccount } from "./account.js";
 import { deleteDoc, listDocs } from "./api/manage.js";
 import { ADMIN_PREFIX, handleAdmin } from "./admin.js";
@@ -219,7 +218,6 @@ export default {
       // handle it, which fails the whole test run.
       switch (surface) {
         case "api":
-          if (url.pathname === "/api/v1/copilot/prove") return await proveCopilotLogin(request, env);
           if (pathIsUnder(url.pathname, ADMIN_PREFIX)) {
             return await handleAdmin(request, url, env);
           }

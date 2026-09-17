@@ -1,6 +1,6 @@
-import { startBrowserLogin, consumeBrowserLogin, confirmCopilotLogin } from "./browser-login.js";
+import { startBrowserLogin, consumeBrowserLogin } from "./browser-login.js";
 import { consumeHandoff, stringField } from "./account.js";
-import { linkExternalOwner } from "./owners.js";
+import { linkExternalOwner, lookupExternalOwner, createLinkedAccount } from "./owners.js";
 import { parseBearerToken } from "./auth.js";
 import type { Env } from "./config.js";
 import { errorResponse } from "./errors.js";
@@ -11,24 +11,44 @@ export const ADMIN_PREFIX = "/admin/v1";
 
 /** Trusted service API: account plans, ownership associations, and one-use account proofs. */
 export async function handleAdmin(request: Request, url: URL, env: Env): Promise<Response> {
-  const match = /^\/admin\/v1\/accounts\/([^/]+)\/(plan|external-owner)$/.exec(url.pathname);
-  const consume = request.method === "POST" && url.pathname === "/admin/v1/handoffs/consume";
-  const browserStart = request.method === "POST" && url.pathname === "/admin/v1/browser-logins";
-  const browserConsume = request.method === "POST" && url.pathname === "/admin/v1/browser-logins/consume";
-  const copilotConfirm = request.method === "POST" && url.pathname === "/admin/v1/browser-logins/copilot/confirm";
-  if (!env.ADMIN_API_KEY?.trim() || (!consume && !browserStart && !browserConsume && !copilotConfirm && (request.method !== "PUT" || !match))) {
-    return errorResponse("not_found", "No admin route.");
-  }
+  const routes = [
+    ["PUT", /^\/admin\/v1\/accounts\/([^/]+)\/(plan|external-owner)$/, "account"],
+    ["POST", /^\/admin\/v1\/handoffs\/consume$/, "handoff"],
+    ["POST", /^\/admin\/v1\/browser-logins$/, "browser-start"],
+    ["POST", /^\/admin\/v1\/browser-logins\/consume$/, "browser-consume"],
+    ["GET", /^\/admin\/v1\/external-owners\/([^/]+)$/, "owner-lookup"],
+    ["POST", /^\/admin\/v1\/accounts$/, "account-create"],
+  ] as const;
+  const route = routes.find(
+    ([method, path]) => request.method === method && path.test(url.pathname),
+  );
+  if (!env.ADMIN_API_KEY?.trim() || !route) return errorResponse("not_found", "No admin route.");
+  const match = route[1].exec(url.pathname)!;
   const token = parseBearerToken(request.headers.get("authorization"));
   // The service secret is not a publisher token; never forward it to license authentication.
-  const digest = (value: string) => crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
-  if (!token || !crypto.subtle.timingSafeEqual(await digest(token), await digest(env.ADMIN_API_KEY))) {
-    return errorResponse("unauthorized", "Expected the admin bearer credential.", { "www-authenticate": "Bearer" });
+  const digest = (value: string) =>
+    crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  if (
+    !token ||
+    !crypto.subtle.timingSafeEqual(await digest(token), await digest(env.ADMIN_API_KEY))
+  ) {
+    return errorResponse("unauthorized", "Expected the admin bearer credential.", {
+      "www-authenticate": "Bearer",
+    });
   }
-  if (copilotConfirm) return await confirmCopilotLogin(request, env);
-  if (browserStart) return await startBrowserLogin(request, env);
-  if (browserConsume) return await consumeBrowserLogin(request, env);
-  if (consume) return await consumeHandoff(request, env);
+  if (route[2] === "browser-start") return await startBrowserLogin(request, env);
+  if (route[2] === "browser-consume") return await consumeBrowserLogin(request, env);
+  if (route[2] === "handoff") return await consumeHandoff(request, env);
+  if (route[2] === "account-create") return await createLinkedAccount(request, env);
+  if (route[2] === "owner-lookup") {
+    let externalOwner: string;
+    try {
+      externalOwner = decodeURIComponent(match[1]!);
+    } catch {
+      return errorResponse("bad_request", "Invalid owner identity.");
+    }
+    return await lookupExternalOwner(env, externalOwner);
+  }
   let owner: string;
   try { owner = decodeURIComponent(match![1]!); } catch {
     return errorResponse("not_found", "No account with that id.");
