@@ -206,6 +206,32 @@ describe("browser account login", () => {
     expect((await start()).status).toBe(200);
     expect(await count("browser_logins")).toBe(1);
   });
+  it("refuses unknown providers after a newer deployment expands the schema", async () => {
+    // Model a future additive provider migration while running this older consumer.
+    await env.DB.batch([
+      env.DB.prepare("CREATE TABLE browser_logins_future AS SELECT * FROM browser_logins"),
+      env.DB.prepare("DROP TABLE browser_logins"),
+      env.DB.prepare("ALTER TABLE browser_logins_future RENAME TO browser_logins"),
+    ]);
+    const code = "6".repeat(64);
+    await env.DB.prepare(
+      `INSERT INTO browser_logins
+      (state_hash, challenge, provider, expires_at, terms_accepted_at, subject, email, code_hash)
+      VALUES (?, ?, 'future_provider', ?, ?, 'future-subject', 'person@example.com', ?)`,
+    )
+      .bind(
+        await sha256Hex(state),
+        await sha256Hex(secret),
+        now + 600000,
+        now,
+        await sha256Hex(code),
+      )
+      .run();
+    expect((await consume(code)).status).toBe(400);
+    expect(await count("accounts")).toBe(0);
+    expect(await count("identities")).toBe(0);
+    expect(await count("browser_logins")).toBe(1);
+  });
   it("requires admin bearer for both browser endpoints", async () => {
     for (const path of ["/admin/v1/browser-logins", "/admin/v1/browser-logins/consume"]) {
       const req = request(path, {});

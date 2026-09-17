@@ -341,3 +341,7 @@ then deploy the website consumer. Existing Google/GitHub redirect registrations
 and `ACCOUNT_ACTION_URL` are reused; no new credentials are required. Reverting
 the Worker disables new browser sign-ins while existing device sign-in remains
 available; the additive table can remain and its rows expire naturally.
+
+Browser proof consumption accepts only providers this Worker implements. Keep
+that allowlist when adding providers so an older deployment cannot interpret a
+newer proof as an ordinary OAuth identity after rollback.

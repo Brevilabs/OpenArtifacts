@@ -173,6 +173,7 @@ export async function consumeBrowserLogin(
     `DELETE FROM browser_logins
     WHERE state_hash = ? AND code_hash = ? AND challenge = ? AND expires_at > ?
       AND subject IS NOT NULL AND email IS NOT NULL AND terms_accepted_at IS NOT NULL
+      AND provider IN ('google', 'github')
     RETURNING provider, subject, email`,
   )
     .bind(
