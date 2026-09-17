@@ -336,10 +336,12 @@ hashed, and at most 1,000 active rows are retained. No Worker cookie is set and
 no publishing credential is created. Existing device approvals and token-bound
 CLI handoffs are unchanged. Browser signup does not opt in to the newsletter.
 
-Apply D1 migration `0014_browser_logins.sql` **before** deploying this Worker,
-then deploy the website consumer. Existing Google/GitHub redirect registrations
-and `ACCOUNT_ACTION_URL` are reused; no new credentials are required. Reverting
-the Worker disables new browser sign-ins while existing device sign-in remains
+Apply D1 migrations `0014_browser_logins.sql` and
+`0015_copilot_browser_logins.sql`, in order, **before** deploying this Worker,
+then deploy the website changes in app-sites #567. Existing Google/GitHub
+redirect registrations and `ACCOUNT_ACTION_URL` are reused; those providers need
+no new credentials. Reverting the Worker disables new browser sign-ins while
+existing device sign-in remains
 available; the additive table can remain and its rows expire naturally.
 
 Browser proof consumption accepts only providers this Worker implements. Keep
@@ -373,15 +375,16 @@ email. Existing association conflicts return 409 and leave both accounts
 unchanged. Account creation, association, and proof consumption form one D1
 transaction; a raced or replayed request cannot leave an orphan account.
 
-Apply `0015_copilot_browser_logins.sql` before deploying this extension. It
-preserves pending Google/GitHub flows while allowing Copilot proofs. Deploy the
-Copilot proof producer before advertising its website sign-in option. No
+Migration `0015_copilot_browser_logins.sql` preserves pending Google/GitHub
+flows while allowing Copilot proofs. The paired app-sites change includes both
+the Copilot proof producer and the website sign-in option. Configure the shared
+secret and deploy this Worker before deploying that app-sites change. No
 license key is transported through the browser, and no publishing token is
 minted. Permanent associations survive rollback; rollback only disables new
 Copilot browser sign-ins.
 
 A rollback that retains the browser-login endpoint must include the provider
-allowlist introduced in `fc6624a` (PR90). Do not roll back to an earlier
-browser-login revision after Copilot proofs can be stored: that consumer could
+allowlist introduced in `fc6624a`, included in this change. Do not roll back to
+an earlier browser-login revision after Copilot proofs can be stored: that consumer could
 otherwise resolve them by email. Versions predating browser login have no proof
 consumer and safely disable the flow.
