@@ -74,7 +74,7 @@ existing license-outage fallback.
 ### The product-analytics secret
 
 The Worker can report publishing and readership counts to PostHog. It is off
-until one secret is set, and setting it is the only step:
+until one secret is set, and there are two steps:
 
 ```bash
 npx wrangler secret put POSTHOG_PROJECT_API_KEY   # the project's phc_ ingest key
@@ -84,6 +84,16 @@ Use the project's `phc_` ingest key, which authorizes capture and nothing else;
 a `phx_` personal API key reads and writes the whole PostHog account and must
 never go here. `ANALYTICS_ENVIRONMENT` is an ordinary var in `wrangler.jsonc`;
 a self-hoster in another PostHog region adds a `POSTHOG_HOST` var beside it.
+
+**Then set a billing limit on the PostHog project, before the deploy rather than
+after it.** One event is sent per read of a public document, and `/d/{docId}` is
+unauthenticated with no rate limiter — so the event volume is a function of how
+much a document is read, by anyone, including a loop. The billing limit is the
+only ceiling in the system. Without it the worst case is an invoice; with it the
+worst case is lost counts, which is what best-effort delivery already promises.
+Set it in PostHog under **Billing → Set a billing limit**, on product analytics.
+[Product analytics](analytics.md#cost-view-events-need-a-ceiling) has the
+arithmetic and the bound deliberately left unbuilt.
 
 **Skipping this is supported and changes nothing else.** With no secret the
 Worker makes no analytics request at all, which is the right default for an
