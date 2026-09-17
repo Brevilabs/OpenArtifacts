@@ -105,7 +105,13 @@ export async function deleteDoc(
   // milliseconds later would put the withdrawal in a different interval from the
   // row that performed it, for no reason but where the call sits.
   const now = Date.now();
-  if (!(await softDeleteDoc(env.DB, docId, publisher.owner, now))) {
+  // The `UPDATE` that withdraws the doc also reports the canonical account it
+  // belonged to, which is the publisher as a person rather than as whichever of
+  // their credentials sent this `DELETE`. A publisher who published with a
+  // license key and withdrew with an account token is one publisher, and the
+  // statement had already worked that out to decide the delete was allowed.
+  const owner = await softDeleteDoc(env.DB, docId, publisher.owner, now);
+  if (owner === null) {
     return docNotFound(docId);
   }
 
@@ -122,7 +128,7 @@ export async function deleteDoc(
   // publisher's doc, a doc that never existed — and none of the three withdrew
   // anything, so none of them reach this line. Repeated withdrawals are not
   // repeated outcomes.
-  analytics.record({ name: "document_unshared", docId, atMs: now, ownerId: publisher.owner });
+  analytics.record({ name: "document_unshared", docId, atMs: now, ownerId: owner });
 
   try {
     await deleteDocObjects(env, docId, deps.objectBatch ?? OBJECT_BATCH);
