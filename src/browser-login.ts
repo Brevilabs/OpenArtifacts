@@ -189,19 +189,19 @@ export async function consumeBrowserLogin(
   const now = (deps.now ?? Date.now)();
   const bindings = value && Object.keys(value).length === 3 && (await proofBindings(value, now));
   if (!bindings) return fail();
-  const copilot = await env.DB.prepare(`SELECT email FROM browser_logins WHERE ${COPILOT_WHERE}`)
-    .bind(...bindings)
-    .first<{ email: string }>();
-  if (copilot) {
-    const proof = await env.DB.prepare(
+  const [consumed, remaining] = await env.DB.batch<{ email: string }>([
+    env.DB.prepare(
       `DELETE FROM browser_logins WHERE ${COPILOT_WHERE}
       AND EXISTS(SELECT 1 FROM owner_links WHERE external_owner = browser_logins.subject)
       RETURNING ${COPILOT_RESULT}`,
-    )
-      .bind(...bindings)
-      .first();
-    return Response.json(proof ?? { needsLink: true, email: copilot.email }, { headers: HEADERS });
-  }
+    ).bind(...bindings),
+    env.DB.prepare(`SELECT email FROM browser_logins WHERE ${COPILOT_WHERE}`).bind(...bindings),
+  ]);
+  const proof = consumed!.results[0];
+  if (proof) return Response.json(proof, { headers: HEADERS });
+  const pending = remaining!.results[0];
+  if (pending)
+    return Response.json({ needsLink: true, email: pending.email }, { headers: HEADERS });
   const row = await env.DB.prepare(
     `DELETE FROM browser_logins WHERE ${PROOF_WHERE}
     AND provider IN ('google', 'github') RETURNING provider, subject, email`,
@@ -298,10 +298,6 @@ export async function confirmCopilotLogin(
         !/^oa_[0-9abcdefghjkmnpqrstvwxyz]{26}$/.test(suppliedTarget)))
   )
     return fail();
-  const pending = await env.DB.prepare(`SELECT email FROM browser_logins WHERE ${COPILOT_WHERE}`)
-    .bind(...bindings)
-    .first<{ email: string }>();
-  if (!pending) return fail();
   const target = typeof suppliedTarget === "string" ? suppliedTarget : newAccountId();
   const statements: D1PreparedStatement[] = [];
   if (suppliedTarget === undefined)
@@ -331,9 +327,14 @@ export async function confirmCopilotLogin(
       ${suppliedTarget === undefined ? "" : "AND account_id = ?"}) RETURNING ${COPILOT_RESULT}`,
     ).bind(...bindings, ...(suppliedTarget === undefined ? [] : [target])),
   );
-  const results = await env.DB.batch(statements);
-  const proof = results[results.length - 1]!.results[0];
+  statements.push(
+    env.DB.prepare(`SELECT email FROM browser_logins WHERE ${COPILOT_WHERE}`).bind(...bindings),
+  );
+  const results = await env.DB.batch<{ email: string }>(statements);
+  const proof = results[results.length - 2]!.results[0];
   if (proof) return Response.json(proof, { headers: HEADERS });
+  const pending = results[results.length - 1]!.results[0];
+  if (!pending) return fail();
   if (suppliedTarget === undefined)
     return Response.json({ needsAccountSignIn: true, email: pending.email }, { headers: HEADERS });
   return fail(409);

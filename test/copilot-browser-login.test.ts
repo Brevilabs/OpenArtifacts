@@ -208,6 +208,7 @@ describe("Copilot browser identity", () => {
   it("concurrent confirmations create exactly one linked account and consume once", async () => {
     const code = await pending();
     const responses = await Promise.all([confirm(code), confirm(code)]);
+    expect(responses.map((response) => response.status).sort()).toEqual([200, 400]);
     const results = await Promise.all(
       responses.map(async (response) =>
         response.status === 200 ? response.json<Record<string, unknown>>() : {},
@@ -216,6 +217,14 @@ describe("Copilot browser identity", () => {
     expect(results.filter((result) => "accountId" in result)).toHaveLength(1);
     expect(await count("accounts")).toBe(1);
     expect(await count("owner_links")).toBe(1);
+    expect(await count("browser_logins")).toBe(0);
+  });
+  it("concurrent linked consumes reject the loser instead of returning a stale linking prompt", async () => {
+    const account = await findOrCreateAccount(env.DB, newAccountId(), "linked@example.com", now);
+    await linkExternalOwner(env.DB, "copilot-user", account.id, now);
+    const code = await pending();
+    const responses = await Promise.all([consume(code), consume(code)]);
+    expect(responses.map((response) => response.status).sort()).toEqual([200, 400]);
     expect(await count("browser_logins")).toBe(0);
   });
   it("wrong or expired browser proof cannot access an already linked account", async () => {
