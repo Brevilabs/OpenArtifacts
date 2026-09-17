@@ -20,9 +20,20 @@
  *
  * Both paths record their outcome last, and with the same `now` the rows carry
  * rather than a fresh clock read, so a push and the event describing it cannot
- * fall on opposite sides of an interval boundary. `ownerId` is
- * `publisher.owner`, the account the credential resolved to: `docs/identity.md`
- * makes that the only admissible source, and no request field could supply one.
+ * fall on opposite sides of an interval boundary.
+ *
+ * Which outcome is a question about the `versions` table, not about which verb
+ * was used: `document_published` names the push that stored a doc's first
+ * version, and a `PUT` is that push whenever a create left a row behind without
+ * one. `insertVersion` answers it as part of the write.
+ *
+ * `ownerId` is the canonical account the doc belongs to, which the same
+ * statement that authorized the push already resolved. It is derived from a
+ * validated credential and from nothing else — `docs/identity.md` makes that
+ * the only admissible source, and no request field could supply one. It is not
+ * `publisher.owner` verbatim, because that is the id of the *credential*: a
+ * license key and an account token linked to one another deliberately resolve
+ * to two different ids there, and one publisher must not become two.
  */
 import type { AnalyticsSink } from "../analytics.js";
 import type { Publisher } from "../auth.js";
@@ -157,6 +168,15 @@ function planHtmlExceeded(env: Env, publisher: Publisher, limits: PlanLimits): R
 }
 
 /**
+ * What a push did with its bytes. `firstVersion` is the fact the publication
+ * outcome turns on: this store is what made the doc a page, rather than a new
+ * version of one that already was.
+ */
+type StoreOutcome =
+  | { stored: true; firstVersion: boolean }
+  | { stored: false; reason: "deleted" | "full" };
+
+/**
  * Store, record — in that order, for the reasons at the top of the file.
  *
  * The version number is already reserved by the time this runs, so the key it
@@ -174,7 +194,7 @@ async function storeVersion(
   atMs: number,
   publisher: Publisher,
   limits: PlanLimits | null,
-): Promise<"stored" | "deleted" | "full"> {
+): Promise<StoreOutcome> {
   // The publisher's own bytes, unmodified. OpenArtifacts' additions go in when the
   // document is served, so a byline change — or a plan that removes one —
   // reaches documents already published. `size` is therefore the size of what
@@ -183,14 +203,14 @@ async function storeVersion(
   const key = versionObjectKey(docId, version);
 
   if (!(await reserveStorage(env.DB, publisher.owner, docId, version, bytes.byteLength, limits?.storageBytes))) {
-    return "full";
+    return { stored: false, reason: "full" };
   }
   // An uncertain put/metadata failure keeps the reservation until reconciliation.
   await env.DOCS.put(key, bytes, {
     httpMetadata: { contentType: STORED_CONTENT_TYPE },
   });
 
-  await insertVersion(env.DB, {
+  const firstVersion = await insertVersion(env.DB, {
     doc_id: docId,
     n: version,
     size: bytes.byteLength,
@@ -212,10 +232,10 @@ async function storeVersion(
     await env.DOCS.delete(key);
     await deleteVersionRow(env.DB, docId, version);
     await releaseStorage(env.DB, docId, [version]);
-    return "deleted";
+    return { stored: false, reason: "deleted" };
   }
 
-  return "stored";
+  return { stored: true, firstVersion };
 }
 
 function storageFull(env: Env, publisher: Publisher, limits: PlanLimits): Response {
@@ -256,7 +276,7 @@ export async function createDoc(
   // let concurrent creates all read the same count and all proceed, so the
   // documented ceiling would hold only for callers who push one at a time.
   const docId = newDocId();
-  const inserted = await insertDocWithinQuota(
+  const owner = await insertDocWithinQuota(
     env.DB,
     {
       id: docId,
@@ -267,7 +287,7 @@ export async function createDoc(
     },
     maxDocs,
   );
-  if (!inserted) {
+  if (owner === null) {
     if (limits) {
       return limitReached(
         env, publisher, "documents",
@@ -292,9 +312,9 @@ export async function createDoc(
   // that loses that race — the doc is gone, and the push is given back rather
   // than spent on a url that would serve 410.
   const result = await storeVersion(env, docId, FIRST_VERSION, parsed.body.html, title, now, publisher, limits);
-  if (result !== "stored") {
+  if (!result.stored) {
     await refundDailyPush(env.DB, publisher.owner, day);
-    if (result === "full") {
+    if (result.reason === "full") {
       await rollbackCreate(env.DB, docId);
       return storageFull(env, publisher, limits!);
     }
@@ -304,7 +324,14 @@ export async function createDoc(
   // The doc becomes a published page here and not a line earlier: `storeVersion`
   // is the first step whose success cannot be undone by the ones around it, and
   // the url is handed over on the next line.
-  analytics.record({ name: "document_published", docId, atMs: now, ownerId: publisher.owner });
+  //
+  // Unconditionally `document_published`, and it cannot be a second one for this
+  // doc: `docId` was minted from 80 fresh CSPRNG bits in this request and
+  // inserted under the `docs` primary key, so reaching this line means no row —
+  // and therefore no version of it — existed before. `result.firstVersion` says
+  // the same thing; the update path is where it is load-bearing, because there a
+  // doc that already exists may still have no version.
+  analytics.record({ name: "document_published", docId, atMs: now, ownerId: owner });
   return pushed(env, requestUrl, docId, FIRST_VERSION, 201);
 }
 
@@ -343,11 +370,12 @@ export async function updateDoc(
   // Past this point the push is paid for, and a delete can still land at either
   // of the two steps below. Both give the push back: a rejected push costs the
   // caller nothing, which is the same promise the ownership check above makes.
-  const version = await reserveNextVersion(env.DB, docId, publisher.owner);
-  if (version === null) {
+  const reserved = await reserveNextVersion(env.DB, docId, publisher.owner);
+  if (reserved === null) {
     await refundDailyPush(env.DB, publisher.owner, day);
     return docNotFound(docId);
   }
+  const version = reserved.version;
 
   // Absent title keeps the doc's current one; a blank one resets it, same as on
   // create. The version row records which of those this push asked for, so the
@@ -358,9 +386,9 @@ export async function updateDoc(
   // 200 would hand back a url that serves 410, so a lost race reads as what it
   // is from the caller's side: the doc is gone.
   const result = await storeVersion(env, docId, version, parsed.body.html, title, now, publisher, limits);
-  if (result !== "stored") {
+  if (!result.stored) {
     await refundDailyPush(env.DB, publisher.owner, day);
-    return result === "full" ? storageFull(env, publisher, limits!) : docNotFound(docId);
+    return result.reason === "full" ? storageFull(env, publisher, limits!) : docNotFound(docId);
   }
 
   // Only now: the title and timestamp in "my docs" describe what the public url
@@ -371,6 +399,21 @@ export async function updateDoc(
   // times is one page, and the epic's "new pages published" counts first
   // publications alone — emitting the same name twice would make one diligent
   // author indistinguishable from twenty documents that do not exist.
-  analytics.record({ name: "document_updated", docId, atMs: now, ownerId: publisher.owner });
+  //
+  // Which is exactly why the *first* one cannot be assumed to have happened. A
+  // create that died between inserting its `docs` row and writing version 1
+  // leaves a row this publisher can see in their own list and push to, and this
+  // push stores the doc's first bytes — its first moment of being readable by
+  // anyone — under version 2. Calling that an update would hand the internet a
+  // new page and leave it out of the count of new pages. `firstVersion` is the
+  // `versions` table's own answer, taken inside the insert that settles it, so
+  // two pushes racing at such a doc produce exactly one publication between
+  // them whichever order they land in.
+  analytics.record({
+    name: result.firstVersion ? "document_published" : "document_updated",
+    docId,
+    atMs: now,
+    ownerId: reserved.owner,
+  });
   return pushed(env, requestUrl, docId, version, 200);
 }

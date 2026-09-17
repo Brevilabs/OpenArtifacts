@@ -659,11 +659,17 @@ describe("races the review found", () => {
                 const bound = stmtTarget.bind(...args);
                 return new Proxy(bound, {
                   get(boundTarget, boundProp, boundReceiver) {
-                    if (boundProp !== "run") {
+                  // Hooked on whichever method executes the statement, not on
+                  // `run` by name: `insertVersion` reads back a `RETURNING`
+                  // row, and a hook that named one method would silently stop
+                  // simulating the race the day the other was used.
+                    if (boundProp !== "run" && boundProp !== "first") {
                       return Reflect.get(boundTarget, boundProp, boundReceiver);
                     }
-                    return async () => {
-                      const result = await boundTarget.run();
+                    const execute = Reflect.get(boundTarget, boundProp, boundReceiver) as
+                      (...callArgs: unknown[]) => Promise<unknown>;
+                    return async (...callArgs: unknown[]) => {
+                      const result = await execute.call(boundTarget, ...callArgs);
                       if (!raced) {
                         raced = true;
                         // The concurrent DELETE: mark it gone, then scan the
@@ -840,9 +846,15 @@ describe("races the review found", () => {
                 const bound = st.bind(...args);
                 return new Proxy(bound, {
                   get(bt, bProp, bRec) {
-                    if (bProp !== "run") return Reflect.get(bt, bProp, bRec);
-                    return async () => {
-                      const result = await bt.run();
+                  // Hooked on whichever method executes the statement, not on
+                  // `run` by name: `insertVersion` reads back a `RETURNING`
+                  // row, and a hook that named one method would silently stop
+                  // simulating the race the day the other was used.
+                    if (bProp !== "run" && bProp !== "first") return Reflect.get(bt, bProp, bRec);
+                    const execute = Reflect.get(bt, bProp, bRec) as
+                      (...callArgs: unknown[]) => Promise<unknown>;
+                    return async (...callArgs: unknown[]) => {
+                      const result = await execute.call(bt, ...callArgs);
                       if (!raced) {
                         raced = true;
                         const docId = String(args[0]);

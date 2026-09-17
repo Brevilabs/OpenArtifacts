@@ -30,8 +30,8 @@ than a new string somebody passed in.
 
 | Event | Meaning |
 | --- | --- |
-| `document_published` | A document was created and its first version stored. |
-| `document_updated` | A new version of an existing document was stored. |
+| `document_published` | A document's first version was stored: the moment it became a readable page. |
+| `document_updated` | A new version was stored for a document that already had one. |
 | `document_unshared` | A document was withdrawn by its owner. |
 | `document_viewed` | A reader successfully fetched a public document page. |
 
@@ -114,9 +114,26 @@ the row it describes can never be counted in different reporting intervals.
 
 | Event | Recorded | `atMs` equals |
 | --- | --- | --- |
-| `document_published` | `createDoc`, on the 201 path, after the first version's bytes are stored | `docs.created_at`, and `versions.created_at` for version 1 |
-| `document_updated` | `updateDoc`, on the 200 path, after `commitVersionMetadata` | `versions.created_at` for the version this push wrote |
+| `document_published` | `createDoc` or `updateDoc`, on their success path, when the version just stored is the document's first | `versions.created_at` for that version |
+| `document_updated` | `updateDoc`, on the 200 path, after `commitVersionMetadata`, for a document that already had a version | `versions.created_at` for the version this push wrote |
 | `document_unshared` | `deleteDoc`, on the 204 path, as soon as `softDeleteDoc` marks the row | `docs.deleted_at` |
+
+**`document_published` marks a document's first stored version, whichever
+request stored it.** For almost every page that is the `POST` that created it,
+and `atMs` is then `docs.created_at` and `versions.created_at` for version 1
+alike. It is not always the `POST`. A create that dies after inserting its
+`docs` row and before storing version 1 leaves a row with no version behind it:
+the publisher sees that row in their own list and can push to it, and the push
+that does stores the document's first bytes under version 2. That push is the
+publication — it is the moment a url starts answering — so it carries
+`document_published`, and the ones after it carry `document_updated`.
+
+Which push that is, is a question about the `versions` table and not about the
+number the push reserved. Version 1 is not a synonym for a first publication,
+and `docs.latest_version` is a reservation that can sit above anything ever
+stored. `insertVersion` answers it inside the insert that settles it, so of two
+pushes racing at the same document exactly one can be its first — including when
+they store out of order and the lower version number lands second.
 
 An update is dated by its own version row rather than by `docs.updated_at`,
 because those two part company under overlapping pushes. `commitVersionMetadata`
@@ -125,11 +142,25 @@ older of two pushes that store out of order leaves it alone — deliberately,
 since `updated_at` describes what the public url is serving. Dating the event
 that way would have it name a value no column holds.
 
-`ownerId` is `publisher.owner` on all three: the account the validated
-credential resolved to, always derived and never accepted as input.
+`ownerId` is the canonical account the document belongs to, on all three: always
+derived from the validated credential, never accepted as input.
 [Identity](identity.md) is why that is a security property rather than a
 convention — an endpoint that took an owner id as a parameter would turn every
 account id into a password.
+
+Canonical, rather than the id authentication returned. A license key resolves to
+an external account id and an account token to a local `oa_` one, and that stays
+true: a credential names a credential. Once a pair is linked they are one
+publisher, and every document query already scopes them to one owner, so these
+events agree with it — publishing from Obsidian with a key and unsharing from
+the CLI with a token is one person carrying one `distinct_id`, not two people
+inflating a count of distinct publishers. An unlinked publisher has no link to
+follow, so their canonical account is the id their credential resolved to.
+
+Resolving it costs no extra read. It is a column of the same statement that
+inserts the `docs` row, reserves the version or marks the delete, so a
+publication and the publisher it is attributed to cannot disagree, and neither
+can fail without the other.
 
 Nothing at all is recorded for:
 
@@ -152,11 +183,13 @@ publisher asked for it and got it — but the document it withdrew never became 
 page. Even with perfect delivery, subtracting one stream from the other can go
 negative, which is a second reason the inventory below comes from D1.
 
-**An update is never a new page.** `document_updated` is a name of its own for
-exactly one reason: "new pages published" counts `document_published` alone, and
-a document pushed twenty times is one page. Emitting the same name twice would
-make one diligent author indistinguishable from twenty documents that do not
-exist.
+**A second version is never a new page.** `document_updated` is a name of its own
+for exactly one reason: "new pages published" counts `document_published` alone,
+and a document pushed twenty times is one page. Emitting the same name twice
+would make one diligent author indistinguishable from twenty documents that do
+not exist. The converse is why the rule above is asked of the `versions` table:
+a `PUT` that stores a document's first version is a new page, and filing it as
+an update would hide a published page from the one metric that counts them.
 
 **The withdrawal follows the row, not the bytes.** A delete marks the `docs` row
 and then sweeps R2, and it answers 204 whether or not that sweep succeeds — past
@@ -201,7 +234,10 @@ both:
   cannot be raced, and returns the id only once the version is stored, so in
   both cases the id was never handed to anyone. Such a row counts against its
   publisher's ceiling and appears in their own list, so they can delete it; no
-  reader could ever have opened it.
+  reader could ever have opened it. They can also push to it, and the version
+  that push stores is what turns the row into a page — the same instant
+  `document_published` records. Both queries below therefore test for a
+  `versions` row rather than for the `docs` row alone.
 - **A withdrawal keeps the `versions` rows.** `deleteDoc` marks
   `docs.deleted_at`, destroys the R2 objects and releases the `storage_usage`
   rows. It does not touch `versions` at all. That is the whole reason "ever
@@ -232,7 +268,9 @@ questions.
 
 The historical baseline for "new pages published" comes from the same two
 tables. A page's publication date is the instant its first version landed, which
-no later push moves:
+no later push moves — the same instant `document_published` carries, so the D1
+baseline and the event stream date a page identically whichever request
+published it:
 
 ```bash
 npx wrangler d1 execute symposium --remote --command \
