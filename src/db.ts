@@ -5,7 +5,7 @@
  * every row here is reconstructible from it, so a lost D1 is a rebuild rather
  * than a data loss. Queries land here as the phase that needs them arrives.
  */
-import { OWNER_SCOPE_SQL } from "./owners.js";
+import { CANONICAL_OWNER_SQL, OWNER_SCOPE_SQL } from "./owners.js";
 
 /** Publisher row, which doubles as the license-validation cache (phase 2). */
 export interface PublisherRow {
@@ -208,8 +208,13 @@ export function d1PublisherStore(db: D1Database): PublisherStore {
 
 /**
  * Create the `docs` row for a first push, already carrying version 1 — but only
- * while this publisher is under `maxDocs` live docs. Returns false at the
- * ceiling.
+ * while this publisher is under `maxDocs` live docs. Returns the canonical
+ * account the row belongs to, or null at the ceiling.
+ *
+ * `owner` is stored exactly as the credential resolved it; the returned id is
+ * `CANONICAL_OWNER_SQL`, which is the same value under either of a linked
+ * publisher's two credentials. Nothing about the row changes — only the caller
+ * learns which human it belongs to.
  *
  * A freshly minted id is private to this request, so nothing can race for its
  * first version and the insert *is* the reservation — the `UPDATE ... RETURNING`
@@ -232,13 +237,14 @@ export async function insertDocWithinQuota(
   db: D1Database,
   doc: Omit<DocRow, "deleted_at" | "latest_version">,
   maxDocs: number,
-): Promise<boolean> {
-  const result = await db
+): Promise<string | null> {
+  const inserted = await db
     .prepare(
       `${OWNER_SCOPE_SQL}
        INSERT INTO docs (id, owner, title, latest_version, created_at, updated_at)
        SELECT ?, ?, ?, ?, ?, ?
-        WHERE (SELECT COUNT(*) FROM docs WHERE owner IN (SELECT owner FROM owner_scope) AND deleted_at IS NULL) < ?`,
+        WHERE (SELECT COUNT(*) FROM docs WHERE owner IN (SELECT owner FROM owner_scope) AND deleted_at IS NULL) < ?
+       RETURNING ${CANONICAL_OWNER_SQL} AS owner`,
     )
     .bind(
       doc.owner,
@@ -251,9 +257,15 @@ export async function insertDocWithinQuota(
       doc.updated_at,
       maxDocs,
     )
-    .run();
+    .first<{ owner: string }>();
 
-  return (result.meta.changes ?? 0) > 0;
+  // `RETURNING` yields a row only for a row actually inserted, so a refusal by
+  // the ceiling predicate reads as null — the same one bit the row count gave.
+  // The row's presence is what carries that bit, never the column: the canonical
+  // id is a `COALESCE` over a bound parameter and cannot come back empty, and
+  // reading it as a refusal would report a full shelf to a publisher whose
+  // document had just been created.
+  return inserted === null ? null : inserted.owner;
 }
 
 /**
@@ -288,9 +300,16 @@ export async function deleteVersionRow(
   await db.prepare("DELETE FROM versions WHERE doc_id = ? AND n = ?").bind(docId, version).run();
 }
 
+export interface ReservedVersion {
+  /** The version number this push owns. No other push will be given it. */
+  version: number;
+  /** The canonical account the doc belongs to, under either linked credential. */
+  owner: string;
+}
+
 /**
- * Mint the next version number for a doc, or null if this publisher has no such
- * doc to push to.
+ * Mint the next version number for a doc, with the canonical account it belongs
+ * to — or null if this publisher has no such doc to push to.
  *
  * The whole coordination story of v0 is this one statement (D7). Incrementing
  * and reading back in a single write means two concurrent pushes to the same
@@ -308,24 +327,28 @@ export async function deleteVersionRow(
  * content a reader gets, so they are committed by `commitVersionMetadata` only
  * once the bytes are actually stored — writing them here would let a failed
  * push leave "my docs" describing a version the public url is not serving.
+ *
+ * `owner` out is `CANONICAL_OWNER_SQL`, not the `owner` argument: the statement
+ * has already resolved a linked publisher's two credentials to one account to
+ * decide the push is allowed, and handing that back is free.
  */
 export async function reserveNextVersion(
   db: D1Database,
   docId: string,
   owner: string,
-): Promise<number | null> {
+): Promise<ReservedVersion | null> {
   const reserved = await db
     .prepare(
       `${OWNER_SCOPE_SQL}
        UPDATE docs
           SET latest_version = latest_version + 1
         WHERE id = ? AND owner IN (SELECT owner FROM owner_scope) AND deleted_at IS NULL
-        RETURNING latest_version`,
+        RETURNING latest_version, ${CANONICAL_OWNER_SQL} AS owner`,
     )
     .bind(owner, owner, docId)
-    .first<{ latest_version: number }>();
+    .first<{ latest_version: number; owner: string }>();
 
-  return reserved?.latest_version ?? null;
+  return reserved === null ? null : { version: reserved.latest_version, owner: reserved.owner };
 }
 
 /**
@@ -384,18 +407,40 @@ export async function commitVersionMetadata(
 }
 
 /**
- * Record that a version exists.
+ * Record that a version exists, and say whether it is the first this doc ever
+ * had — the moment the doc stopped being an empty row and became a page.
  *
  * Written *after* its R2 object, never before, so every row here has bytes
  * behind it. The reverse failure — an object with no row — is the one this
  * ordering chooses to allow: it costs storage, where a row with no object would
  * be a doc that 500s.
+ *
+ * "First" is a question about this table and not about the number the push
+ * reserved. A create that dies between its `docs` insert and this one leaves
+ * `latest_version` at 1 with no row here, so the next push reserves 2 and
+ * stores the doc's first bytes under that number. Version 1 is therefore not a
+ * synonym for a first publication, and asking the counter would miss it.
+ *
+ * The count is a subquery of the insert rather than a read around it, which is
+ * what makes the answer true exactly once. SQLite serializes the two inserts of
+ * two concurrent pushes, so precisely one of them observes itself as the only
+ * row — including when they store out of order and the lower version number
+ * lands second. A count taken after both inserts would instead see two rows
+ * from both and report a first publication from neither.
  */
-export async function insertVersion(db: D1Database, version: VersionRow): Promise<void> {
-  await db
-    .prepare("INSERT INTO versions (doc_id, n, size, title, created_at) VALUES (?, ?, ?, ?, ?)")
-    .bind(version.doc_id, version.n, version.size, version.title, version.created_at)
-    .run();
+export async function insertVersion(db: D1Database, version: VersionRow): Promise<boolean> {
+  const inserted = await db
+    .prepare(
+      `INSERT INTO versions (doc_id, n, size, title, created_at) VALUES (?, ?, ?, ?, ?)
+       RETURNING (SELECT COUNT(*) FROM versions WHERE doc_id = ?) = 1 AS first_version`,
+    )
+    .bind(
+      version.doc_id, version.n, version.size, version.title, version.created_at,
+      version.doc_id,
+    )
+    .first<{ first_version: number }>();
+
+  return inserted?.first_version === 1;
 }
 
 /** What the serving path needs to know about a doc, in one read. */
@@ -464,9 +509,10 @@ export async function ownsLiveDoc(db: D1Database, docId: string, owner: string):
 }
 
 /**
- * Soft-delete a doc, returning false when this publisher has no live doc with
- * that id — missing, someone else's, or already deleted, conflated for the same
- * reason as everywhere else on the write path.
+ * Soft-delete a doc, returning the canonical account it belonged to — or null
+ * when this publisher has no live doc with that id: missing, someone else's, or
+ * already deleted, conflated for the same reason as everywhere else on the
+ * write path.
  *
  * Soft, not hard: the row is what lets the serving path answer 410 rather than
  * 404, so a reader who bookmarked the link learns it was withdrawn instead of
@@ -482,19 +528,22 @@ export async function softDeleteDoc(
   docId: string,
   owner: string,
   atMs: number,
-): Promise<boolean> {
+): Promise<string | null> {
   const deleted = await db
     .prepare(
       `${OWNER_SCOPE_SQL}
        UPDATE docs
           SET deleted_at = ?
         WHERE id = ? AND owner IN (SELECT owner FROM owner_scope) AND deleted_at IS NULL
-        RETURNING id`,
+        RETURNING ${CANONICAL_OWNER_SQL} AS owner`,
     )
     .bind(owner, owner, atMs, docId)
-    .first<{ id: string }>();
+    .first<{ owner: string }>();
 
-  return deleted !== null;
+  // A returned row is the proof this `UPDATE` marked the doc, exactly as
+  // `RETURNING id` was. The id it carries is read from the row, never used to
+  // decide whether there was one.
+  return deleted === null ? null : deleted.owner;
 }
 
 /** One row of the publisher's doc list, as the index scan yields it. */

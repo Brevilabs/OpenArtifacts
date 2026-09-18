@@ -1,13 +1,22 @@
-import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { createExecutionContext, env, waitOnExecutionContext } from "cloudflare:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ANALYTICS_TIMEOUT_MS,
   analyticsSink,
   documentAnalyticsKey,
   NO_ANALYTICS,
+  type AnalyticsSink,
   type DocumentEvent,
 } from "../src/analytics.js";
+import { deleteDoc } from "../src/api/manage.js";
+import { createDoc, updateDoc } from "../src/api/push.js";
+import type { Publisher } from "../src/auth.js";
 import type { Env } from "../src/config.js";
+import { MAX_DOC_BYTES } from "../src/config.js";
+import { sha256Hex } from "../src/hash.js";
+import { DOC_ID_LENGTH } from "../src/ids.js";
+import { linkExternalOwner } from "../src/owners.js";
+import worker from "../src/index.js";
 
 /**
  * Delivery is stubbed at `globalThis.fetch` rather than behind an injected
@@ -127,7 +136,9 @@ describe("the capture payload", () => {
     expect(delivery.method).toBe("POST");
     expect(delivery.headers["content-type"]).toBe("application/json");
     // The body carries the ingest key, so a redirect must never be followed.
-    expect(delivery.redirect).toBe("error");
+    // `manual` rather than `error` because the runtime refuses `error`; the 3xx
+    // comes back unfollowed and is handled as the failure it is.
+    expect(delivery.redirect).toBe("manual");
 
     expect(Object.keys(delivery.body).sort()).toEqual(PAYLOAD_KEYS);
     expect(delivery.body.api_key).toBe(KEY);
@@ -333,5 +344,815 @@ describe("delivery failures", () => {
     expect(logged).not.toContain(await documentAnalyticsKey(DOC_ID));
     expect(logged).not.toContain(KEY);
     expect(logged).not.toContain("quota exceeded");
+  });
+
+  it("treats a redirect as a failure instead of chasing it", async () => {
+    const warn = captureWarnings();
+    const { deliveries } = captureDeliveries(
+      async () =>
+        new Response(null, { status: 307, headers: { location: "https://elsewhere.test/i/v0/e/" } }),
+    );
+
+    await record(publication("document_published"));
+
+    // Exactly one request, to the host that was configured, and no second one
+    // carrying the ingest key to wherever the `location` header pointed.
+    expect(only(deliveries).url).toBe(`${HOST}/i/v0/e/`);
+    expect(warn).toHaveBeenCalledWith("analytics delivery failed", {
+      event: "document_published",
+      status: 307,
+    });
+  });
+
+  it("builds an init the runtime will actually accept", async () => {
+    const { deliveries } = captureDeliveries();
+
+    await record(publication("document_published"));
+
+    // Every other test here stubs `fetch`, so the runtime never validates the
+    // init the sender built — and an init workerd rejects fails in exactly the
+    // shape of an intake being down: a `TypeError`, caught, logged as
+    // `status: null`, no events delivered and nothing saying why. `redirect`
+    // is the field that does this (`"error"` is refused at the edge), so the
+    // guard is to hand the captured init to a real `Request` and let the
+    // runtime object here rather than in production.
+    const delivery = only(deliveries);
+    expect(
+      () =>
+        new Request(delivery.url, {
+          method: delivery.method,
+          headers: delivery.headers,
+          body: delivery.raw,
+          redirect: delivery.redirect as RequestInit["redirect"],
+        }),
+    ).not.toThrow();
+  });
+});
+
+/**
+ * Everything below is about *which* outcomes record, which is a different
+ * question from what the sender puts on the wire — that is settled once, above,
+ * against a stubbed `fetch`.
+ *
+ * So these call the handlers directly and hand them a sink that keeps the typed
+ * events. That is what the injected parameter is for: a handler test watching
+ * `fetch` would be re-asserting the payload builder, and would pass just as
+ * happily if a call site recorded the wrong outcome in the right shape. The last
+ * two describes close the loop through the real router, so router → handler →
+ * sender is covered too rather than only the fake.
+ */
+
+/** The API surface under local path-prefix routing. */
+const ORIGIN = "https://openartifacts.workers.dev";
+const API_URL = new URL(`${ORIGIN}/api/v1/docs`);
+
+/**
+ * A well-formed id that no push ever minted, derived from `DOC_ID_LENGTH` rather
+ * than written out: a literal of the wrong length is refused on shape before D1
+ * is consulted, which would quietly turn a "not found" test into a shape test.
+ */
+const UNKNOWN_DOC_ID = "0123456789abcdefghjkmnpqrstvwxyz".repeat(2).slice(0, DOC_ID_LENGTH);
+
+const PAGE = "<!doctype html><html><body><p>hi</p></body></html>";
+
+/** A license-key publisher: no plan, so the flat v0 ceilings apply. */
+const PUBLISHER: Publisher = { owner: OWNER, plan: "believer" };
+
+/** Someone else entirely, for the doc that is not the caller's. */
+const OTHER_PUBLISHER: Publisher = { owner: "oa_somebody_else", plan: "believer" };
+
+/** The real bindings, with the host vars cleared so routing falls back to paths. */
+function workerEnv(overrides: Partial<Env> = {}): Env {
+  return {
+    ...env,
+    SERVING_HOST: "",
+    API_HOST: "",
+    LEGACY_SERVING_HOST: "",
+    RETIRED_API_HOST: "",
+    ...overrides,
+  } as Env;
+}
+
+/** Which env and which publisher a handler call runs as. */
+interface Caller {
+  env?: Env;
+  publisher?: Publisher;
+}
+
+/**
+ * A caller whose plan has one ceiling tightened to something a test can reach.
+ *
+ * `authKind: "account"` travels with it because that flag is what makes the
+ * handlers consult plan limits at all; a license-key publisher never sees them.
+ */
+const PLAN = "test_plan";
+function planned(limits: Record<string, number>): Caller {
+  return {
+    env: workerEnv({
+      PLAN_LIMITS: JSON.stringify({
+        [PLAN]: { documents: 50, pushesPerDay: 50, htmlBytes: MAX_DOC_BYTES, ...limits },
+      }),
+    }),
+    publisher: { owner: OWNER, plan: PLAN, authKind: "account" },
+  };
+}
+
+/** A sink that keeps what it was asked to record, and delivers nothing. */
+function collectingSink(): { sink: AnalyticsSink; events: DocumentEvent[] } {
+  const events: DocumentEvent[] = [];
+  return {
+    sink: {
+      record(event) {
+        events.push(event);
+      },
+    },
+    events,
+  };
+}
+
+const pushRequest = (body: unknown) =>
+  new Request(API_URL, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: typeof body === "string" ? body : JSON.stringify(body),
+  });
+
+const create = (sink: AnalyticsSink, body: unknown, caller: Caller = {}) =>
+  createDoc(pushRequest(body), API_URL, caller.env ?? workerEnv(), caller.publisher ?? PUBLISHER, sink);
+
+const update = (sink: AnalyticsSink, docId: string, body: unknown, caller: Caller = {}) =>
+  updateDoc(
+    pushRequest(body),
+    API_URL,
+    caller.env ?? workerEnv(),
+    caller.publisher ?? PUBLISHER,
+    docId,
+    sink,
+  );
+
+const withdraw = (sink: AnalyticsSink, docId: string, caller: Caller = {}) =>
+  deleteDoc(caller.env ?? workerEnv(), caller.publisher ?? PUBLISHER, docId, sink);
+
+/** The id a create handed back, and the assertion that it handed one back at all. */
+async function published(response: Response): Promise<string> {
+  expect(response.status).toBe(201);
+  return ((await response.json()) as { docId: string }).docId;
+}
+
+/** The three timestamps an event has to agree with. */
+const docRow = (docId: string) =>
+  env.DB.prepare("SELECT created_at, updated_at, deleted_at FROM docs WHERE id = ?")
+    .bind(docId)
+    .first<{ created_at: number; updated_at: number; deleted_at: number | null }>();
+
+/**
+ * When the bytes of one version landed. This, not `docs.updated_at`, is what an
+ * update event has to agree with: `commitVersionMetadata` moves `updated_at`
+ * only for the newest version, so the older of two pushes that store out of
+ * order deliberately leaves it behind.
+ */
+const versionRow = (docId: string, n: number) =>
+  env.DB.prepare("SELECT created_at FROM versions WHERE doc_id = ? AND n = ?")
+    .bind(docId, n)
+    .first<{ created_at: number }>();
+
+const names = (events: DocumentEvent[]) => events.map((event) => event.name);
+
+/** A push that will be accepted, so a test can be about the outcome instead. */
+const VALID_PUSH = { title: "A note", html: PAGE };
+
+describe("which outcomes record", () => {
+  it("counts a create once, stamped with the instant its rows carry", async () => {
+    const { sink, events } = collectingSink();
+
+    const docId = await published(await create(sink, VALID_PUSH));
+
+    expect(events).toEqual([
+      { name: "document_published", docId, atMs: expect.any(Number), ownerId: OWNER },
+    ]);
+    // The handler's own `now`, never a second clock read. An event and the row
+    // it describes have to fall inside the same reporting interval, and a fresh
+    // `Date.now()` here is exactly how one of them ends up in the next one.
+    expect(events[0]!.atMs).toBe((await docRow(docId))!.created_at);
+  });
+
+  it("counts an update under the key the create already used", async () => {
+    const { sink, events } = collectingSink();
+    const docId = await published(await create(sink, VALID_PUSH));
+
+    const response = await update(sink, docId, { html: "<p>second draft</p>" });
+
+    expect(response.status).toBe(200);
+    expect(names(events)).toEqual(["document_published", "document_updated"]);
+    // The key is what makes a document one page for its whole life, so this is
+    // the assertion that an update attaches to the page it changed instead of
+    // arriving as a second one.
+    expect(await documentAnalyticsKey(events[1]!.docId)).toBe(await documentAnalyticsKey(docId));
+    expect(events[1]).toEqual({
+      name: "document_updated",
+      docId,
+      atMs: (await versionRow(docId, 2))!.created_at,
+      ownerId: OWNER,
+    });
+    // With nothing else pushing, that instant is also the doc's `updated_at`.
+    expect(events[1]!.atMs).toBe((await docRow(docId))!.updated_at);
+  });
+
+  it("counts a withdrawal under that same key, stamped with deleted_at", async () => {
+    const { sink, events } = collectingSink();
+    const docId = await published(await create(sink, VALID_PUSH));
+
+    const response = await withdraw(sink, docId);
+
+    expect(response.status).toBe(204);
+    expect(names(events)).toEqual(["document_published", "document_unshared"]);
+    // One clock read served the column and the event, so a withdrawal cannot be
+    // reported a millisecond after the row that performed it.
+    expect(events[1]).toEqual({
+      name: "document_unshared",
+      docId,
+      atMs: (await docRow(docId))!.deleted_at,
+      ownerId: OWNER,
+    });
+  });
+
+  it("reports a document's whole life as three events under one key", async () => {
+    const { sink, events } = collectingSink();
+
+    const docId = await published(await create(sink, VALID_PUSH));
+    expect((await update(sink, docId, { html: "<p>second</p>" })).status).toBe(200);
+    expect((await withdraw(sink, docId)).status).toBe(204);
+
+    // The epic's reconciliation requirement: a controlled create/update/withdraw
+    // sequence has to read in PostHog as one page with three outcomes, and never
+    // as two or three pages.
+    expect(names(events)).toEqual([
+      "document_published",
+      "document_updated",
+      "document_unshared",
+    ]);
+    const keys = new Set(
+      await Promise.all(events.map((event) => documentAnalyticsKey(event.docId))),
+    );
+    expect(keys.size).toBe(1);
+    // Every publication event is attributed to the account the credential
+    // resolved to, and nothing in the request could have supplied another.
+    expect(events.every((event) => "ownerId" in event && event.ownerId === OWNER)).toBe(true);
+  });
+});
+
+/**
+ * A D1 whose first `INSERT INTO versions` is followed, before anything else can
+ * look, by the delete that beat it to the doc. It is the one interleaving a
+ * client cannot be asked to produce on demand; `test/push.test.ts` pins what the
+ * push does about it, and what matters here is that a push answering 404 counts
+ * nothing — the url it would have described serves 410.
+ */
+function deleteRacingDb(): D1Database {
+  let raced = false;
+  return new Proxy(env.DB, {
+    get(target, prop, receiver) {
+      if (prop !== "prepare") return Reflect.get(target, prop, receiver);
+      return (sql: string) => {
+        const statement = target.prepare(sql);
+        if (!sql.includes("INSERT INTO versions")) return statement;
+        return new Proxy(statement, {
+          get(st, stProp, stRec) {
+            if (stProp !== "bind") return Reflect.get(st, stProp, stRec);
+            return (...args: unknown[]) => {
+              const bound = st.bind(...args);
+              return new Proxy(bound, {
+                get(bt, bProp, bRec) {
+                  // Hooked on whichever method executes the statement, not on
+                  // `run` by name: `insertVersion` reads back a `RETURNING`
+                  // row, and a hook that named one method would silently stop
+                  // simulating the race the day the other was used.
+                  if (bProp !== "run" && bProp !== "first") return Reflect.get(bt, bProp, bRec);
+                  const execute = Reflect.get(bt, bProp, bRec) as
+                    (...callArgs: unknown[]) => Promise<unknown>;
+                  return async (...callArgs: unknown[]) => {
+                    const result = await execute.call(bt, ...callArgs);
+                    if (!raced) {
+                      raced = true;
+                      await env.DB.prepare("UPDATE docs SET deleted_at = ? WHERE id = ?")
+                        .bind(Date.now(), String(args[0]))
+                        .run();
+                    }
+                    return result;
+                  };
+                },
+              });
+            };
+          },
+        });
+      };
+    },
+  }) as D1Database;
+}
+
+describe("which outcomes record nothing", () => {
+  it("records nothing for a body that is not a push", async () => {
+    const { sink, events } = collectingSink();
+
+    for (const body of ["not json", [], { html: "" }, { html: PAGE, title: 7 }]) {
+      expect((await create(sink, body)).status).toBe(400);
+    }
+
+    expect(events).toEqual([]);
+  });
+
+  it("records nothing for html over the published ceiling", async () => {
+    const { sink, events } = collectingSink();
+    const docId = await published(await create(sink, VALID_PUSH));
+    const oversized = "a".repeat(MAX_DOC_BYTES + 1);
+
+    expect((await create(sink, { html: oversized })).status).toBe(413);
+    expect((await update(sink, docId, { html: oversized })).status).toBe(413);
+
+    expect(names(events)).toEqual(["document_published"]);
+  });
+
+  it("records nothing when the document ceiling is full", async () => {
+    const { sink, events } = collectingSink();
+    const caller = planned({ documents: 1 });
+
+    await published(await create(sink, VALID_PUSH, caller));
+    const refused = await create(sink, { title: "second", html: PAGE }, caller);
+
+    // A doc row is never inserted, so there is no reservation to mistake for a
+    // page — but a create that answers 402 must not count one either way.
+    expect(refused.status).toBe(402);
+    expect(names(events)).toEqual(["document_published"]);
+  });
+
+  it("records nothing when today's pushes are spent", async () => {
+    const { sink, events } = collectingSink();
+    const caller = planned({ pushesPerDay: 1 });
+
+    const docId = await published(await create(sink, VALID_PUSH, caller));
+    const refusedUpdate = await update(sink, docId, { html: "<p>again</p>" }, caller);
+    const refusedCreate = await create(sink, { title: "second", html: PAGE }, caller);
+
+    expect([refusedUpdate.status, refusedCreate.status]).toEqual([402, 402]);
+    expect(names(events)).toEqual(["document_published"]);
+  });
+
+  it("records nothing when the storage allowance refuses the first version", async () => {
+    const { sink, events } = collectingSink();
+    // Less room than one page, so the create is refused before any bytes land
+    // and its doc row is rolled back. Nothing was ever published.
+    const refused = await create(sink, VALID_PUSH, planned({ storageBytes: 1 }));
+
+    expect(refused.status).toBe(402);
+    expect(events).toEqual([]);
+  });
+
+  it("records nothing when the storage allowance refuses a later version", async () => {
+    const { sink, events } = collectingSink();
+    // Exactly one page of room: the create fits and the version after it cannot,
+    // so the refusal lands on a document that has already been counted once.
+    const caller = planned({ storageBytes: PAGE.length });
+
+    const docId = await published(await create(sink, VALID_PUSH, caller));
+    const refused = await update(sink, docId, { html: PAGE }, caller);
+
+    expect(refused.status).toBe(402);
+    expect(names(events)).toEqual(["document_published"]);
+  });
+
+  it("records nothing for a push or a withdrawal against someone else's doc", async () => {
+    const { sink, events } = collectingSink();
+    const docId = await published(await create(sink, VALID_PUSH));
+    const intruder: Caller = { publisher: OTHER_PUBLISHER };
+
+    // 404, never 403: another publisher's doc has to be indistinguishable from
+    // one that never existed, and neither of them is an outcome.
+    expect((await update(sink, docId, { html: PAGE }, intruder)).status).toBe(404);
+    expect((await withdraw(sink, docId, intruder)).status).toBe(404);
+
+    expect(names(events)).toEqual(["document_published"]);
+  });
+
+  it("records nothing against a doc that never existed", async () => {
+    const { sink, events } = collectingSink();
+
+    expect((await update(sink, UNKNOWN_DOC_ID, { html: PAGE })).status).toBe(404);
+    expect((await withdraw(sink, UNKNOWN_DOC_ID)).status).toBe(404);
+
+    expect(events).toEqual([]);
+  });
+
+  it("does not count a second withdrawal of an already-withdrawn doc", async () => {
+    const { sink, events } = collectingSink();
+    const docId = await published(await create(sink, VALID_PUSH));
+
+    expect((await withdraw(sink, docId)).status).toBe(204);
+    const again = await withdraw(sink, docId);
+
+    // Repeated no-op withdrawals are not new outcomes. The page left the
+    // internet once; counting a client's retry would report churn that is really
+    // a timeout somebody worked around.
+    expect(again.status).toBe(404);
+    expect(names(events)).toEqual(["document_published", "document_unshared"]);
+  });
+
+  it("records nothing for a create that loses the race against a delete", async () => {
+    const { sink, events } = collectingSink();
+
+    const response = await create(sink, VALID_PUSH, { env: workerEnv({ DB: deleteRacingDb() }) });
+
+    // The doc row survives, but its id was never returned to anyone, so nothing
+    // will ever reconcile against it. Counting it would put a page in the totals
+    // that no reader could have been given.
+    expect(response.status).toBe(404);
+    expect(events).toEqual([]);
+  });
+
+  it("records nothing for an update that loses the race against a delete", async () => {
+    const { sink, events } = collectingSink();
+    const docId = await published(await create(sink, VALID_PUSH));
+
+    const response = await update(sink, docId, { html: "<p>second</p>" }, {
+      env: workerEnv({ DB: deleteRacingDb() }),
+    });
+
+    expect(response.status).toBe(404);
+    expect(names(events)).toEqual(["document_published"]);
+  });
+});
+
+/**
+ * `document_published` is a fact about the `versions` table — the push that
+ * stored a document's first bytes — rather than about which verb was used. The
+ * two come apart in exactly one place: a create that dies after inserting its
+ * `docs` row and before storing version 1 leaves a row its publisher can see in
+ * their own list and push to, and the `PUT` that follows stores the document's
+ * first version under number 2.
+ */
+describe("a document whose first version arrives as an update", () => {
+  /**
+   * One stranded row, made the way production makes them: a create that reserved
+   * everything it needed and then met an R2 that would not take the bytes. An
+   * `INSERT` written out here would pin the query instead of the path, and would
+   * keep passing if the path that strands rows changed shape.
+   */
+  async function strandOneDoc(): Promise<string> {
+    const brokenDocs = {
+      put: () => {
+        throw new Error("R2 unavailable");
+      },
+    } as unknown as R2Bucket;
+
+    const { sink, events } = collectingSink();
+    await expect(
+      create(sink, VALID_PUSH, { env: workerEnv({ DOCS: brokenDocs }) }),
+    ).rejects.toThrow();
+    // The create published nothing, so it counted nothing.
+    expect(events).toEqual([]);
+
+    const stranded = await env.DB.prepare(
+      `SELECT id, latest_version FROM docs d
+        WHERE NOT EXISTS (SELECT 1 FROM versions v WHERE v.doc_id = d.id)`,
+    ).first<{ id: string; latest_version: number }>();
+    // The shape the miscount lives in: version 1 is spoken for and nothing has
+    // it, so the next push reserves 2 for the first bytes this doc ever holds.
+    expect(stranded).toMatchObject({ latest_version: 1 });
+    return stranded!.id;
+  }
+
+  it("counts the first stored version as a publication, whichever request stored it", async () => {
+    const docId = await strandOneDoc();
+    const { sink, events } = collectingSink();
+
+    const response = await update(sink, docId, { html: PAGE });
+
+    // From here the page is readable by anyone holding the link. Calling that an
+    // update would put a page on the internet and leave it out of "new pages
+    // published", which counts `document_published` alone.
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ docId, url: `${ORIGIN}/d/${docId}`, version: 2 });
+    expect(events).toEqual([
+      {
+        name: "document_published",
+        docId,
+        atMs: (await versionRow(docId, 2))!.created_at,
+        ownerId: OWNER,
+      },
+    ]);
+    // Under the key the page will carry for the rest of its life, so its views
+    // and its withdrawal still reconcile against this publication.
+    expect(await documentAnalyticsKey(events[0]!.docId)).toBe(await documentAnalyticsKey(docId));
+  });
+
+  it("counts every push after that one as an update", async () => {
+    const docId = await strandOneDoc();
+    const { sink, events } = collectingSink();
+
+    expect((await update(sink, docId, { html: PAGE })).status).toBe(200);
+    expect((await update(sink, docId, { html: "<p>third</p>" })).status).toBe(200);
+
+    // One publication per page and one update per version after it. The rule is
+    // "the first version this doc ever had", not "version 1".
+    expect(names(events)).toEqual(["document_published", "document_updated"]);
+  });
+
+  it("leaves an update to a document that already has a version an update", async () => {
+    const { sink, events } = collectingSink();
+    const docId = await published(await create(sink, VALID_PUSH));
+
+    expect((await update(sink, docId, { html: "<p>second</p>" })).status).toBe(200);
+
+    expect(names(events)).toEqual(["document_published", "document_updated"]);
+  });
+});
+
+/**
+ * `ownerId` names a publisher, and a publisher is an account rather than a
+ * credential.
+ *
+ * Authentication returns the external id for a license key and the local `oa_`
+ * id for an account token, deliberately and permanently — `docs/identity.md`
+ * keeps credential identity separate from document ownership. `OWNER_SCOPE_SQL`
+ * has always collapsed a linked pair to one owner for every document query, and
+ * these events have to agree with it: one person publishing from Obsidian with
+ * a key and unsharing from the CLI with a token is one publisher, not two.
+ */
+describe("who a publication is attributed to", () => {
+  const LINKED_ACCOUNT = "oa_aaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const LICENSE_OWNER = "external-owner-for-analytics";
+
+  /** The license-key path: authentication hands back the external account id. */
+  const BY_LICENSE: Caller = { publisher: { owner: LICENSE_OWNER, plan: "believer" } };
+
+  /** The same human's account token, which resolves to the local `oa_` id. */
+  const BY_TOKEN: Caller = {
+    publisher: { owner: LINKED_ACCOUNT, plan: "free", authKind: "account" },
+  };
+
+  const owners = (events: DocumentEvent[]) =>
+    events.map((event) => ("ownerId" in event ? event.ownerId : null));
+
+  beforeEach(async () => {
+    await env.DB.prepare(
+      "INSERT INTO accounts (id, email, created_at, plan) VALUES (?, ?, 0, 'free')",
+    ).bind(LINKED_ACCOUNT, "linked@example.test").run();
+  });
+
+  it("reports a linked publisher as one person under either credential", async () => {
+    expect(await linkExternalOwner(env.DB, LICENSE_OWNER, LINKED_ACCOUNT, 1)).toBe("linked");
+    const { sink, events } = collectingSink();
+
+    const docId = await published(await create(sink, VALID_PUSH, BY_LICENSE));
+    expect((await update(sink, docId, { html: "<p>second</p>" }, BY_TOKEN)).status).toBe(200);
+    expect((await withdraw(sink, docId, BY_TOKEN)).status).toBe(204);
+
+    expect(names(events)).toEqual([
+      "document_published",
+      "document_updated",
+      "document_unshared",
+    ]);
+    // The publication arrived under the license key's external id and everything
+    // after it under the account token's. Two `distinct_id`s across these three
+    // would split one person profile in PostHog and count one publisher twice.
+    expect(owners(events)).toEqual([LINKED_ACCOUNT, LINKED_ACCOUNT, LINKED_ACCOUNT]);
+    expect(owners(events)).not.toContain(LICENSE_OWNER);
+  });
+
+  it("leaves an unlinked publisher under the id their credential resolved to", async () => {
+    const { sink, events } = collectingSink();
+
+    const docId = await published(await create(sink, VALID_PUSH, BY_LICENSE));
+    expect((await update(sink, docId, { html: "<p>second</p>" }, BY_LICENSE)).status).toBe(200);
+    expect((await withdraw(sink, docId, BY_LICENSE)).status).toBe(204);
+
+    // With no link the canonical account *is* the id authentication returned.
+    // Resolution must not invent an account for a publisher who has none.
+    expect(owners(events)).toEqual([LICENSE_OWNER, LICENSE_OWNER, LICENSE_OWNER]);
+  });
+});
+
+/**
+ * The router's own path, end to end: a real request, the real sink, and PostHog
+ * stood in for at `globalThis.fetch`.
+ *
+ * The fake sink above proves which outcomes record. These prove the wire is
+ * actually attached to them — that the sink `handleApi` builds reaches the three
+ * handlers, and that an analytics failure is invisible from outside.
+ */
+describe("through the router", () => {
+  const LICENSE_KEY = "cplus_live_a1b2c3d4e5f60718";
+  const CONFIGURED: Partial<Env> = {
+    POSTHOG_PROJECT_API_KEY: KEY,
+    POSTHOG_HOST: HOST,
+    ANALYTICS_ENVIRONMENT: "test",
+  };
+  let owner = "";
+
+  beforeEach(async () => {
+    // What auth leaves behind after a successful validation. A row younger than
+    // the TTL means no license server is reached, which matters here because
+    // `fetch` is stubbed: these tests are about analytics, not authentication.
+    const keyHash = await sha256Hex(LICENSE_KEY);
+    owner = `account-${keyHash.slice(0, 8)}`;
+    await env.DB.prepare(
+      `INSERT OR REPLACE INTO publishers (key_hash, plan, validated_at, owner)
+       VALUES (?, 'believer', ?, ?)`,
+    )
+      .bind(keyHash, Date.now(), owner)
+      .run();
+  });
+
+  async function api(
+    method: string,
+    path: string,
+    body?: unknown,
+    overrides: Partial<Env> = {},
+  ): Promise<Response> {
+    const headers = new Headers({ authorization: `Bearer ${LICENSE_KEY}` });
+    const init: RequestInit = { method, headers };
+    if (body !== undefined) {
+      headers.set("content-type", "application/json");
+      init.body = JSON.stringify(body);
+    }
+
+    const ctx = createExecutionContext();
+    const env = workerEnv({ ...CONFIGURED, ...overrides });
+    const response = await worker.fetch(new Request(`${ORIGIN}${path}`, init), env, ctx);
+    // Deliveries are scheduled on `waitUntil`, so without this every assertion
+    // about them would race the request that scheduled them.
+    await waitOnExecutionContext(ctx);
+    return response;
+  }
+
+  it("puts one publication event on the wire per outcome, under one document key", async () => {
+    const { deliveries } = captureDeliveries();
+
+    const created = await api("POST", "/api/v1/docs", VALID_PUSH);
+    const docId = await published(created);
+    expect((await api("PUT", `/api/v1/docs/${docId}`, { html: "<p>second</p>" })).status).toBe(200);
+    expect((await api("DELETE", `/api/v1/docs/${docId}`)).status).toBe(204);
+
+    expect(deliveries.map((delivery) => delivery.body.event)).toEqual([
+      "document_published",
+      "document_updated",
+      "document_unshared",
+    ]);
+
+    const documentKey = await documentAnalyticsKey(docId);
+    for (const delivery of deliveries) {
+      expect(delivery.body.distinct_id).toBe(owner);
+      expect((delivery.body.properties as Record<string, unknown>).document_key).toBe(documentKey);
+      // Nothing that could name the page: not its id, not its url, not its title.
+      expect(delivery.raw).not.toContain(docId);
+      expect(delivery.raw).not.toContain("A note");
+      expect(delivery.raw).not.toContain("/d/");
+    }
+  });
+
+  it("answers the documented error, and counts nothing, when the publisher cannot be resolved", async () => {
+    const { deliveries } = captureDeliveries();
+    // The canonical account is a column of the statement that performs the
+    // write — the insert, the version reservation, the delete — and not a
+    // second read taken after it. So "the publish succeeded but resolving its
+    // publisher failed" is not a reachable state: breaking resolution breaks
+    // the write it travels with. This proxy breaks exactly the statements that
+    // resolve a publisher, leaving authentication intact, and what must hold is
+    // that the failure is loud on the wire and silent in the events.
+    const unresolvable = new Proxy(env.DB, {
+      get(target, prop, receiver) {
+        if (prop !== "prepare") return Reflect.get(target, prop, receiver);
+        return (sql: string) => {
+          if (sql.includes("WITH canonical AS")) throw new Error("D1 unavailable");
+          return target.prepare(sql);
+        };
+      },
+    }) as D1Database;
+
+    const response = await api("POST", "/api/v1/docs", VALID_PUSH, { DB: unresolvable });
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toMatchObject({ error: { code: "internal" } });
+    // No page went public, so nothing may claim one did — least of all under an
+    // id nobody resolved.
+    expect(deliveries).toEqual([]);
+    expect(
+      await env.DB.prepare("SELECT COUNT(*) AS n FROM versions").first<{ n: number }>(),
+    ).toEqual({ n: 0 });
+  });
+
+  const FAILURES: Array<[string, () => Promise<Response>]> = [
+    [
+      "a network that rejects",
+      async () => {
+        throw new Error("no route to posthog.test");
+      },
+    ],
+    ["a refusal from PostHog", async () => new Response("nope", { status: 500 })],
+  ];
+
+  it.each(FAILURES)("answers create, update and delete identically through %s", async (_label, respond) => {
+    captureWarnings();
+    captureDeliveries(respond);
+
+    const created = await api("POST", "/api/v1/docs", VALID_PUSH);
+    expect(created.status).toBe(201);
+    const body = (await created.json()) as { docId: string };
+    const { docId } = body;
+    // `docs/http-api.md` is frozen, and a publisher must not be able to tell
+    // from any response whether analytics succeeded, failed, or is configured.
+    expect(body).toEqual({ docId, url: `${ORIGIN}/d/${docId}`, version: 1 });
+
+    const updated = await api("PUT", `/api/v1/docs/${docId}`, { html: "<p>second</p>" });
+    expect(updated.status).toBe(200);
+    expect(await updated.json()).toEqual({ docId, url: `${ORIGIN}/d/${docId}`, version: 2 });
+
+    const withdrawn = await api("DELETE", `/api/v1/docs/${docId}`);
+    expect(withdrawn.status).toBe(204);
+    expect(await withdrawn.text()).toBe("");
+  });
+});
+
+/**
+ * The authoritative aggregate `docs/analytics.md` hands an operator, pinned in
+ * the suite rather than left in a doc nobody runs.
+ *
+ * Events cannot answer "how many pages exist right now". Delivery is best
+ * effort, so an event-derived inventory is a floor, and deriving one by
+ * subtracting withdrawals from publications compounds both streams' losses
+ * instead of cancelling them. D1 knows exactly, so D1 is asked.
+ *
+ * What makes these queries worth a test is that the property they lean on is
+ * invisible from the code that could take it away: a withdrawal marks the `docs`
+ * row and destroys the bytes, but leaves the `versions` rows behind, which is
+ * the only reason "ever published" is recoverable at all. A future delete that
+ * swept those rows would empty the historical baseline while every other test in
+ * the repo still passed.
+ */
+describe("the D1 publication aggregate", () => {
+  const CURRENTLY_PUBLISHED = `SELECT COUNT(*) AS pages
+  FROM docs d
+ WHERE d.deleted_at IS NULL
+   AND EXISTS (SELECT 1 FROM versions v WHERE v.doc_id = d.id)`;
+
+  const EVER_PUBLISHED = `SELECT COUNT(*) AS pages
+  FROM docs d
+ WHERE EXISTS (SELECT 1 FROM versions v WHERE v.doc_id = d.id)`;
+
+  const pages = async (sql: string) =>
+    (await env.DB.prepare(sql).first<{ pages: number }>())!.pages;
+
+  it("counts published pages, skips failed reservations, and remembers withdrawals", async () => {
+    const { sink } = collectingSink();
+    const kept = await published(await create(sink, VALID_PUSH));
+    const withdrawn = await published(await create(sink, { title: "Second", html: PAGE }));
+
+    // A `docs` row with no `versions` row: a create whose first push died before
+    // writing bytes. Its id was never returned to anyone, so it is not a page.
+    await env.DB.prepare(
+      `INSERT INTO docs (id, owner, title, latest_version, created_at, updated_at)
+       VALUES (?, ?, 'never stored', 1, ?, ?)`,
+    )
+      .bind(UNKNOWN_DOC_ID, OWNER, Date.now(), Date.now())
+      .run();
+
+    expect(await pages(CURRENTLY_PUBLISHED)).toBe(2);
+    expect(await pages(EVER_PUBLISHED)).toBe(2);
+
+    expect((await withdraw(sink, withdrawn)).status).toBe(204);
+
+    expect(await pages(CURRENTLY_PUBLISHED)).toBe(1);
+    // The withdrawn doc is still a page that was once published, and D1 can
+    // still say so — this is the assertion the historical baseline rests on.
+    expect(await pages(EVER_PUBLISHED)).toBe(2);
+
+    // The bytes are gone and the allowance is released; the row that records the
+    // publication is not, and neither is the row that records the doc.
+    expect(
+      (await env.DB.prepare("SELECT n FROM versions WHERE doc_id = ?").bind(withdrawn).all()).results,
+    ).toEqual([{ n: 1 }]);
+    expect(
+      (await env.DB.prepare("SELECT n FROM storage_usage WHERE doc_id = ?").bind(withdrawn).all())
+        .results,
+    ).toEqual([]);
+    expect((await env.DOCS.list({ prefix: `docs/${withdrawn}/` })).objects).toEqual([]);
+    expect(await env.DOCS.list({ prefix: `docs/${kept}/` })).toMatchObject({
+      objects: [expect.anything()],
+    });
+  });
+
+  it("dates each page by the instant its first version landed", async () => {
+    const { sink } = collectingSink();
+    const docId = await published(await create(sink, VALID_PUSH));
+    expect((await update(sink, docId, { html: "<p>second</p>" })).status).toBe(200);
+
+    const first = await env.DB.prepare(
+      `SELECT d.id, MIN(v.created_at) AS first_published
+         FROM docs d JOIN versions v ON v.doc_id = d.id
+        GROUP BY d.id`,
+    ).first<{ id: string; first_published: number }>();
+
+    // An update never moves a page's publication date, which is what keeps "new
+    // pages published" a count of pages rather than of pushes.
+    expect(first).toEqual({ id: docId, first_published: (await docRow(docId))!.created_at });
   });
 });
