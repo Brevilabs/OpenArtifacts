@@ -888,11 +888,13 @@ export async function confirmDeviceApproval(
   db: D1Database,
   confirmToken: string,
   atMs: number,
-  newsletter = false,
+  newsletter: boolean | null = false,
   terms = false,
   newId = "",
   plan = "free",
 ): Promise<string | null> {
+  const newsletterOptIn = newsletter === null ? null : newsletter ? 1 : 0;
+  const newsletterChoiceAt = newsletter === null ? null : atMs;
   // The whole registration and approval is one transaction. The live secret and
   // explicit Terms choice guard every insert; a denied/expired/replayed form
   // cannot create an account. Unique identity constraints decide competing signups.
@@ -908,7 +910,17 @@ export async function confirmDeviceApproval(
         SELECT 1 FROM identities i WHERE i.provider = d.provider AND i.subject = d.pending_subject
       ) ON CONFLICT DO NOTHING`,
       )
-      .bind(newId, atMs, plan, atMs, newsletter ? 1 : 0, atMs, confirmToken, atMs, terms ? 1 : 0),
+      .bind(
+        newId,
+        atMs,
+        plan,
+        atMs,
+        newsletterOptIn,
+        newsletterChoiceAt,
+        confirmToken,
+        atMs,
+        terms ? 1 : 0,
+      ),
     db
       .prepare(
         `INSERT INTO identities (provider, subject, account_id, created_at)

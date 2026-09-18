@@ -380,3 +380,19 @@ not wait on the entitlement service.
 ### Linked-account rollback floor
 
 Before enabling permanent owner links, record the first link-aware Worker version ID in the deployment record. After any owner link exists, never roll back below that version: older Workers ignore the associations and split histories and quotas. Later credential-rejection markers also require a rejection-aware rollback target; record the first version supporting migration 0011 as the new floor. Keep the additive schema when rolling back compatible code.
+
+## Browser account sign-in
+
+Deploy the Worker before the paired websites. Browser Google/GitHub sign-in
+reuses the existing `device_codes` schema, OAuth provider registrations,
+`ADMIN_API_KEY`, and `ACCOUNT_ACTION_URL`. It creates account access proofs only,
+not publishing tokens, and needs no schema migration. Rolling back the Worker
+disables browser sign-in while transient rows expire.
+
+External account sign-in stays in the websites. The trusted website uses
+`GET /admin/v1/external-owners/{owner}` to look up an association, and after
+explicit consent uses `POST /admin/v1/accounts` to create a linked account or
+the existing `PUT /admin/v1/accounts/{id}/external-owner` to link an account it
+has separately authenticated. These routes need only the existing admin key.
+No partner sign-in secret or partner proof endpoint is configured on the Worker.
+Permanent associations survive website or Worker rollback.

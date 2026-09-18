@@ -23,7 +23,7 @@ export async function stringField(request: Request, field: string): Promise<stri
   } catch { return null; }
 }
 
-function actionUrl(env: Env): URL | null {
+export function actionUrl(env: Env): URL | null {
   if (!env.ACCOUNT_ACTION_URL?.trim()) return null;
   const url = new URL(env.ACCOUNT_ACTION_URL);
   const local = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);

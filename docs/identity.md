@@ -69,7 +69,7 @@ entitlement reconciliation belongs to the trusted integration using it.
 
 ## How an account comes into existence
 
-There is no sign-up form, no sign-in page and no session. The only human surface
+The CLI uses no browser session. Its human surface
 is one approval page.
 
 1. An agent's CLI has no token, so it asks for a device code and prints a url.
@@ -116,7 +116,7 @@ Resolution asks the subject first:
 | Situation | Result |
 | --- | --- |
 | This subject has signed in before | its account, whatever address the provider reports now |
-| A new subject, address free | registration is deferred until Terms and device approval |
+| A new subject, address free | registration waits for explicit Terms and either device approval or browser-bound account proof |
 | A new subject, address on an account this provider has never signed in to | that account, and the identity is linked to it |
 | A new subject, address on an account another subject on **this** provider already signs in with | refused |
 
@@ -307,3 +307,57 @@ No campaign is sent by signing in.
 Migration 0011 records license rejection completion time. Only validation begun after that rejection may authorize the credential again; delayed older successes cannot restore it, even after a later recovery. Ownership and documents are unchanged.
 
 Failed automatic entitlement refreshes back off for one minute independently of successful-check time and paid expiry. Explicit account refresh bypasses the delay. A successful concurrent refresh is reported as cached by an older failed request.
+
+### Browser account sign-in
+
+The website can sign a person in with Google or GitHub for account and checkout
+actions without a terminal or publishing token. Its same-origin POST records
+explicit Terms acceptance, then calls `POST /admin/v1/browser-logins` with
+`{provider, termsAccepted: true}` using the existing admin credential. The
+Worker stores the OAuth handshake in `device_codes` with a `browser_` user-code
+prefix and no device-code hash, so the row cannot enter the approval page or
+yield a publishing token. It returns `{url, state}`; the website keeps the state
+and intent in a signed, HttpOnly, SameSite=Lax cookie.
+
+The provider uses the same `/approve/callback/{provider}` route as device
+approval. The shared callback verifies the provider identity, records it with
+`holdProvenIdentity`, and sends its confirm token only to the finishing browser
+at the fixed `ACCOUNT_ACTION_URL` origin. Provider refusal returns
+`error=sign_in_failed`; a reassigned mailbox returns `error=identity`. No account
+or publishing token exists yet.
+
+The website verifies its signed cookie and matching state before calling
+`POST /admin/v1/browser-logins/consume` with `{code, termsAccepted: true}`.
+Consume spends the confirm token once, creates an account and identity when
+needed, and returns `{accountId, email, externalOwner}` for the website session.
+Browser signup leaves `newsletter_opt_in` and `newsletter_choice_at` null.
+
+A browser confirm token also fits `/approve/confirm` and `/approve/deny`. Only
+the finishing browser receives it, so using either route merely finishes or
+cancels that person's own sign-in and leaves browser consume nothing to spend.
+Whichever of confirm, deny, or browser consume lands first wins; every later use
+fails. Rows expire after ten minutes, the Worker sets no cookie, and no schema
+migration is required.
+
+#### Copilot accounts
+
+Copilot users are external owners. The Worker never sees a Copilot sign-in; the
+website learns the signed-in `User.id` from the Copilot site and proves it
+through the existing admin trust boundary. `GET /admin/v1/external-owners/{owner}`
+returns `{accountId, email}` or `404 not_found`. After explicit permanent-link
+consent, `POST /admin/v1/accounts` with `{email, externalOwner}` atomically creates
+an account and its association, returning `201 {accountId, email}`.
+
+An owner already associated with an account returns `409 conflict`. An address
+already held by an account returns the admin-only JSON code `409 email_taken`;
+email equality is a refusal, never a match or automatic merge. The person must
+sign in to the existing account before the website invokes the existing
+`PUT /admin/v1/accounts/{id}/external-owner` route to link it. All these routes
+require the existing admin bearer credential; no additional Worker secret or
+partner endpoint is involved.
+
+Deploy the Worker before the paired website changes. Browser sign-in needs no
+schema migration; existing provider redirect registrations and
+`ACCOUNT_ACTION_URL` are reused. Rollback disables browser sign-in and leaves
+transient device-code rows to expire; permanent associations and the CLI flow
+are unaffected.

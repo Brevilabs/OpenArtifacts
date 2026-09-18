@@ -1,6 +1,6 @@
 /**
- * The approval page: the only place a human ever interacts with OpenArtifacts,
- * and the only way an account comes into existence.
+ * Device approval for CLI publishing. Browser account sign-in is handled
+ * separately by browser-login.ts through the shared provider callback URLs.
  *
  * A CLI prints a device-approval URL. The person chooses Google or GitHub,
  * then an existing account approves the device. A new user accepts Terms and
@@ -28,6 +28,7 @@
  * `docs/http-api.md`'s JSON envelope would be the wrong answer to give them.
  */
 import { syncNewsletter } from "../newsletter.js";
+import { actionUrl } from "../account.js";
 import { type Env } from "../config.js";
 import {
   confirmDeviceApproval,
@@ -83,6 +84,9 @@ const UNNAMED_DEVICE = "that terminal";
  * a terminal onto a phone.
  */
 const USER_CODE_PATTERN = /^[A-Z0-9][A-Z0-9-]{0,63}$/;
+export const BROWSER_USER_CODE_PREFIX = "browser_";
+export const isBrowserLogin = (userCode: string): boolean =>
+  userCode.startsWith(BROWSER_USER_CODE_PREFIX);
 
 /**
  * Ceiling on a submitted form.
@@ -328,21 +332,59 @@ async function prove(url: URL, env: Env, provider: string, deps: ApprovalDeps): 
     return page(EXPIRED, 400);
   }
 
+  const browser = isBrowserLogin(handshake.user_code);
+  const back = (params: Record<string, string>) => {
+    const configured = actionUrl(env);
+    if (configured === null) return page(NOT_CONFIGURED, 503);
+    const target = new URL("/account/login/callback", configured.origin);
+    for (const [name, value] of Object.entries(params)) target.searchParams.set(name, value);
+    return new Response(null, {
+      status: 303,
+      headers: {
+        location: target.toString(),
+        "cache-control": "no-store",
+        "referrer-policy": "no-referrer",
+      },
+    });
+  };
+  const endBrowserHandshake = async () => {
+    await env.DB.prepare(
+      `DELETE FROM device_codes
+       WHERE user_code = ? AND state = ? AND confirm_token IS NULL`,
+    )
+      .bind(handshake.user_code, state)
+      .run();
+  };
+  const browserFailure = async () => {
+    await endBrowserHandshake();
+    return back({ state, error: "sign_in_failed" });
+  };
+
   // A provider that sends `error` instead of `code` is almost always someone
   // pressing Cancel, and that deserves its own words rather than a failure.
   const code = url.searchParams.get("code");
-  if (code === null) return page(url.searchParams.has("error") ? DECLINED : EXPIRED, 400);
+  if (code === null)
+    return browser
+      ? await browserFailure()
+      : page(url.searchParams.has("error") ? DECLINED : EXPIRED, 400);
   // Null once the handshake has been through here already, since the verifier is
   // cleared when it is spent. Reloading a callback cannot repeat an exchange.
-  if (handshake.verifier === null) return page(EXPIRED, 400);
+  if (handshake.verifier === null)
+    return browser ? await browserFailure() : page(EXPIRED, 400);
 
   const oauth = deps.oauth ?? arcticOAuthClient(env);
-  const asserted = await oauth.verifiedIdentity(
-    handshake.provider as ProviderId,
-    redirectUri(url, handshake.provider as ProviderId),
-    code,
-    handshake.verifier,
-  );
+  let asserted;
+  try {
+    asserted = await oauth.verifiedIdentity(
+      handshake.provider as ProviderId,
+      redirectUri(url, handshake.provider as ProviderId),
+      code,
+      handshake.verifier,
+    );
+  } catch (error) {
+    if (browser) return await browserFailure();
+    throw error;
+  }
   // Null covers a refused exchange and an address the provider will not vouch
   // for alike, and the second is the one that matters: `accounts.email` is
   // unique, so accepting an unverified address would let anyone who can assert
@@ -353,7 +395,8 @@ async function prove(url: URL, env: Env, provider: string, deps: ApprovalDeps): 
   // eventually disagree, and disagreeing means one person with two shelves of
   // documents and no way to reunite them.
   const email = asserted === null ? null : normalizeEmail(asserted.email);
-  if (asserted === null || email === null) return page(UNVERIFIED, 400);
+  if (asserted === null || email === null)
+    return browser ? await browserFailure() : page(UNVERIFIED, 400);
 
   // The subject, not the email, is what brings someone back to an account. An
   // address can be reassigned to a new person; a provider's subject cannot,
@@ -372,7 +415,8 @@ async function prove(url: URL, env: Env, provider: string, deps: ApprovalDeps): 
     account === null &&
     (await env.DB.prepare("SELECT 1 FROM accounts WHERE email = ?").bind(email).first())
   ) {
-    return page(EMAIL_CLAIMED, 409);
+    if (browser) await endBrowserHandshake();
+    return browser ? back({ state, error: "identity" }) : page(EMAIL_CLAIMED, 409);
   }
 
   // Only the first callback can hold a proven identity. New identities remain
@@ -388,8 +432,10 @@ async function prove(url: URL, env: Env, provider: string, deps: ApprovalDeps): 
       account === null ? { subject: asserted.subject, email } : undefined,
     ))
   ) {
-    return page(EXPIRED, 400);
+    return browser ? await browserFailure() : page(EXPIRED, 400);
   }
+
+  if (browser) return back({ state, code: confirmToken });
 
   // The machine's own name for itself, which is the only thing on this page
   // that tells someone whether the terminal waiting on this code is theirs. It
