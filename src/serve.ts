@@ -17,10 +17,11 @@
  * `form-action` against a document that may rewrite its own DOM) are only
  * honoured as a real header.
  */
-import type { AnalyticsSink } from "./analytics.js";
+import { documentAnalyticsKey, type AnalyticsSink } from "./analytics.js";
 import type { Env } from "./config.js";
 import { findServableVersion } from "./db.js";
 import { isDocId } from "./ids.js";
+import { withinLimit } from "./limits.js";
 import { ABOUT_LINK, brandPageHtml } from "./page.js";
 import { RENDER_REVISION, renderServedHtml } from "./render.js";
 import { STORED_CONTENT_TYPE, versionObjectKey } from "./storage.js";
@@ -446,6 +447,73 @@ async function serveObject(
 }
 
 /**
+ * A verdict that is always false, and a limiter that is never called.
+ *
+ * Two different situations answer with this and neither is a refused read: a
+ * request that could never have been a view, and a deployment that declared no
+ * budget for views at all. What they share is that no bucket is touched, so a
+ * flood of `HEAD`s cannot drain a document's allowance and leave its real reads
+ * uncounted.
+ */
+const NO_VIEW_EVENT = () => false;
+
+/**
+ * Begin counting this read against its document's view-event budget, and hand
+ * back a verdict that is **consulted, never waited for**.
+ *
+ * The bound is a Workers rate limiter binding keyed by the document. Keyed by
+ * the document because that is the property the alternatives cannot offer: a
+ * loop against one public url can only exhaust the budget of the page it is
+ * aimed at, so an attack costs one document's count and every other document
+ * keeps counting. A PostHog billing limit is the outer backstop and never the
+ * bound — it caps the invoice, and the moment it trips PostHog drops events for
+ * *every* document, so a loop against one url would take readership analytics
+ * down for the whole product. Sampling was the cheaper option and fails the
+ * same way, since a global rate means a looped document still spends
+ * everybody's budget; it also loses distinct-page counts first, because a page
+ * read twice a week contributes no event at all. Per-document aggregation keeps
+ * the counts exactly and wants the per-document coordinator `CLAUDE.md` D7
+ * keeps out of v0.
+ *
+ * The document's *analytics* key, not its id: a doc id is the read capability,
+ * since whoever holds one holds the document, and there is no reason to hand a
+ * second subsystem a copy of it. `documentAnalyticsKey` is already this
+ * document's domain-separated name, so nothing new is derived here.
+ *
+ * **Nothing in here is ever awaited on the response path.** The call starts
+ * above the D1 lookup and the verdict is read below the R2 one, so in practice
+ * it has been back for two round trips — but the guarantee does not rest on
+ * that, because a verdict that has not arrived reads as a refusal. A limiter
+ * that hangs, throws or is not declared therefore costs a lost count and never
+ * a slow page, which is the only acceptable direction on the one surface the
+ * whole internet can reach.
+ */
+function startViewEventGate(env: Env, docId: string): () => boolean {
+  const limiter = env.VIEW_EVENT_LIMITER;
+  // Not `withinLimit`'s own undefined branch, which allows. An undeclared
+  // limiter here has to refuse instead; `Env.VIEW_EVENT_LIMITER` carries the
+  // argument for inverting the house default on this one binding.
+  if (limiter === undefined) return NO_VIEW_EVENT;
+
+  let allowed = false;
+  // `void` on a task that cannot reject, rather than a floating promise with a
+  // `catch` bolted on: nothing awaits this, so a rejection escaping it would be
+  // reported against a request that has already answered correctly — the same
+  // reason `analyticsSink` catches inside its own `waitUntil`.
+  void (async () => {
+    try {
+      allowed = await withinLimit(limiter, await documentAnalyticsKey(docId));
+    } catch {
+      // A limiter that fails is an outage of the thing bounding what this
+      // costs, so the safe reading of its silence is "no budget left" rather
+      // than "no bound". `allowed` stays false and the document has already
+      // been served either way.
+    }
+  })();
+  return () => allowed;
+}
+
+/**
  * The whole public surface.
  *
  * Order matters at the end: a deleted doc is 410 before its version is even
@@ -458,6 +526,12 @@ export async function handleServing(
   env: Env,
   analytics: AnalyticsSink,
 ): Promise<Response> {
+  // Read before any I/O, so a view is dated by when the request arrived rather
+  // than by when R2 got round to answering it. A publication event takes its
+  // timestamp from the row it wrote; a view writes no row, and this is its
+  // analogue.
+  const atMs = Date.now();
+
   // Two verbs, no third. A 405 would need an error code the frozen contract
   // does not have, and nothing that legitimately reads a doc sends anything
   // else — a POST to a doc url is a probe, and it gets what a probe gets.
@@ -468,6 +542,13 @@ export async function handleServing(
   const route = parseDocPath(url.pathname);
   if (route === null) return noDocAt(request.method);
 
+  // Started here rather than beside the recording decision, so the limiter has
+  // the D1 and R2 round trips below to answer in and the verdict is already
+  // waiting when it is read. This is also where the method is decided, once: a
+  // `HEAD` never opens a gate, so it can never record and can never spend.
+  const viewEventAllowed =
+    request.method === "GET" ? startViewEventGate(env, route.docId) : NO_VIEW_EVENT;
+
   const found = await findServableVersion(env.DB, route.docId, route.pinned);
   if (found === null) return noDocAt(request.method);
   if (found.deleted_at !== null) {
@@ -475,9 +556,38 @@ export async function handleServing(
   }
   if (found.version === null) return noDocAt(request.method);
 
-  // `return await`, not `return`, for the reason spelled out in index.ts: an
-  // async function that hands back somebody else's promise unawaited drops
-  // itself out of the rejection's stack and, in workerd, gets the rejection
-  // reported as unhandled even though the router catches it.
-  return await serveObject(request, env, route, found.version);
+  // Awaited into a local rather than handed back, and not only so the status
+  // can be read below: an async function that returns somebody else's promise
+  // unawaited drops itself out of the rejection's stack and, in workerd, gets
+  // the rejection reported as unhandled even though the router catches it. The
+  // same reason index.ts gives at every dispatch it makes.
+  const response = await serveObject(request, env, route, found.version);
+
+  // One view, counted below R2 rather than above it, because the two ways this
+  // surface still answers 404 after D1 said yes — an object the pointer row
+  // promises and the bucket does not have, and a version reserved but never
+  // written — are only visible once the bucket has answered. Recording
+  // optimistically would count reads nobody received.
+  //
+  // `304` counts: a reader who asked for this document and was told to use the
+  // copy they already hold has read it. Counting `200` alone would make the
+  // metric "reads by people whose cache had gone cold", and a reader who opens
+  // the same page every morning would appear once and then seem to stop.
+  //
+  // The condition reads a status and a budget, and the method decided it above.
+  // Not the address, not the user agent, not bot management — so reloads and
+  // bots are in the count, and the alternative is inspecting the people this
+  // service promises not to look at. docs/analytics.md carries the whole rule,
+  // every exclusion, and what the number may and may not be called.
+  //
+  // The budget is consulted last and only about the *event*. A refusal here
+  // never reaches the reader: `response` is already built, and it is returned
+  // byte for byte and header for header whether or not the view was counted.
+  // What a refusal costs is the count, and docs/analytics.md says so wherever
+  // the number is read — a document read faster than its bound is undercounted.
+  if ((response.status === 200 || response.status === 304) && viewEventAllowed()) {
+    analytics.record({ name: "document_viewed", docId: route.docId, atMs });
+  }
+
+  return response;
 }
