@@ -113,6 +113,45 @@ export interface Env {
   OAUTH_GOOGLE_CLIENT_SECRET?: string;
   OAUTH_GITHUB_CLIENT_ID?: string;
   OAUTH_GITHUB_CLIENT_SECRET?: string;
+
+  /**
+   * PostHog project ingest key, and the single switch that turns product
+   * analytics on.
+   *
+   * **Optional, and absent is a supported deployment** in the same way the rate
+   * limiters above are: a self-hoster who sets nothing gets a Worker that makes
+   * no analytics request at all, which is the only defensible default for
+   * somebody else's installation. It is also what keeps every local checkout
+   * and the whole test suite silent without a second flag to remember.
+   *
+   * A secret rather than a var because it is an ingest credential, even though
+   * PostHog's `phc_` project keys are designed to sit in browser bundles and
+   * authorize capture only. Committing it would still hand anyone with the repo
+   * the ability to write events into our project, and a poisoned event stream is
+   * expensive to unpick. `phx_` personal API keys read and write everything in
+   * the account and must never be used here.
+   */
+  POSTHOG_PROJECT_API_KEY?: string;
+
+  /**
+   * PostHog ingest origin. A var rather than a secret: it is a public hostname,
+   * it differs per region, and pointing a local run at a capture server is the
+   * only honest way to see what this Worker sends. Absent means PostHog's US
+   * ingest host, so a deployment that sets the key and forgets this one still
+   * delivers rather than silently dropping every event.
+   */
+  POSTHOG_HOST?: string;
+
+  /**
+   * The `environment` property every analytics event carries, and the field
+   * every business query filters on.
+   *
+   * A var, because it describes which deployment this is rather than protecting
+   * anything. Absent means `development`: the totals must exclude a laptop and a
+   * synthetic verification run, so the default has to be the value that stays
+   * out of them rather than the one that folds them in.
+   */
+  ANALYTICS_ENVIRONMENT?: string;
 }
 
 /**

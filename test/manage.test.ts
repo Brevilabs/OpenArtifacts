@@ -1,5 +1,6 @@
 import { createExecutionContext, env, waitOnExecutionContext } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
+import { NO_ANALYTICS } from "../src/analytics.js";
 import { deleteDoc } from "../src/api/manage.js";
 import { resolvePublisher, type Publisher } from "../src/auth.js";
 import type { Env } from "../src/config.js";
@@ -286,7 +287,7 @@ describe("DELETE /api/v1/docs/{docId}", () => {
     for (let n = 1; n <= 3; n++) await env.DOCS.put(versionObjectKey(docId, n), "x");
 
     const publisher: Publisher = { owner: ownerA, plan: "believer" };
-    const response = await deleteDoc(env, publisher, docId, { objectBatch: 2 });
+    const response = await deleteDoc(env, publisher, docId, NO_ANALYTICS, { objectBatch: 2 });
 
     expect(response.status).toBe(204);
     expect(await objectKeys(docId)).toEqual([]);
