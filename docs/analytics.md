@@ -573,10 +573,11 @@ Two consequences follow, and both belong on anything built from these numbers:
   nothing is queued, nothing is replayed, and nothing reports the gap. Treat a
   small shortfall as expected rather than as evidence of a problem.
 
-The wire format is verified end to end against a local capture server, not
-against PostHog itself. Confirming that project 119931 accepts this body — one
-hand-sent event, and the date it was accepted — is owed here before any figure
-derived from these events is reported as fact.
+Project 119931 accepted this body on September 22, 2026. A local run of the
+Worker, labelled `environment: verification` so business queries exclude it,
+sent all four events through the real sender, and all four were ingested with
+their properties intact. PostHog also stored the sender's address as `$ip` —
+the Worker's egress in production, never a reader's.
 
 ## Inspecting delivery failures
 
