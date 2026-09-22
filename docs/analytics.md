@@ -246,9 +246,7 @@ counters and builds no summaries.
 **Distinct-page counts must be recomputed over the interval and never summed
 across days.** A page read on Monday and again on Tuesday is one page, not two;
 adding Monday's distinct count to Tuesday's says otherwise, and the number it
-produces looks entirely plausible. `test/analytics-views.test.ts` pins this with
-a worked example — two pages, four reads, two days — where the summed figure is
-three and the right answer is two.
+produces looks entirely plausible.
 
 Total views is a sum, so summing days is the correct way to get it. The two
 metrics differ in exactly this way, which is why they are reported together:
