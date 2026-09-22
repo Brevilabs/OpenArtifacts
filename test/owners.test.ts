@@ -85,7 +85,7 @@ it("joins both live collections with stable pagination and preserves deleted pro
   const b = doc(ACCOUNT, 2);
   const c = doc(EXTERNAL, 3);
   const unrelated = doc(OTHER_ACCOUNT, 4);
-  // Unlinked, each row's canonical account is the owner that inserted it.
+  // Unlinked, each row's publisher id is the owner that inserted it.
   for (const row of [a, b, c, unrelated]) expect(await insertDocWithinQuota(env.DB, row, 10)).toBe(row.owner);
   await softDeleteDoc(env.DB, c.id, EXTERNAL, 4);
   expect(await ownsLiveDoc(env.DB, a.id, ACCOUNT)).toBe(false);
@@ -98,12 +98,11 @@ it("joins both live collections with stable pagination and preserves deleted pro
     expect(await reserveNextVersion(env.DB, unrelated.id, owner)).toBeNull();
     expect(await softDeleteDoc(env.DB, unrelated.id, owner, 5)).toBeNull();
   }
-  // Both writes name the linked account whichever credential reached them, and
-  // neither is the id the row stores or the id the caller passed in: `a` is
-  // owned by EXTERNAL and pushed as ACCOUNT, `b` owned by ACCOUNT and withdrawn
-  // as EXTERNAL. One publisher, one id, either way round.
-  expect(await reserveNextVersion(env.DB, a.id, ACCOUNT)).toEqual({ version: 2, owner: ACCOUNT });
-  expect(await softDeleteDoc(env.DB, b.id, EXTERNAL, 5)).toBe(ACCOUNT);
+  // Both writes name the linked app-sites user whichever credential reached
+  // them: `a` is pushed as ACCOUNT, `b` owned by ACCOUNT and withdrawn as
+  // EXTERNAL. One publisher, one id, either way round.
+  expect(await reserveNextVersion(env.DB, a.id, ACCOUNT)).toEqual({ version: 2, owner: EXTERNAL });
+  expect(await softDeleteDoc(env.DB, b.id, EXTERNAL, 5)).toBe(EXTERNAL);
   expect(await env.DB.prepare("SELECT owner, deleted_at FROM docs WHERE id = ?").bind(c.id).first())
     .toEqual({ owner: EXTERNAL, deleted_at: 4 });
 });
@@ -117,8 +116,8 @@ it("counts both document owners inside reservation, including requests started b
     insertDocWithinQuota(env.DB, doc(ACCOUNT), 2),
   ]);
   expect(attempts.filter(Boolean)).toHaveLength(1);
-  // Linked, so an insert under either credential reports the same account.
-  expect(attempts.find((owner) => owner !== null)).toBe(ACCOUNT);
+  // Linked, so an insert under either credential reports the same user.
+  expect(attempts.find((owner) => owner !== null)).toBe(EXTERNAL);
   expect(await insertDocWithinQuota(env.DB, doc(EXTERNAL), 2)).toBeNull();
   expect(await insertDocWithinQuota(env.DB, doc(ACCOUNT), 2)).toBeNull();
 });

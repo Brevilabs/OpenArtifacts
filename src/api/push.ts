@@ -21,8 +21,8 @@
  * Both paths record their analytics outcome last, stamped with the same `now`
  * as the rows. `document_published` marks the push that stored a doc's first
  * version, which is a `PUT` when a failed create left a row without one.
- * `ownerId` is the canonical account the ownership check resolved, so a linked
- * license key and account token count as one publisher.
+ * `ownerId` is the publisher's app-sites user id, resolved by the ownership
+ * check, so a linked license key and account token count as one publisher.
  */
 import type { AnalyticsSink } from "../analytics.js";
 import type { Publisher } from "../auth.js";

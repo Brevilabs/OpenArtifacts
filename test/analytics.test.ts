@@ -875,15 +875,9 @@ describe("a document whose first version arrives as an update", () => {
 });
 
 /**
- * `ownerId` names a publisher, and a publisher is an account rather than a
- * credential.
- *
- * Authentication returns the external id for a license key and the local `oa_`
- * id for an account token, deliberately and permanently — `docs/identity.md`
- * keeps credential identity separate from document ownership. `OWNER_SCOPE_SQL`
- * has always collapsed a linked pair to one owner for every document query, and
- * these events have to agree with it: one person publishing from Obsidian with
- * a key and unsharing from the CLI with a token is one publisher, not two.
+ * `ownerId` names a publisher by their app-sites `User.id`, whichever credential
+ * they used: a linked license key and account token are one publisher, and an
+ * account token with no link falls back to its `oa_` id.
  */
 describe("who a publication is attributed to", () => {
   const LINKED_ACCOUNT = "oa_aaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -919,11 +913,19 @@ describe("who a publication is attributed to", () => {
       "document_updated",
       "document_unshared",
     ]);
-    // The publication arrived under the license key's external id and everything
-    // after it under the account token's. Two `distinct_id`s across these three
-    // would split one person profile in PostHog and count one publisher twice.
-    expect(owners(events)).toEqual([LINKED_ACCOUNT, LINKED_ACCOUNT, LINKED_ACCOUNT]);
-    expect(owners(events)).not.toContain(LICENSE_OWNER);
+    // The publication arrived under the license key and everything after it
+    // under the account token; all three name the app-sites user.
+    expect(owners(events)).toEqual([LICENSE_OWNER, LICENSE_OWNER, LICENSE_OWNER]);
+    expect(owners(events)).not.toContain(LINKED_ACCOUNT);
+  });
+
+  it("names an unlinked account token by its own account id", async () => {
+    const { sink, events } = collectingSink();
+
+    const docId = await published(await create(sink, VALID_PUSH, BY_TOKEN));
+    expect((await withdraw(sink, docId, BY_TOKEN)).status).toBe(204);
+
+    expect(owners(events)).toEqual([LINKED_ACCOUNT, LINKED_ACCOUNT]);
   });
 
   it("leaves an unlinked publisher under the id their credential resolved to", async () => {
@@ -933,8 +935,7 @@ describe("who a publication is attributed to", () => {
     expect((await update(sink, docId, { html: "<p>second</p>" }, BY_LICENSE)).status).toBe(200);
     expect((await withdraw(sink, docId, BY_LICENSE)).status).toBe(204);
 
-    // With no link the canonical account *is* the id authentication returned.
-    // Resolution must not invent an account for a publisher who has none.
+    // A license key's owner already is the app-sites user id.
     expect(owners(events)).toEqual([LICENSE_OWNER, LICENSE_OWNER, LICENSE_OWNER]);
   });
 });

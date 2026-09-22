@@ -5,7 +5,7 @@
  * every row here is reconstructible from it, so a lost D1 is a rebuild rather
  * than a data loss. Queries land here as the phase that needs them arrives.
  */
-import { CANONICAL_OWNER_SQL, OWNER_SCOPE_SQL } from "./owners.js";
+import { PUBLISHER_USER_ID_SQL, OWNER_SCOPE_SQL } from "./owners.js";
 
 /** Publisher row, which doubles as the license-validation cache (phase 2). */
 export interface PublisherRow {
@@ -208,8 +208,8 @@ export function d1PublisherStore(db: D1Database): PublisherStore {
 
 /**
  * Create the `docs` row for a first push, already carrying version 1 — but only
- * while this publisher is under `maxDocs` live docs. Returns the canonical
- * account the row belongs to, or null at the ceiling.
+ * while this publisher is under `maxDocs` live docs. Returns the
+ * publisher's user id (`PUBLISHER_USER_ID_SQL`), or null at the ceiling.
  *
  * A freshly minted id is private to this request, so nothing can race for its
  * first version and the insert *is* the reservation — the `UPDATE ... RETURNING`
@@ -239,7 +239,7 @@ export async function insertDocWithinQuota(
        INSERT INTO docs (id, owner, title, latest_version, created_at, updated_at)
        SELECT ?, ?, ?, ?, ?, ?
         WHERE (SELECT COUNT(*) FROM docs WHERE owner IN (SELECT owner FROM owner_scope) AND deleted_at IS NULL) < ?
-       RETURNING ${CANONICAL_OWNER_SQL} AS owner`,
+       RETURNING ${PUBLISHER_USER_ID_SQL} AS owner`,
     )
     .bind(
       doc.owner,
@@ -292,12 +292,12 @@ export async function deleteVersionRow(
 export interface ReservedVersion {
   /** The version number this push owns. No other push will be given it. */
   version: number;
-  /** The canonical account the doc belongs to, under either linked credential. */
+  /** The publisher's user id (`PUBLISHER_USER_ID_SQL`), under either linked credential. */
   owner: string;
 }
 
 /**
- * Mint the next version number for a doc, with the canonical account it belongs
+ * Mint the next version number for a doc, with the publisher's user id
  * to — or null if this publisher has no such doc to push to.
  *
  * The whole coordination story of v0 is this one statement (D7). Incrementing
@@ -328,7 +328,7 @@ export async function reserveNextVersion(
        UPDATE docs
           SET latest_version = latest_version + 1
         WHERE id = ? AND owner IN (SELECT owner FROM owner_scope) AND deleted_at IS NULL
-        RETURNING latest_version, ${CANONICAL_OWNER_SQL} AS owner`,
+        RETURNING latest_version, ${PUBLISHER_USER_ID_SQL} AS owner`,
     )
     .bind(owner, owner, docId)
     .first<{ latest_version: number; owner: string }>();
@@ -485,7 +485,7 @@ export async function ownsLiveDoc(db: D1Database, docId: string, owner: string):
 }
 
 /**
- * Soft-delete a doc, returning the canonical account it belonged to — or null
+ * Soft-delete a doc, returning the publisher's user id — or null
  * when this publisher has no live doc with that id: missing, someone else's, or
  * already deleted, conflated for the same reason as everywhere else on the
  * write path.
@@ -511,7 +511,7 @@ export async function softDeleteDoc(
        UPDATE docs
           SET deleted_at = ?
         WHERE id = ? AND owner IN (SELECT owner FROM owner_scope) AND deleted_at IS NULL
-        RETURNING ${CANONICAL_OWNER_SQL} AS owner`,
+        RETURNING ${PUBLISHER_USER_ID_SQL} AS owner`,
     )
     .bind(owner, owner, atMs, docId)
     .first<{ owner: string }>();

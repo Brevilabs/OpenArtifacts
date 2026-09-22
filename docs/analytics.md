@@ -142,20 +142,17 @@ older of two pushes that store out of order leaves it alone — deliberately,
 since `updated_at` describes what the public url is serving. Dating the event
 that way would have it name a value no column holds.
 
-`ownerId` is the canonical account the document belongs to, on all three: always
+`ownerId` is the publisher's app-sites `User.id` on all three: always
 derived from the validated credential, never accepted as input.
 [Identity](identity.md) is why that is a security property rather than a
 convention — an endpoint that took an owner id as a parameter would turn every
 account id into a password.
 
-Canonical, rather than the id authentication returned. A license key resolves to
-an external account id and an account token to a local `oa_` one, and that stays
-true: a credential names a credential. Once a pair is linked they are one
-publisher, and every document query already scopes them to one owner, so these
-events agree with it — publishing from Obsidian with a key and unsharing from
-the CLI with a token is one person carrying one `distinct_id`, not two people
-inflating a count of distinct publishers. An unlinked publisher has no link to
-follow, so their canonical account is the id their credential resolved to.
+A license key resolves to an app-sites `User.id` and an account token to a local
+`oa_` id. Once a pair is linked they are one publisher, and the events name them
+by the `User.id` under either credential, so publishing from Obsidian with a key
+and unsharing from the CLI with a token is one `distinct_id`. An account token with no linked
+license key has no `User.id`, so it is named by its `oa_` id.
 
 Resolving it costs no extra read. It is a column of the same statement that
 inserts the `docs` row, reserves the version or marks the delete, so a

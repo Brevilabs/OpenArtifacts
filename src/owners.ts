@@ -34,12 +34,16 @@ export const OWNER_SCOPE_SQL = `WITH canonical AS (
 )`;
 
 /**
- * The canonical account for the authenticated owner, as a `RETURNING`
- * expression for a statement prefixed with `OWNER_SCOPE_SQL`. A linked license
- * key and account token resolve to the same id, from the same read that
- * authorized the write.
+ * The publisher's app-sites `User.id` when one is known — the license-key owner
+ * itself, or the one linked to an account — and otherwise the local `oa_`
+ * account id. A `RETURNING` expression for a statement prefixed with
+ * `OWNER_SCOPE_SQL`, so a linked key and token resolve to the same id from the
+ * same read that authorized the write.
  */
-export const CANONICAL_OWNER_SQL = "(SELECT id FROM canonical)";
+export const PUBLISHER_USER_ID_SQL = `(SELECT COALESCE(
+  (SELECT external_owner FROM owner_links WHERE account_id = canonical.id),
+  canonical.id
+) FROM canonical)`;
 
 export type OwnerLinkResult = "linked" | "conflict" | "invalid" | "account_not_found";
 
