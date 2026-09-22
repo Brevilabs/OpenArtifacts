@@ -124,7 +124,7 @@ counted by the Worker that served them and in no other way.
 | Name | Kind | Value |
 | --- | --- | --- |
 | `POSTHOG_PROJECT_API_KEY` | secret | The project's `phc_` ingest key. |
-| `POSTHOG_HOST` | var | `https://us.i.posthog.com`, in `wrangler.jsonc`. |
+| `POSTHOG_HOST` | var | Optional. Defaults to `https://us.i.posthog.com` in code. |
 | `ANALYTICS_ENVIRONMENT` | var | `production` on the deployed Worker. |
 
 Delivery is gated on the ingest key alone:

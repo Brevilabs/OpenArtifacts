@@ -82,9 +82,8 @@ npx wrangler secret put POSTHOG_PROJECT_API_KEY   # the project's phc_ ingest ke
 
 Use the project's `phc_` ingest key, which authorizes capture and nothing else;
 a `phx_` personal API key reads and writes the whole PostHog account and must
-never go here. `POSTHOG_HOST` and `ANALYTICS_ENVIRONMENT` are ordinary vars in
-`wrangler.jsonc`, so a self-hoster who wants a different region or a name other
-than `production` edits them there rather than holding a second secret.
+never go here. `ANALYTICS_ENVIRONMENT` is an ordinary var in `wrangler.jsonc`;
+a self-hoster in another PostHog region adds a `POSTHOG_HOST` var beside it.
 
 **Skipping this is supported and changes nothing else.** With no secret the
 Worker makes no analytics request at all, which is the right default for an

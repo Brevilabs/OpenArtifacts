@@ -134,11 +134,8 @@ export interface Env {
   POSTHOG_PROJECT_API_KEY?: string;
 
   /**
-   * PostHog ingest origin. A var rather than a secret: it is a public hostname,
-   * it differs per region, and pointing a local run at a capture server is the
-   * only honest way to see what this Worker sends. Absent means PostHog's US
-   * ingest host, so a deployment that sets the key and forgets this one still
-   * delivers rather than silently dropping every event.
+   * PostHog ingest origin. Absent means PostHog's US ingest host; set it for
+   * another region, or to point a local run at a capture server.
    */
   POSTHOG_HOST?: string;
 

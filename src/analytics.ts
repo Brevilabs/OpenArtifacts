@@ -26,12 +26,8 @@ import { sha256Hex } from "./hash.js";
 const CAPTURE_PATH = "/i/v0/e/";
 
 /**
- * Where events go when `POSTHOG_HOST` is not configured.
- *
- * Delivery is gated on the ingest key alone, so this default is what keeps that
- * sentence true: a deployment that sets the secret and forgets the var should
- * send its events to PostHog's US ingest host rather than quietly send nothing,
- * which is the failure nobody notices until a month of counts is missing.
+ * Where events go when `POSTHOG_HOST` is not set. Delivery is gated on the
+ * ingest key alone, so setting the secret is enough to deliver.
  */
 const DEFAULT_POSTHOG_HOST = "https://us.i.posthog.com";
 
