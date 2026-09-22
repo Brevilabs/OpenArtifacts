@@ -19,8 +19,7 @@
  * a rollback there would strand the object it names.
  *
  * Both paths record their analytics outcome last, stamped with the same `now`
- * as the rows. `document_published` marks the push that stored a doc's first
- * version, which is a `PUT` when a failed create left a row without one.
+ * as the rows: a create is `document_published`, an update `document_updated`.
  * `ownerId` is the publisher's app-sites user id, resolved by the ownership
  * check, so a linked license key and account token count as one publisher.
  */
@@ -157,15 +156,6 @@ function planHtmlExceeded(env: Env, publisher: Publisher, limits: PlanLimits): R
 }
 
 /**
- * What a push did with its bytes. `firstVersion` is the fact the publication
- * outcome turns on: this store is what made the doc a page, rather than a new
- * version of one that already was.
- */
-type StoreOutcome =
-  | { stored: true; firstVersion: boolean }
-  | { stored: false; reason: "deleted" | "full" };
-
-/**
  * Store, record — in that order, for the reasons at the top of the file.
  *
  * The version number is already reserved by the time this runs, so the key it
@@ -183,7 +173,7 @@ async function storeVersion(
   atMs: number,
   publisher: Publisher,
   limits: PlanLimits | null,
-): Promise<StoreOutcome> {
+): Promise<"stored" | "deleted" | "full"> {
   // The publisher's own bytes, unmodified. OpenArtifacts' additions go in when the
   // document is served, so a byline change — or a plan that removes one —
   // reaches documents already published. `size` is therefore the size of what
@@ -192,14 +182,14 @@ async function storeVersion(
   const key = versionObjectKey(docId, version);
 
   if (!(await reserveStorage(env.DB, publisher.owner, docId, version, bytes.byteLength, limits?.storageBytes))) {
-    return { stored: false, reason: "full" };
+    return "full";
   }
   // An uncertain put/metadata failure keeps the reservation until reconciliation.
   await env.DOCS.put(key, bytes, {
     httpMetadata: { contentType: STORED_CONTENT_TYPE },
   });
 
-  const firstVersion = await insertVersion(env.DB, {
+  await insertVersion(env.DB, {
     doc_id: docId,
     n: version,
     size: bytes.byteLength,
@@ -221,10 +211,10 @@ async function storeVersion(
     await env.DOCS.delete(key);
     await deleteVersionRow(env.DB, docId, version);
     await releaseStorage(env.DB, docId, [version]);
-    return { stored: false, reason: "deleted" };
+    return "deleted";
   }
 
-  return { stored: true, firstVersion };
+  return "stored";
 }
 
 function storageFull(env: Env, publisher: Publisher, limits: PlanLimits): Response {
@@ -301,16 +291,15 @@ export async function createDoc(
   // that loses that race — the doc is gone, and the push is given back rather
   // than spent on a url that would serve 410.
   const result = await storeVersion(env, docId, FIRST_VERSION, parsed.body.html, title, now, publisher, limits);
-  if (!result.stored) {
+  if (result !== "stored") {
     await refundDailyPush(env.DB, publisher.owner, day);
-    if (result.reason === "full") {
+    if (result === "full") {
       await rollbackCreate(env.DB, docId);
       return storageFull(env, publisher, limits!);
     }
     return docNotFound(docId);
   }
 
-  // A freshly minted id has no earlier version, so this is always a publication.
   analytics.record({ name: "document_published", docId, atMs: now, ownerId: owner });
   return pushed(env, requestUrl, docId, FIRST_VERSION, 201);
 }
@@ -366,24 +355,15 @@ export async function updateDoc(
   // 200 would hand back a url that serves 410, so a lost race reads as what it
   // is from the caller's side: the doc is gone.
   const result = await storeVersion(env, docId, version, parsed.body.html, title, now, publisher, limits);
-  if (!result.stored) {
+  if (result !== "stored") {
     await refundDailyPush(env.DB, publisher.owner, day);
-    return result.reason === "full" ? storageFull(env, publisher, limits!) : docNotFound(docId);
+    return result === "full" ? storageFull(env, publisher, limits!) : docNotFound(docId);
   }
 
   // Only now: the title and timestamp in "my docs" describe what the public url
   // is serving, so they move after the bytes do, never before.
   await commitVersionMetadata(env.DB, docId, version, now);
 
-  // Normally an update. A create that died before writing version 1 leaves a
-  // row this push can store the doc's first bytes into, and that is the doc's
-  // publication; `firstVersion` comes from the insert itself, so racing pushes
-  // produce exactly one.
-  analytics.record({
-    name: result.firstVersion ? "document_published" : "document_updated",
-    docId,
-    atMs: now,
-    ownerId: reserved.owner,
-  });
+  analytics.record({ name: "document_updated", docId, atMs: now, ownerId: reserved.owner });
   return pushed(env, requestUrl, docId, version, 200);
 }

@@ -392,31 +392,18 @@ export async function commitVersionMetadata(
 }
 
 /**
- * Record that a version exists, and say whether it is the first this doc ever
- * had — the moment the doc stopped being an empty row and became a page.
+ * Record that a version exists.
  *
  * Written *after* its R2 object, never before, so every row here has bytes
  * behind it. The reverse failure — an object with no row — is the one this
  * ordering chooses to allow: it costs storage, where a row with no object would
  * be a doc that 500s.
- *
- * Not the same as `n = 1`: a create that died before this insert leaves the
- * next push storing the first bytes under version 2. The count runs inside the
- * insert, so of two concurrent pushes exactly one sees itself as first.
  */
-export async function insertVersion(db: D1Database, version: VersionRow): Promise<boolean> {
-  const inserted = await db
-    .prepare(
-      `INSERT INTO versions (doc_id, n, size, title, created_at) VALUES (?, ?, ?, ?, ?)
-       RETURNING (SELECT COUNT(*) FROM versions WHERE doc_id = ?) = 1 AS first_version`,
-    )
-    .bind(
-      version.doc_id, version.n, version.size, version.title, version.created_at,
-      version.doc_id,
-    )
-    .first<{ first_version: number }>();
-
-  return inserted?.first_version === 1;
+export async function insertVersion(db: D1Database, version: VersionRow): Promise<void> {
+  await db
+    .prepare("INSERT INTO versions (doc_id, n, size, title, created_at) VALUES (?, ?, ?, ?, ?)")
+    .bind(version.doc_id, version.n, version.size, version.title, version.created_at)
+    .run();
 }
 
 /** What the serving path needs to know about a doc, in one read. */
