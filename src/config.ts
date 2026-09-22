@@ -66,24 +66,8 @@ export interface Env {
 
   /**
    * Ceiling on `document_viewed` analytics events, keyed by the document read.
-   *
-   * **Absent means no view events are recorded at all**, which inverts the four
-   * limiters above, deliberately. Theirs bound a self-hoster's own D1 write
-   * budget on endpoints that have to answer without a credential: an undeclared
-   * one costs that installation and nobody else, and failing closed would mean
-   * a Worker that refuses to sign anyone in until an operator has read a
-   * configuration reference. This one stands between an anonymous public url
-   * and a metered third-party bill. Reading its absence as "no limit" would
-   * mean that setting one secret quietly arms an unbounded meter that anyone
-   * holding a document link can run up — and nothing would fail, so nobody
-   * would find out until the invoice, or until a tripped spend cap started
-   * dropping every document's counts.
-   *
-   * So the absence degrades analytics instead of unbounding it. Publication
-   * events keep recording — they are bounded by the per-day push quota and
-   * never consult this binding — and readership goes uncounted until the
-   * binding is declared. A deployment therefore cannot have this feature
-   * without its quota, which is what `CLAUDE.md` asks for.
+   * **Absent means no view events are recorded at all**, the inverse of the
+   * limiters above; docs/analytics.md ("Cost") explains why.
    */
   VIEW_EVENT_LIMITER?: RateLimit;
 

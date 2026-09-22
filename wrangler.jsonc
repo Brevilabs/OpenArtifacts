@@ -69,36 +69,8 @@
       "namespace_id": "1004",
       "simple": { "limit": 20, "period": 10 }
     },
-    // The ceiling on PostHog view events, and the only limiter here that is not
-    // about signing in. /d/{docId} is the one surface with no credential in
-    // front of it, so without this every read anybody anywhere makes mints an
-    // event somebody invoices us for, and a loop against one public url mints
-    // them at line rate for free.
-    //
-    // Keyed by the document's analytics key, not by caller and not globally.
-    // That is the property the alternatives cannot offer: a loop can only spend
-    // the budget of the page it is aimed at, so the worst it does is wreck that
-    // page's own count. A PostHog billing limit is the outer backstop and not a
-    // substitute — it bounds the invoice, and the moment it trips PostHog drops
-    // events for every document, which is the feature going dark rather than a
-    // bill being capped.
-    //
-    // Sixty a minute is one event per document per second sustained, with a
-    // whole minute of burst before it truncates. Readership arrives in clumps —
-    // a link posted to a channel and opened by thirty people at once — and a
-    // sixty-wide bucket counts that clump whole, where limit 10 / period 10
-    // would truncate it for exactly the same sustained ceiling. Above a read a
-    // second, a document's count is deliberately short; docs/analytics.md says
-    // so wherever the number is read.
-    //
-    // Unlike the four above, no constant in src/config.ts tracks these numbers,
-    // because nothing in the Worker reads them: the binding reports a verdict
-    // and no counts, and a refused *event* owes the reader no Retry-After
-    // because the reader was never refused anything.
-    //
-    // Deleting this block is supported and means no view events at all, which
-    // is the opposite of what deleting one above means. See
-    // Env.VIEW_EVENT_LIMITER in src/config.ts for why the default inverts.
+    // Ceiling on PostHog view events, per document: 60 a minute. Deleting it
+    // means no view events at all. See "Cost" in docs/analytics.md.
     {
       "name": "VIEW_EVENT_LIMITER",
       "namespace_id": "1005",

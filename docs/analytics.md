@@ -54,9 +54,13 @@ Every event is a POST to `{POSTHOG_HOST}/i/v0/e/` carrying exactly this:
 }
 ```
 
+A `document_viewed` also carries `$raw_user_agent` when the reader sent a
+`User-Agent` header, capped at 512 characters.
+
 ### The property allowlist
 
-Those five properties are the whole allowlist, and it is enforced by
+Those five properties, plus `$raw_user_agent` on a view, are the whole
+allowlist, and it is enforced by
 construction rather than by a check. The sender builds `properties` itself from
 the typed event; there is no property bag, no `Record<string, unknown>`, and no
 `Request` anywhere in the module's interface. A call site that wanted to attach
@@ -217,10 +221,12 @@ twice.
 
 **Nothing about the reader decides any of this.** The call reads a method and a
 status, and nothing else. Not the address, not the user agent, not the referrer,
-not bot management. The cost is real and belongs beside the number: **reloads
-and bots are in it.** The alternative is to start inspecting the people this
-service promises not to look at, which would buy a cleaner metric with the one
-property the metric exists to keep.
+not bot management. **Reloads and bots are in the raw count.**
+
+The user agent is carried on the event as `$raw_user_agent`, so PostHog can
+split views by browser, device and link-preview fetcher, and filter bots at
+query time with its user-agent classification. It still decides nothing in the
+Worker: every qualifying read is sent, whoever sent it.
 
 There is no publisher exclusion either. The serving surface is unauthenticated
 by design, so an author opening their own page is indistinguishable from anyone
@@ -393,8 +399,8 @@ None of the following is sent, and none of it can be, because no event shape has
 a field for it:
 
 - reader identities of any kind, including invented or derived ones;
-- IP addresses, raw user agents, `Referer`, and any other request-derived
-  metadata;
+- IP addresses, `Referer`, cookies, and any other request-derived metadata
+  other than a view's user agent;
 - public document ids, document urls, and document titles;
 - document content, in whole or in part;
 - license keys, API tokens, and every other credential.
@@ -457,10 +463,9 @@ because the multiplier is the same.
 ### The bound: sixty view events per document per minute
 
 `VIEW_EVENT_LIMITER` is a Workers rate limiter binding, declared in
-`wrangler.jsonc` and keyed by the document's analytics key. A `GET` that would
-otherwise record a view is counted against that document's bucket first, and a
-read past the bucket is served exactly as it would have been and recorded as
-nothing. The reader is never refused, never delayed and never told a bound
+`wrangler.jsonc` and keyed by the document's analytics key. The sink checks it
+inside `ctx.waitUntil`, after the response is built, so the limiter is never on
+the reader's path. A view past the bucket is not sent. The reader is never refused, never delayed and never told a bound
 exists: a refused *event* is not a refused *request*.
 
 **Keyed by the document, which is the entire point.** A bound with any wider key
@@ -500,11 +505,7 @@ multiplier to record and none is invented. Treat every view total as a floor.
 Three other things make it a floor, and all four compound:
 
 - delivery is best effort, so a PostHog outage costs counts (below);
-- the verdict is consulted, never waited for. The limiter call starts above the
-  D1 lookup and is read below the R2 one, so it has had two round trips to
-  answer — but one that somehow has not answered is read as a refusal rather
-  than waited on, because the alternative is a slow limiter holding up a
-  reader's page;
+- a limiter that throws is read as a refusal, and the view is not sent;
 - with no `VIEW_EVENT_LIMITER` declared, no view is recorded at all.
 
 Distinct-page counts survive all of this far better than totals do, because a
