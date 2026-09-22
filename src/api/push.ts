@@ -18,22 +18,11 @@
  * the failure may equally be the version insert *after* a successful write, and
  * a rollback there would strand the object it names.
  *
- * Both paths record their outcome last, and with the same `now` the rows carry
- * rather than a fresh clock read, so a push and the event describing it cannot
- * fall on opposite sides of an interval boundary.
- *
- * Which outcome is a question about the `versions` table, not about which verb
- * was used: `document_published` names the push that stored a doc's first
- * version, and a `PUT` is that push whenever a create left a row behind without
- * one. `insertVersion` answers it as part of the write.
- *
- * `ownerId` is the canonical account the doc belongs to, which the same
- * statement that authorized the push already resolved. It is derived from a
- * validated credential and from nothing else — `docs/identity.md` makes that
- * the only admissible source, and no request field could supply one. It is not
- * `publisher.owner` verbatim, because that is the id of the *credential*: a
- * license key and an account token linked to one another deliberately resolve
- * to two different ids there, and one publisher must not become two.
+ * Both paths record their analytics outcome last, stamped with the same `now`
+ * as the rows. `document_published` marks the push that stored a doc's first
+ * version, which is a `PUT` when a failed create left a row without one.
+ * `ownerId` is the canonical account the ownership check resolved, so a linked
+ * license key and account token count as one publisher.
  */
 import type { AnalyticsSink } from "../analytics.js";
 import type { Publisher } from "../auth.js";
@@ -321,16 +310,7 @@ export async function createDoc(
     return docNotFound(docId);
   }
 
-  // The doc becomes a published page here and not a line earlier: `storeVersion`
-  // is the first step whose success cannot be undone by the ones around it, and
-  // the url is handed over on the next line.
-  //
-  // Unconditionally `document_published`, and it cannot be a second one for this
-  // doc: `docId` was minted from 80 fresh CSPRNG bits in this request and
-  // inserted under the `docs` primary key, so reaching this line means no row —
-  // and therefore no version of it — existed before. `result.firstVersion` says
-  // the same thing; the update path is where it is load-bearing, because there a
-  // doc that already exists may still have no version.
+  // A freshly minted id has no earlier version, so this is always a publication.
   analytics.record({ name: "document_published", docId, atMs: now, ownerId: owner });
   return pushed(env, requestUrl, docId, FIRST_VERSION, 201);
 }
@@ -395,20 +375,10 @@ export async function updateDoc(
   // is serving, so they move after the bytes do, never before.
   await commitVersionMetadata(env.DB, docId, version, now);
 
-  // A name of its own, never a second `document_published`. A page pushed twenty
-  // times is one page, and the epic's "new pages published" counts first
-  // publications alone — emitting the same name twice would make one diligent
-  // author indistinguishable from twenty documents that do not exist.
-  //
-  // Which is exactly why the *first* one cannot be assumed to have happened. A
-  // create that died between inserting its `docs` row and writing version 1
-  // leaves a row this publisher can see in their own list and push to, and this
-  // push stores the doc's first bytes — its first moment of being readable by
-  // anyone — under version 2. Calling that an update would hand the internet a
-  // new page and leave it out of the count of new pages. `firstVersion` is the
-  // `versions` table's own answer, taken inside the insert that settles it, so
-  // two pushes racing at such a doc produce exactly one publication between
-  // them whichever order they land in.
+  // Normally an update. A create that died before writing version 1 leaves a
+  // row this push can store the doc's first bytes into, and that is the doc's
+  // publication; `firstVersion` comes from the insert itself, so racing pushes
+  // produce exactly one.
   analytics.record({
     name: result.firstVersion ? "document_published" : "document_updated",
     docId,

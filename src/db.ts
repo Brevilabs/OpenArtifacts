@@ -211,11 +211,6 @@ export function d1PublisherStore(db: D1Database): PublisherStore {
  * while this publisher is under `maxDocs` live docs. Returns the canonical
  * account the row belongs to, or null at the ceiling.
  *
- * `owner` is stored exactly as the credential resolved it; the returned id is
- * `CANONICAL_OWNER_SQL`, which is the same value under either of a linked
- * publisher's two credentials. Nothing about the row changes — only the caller
- * learns which human it belongs to.
- *
  * A freshly minted id is private to this request, so nothing can race for its
  * first version and the insert *is* the reservation — the `UPDATE ... RETURNING`
  * dance below only earns its keep once a doc is reachable by id.
@@ -259,12 +254,6 @@ export async function insertDocWithinQuota(
     )
     .first<{ owner: string }>();
 
-  // `RETURNING` yields a row only for a row actually inserted, so a refusal by
-  // the ceiling predicate reads as null — the same one bit the row count gave.
-  // The row's presence is what carries that bit, never the column: the canonical
-  // id is a `COALESCE` over a bound parameter and cannot come back empty, and
-  // reading it as a refusal would report a full shelf to a publisher whose
-  // document had just been created.
   return inserted === null ? null : inserted.owner;
 }
 
@@ -327,10 +316,6 @@ export interface ReservedVersion {
  * content a reader gets, so they are committed by `commitVersionMetadata` only
  * once the bytes are actually stored — writing them here would let a failed
  * push leave "my docs" describing a version the public url is not serving.
- *
- * `owner` out is `CANONICAL_OWNER_SQL`, not the `owner` argument: the statement
- * has already resolved a linked publisher's two credentials to one account to
- * decide the push is allowed, and handing that back is free.
  */
 export async function reserveNextVersion(
   db: D1Database,
@@ -415,18 +400,9 @@ export async function commitVersionMetadata(
  * ordering chooses to allow: it costs storage, where a row with no object would
  * be a doc that 500s.
  *
- * "First" is a question about this table and not about the number the push
- * reserved. A create that dies between its `docs` insert and this one leaves
- * `latest_version` at 1 with no row here, so the next push reserves 2 and
- * stores the doc's first bytes under that number. Version 1 is therefore not a
- * synonym for a first publication, and asking the counter would miss it.
- *
- * The count is a subquery of the insert rather than a read around it, which is
- * what makes the answer true exactly once. SQLite serializes the two inserts of
- * two concurrent pushes, so precisely one of them observes itself as the only
- * row — including when they store out of order and the lower version number
- * lands second. A count taken after both inserts would instead see two rows
- * from both and report a first publication from neither.
+ * Not the same as `n = 1`: a create that died before this insert leaves the
+ * next push storing the first bytes under version 2. The count runs inside the
+ * insert, so of two concurrent pushes exactly one sees itself as first.
  */
 export async function insertVersion(db: D1Database, version: VersionRow): Promise<boolean> {
   const inserted = await db
@@ -540,9 +516,6 @@ export async function softDeleteDoc(
     .bind(owner, owner, atMs, docId)
     .first<{ owner: string }>();
 
-  // A returned row is the proof this `UPDATE` marked the doc, exactly as
-  // `RETURNING id` was. The id it carries is read from the row, never used to
-  // decide whether there was one.
   return deleted === null ? null : deleted.owner;
 }
 

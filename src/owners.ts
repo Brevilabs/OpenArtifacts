@@ -34,20 +34,10 @@ export const OWNER_SCOPE_SQL = `WITH canonical AS (
 )`;
 
 /**
- * The canonical account for the authenticated owner, for a statement already
- * prefixed with `OWNER_SCOPE_SQL`.
- *
- * Authentication returns the external id for a license key and the local `oa_`
- * id for an account token, deliberately: a credential names a credential. Once
- * those two are linked they are nonetheless one publisher, and `owner_scope`
- * already spends a statement working out which. Returning it costs nothing
- * where it is already computed, so anything that has to name the human rather
- * than the credential — an analytics `distinct_id`, say — can have the same
- * answer the ownership check just used, from the same read.
- *
- * It is a `RETURNING` expression and not a query of its own on purpose. A
- * second lookup could disagree with the statement it accompanies, and would
- * have its own failure mode on a path where the write has already succeeded.
+ * The canonical account for the authenticated owner, as a `RETURNING`
+ * expression for a statement prefixed with `OWNER_SCOPE_SQL`. A linked license
+ * key and account token resolve to the same id, from the same read that
+ * authorized the write.
  */
 export const CANONICAL_OWNER_SQL = "(SELECT id FROM canonical)";
 

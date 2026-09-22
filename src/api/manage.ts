@@ -100,34 +100,15 @@ export async function deleteDoc(
   // An id that cannot exist is answered without touching D1.
   if (!isDocId(docId)) return docNotFound(docId);
 
-  // One clock read for the column and the event alike. `deleted_at` is the
-  // instant the doc stopped being readable, and an event stamped a few
-  // milliseconds later would put the withdrawal in a different interval from the
-  // row that performed it, for no reason but where the call sits.
+  // One clock read, so the event carries the row's `deleted_at`.
   const now = Date.now();
-  // The `UPDATE` that withdraws the doc also reports the canonical account it
-  // belonged to, which is the publisher as a person rather than as whichever of
-  // their credentials sent this `DELETE`. A publisher who published with a
-  // license key and withdrew with an account token is one publisher, and the
-  // statement had already worked that out to decide the delete was allowed.
   const owner = await softDeleteDoc(env.DB, docId, publisher.owner, now);
   if (owner === null) {
     return docNotFound(docId);
   }
 
-  // Recorded against the row, which is where the withdrawal happened. Past that
-  // `UPDATE` the doc is unreachable whatever R2 does next, which is the whole
-  // reason the catch below still answers 204 — so the sweep is cleanup, and the
-  // count must not depend on it. Inside the `try` is the placement that would:
-  // a sweep failure would skip the event while the publisher was told 204 and a
-  // retry got 404. Here the two can never disagree. The orphaned objects a
-  // failed sweep leaves are a storage problem, reported by the `console.error`
-  // below rather than by a missing event.
-  //
-  // A false return above is the entire no-op set — a second `DELETE`, another
-  // publisher's doc, a doc that never existed — and none of the three withdrew
-  // anything, so none of them reach this line. Repeated withdrawals are not
-  // repeated outcomes.
+  // Recorded before the R2 sweep, not inside it: the doc is withdrawn once the
+  // row is marked, and the handler answers 204 even if the sweep fails.
   analytics.record({ name: "document_unshared", docId, atMs: now, ownerId: owner });
 
   try {
