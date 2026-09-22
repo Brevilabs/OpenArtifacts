@@ -156,6 +156,9 @@ export async function documentAnalyticsKey(docId: string): Promise<string> {
  * PostHog stores the event without ever materialising a person behind it, and
  * `true` for the three publication events, where the person is an account that
  * already exists here.
+ *
+ * `$geoip_disable` because PostHog would otherwise geolocate the address the
+ * capture came from, which is this Worker's egress and not anyone's location.
  */
 function capturePayload(
   apiKey: string,
@@ -176,6 +179,7 @@ function capturePayload(
       environment,
       document_key: documentKey,
       $process_person_profile: !viewed,
+      $geoip_disable: true,
     },
   });
 }

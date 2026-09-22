@@ -40,7 +40,13 @@ const PUBLICATION_EVENTS = ["document_published", "document_updated", "document_
 const PAYLOAD_KEYS = ["api_key", "distinct_id", "event", "properties", "timestamp", "uuid"];
 
 /** The whole property allowlist. Adding a row here is a deliberate decision. */
-const PROPERTY_KEYS = ["$process_person_profile", "document_key", "environment", "service"];
+const PROPERTY_KEYS = [
+  "$geoip_disable",
+  "$process_person_profile",
+  "document_key",
+  "environment",
+  "service",
+];
 
 function analyticsEnv(overrides: Partial<Env> = {}): Env {
   return {
@@ -143,6 +149,8 @@ describe("the capture payload", () => {
     // The actor is an account we already resolved, so "distinct publishers" is
     // a question worth being able to ask.
     expect(properties.$process_person_profile).toBe(true);
+    // The capture comes from the Worker, so its address locates nobody.
+    expect(properties.$geoip_disable).toBe(true);
   });
 
   it("carries only the allowlisted fields for document_viewed", async () => {

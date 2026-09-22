@@ -51,14 +51,15 @@ Every event is a POST to `{POSTHOG_HOST}/i/v0/e/` carrying exactly this:
     "service": "openartifacts",
     "environment": "production",
     "document_key": "doc_<32 hex characters>",
-    "$process_person_profile": true
+    "$process_person_profile": true,
+    "$geoip_disable": true
   }
 }
 ```
 
 ### The property allowlist
 
-Those four properties are the whole allowlist, and it is enforced by
+Those five properties are the whole allowlist, and it is enforced by
 construction rather than by a check. The sender builds `properties` itself from
 the typed event; there is no property bag, no `Record<string, unknown>`, and no
 `Request` anywhere in the module's interface. A call site that wanted to attach
@@ -70,6 +71,10 @@ payload builder fails a test rather than reaching PostHog.
 three publication events. A reader must never become a PostHog person; the
 publisher already is an account this service resolved from a credential it
 validated, and "how many distinct publishers" is worth being able to ask.
+
+`$geoip_disable` is `true` on every event. PostHog would otherwise geolocate the
+address the capture came from, which is the Worker's egress, so every event
+would carry a location that belongs to Cloudflare rather than to anyone.
 
 `timestamp` is when the outcome happened, not when PostHog received it, so a
 delivery delayed behind a slow intake still lands in the right interval.
