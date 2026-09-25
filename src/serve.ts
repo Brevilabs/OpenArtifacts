@@ -458,6 +458,12 @@ export async function handleServing(
   env: Env,
   analytics: AnalyticsSink,
 ): Promise<Response> {
+  // Read before any I/O, so a view is dated by when the request arrived rather
+  // than by when R2 got round to answering it. A publication event takes its
+  // timestamp from the row it wrote; a view writes no row, and this is its
+  // analogue.
+  const atMs = Date.now();
+
   // Two verbs, no third. A 405 would need an error code the frozen contract
   // does not have, and nothing that legitimately reads a doc sends anything
   // else — a POST to a doc url is a probe, and it gets what a probe gets.
@@ -475,9 +481,26 @@ export async function handleServing(
   }
   if (found.version === null) return noDocAt(request.method);
 
-  // `return await`, not `return`, for the reason spelled out in index.ts: an
-  // async function that hands back somebody else's promise unawaited drops
-  // itself out of the rejection's stack and, in workerd, gets the rejection
-  // reported as unhandled even though the router catches it.
-  return await serveObject(request, env, route, found.version);
+  // Awaited into a local rather than handed back, and not only so the status
+  // can be read below: an async function that returns somebody else's promise
+  // unawaited drops itself out of the rejection's stack and, in workerd, gets
+  // the rejection reported as unhandled even though the router catches it. The
+  // same reason index.ts gives at every dispatch it makes.
+  const response = await serveObject(request, env, route, found.version);
+
+  // One view per GET that served the document: counted after R2 answered,
+  // because a missing object still turns into a 404 here. `304` counts, since
+  // that reader asked for this document and was told to use their copy. `HEAD`
+  // never records, so it cannot spend a document's view allowance either. The
+  // sink applies that allowance; docs/analytics.md has the whole rule.
+  if (request.method === "GET" && (response.status === 200 || response.status === 304)) {
+    analytics.record({
+      name: "document_viewed",
+      docId: route.docId,
+      atMs,
+      userAgent: request.headers.get("user-agent"),
+    });
+  }
+
+  return response;
 }

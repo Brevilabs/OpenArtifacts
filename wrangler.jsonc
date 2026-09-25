@@ -68,6 +68,13 @@
       "name": "DEVICE_POLL_CLIENT_LIMITER",
       "namespace_id": "1004",
       "simple": { "limit": 20, "period": 10 }
+    },
+    // Ceiling on PostHog view events, per document: 60 a minute. Deleting it
+    // means no view events at all. See "Cost" in docs/analytics.md.
+    {
+      "name": "VIEW_EVENT_LIMITER",
+      "namespace_id": "1005",
+      "simple": { "limit": 60, "period": 60 }
     }
   ],
 

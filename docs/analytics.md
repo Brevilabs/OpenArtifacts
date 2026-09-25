@@ -9,18 +9,18 @@ reader's browser.
 
 ## What is instrumented today
 
-The three publication outcomes, and nothing else. `createDoc`, `updateDoc` and
-`deleteDoc` each record one event on their success path; no other code in the
-Worker calls `record`.
+All four events. `createDoc`, `updateDoc` and `deleteDoc` each record one on
+their success path, and `handleServing` records one per qualifying read; no
+other code in the Worker calls `record`.
 
-| Events | Where | Status |
-| --- | --- | --- |
-| `document_published`, `document_updated`, `document_unshared` | `createDoc`, `updateDoc`, `deleteDoc`, on their success paths only | Recorded |
-| `document_viewed` | `handleServing`, on a successful public document `GET` | Not written |
+| Events | Where |
+| --- | --- |
+| `document_published`, `document_updated`, `document_unshared` | `createDoc`, `updateDoc`, `deleteDoc`, on their success paths only |
+| `document_viewed` | `handleServing`, once the served response is decided |
 
-A PostHog query over `document_viewed` therefore correctly returns nothing. Do
-not read that as zero readership; read it as zero readership instrumentation.
-The cost gate below is what it is waiting on.
+Both streams start at the deployment that landed them, and neither can be
+backfilled. A query that returns nothing for an earlier date is reporting the
+absence of instrumentation, not the absence of usage.
 
 ## The events
 
@@ -54,9 +54,13 @@ Every event is a POST to `{POSTHOG_HOST}/i/v0/e/` carrying exactly this:
 }
 ```
 
+A `document_viewed` also carries `$raw_user_agent` when the reader sent a
+`User-Agent` header, capped at 512 characters.
+
 ### The property allowlist
 
-Those five properties are the whole allowlist, and it is enforced by
+Those five properties, plus `$raw_user_agent` on a view, are the whole
+allowlist, and it is enforced by
 construction rather than by a check. The sender builds `properties` itself from
 the typed event; there is no property bag, no `Record<string, unknown>`, and no
 `Request` anywhere in the module's interface. A call site that wanted to attach
@@ -184,6 +188,77 @@ anyway, and the count would then disagree with the 404 a retry receives.
 Orphaned objects are reported separately, by `delete left objects behind` in the
 logs; they are a storage problem, not an unrecorded withdrawal.
 
+## Which reads record
+
+One `document_viewed` per read of a public document page, recorded once the
+served response is a fact rather than an intention — below R2, because the two
+ways this surface still answers 404 after D1 said yes are only visible once the
+bucket has answered.
+
+| Request | Records |
+| --- | --- |
+| `GET /d/{docId}` answering `200` | Yes |
+| `GET /d/{docId}/v{n}` answering `200` | Yes |
+| Either, answering `304` | Yes |
+| `HEAD`, on any status | No |
+| Any other method on a document url | No |
+| `404`, `410`, `500` | No |
+| The legacy host's `307` redirect | No |
+| Anything on the API surface | No |
+
+**`304` counts, and it is the half worth arguing.** It is not a failed read: it
+is a reader who asked for this document, already held a representation of it,
+and was told to use that. Counting `200` alone would quietly redefine the metric
+as "reads by people whose cache had gone cold" — a reader who opens the same
+page every morning would appear once and then seem to stop.
+
+**`HEAD` does not.** It is defined as GET without the body, and what sends one
+is a cache revalidating or a link checker, not somebody reading.
+
+**The legacy host's redirect does not.** The reader's follow-up `GET` on the
+canonical host is the view; counting the `307` as well would count one read
+twice.
+
+**Nothing about the reader decides any of this.** The call reads a method and a
+status, and nothing else. Not the address, not the user agent, not the referrer,
+not bot management. **Reloads and bots are in the raw count.**
+
+The user agent is carried on the event as `$raw_user_agent`, so PostHog can
+split views by browser, device and link-preview fetcher, and filter bots at
+query time with its user-agent classification. It still decides nothing in the
+Worker: every qualifying read is sent, whoever sent it.
+
+There is no publisher exclusion either. The serving surface is unauthenticated
+by design, so an author opening their own page is indistinguishable from anyone
+else opening it, and the only way to tell them apart would be to identify
+readers.
+
+### Reading the two readership metrics
+
+Both are computed by PostHog from the individual events. The Worker keeps no
+counters and builds no summaries.
+
+| Metric | How | Interval |
+| --- | --- | --- |
+| Total document views | Count `document_viewed` | Any |
+| Published pages viewed | Count **distinct** `document_key` | Recompute per interval |
+
+**Distinct-page counts must be recomputed over the interval and never summed
+across days.** A page read on Monday and again on Tuesday is one page, not two;
+adding Monday's distinct count to Tuesday's says otherwise, and the number it
+produces looks entirely plausible.
+
+Total views is a sum, so summing days is the correct way to get it. The two
+metrics differ in exactly this way, which is why they are reported together:
+one distinguishes distribution across pages from repeat requests for one page.
+
+Both are floors rather than exact counts. Reads past a document's per-minute
+ceiling are not recorded, and nothing in the data marks where that happened —
+[the bound](#the-bound-sixty-view-events-per-document-per-minute) is what it
+costs and why it is paid. Total views absorbs the loss first; distinct pages is
+the more robust of the two, since a document only has to be read once inside its
+window to appear.
+
 ## Coverage
 
 Event-derived figures are **observed usage since instrumentation began**, and
@@ -194,11 +269,43 @@ Anything published before it produced no event, and no event can be
 reconstructed for it — D1 is what knows about those documents, and the section
 below is how to ask.
 
+View events have no D1 fallback at all. Nothing anywhere holds a read history,
+so a date before the call site landed is not merely unmeasured, it is
+unrecoverable.
+
 There is no legacy event stream to reconcile against and nothing is
 dual-emitted. A 90-day query of production PostHog project 119931 on September
 12, 2026 found a single `openartifacts_command_copied` event and no `symposium_*`
 publication or withdrawal events of any kind. There is no migration contract to
 write because there is nothing to migrate from.
+
+### What a view event counts, and what will change it
+
+**Today the Worker sees every read.** Cloudflare does not cache HTML by default:
+eligibility is decided by file extension, and `/d/{docId}` has no extension. The
+serving zone carries no Cache Rule, and the Worker calls no Cache API, so no
+request to a document url is answered without invoking this code. Every
+qualifying read reaches the call site, and `document_viewed` is a count of reads
+up to the per-document ceiling below — a count of reads, floored.
+
+**An edge cache will change what the number means, not merely how large it is.**
+`CLAUDE.md` owes the serving zone an explicit Cache Rule, and the day it lands a
+cache hit stops invoking the Worker entirely. `document_viewed` then counts
+origin misses:
+
+| Url | Cache TTL | Roughly one event per |
+| --- | --- | --- |
+| `/d/{docId}` | 60 seconds | edge location, per minute of sustained reading |
+| `/d/{docId}/v{n}` | one year, `immutable` | edge location, per year |
+
+A pinned url read ten thousand times through one edge location would produce one
+event. That is a different quantity, not a smaller version of the same one, and
+distinct-page counts degrade with it — a page read steadily from one region
+could go a whole reporting interval without a single event.
+
+Whichever of the two lands second owes this document a restatement of what the
+metric counts. There is no partial measure available in between: a Worker cannot
+observe a request the cache answered.
 
 ## Counting pages: the authoritative aggregate
 
@@ -269,9 +376,9 @@ America/Los_Angeles, where that offset is wrong for half the year.
 
 ### What D1 cannot give back
 
-- **Readership, entirely.** D1 holds no view history and never has. Nothing that
-  happened before a `document_viewed` call site ships is reconstructible by any
-  means.
+- **Readership, entirely.** D1 holds no view history and never has. Nothing read
+  before the `document_viewed` call site landed is reconstructible by any means,
+  and a dropped view event is gone for the same reason.
 - **Anything before `0002_own_docs_by_owner.sql`.** That migration dropped
   `docs`, `versions`, `publishers` and `push_quota` rather than carrying them
   across, because every row was development data filed under a license-key hash.
@@ -290,8 +397,8 @@ None of the following is sent, and none of it can be, because no event shape has
 a field for it:
 
 - reader identities of any kind, including invented or derived ones;
-- IP addresses, raw user agents, `Referer`, and any other request-derived
-  metadata;
+- IP addresses, `Referer`, cookies, and any other request-derived metadata
+  other than a view's user agent;
 - public document ids, document urls, and document titles;
 - document content, in whole or in part;
 - license keys, API tokens, and every other credential.
@@ -306,6 +413,7 @@ counted by the Worker that served them and in no other way.
 | `POSTHOG_PROJECT_API_KEY` | secret | The project's `phc_` ingest key. |
 | `POSTHOG_HOST` | var | Optional. Defaults to `https://us.i.posthog.com` in code. |
 | `ANALYTICS_ENVIRONMENT` | var | `production` on the deployed Worker. |
+| `VIEW_EVENT_LIMITER` | rate limiter binding | 60 per 60s, in `wrangler.jsonc`. Absent records no views. |
 
 Delivery is gated on the ingest key alone:
 
@@ -332,19 +440,16 @@ npx wrangler dev --var POSTHOG_HOST:http://127.0.0.1:8999 \
   --var ANALYTICS_ENVIRONMENT:development
 ```
 
-## Cost, and the gate before view events ship
-
-**This is the one part of the design that needs a decision before readership is
-instrumented, and it belongs here rather than in a PR that has already spent the
-money.**
+## Cost: view events need a ceiling
 
 PostHog product analytics is priced per event. The three publication events are
 bounded by the per-day push quota that already exists, so their volume is a
 function of how many people publish and cannot run away. `document_viewed` is
-different in kind: `/d/{docId}` is unauthenticated, carries no rate limiter, and
-is read by a population two or three orders of magnitude larger than the
-publisher count. One event per read makes the analytics bill a function of
-audience size.
+different in kind: `/d/{docId}` is unauthenticated and is read by a population
+two or three orders of magnitude larger than the publisher count. One event per
+read, unbounded, makes the analytics bill a function of audience size — and of
+attacker effort, since a loop against one public url would mint billable events
+at line rate, from anywhere, with no credential.
 
 [Cost at scale](cost-at-scale.md) makes the opposite promise — cost scales with
 publishers and bytes, not with audience size — and §6 names analytics as the
@@ -353,18 +458,98 @@ pricing that section forbids, and `$process_person_profile: false` means no
 reader ever becomes a billable person. The failure mode is the same one anyway,
 because the multiplier is the same.
 
-Two things must therefore be true before a `document_viewed` call site ships,
-and neither is true today:
+### The bound: sixty view events per document per minute
 
-- **A project billing limit is set in PostHog and recorded here.** An
-  unauthenticated endpoint with no ceiling is an attacker-controlled bill: a
-  loop against one public url mints billable events at line rate.
-- **View events carry a bound of their own.** Either a fixed sampling rate,
-  carried as a property so the multiplier is recoverable, or a per-document
-  counter aggregated before it leaves the Worker. `CLAUDE.md` requires that
-  quotas ship with the feature they protect rather than after it.
+`VIEW_EVENT_LIMITER` is a Workers rate limiter binding, declared in
+`wrangler.jsonc` and keyed by the document's analytics key. The sink checks it
+inside `ctx.waitUntil`, after the response is built, so the limiter is never on
+the reader's path. A view past the bucket is not sent. The reader is never refused, never delayed and never told a bound
+exists: a refused *event* is not a refused *request*.
 
-Publication events need neither and can ship without them.
+**Keyed by the document, which is the entire point.** A bound with any wider key
+— one shared bucket, a global sampling rate — would let a loop against a single
+public url spend everybody's allowance, and the first casualty would be
+readership numbers for every other document. Per document, the worst somebody
+holding one link can do is wreck that page's own count.
+
+Sixty a minute is one event per document per second sustained, with a whole
+minute of burst before it truncates. Readership arrives in clumps — a link
+posted to a channel and opened by thirty people at once — and a sixty-wide
+bucket counts that clump whole, where `limit: 10, period: 10` would truncate it
+for exactly the same sustained ceiling. A looped document's worst case becomes
+86,400 events a day instead of an unbounded number: a ceiling that can be
+watched.
+
+Two other shapes were considered and rejected:
+
+- **Sampling** is cheaper and fails in the way this bound exists to avoid, since
+  a global rate means a looped document still spends everybody's budget. It also
+  loses distinct-page counts first — a page read twice a week contributes no
+  event at all — and the rate would have to be guessed before any traffic
+  existed and then baked into the only record of what that traffic was.
+- **Per-document aggregation** preserves counts exactly and wants the
+  per-document coordinator `CLAUDE.md` D7 keeps out of v0: a stateful object in
+  the read path of every public document. It is the shape to revisit if
+  undercounting a popular page ever costs more than that coordinator does.
+
+### What the bound costs the numbers
+
+**A document read faster than once a second is undercounted, and the shortfall
+is invisible in the data.** A refused event is not sent, and nothing in what is
+sent says a refusal happened: `properties` is a closed allowlist, and the Worker
+cannot read its own limit back out of the binding, so there is no honest
+multiplier to record and none is invented. Treat every view total as a floor.
+
+Three other things make it a floor, and all four compound:
+
+- delivery is best effort, so a PostHog outage costs counts (below);
+- a limiter that throws is read as a refusal, and the view is not sent;
+- with no `VIEW_EVENT_LIMITER` declared, no view is recorded at all.
+
+Distinct-page counts survive all of this far better than totals do, because a
+document only has to be read once inside its window to appear. That is the main
+reason the bound is a per-document limiter rather than a sampling rate.
+
+`HEAD` requests spend no budget, because they record nothing. Otherwise the
+cheapest way to stop a page being counted would be to flood it with requests
+that were never going to be counted anyway.
+
+### An absent binding records no views
+
+This inverts the four sign-in limiters in `wrangler.jsonc`, where an undeclared
+binding means no limit on that endpoint. Theirs bound a self-hoster's own D1
+write budget, so an absent one costs that installation and nobody else. This one
+stands between an anonymous public url and a metered third-party bill, and
+"absent means no limit" there would mean setting one secret quietly arms an
+unbounded meter that anyone holding a document link can run up. Nothing would
+fail, so nobody would find out until the invoice — or until a tripped spend cap
+started dropping everybody's counts.
+
+So a deployment with the ingest secret and no `VIEW_EVENT_LIMITER` records
+publication events and no view events. Analytics degrades to publication-only,
+which is a complete and fully bounded product rather than a broken one, and a
+deployment cannot have readership counts without their quota — which is what
+`CLAUDE.md` asks of any quota.
+
+Publication events never consult this binding, in any configuration. They stay
+bounded by the per-day push quota and are unaffected by a limiter that is
+absent, refusing or broken.
+
+### The billing limit is the outer backstop
+
+The bound is per document; the bill is not. Documents exist only because
+somebody with a key published one, so the aggregate worst case is the number of
+documents times 86,400 a day, and that is still worth capping. **A PostHog
+project billing limit remains a deployment prerequisite** —
+[Deploying](deploying.md#the-product-analytics-secret) carries it alongside the
+binding.
+
+The two are not interchangeable, and the billing limit is the weaker of them. It
+bounds the invoice and does not protect the feature: a tripped limit makes
+PostHog drop events for *every* document, so on its own it would let one looped
+url take readership analytics down for the whole product. The in-Worker bound is
+what keeps a single url from reaching that state, and what confines the damage
+to one page if anything else does.
 
 ## Delivery is best effort
 
@@ -386,23 +571,11 @@ Two consequences follow, and both belong on anything built from these numbers:
   nothing is queued, nothing is replayed, and nothing reports the gap. Treat a
   small shortfall as expected rather than as evidence of a problem.
 
-- **An edge cache will change what a view event counts.** `CLAUDE.md` owes the
-  serving zone an explicit Cache Rule, and `/d/{docId}` is uncached until it
-  lands. Afterwards a cache hit never invokes the Worker, so `document_viewed`
-  counts origin misses rather than reads — roughly one per edge location per
-  TTL, and for a pinned `/v{n}` url served `immutable` for a year, about one
-  event per location per year. That is not a smaller version of the same
-  number, it is a different quantity, and whichever of the two lands second
-  must restate what the metric means.
-
-Distinct-page metrics must be recomputed for each interval from the underlying
-events. Summing daily distinct-document counts into a weekly one double-counts
-every document read on more than one day.
-
-The wire format is verified end to end against a local capture server, not
-against PostHog itself. Confirming that project 119931 accepts this body — one
-hand-sent event, and the date it was accepted — is owed here before any figure
-derived from these events is reported as fact.
+Project 119931 accepted this body on September 22, 2026. A local run of the
+Worker, labelled `environment: verification` so business queries exclude it,
+sent all four events through the real sender, and all four were ingested with
+their properties intact. PostHog also stored the sender's address as `$ip` —
+the Worker's egress in production, never a reader's.
 
 ## Inspecting delivery failures
 

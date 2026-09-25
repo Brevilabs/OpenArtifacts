@@ -5,7 +5,7 @@
  * What leaves this Worker is decided *here*, from a closed union of four event
  * shapes, and never by a caller: `properties` is assembled below out of those
  * fields alone, and nothing in the interface accepts a property bag, a
- * `Request`, a title, a url or a reader. A call site that wanted to attach one
+ * `Request`, a title or a url. A call site that wanted to attach one
  * would have nowhere to put it, which is a stronger guarantee than an allowlist
  * checked at send time — that one keeps working right up until somebody adds a
  * key to it.
@@ -20,6 +20,7 @@
  * usage since instrumentation began, not exact all-time counts.
  */
 import type { Env } from "./config.js";
+import { withinLimit } from "./limits.js";
 import { sha256Hex } from "./hash.js";
 
 /** PostHog's single-event capture endpoint. */
@@ -56,13 +57,18 @@ const DEFAULT_ENVIRONMENT = "development";
 export const ANALYTICS_TIMEOUT_MS = 2000;
 
 /**
+ * Longest user agent a view event carries. Real browser strings are a few
+ * hundred characters; the header is reader-controlled, so it is capped.
+ */
+export const MAX_USER_AGENT_LENGTH = 512;
+
+/**
  * The four outcomes worth counting, and the only things that can be recorded.
  *
- * The union is the privacy boundary expressed in the type system. A view event
- * has no `ownerId` field to fill in, so a reader cannot be turned into an
- * account by a later edit that looked harmless; the three publication events do
- * have one, because the actor there is an account this Worker already resolved
- * from a credential it validated.
+ * A view event has no `ownerId` field to fill in, so a reader cannot be turned
+ * into an account; the three publication events do have one, because the actor
+ * there is an account this Worker already resolved from a credential it
+ * validated. The one thing a view carries about its reader is the user agent.
  */
 export type DocumentEvent =
   | {
@@ -74,7 +80,13 @@ export type DocumentEvent =
       /** The account that performed it — always derived, never request input. */
       ownerId: string;
     }
-  | { name: "document_viewed"; docId: string; atMs: number };
+  | {
+      name: "document_viewed";
+      docId: string;
+      atMs: number;
+      /** The reader's `User-Agent` header, or null when absent. */
+      userAgent: string | null;
+    };
 
 export interface AnalyticsSink {
   /** Fire and forget. Never throws, never returns a promise a handler awaits. */
@@ -159,6 +171,9 @@ export async function documentAnalyticsKey(docId: string): Promise<string> {
  *
  * `$geoip_disable` because PostHog would otherwise geolocate the address the
  * capture came from, which is this Worker's egress and not anyone's location.
+ *
+ * A view's user agent goes in `$raw_user_agent`, the property PostHog's bot
+ * classification and user-agent parsing read for server-side events.
  */
 function capturePayload(
   apiKey: string,
@@ -180,6 +195,9 @@ function capturePayload(
       document_key: documentKey,
       $process_person_profile: !viewed,
       $geoip_disable: true,
+      ...(viewed && event.userAgent
+        ? { $raw_user_agent: event.userAgent.slice(0, MAX_USER_AGENT_LENGTH) }
+        : {}),
     },
   });
 }
@@ -205,9 +223,9 @@ async function deliver(
   host: string,
   environment: string,
   event: DocumentEvent,
+  documentKey: string,
   uuid: string,
 ): Promise<void> {
-  const documentKey = await documentAnalyticsKey(event.docId);
   const response = await fetch(`${host}${CAPTURE_PATH}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -232,6 +250,27 @@ async function deliver(
 }
 
 /**
+ * Whether a view may be sent, against its document's `VIEW_EVENT_LIMITER`
+ * allowance. Checked inside `waitUntil`, after the reader has their page, so
+ * the limiter can never slow or fail a read.
+ *
+ * An undeclared binding or a failing limiter sends nothing: this bound is what
+ * stands between an anonymous public url and a metered bill. The reasoning,
+ * and why the bucket is per document, is in docs/analytics.md under "Cost".
+ */
+async function viewWithinAllowance(
+  limiter: RateLimit | undefined,
+  documentKey: string,
+): Promise<boolean> {
+  if (limiter === undefined) return false;
+  try {
+    return await withinLimit(limiter, documentKey);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * The production sink.
  *
  * Configuration is read once, when the sink is built, and delivery is gated on
@@ -247,6 +286,15 @@ export function analyticsSink(env: Env, ctx: ExecutionContext): AnalyticsSink {
 
   const host = (env.POSTHOG_HOST?.trim() || DEFAULT_POSTHOG_HOST).replace(/\/+$/, "");
   const environment = env.ANALYTICS_ENVIRONMENT?.trim() || DEFAULT_ENVIRONMENT;
+  const viewLimiter = env.VIEW_EVENT_LIMITER;
+
+  const send = async (event: DocumentEvent, uuid: string): Promise<void> => {
+    const documentKey = await documentAnalyticsKey(event.docId);
+    if (event.name === "document_viewed" && !(await viewWithinAllowance(viewLimiter, documentKey))) {
+      return;
+    }
+    await deliver(apiKey, host, environment, event, documentKey, uuid);
+  };
 
   return {
     record(event) {
@@ -260,7 +308,7 @@ export function analyticsSink(env: Env, ctx: ExecutionContext): AnalyticsSink {
       // has to end here. `waitUntil` would otherwise report it as an unhandled
       // rejection against a request that has already answered correctly.
       ctx.waitUntil(
-        deliver(apiKey, host, environment, event, uuid).catch(() => {
+        send(event, uuid).catch(() => {
           deliveryFailed(event, null);
         }),
       );

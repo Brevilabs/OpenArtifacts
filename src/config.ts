@@ -64,6 +64,13 @@ export interface Env {
    */
   DEVICE_POLL_CLIENT_LIMITER?: RateLimit;
 
+  /**
+   * Ceiling on `document_viewed` analytics events, keyed by the document read.
+   * **Absent means no view events are recorded at all**, the inverse of the
+   * limiters above; docs/analytics.md ("Cost") explains why.
+   */
+  VIEW_EVENT_LIMITER?: RateLimit;
+
   /** Canonical host that serves public docs. Empty in local development. */
   SERVING_HOST?: string;
   /** Canonical host that exposes /api/v1. Empty in local development. */

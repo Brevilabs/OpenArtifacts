@@ -2,6 +2,7 @@ import { createExecutionContext, env, waitOnExecutionContext } from "cloudflare:
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ANALYTICS_TIMEOUT_MS,
+  MAX_USER_AGENT_LENGTH,
   analyticsSink,
   documentAnalyticsKey,
   NO_ANALYTICS,
@@ -57,8 +58,12 @@ const PROPERTY_KEYS = [
   "service",
 ];
 
+/** A view limiter that always allows, so sender tests are not about the bound. */
+const ALLOW_VIEWS: RateLimit = { limit: async () => ({ success: true }) };
+
 function analyticsEnv(overrides: Partial<Env> = {}): Env {
   return {
+    VIEW_EVENT_LIMITER: ALLOW_VIEWS,
     POSTHOG_PROJECT_API_KEY: KEY,
     POSTHOG_HOST: HOST,
     ANALYTICS_ENVIRONMENT: "test",
@@ -70,7 +75,7 @@ function publication(name: (typeof PUBLICATION_EVENTS)[number]): DocumentEvent {
   return { name, docId: DOC_ID, atMs: AT_MS, ownerId: OWNER };
 }
 
-const VIEW: DocumentEvent = { name: "document_viewed", docId: DOC_ID, atMs: AT_MS };
+const VIEW: DocumentEvent = { name: "document_viewed", docId: DOC_ID, atMs: AT_MS, userAgent: null };
 
 interface Delivery {
   url: string;
@@ -183,6 +188,22 @@ describe("the capture payload", () => {
     expect(properties.document_key).toBe(documentKey);
     // A reader must never become a person in PostHog.
     expect(properties.$process_person_profile).toBe(false);
+  });
+
+  it("carries a view's user agent as $raw_user_agent, capped in length", async () => {
+    const { deliveries } = captureDeliveries();
+    const browser = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Safari/605.1.15";
+
+    await record({ ...VIEW, userAgent: browser });
+    await record({ ...VIEW, userAgent: "x".repeat(MAX_USER_AGENT_LENGTH * 4) });
+
+    expect(deliveries).toHaveLength(2);
+    const [full, capped] = deliveries.map(
+      (delivery) => delivery.body.properties as Record<string, unknown>,
+    );
+    expect(Object.keys(full!).sort()).toEqual([...PROPERTY_KEYS, "$raw_user_agent"].sort());
+    expect(full!.$raw_user_agent).toBe(browser);
+    expect(capped!.$raw_user_agent).toBe("x".repeat(MAX_USER_AGENT_LENGTH));
   });
 
   it("puts distinct_id at the top level, never inside properties", async () => {
