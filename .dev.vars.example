@@ -28,3 +28,18 @@ OAUTH_GOOGLE_CLIENT_ID=""
 OAUTH_GOOGLE_CLIENT_SECRET=""
 OAUTH_GITHUB_CLIENT_ID=""
 OAUTH_GITHUB_CLIENT_SECRET=""
+
+# PostHog project ingest key. Product analytics is gated on this alone, so
+# leaving it empty means the worker makes no analytics request at all — which is
+# what you want locally unless you are deliberately watching what it sends.
+#
+# It must be the project's `phc_` ingest key, which authorizes capture and
+# nothing else. A `phx_` personal API key reads and writes everything in the
+# PostHog account and must never be put here.
+#
+# To watch the wire locally, set this to any value, point POSTHOG_HOST at a
+# capture server, and label the events as development so they stay out of the
+# business totals:
+#   npx wrangler dev --var POSTHOG_HOST:http://127.0.0.1:8999 \
+#     --var ANALYTICS_ENVIRONMENT:development
+POSTHOG_PROJECT_API_KEY=""

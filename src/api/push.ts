@@ -18,6 +18,7 @@
  * the failure may equally be the version insert *after* a successful write, and
  * a rollback there would strand the object it names.
  */
+import type { AnalyticsSink } from "../analytics.js";
 import type { Publisher } from "../auth.js";
 import { MAX_DOCS_PER_PUBLISHER, MAX_DOC_BYTES, MAX_PUSHES_PER_DAY } from "../config.js";
 import { limitReached, planLimits, type PlanLimits } from "../plans.js";
@@ -228,6 +229,7 @@ export async function createDoc(
   requestUrl: URL,
   env: Env,
   publisher: Publisher,
+  analytics: AnalyticsSink,
 ): Promise<Response> {
   const limits = publisher.authKind === "account" ? planLimits(env, publisher.plan) : null;
   const parsed = await parsePushBody(request);
@@ -301,6 +303,7 @@ export async function updateDoc(
   env: Env,
   publisher: Publisher,
   docId: string,
+  analytics: AnalyticsSink,
 ): Promise<Response> {
   // An id that cannot exist is answered without touching D1.
   if (!isDocId(docId)) return docNotFound(docId);

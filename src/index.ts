@@ -1,4 +1,5 @@
 import { handleAccount } from "./account.js";
+import { analyticsSink, type AnalyticsSink } from "./analytics.js";
 import { deleteDoc, listDocs } from "./api/manage.js";
 import { ADMIN_PREFIX, handleAdmin } from "./admin.js";
 import { APPROVAL_PREFIX, handleApproval } from "./approval/handler.js";
@@ -101,8 +102,16 @@ export function resolveSurface(hostname: string, pathname: string, config: Surfa
 /**
  * Every API request authenticates before any handler sees it, so a handler can
  * assume a publisher and never has to reason about the license key.
+ *
+ * `analytics` rides down to the three handlers that change a document, for the
+ * reason given where it is built.
  */
-async function handleApi(request: Request, url: URL, env: Env): Promise<Response> {
+async function handleApi(
+  request: Request,
+  url: URL,
+  env: Env,
+  analytics: AnalyticsSink,
+): Promise<Response> {
   const auth = await authenticateRequest(request, env);
   if (!auth.ok) return publisherErrorResponse(auth);
 
@@ -135,16 +144,16 @@ async function handleApi(request: Request, url: URL, env: Env): Promise<Response
   // promise, for the reason spelled out on the catch below.
   if (collection === "docs" && extra.length === 0) {
     if (docId === undefined && request.method === "POST") {
-      return await createDoc(request, url, env, auth.publisher);
+      return await createDoc(request, url, env, auth.publisher, analytics);
     }
     if (docId === undefined && request.method === "GET") {
       return await listDocs(url, env, auth.publisher);
     }
     if (docId !== undefined && request.method === "PUT") {
-      return await updateDoc(request, url, env, auth.publisher, docId);
+      return await updateDoc(request, url, env, auth.publisher, docId, analytics);
     }
     if (docId !== undefined && request.method === "DELETE") {
-      return await deleteDoc(env, auth.publisher, docId);
+      return await deleteDoc(env, auth.publisher, docId, analytics);
     }
   }
 
@@ -164,7 +173,7 @@ async function handleApi(request: Request, url: URL, env: Env): Promise<Response
 }
 
 export default {
-  async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
     const surfaceConfig = {
@@ -210,6 +219,18 @@ export default {
       return Response.json({ ok: true });
     }
 
+    // Product analytics, built once per request and handed to the handlers that
+    // own an outcome worth counting. It is a parameter rather than something
+    // reachable from `env` on purpose: a handler that can record has to have
+    // been given the ability, so the set of places an event can come from is
+    // the set of places this value reaches, and that set is this file.
+    //
+    // `ctx` exists for this. Delivery is scheduled on `ctx.waitUntil` after the
+    // response is decided, which is what keeps an analytics outage off the
+    // publish and read paths; a sink built without it would have to either
+    // block the response or drop the event.
+    const analytics = analyticsSink(env, ctx);
+
     try {
       // `return await`, not `return` — here, and at every dispatch either
       // surface makes. A bare return hands somebody else's promise back
@@ -235,9 +256,9 @@ export default {
           if (pathIsUnder(url.pathname, DEVICE_PREFIX)) {
             return await handleDevice(request, url, env);
           }
-          return await handleApi(request, url, env);
+          return await handleApi(request, url, env, analytics);
         case "serving":
-          return await handleServing(request, url, env);
+          return await handleServing(request, url, env, analytics);
         default:
           return errorResponse("not_found", `No route for ${url.pathname}`);
       }
