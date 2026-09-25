@@ -5,7 +5,7 @@
  * every row here is reconstructible from it, so a lost D1 is a rebuild rather
  * than a data loss. Queries land here as the phase that needs them arrives.
  */
-import { OWNER_SCOPE_SQL } from "./owners.js";
+import { PUBLISHER_USER_ID_SQL, OWNER_SCOPE_SQL } from "./owners.js";
 
 /** Publisher row, which doubles as the license-validation cache (phase 2). */
 export interface PublisherRow {
@@ -208,8 +208,8 @@ export function d1PublisherStore(db: D1Database): PublisherStore {
 
 /**
  * Create the `docs` row for a first push, already carrying version 1 — but only
- * while this publisher is under `maxDocs` live docs. Returns false at the
- * ceiling.
+ * while this publisher is under `maxDocs` live docs. Returns the
+ * publisher's user id (`PUBLISHER_USER_ID_SQL`), or null at the ceiling.
  *
  * A freshly minted id is private to this request, so nothing can race for its
  * first version and the insert *is* the reservation — the `UPDATE ... RETURNING`
@@ -232,13 +232,14 @@ export async function insertDocWithinQuota(
   db: D1Database,
   doc: Omit<DocRow, "deleted_at" | "latest_version">,
   maxDocs: number,
-): Promise<boolean> {
-  const result = await db
+): Promise<string | null> {
+  const inserted = await db
     .prepare(
       `${OWNER_SCOPE_SQL}
        INSERT INTO docs (id, owner, title, latest_version, created_at, updated_at)
        SELECT ?, ?, ?, ?, ?, ?
-        WHERE (SELECT COUNT(*) FROM docs WHERE owner IN (SELECT owner FROM owner_scope) AND deleted_at IS NULL) < ?`,
+        WHERE (SELECT COUNT(*) FROM docs WHERE owner IN (SELECT owner FROM owner_scope) AND deleted_at IS NULL) < ?
+       RETURNING ${PUBLISHER_USER_ID_SQL} AS owner`,
     )
     .bind(
       doc.owner,
@@ -251,9 +252,9 @@ export async function insertDocWithinQuota(
       doc.updated_at,
       maxDocs,
     )
-    .run();
+    .first<{ owner: string }>();
 
-  return (result.meta.changes ?? 0) > 0;
+  return inserted === null ? null : inserted.owner;
 }
 
 /**
@@ -288,9 +289,16 @@ export async function deleteVersionRow(
   await db.prepare("DELETE FROM versions WHERE doc_id = ? AND n = ?").bind(docId, version).run();
 }
 
+export interface ReservedVersion {
+  /** The version number this push owns. No other push will be given it. */
+  version: number;
+  /** The publisher's user id (`PUBLISHER_USER_ID_SQL`), under either linked credential. */
+  owner: string;
+}
+
 /**
- * Mint the next version number for a doc, or null if this publisher has no such
- * doc to push to.
+ * Mint the next version number for a doc, with the publisher's user id
+ * to — or null if this publisher has no such doc to push to.
  *
  * The whole coordination story of v0 is this one statement (D7). Incrementing
  * and reading back in a single write means two concurrent pushes to the same
@@ -313,19 +321,19 @@ export async function reserveNextVersion(
   db: D1Database,
   docId: string,
   owner: string,
-): Promise<number | null> {
+): Promise<ReservedVersion | null> {
   const reserved = await db
     .prepare(
       `${OWNER_SCOPE_SQL}
        UPDATE docs
           SET latest_version = latest_version + 1
         WHERE id = ? AND owner IN (SELECT owner FROM owner_scope) AND deleted_at IS NULL
-        RETURNING latest_version`,
+        RETURNING latest_version, ${PUBLISHER_USER_ID_SQL} AS owner`,
     )
     .bind(owner, owner, docId)
-    .first<{ latest_version: number }>();
+    .first<{ latest_version: number; owner: string }>();
 
-  return reserved?.latest_version ?? null;
+  return reserved === null ? null : { version: reserved.latest_version, owner: reserved.owner };
 }
 
 /**
@@ -464,9 +472,10 @@ export async function ownsLiveDoc(db: D1Database, docId: string, owner: string):
 }
 
 /**
- * Soft-delete a doc, returning false when this publisher has no live doc with
- * that id — missing, someone else's, or already deleted, conflated for the same
- * reason as everywhere else on the write path.
+ * Soft-delete a doc, returning the publisher's user id — or null
+ * when this publisher has no live doc with that id: missing, someone else's, or
+ * already deleted, conflated for the same reason as everywhere else on the
+ * write path.
  *
  * Soft, not hard: the row is what lets the serving path answer 410 rather than
  * 404, so a reader who bookmarked the link learns it was withdrawn instead of
@@ -482,19 +491,19 @@ export async function softDeleteDoc(
   docId: string,
   owner: string,
   atMs: number,
-): Promise<boolean> {
+): Promise<string | null> {
   const deleted = await db
     .prepare(
       `${OWNER_SCOPE_SQL}
        UPDATE docs
           SET deleted_at = ?
         WHERE id = ? AND owner IN (SELECT owner FROM owner_scope) AND deleted_at IS NULL
-        RETURNING id`,
+        RETURNING ${PUBLISHER_USER_ID_SQL} AS owner`,
     )
     .bind(owner, owner, atMs, docId)
-    .first<{ id: string }>();
+    .first<{ owner: string }>();
 
-  return deleted !== null;
+  return deleted === null ? null : deleted.owner;
 }
 
 /** One row of the publisher's doc list, as the index scan yields it. */

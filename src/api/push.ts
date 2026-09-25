@@ -17,6 +17,11 @@
  * anything pointed at it. Rolling the row back is deliberately not attempted:
  * the failure may equally be the version insert *after* a successful write, and
  * a rollback there would strand the object it names.
+ *
+ * Both paths record their analytics outcome last, stamped with the same `now`
+ * as the rows: a create is `document_published`, an update `document_updated`.
+ * `ownerId` is the publisher's app-sites user id, resolved by the ownership
+ * check, so a linked license key and account token count as one publisher.
  */
 import type { AnalyticsSink } from "../analytics.js";
 import type { Publisher } from "../auth.js";
@@ -250,7 +255,7 @@ export async function createDoc(
   // let concurrent creates all read the same count and all proceed, so the
   // documented ceiling would hold only for callers who push one at a time.
   const docId = newDocId();
-  const inserted = await insertDocWithinQuota(
+  const owner = await insertDocWithinQuota(
     env.DB,
     {
       id: docId,
@@ -261,7 +266,7 @@ export async function createDoc(
     },
     maxDocs,
   );
-  if (!inserted) {
+  if (owner === null) {
     if (limits) {
       return limitReached(
         env, publisher, "documents",
@@ -294,6 +299,8 @@ export async function createDoc(
     }
     return docNotFound(docId);
   }
+
+  analytics.record({ name: "document_published", docId, atMs: now, ownerId: owner });
   return pushed(env, requestUrl, docId, FIRST_VERSION, 201);
 }
 
@@ -332,11 +339,12 @@ export async function updateDoc(
   // Past this point the push is paid for, and a delete can still land at either
   // of the two steps below. Both give the push back: a rejected push costs the
   // caller nothing, which is the same promise the ownership check above makes.
-  const version = await reserveNextVersion(env.DB, docId, publisher.owner);
-  if (version === null) {
+  const reserved = await reserveNextVersion(env.DB, docId, publisher.owner);
+  if (reserved === null) {
     await refundDailyPush(env.DB, publisher.owner, day);
     return docNotFound(docId);
   }
+  const version = reserved.version;
 
   // Absent title keeps the doc's current one; a blank one resets it, same as on
   // create. The version row records which of those this push asked for, so the
@@ -355,5 +363,7 @@ export async function updateDoc(
   // Only now: the title and timestamp in "my docs" describe what the public url
   // is serving, so they move after the bytes do, never before.
   await commitVersionMetadata(env.DB, docId, version, now);
+
+  analytics.record({ name: "document_updated", docId, atMs: now, ownerId: reserved.owner });
   return pushed(env, requestUrl, docId, version, 200);
 }

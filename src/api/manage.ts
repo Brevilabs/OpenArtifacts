@@ -100,9 +100,16 @@ export async function deleteDoc(
   // An id that cannot exist is answered without touching D1.
   if (!isDocId(docId)) return docNotFound(docId);
 
-  if (!(await softDeleteDoc(env.DB, docId, publisher.owner, Date.now()))) {
+  // One clock read, so the event carries the row's `deleted_at`.
+  const now = Date.now();
+  const owner = await softDeleteDoc(env.DB, docId, publisher.owner, now);
+  if (owner === null) {
     return docNotFound(docId);
   }
+
+  // Recorded before the R2 sweep, not inside it: the doc is withdrawn once the
+  // row is marked, and the handler answers 204 even if the sweep fails.
+  analytics.record({ name: "document_unshared", docId, atMs: now, ownerId: owner });
 
   try {
     await deleteDocObjects(env, docId, deps.objectBatch ?? OBJECT_BATCH);

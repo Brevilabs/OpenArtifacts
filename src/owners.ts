@@ -33,6 +33,18 @@ export const OWNER_SCOPE_SQL = `WITH canonical AS (
   SELECT external_owner FROM owner_links JOIN canonical ON account_id = id
 )`;
 
+/**
+ * The publisher's app-sites `User.id` when one is known — the license-key owner
+ * itself, or the one linked to an account — and otherwise the local `oa_`
+ * account id. A `RETURNING` expression for a statement prefixed with
+ * `OWNER_SCOPE_SQL`, so a linked key and token resolve to the same id from the
+ * same read that authorized the write.
+ */
+export const PUBLISHER_USER_ID_SQL = `(SELECT COALESCE(
+  (SELECT external_owner FROM owner_links WHERE account_id = canonical.id),
+  canonical.id
+) FROM canonical)`;
+
 export type OwnerLinkResult = "linked" | "conflict" | "invalid" | "account_not_found";
 
 /**
