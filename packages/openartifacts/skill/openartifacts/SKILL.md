@@ -28,8 +28,13 @@ defaults of your own. A missing theme never blocks publishing.
 ## 2. Let the user review
 
 Write the HTML to a new file next to the source, for example `notes.html` for
-`notes.md`. Never overwrite the source. Tell the user the absolute path and that
-opening it in a browser shows the page as it will be uploaded; OpenArtifacts adds its
+`notes.md`. Never overwrite the source. Your reply must contain this link as plain
+text (not in inline code or a code block): `[notes.html](file:///Users/me/My%20Notes/caf%C3%A9.html)`.
+Build the target by writing `file://` followed by the absolute path of the HTML file, then
+percent-encode the path (`%20` for each space, UTF-8 percent-encoding such as `%C3%A9` for
+each non-ASCII character; on Windows `file:///C:/Users/me/notes.html`). Never give a bare
+path or a target without `file://`; those do not open. This rule overrides any default
+format for file references: the target must start with `file:///`. Say that opening it in a browser shows the page as it will be uploaded; OpenArtifacts adds its
 own header and footer bylines when it serves the page. Then end your turn.
 
 Never publish in the same turn that produced the HTML. Publish only when a later

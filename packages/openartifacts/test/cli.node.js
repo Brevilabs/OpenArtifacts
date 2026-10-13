@@ -138,6 +138,7 @@ test("installer fetches latest and copies its newly installed skill and themes",
 test("the shipped skill directory carries the skill and the research-memo theme", async () => {
   const skill = new URL("../skill/openartifacts/", import.meta.url);
   assert.match(await readFile(new URL("SKILL.md", skill), "utf8"), /end your turn/i);
+  assert.match(await readFile(new URL("SKILL.md", skill), "utf8"), /\[notes\.html\]\(file:\/\/\/Users\/me\/My%20Notes\/caf%C3%A9\.html\)/);
   assert.deepEqual(await readdir(new URL("themes/", skill)), ["research-memo.md"]);
 });
 
