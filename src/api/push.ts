@@ -28,6 +28,7 @@ import type { Publisher } from "../auth.js";
 import { MAX_DOCS_PER_PUBLISHER, MAX_DOC_BYTES, MAX_PUSHES_PER_DAY } from "../config.js";
 import { limitReached, planLimits, type PlanLimits } from "../plans.js";
 import type { Env } from "../config.js";
+import { parseLinkAccess, refusePrivate } from "./access.js";
 import {
   rollbackCreate,
   deleteVersionRow,
@@ -36,6 +37,7 @@ import {
   FIRST_VERSION,
   insertDocWithinQuota,
   insertVersion,
+  type LinkAccess,
   ownsLiveDoc,
   reserveNextVersion,
 } from "../db.js";
@@ -73,6 +75,8 @@ interface PushBody {
   title: string | null | undefined;
   html: string;
   htmlBytes: number;
+  /** Honoured on create only; an update never changes who can read a document. */
+  linkAccess: LinkAccess | undefined;
 }
 
 type ParsedPush = { ok: true; body: PushBody } | { ok: false; response: Response };
@@ -135,6 +139,14 @@ async function parsePushBody(request: Request): Promise<ParsedPush> {
     return { ok: false, response: errorResponse("bad_request", "`title` must be a string.") };
   }
 
+  const linkAccess = fields.linkAccess === undefined ? undefined : parseLinkAccess(fields.linkAccess);
+  if (linkAccess === null) {
+    return {
+      ok: false,
+      response: errorResponse("bad_request", '`linkAccess` must be "anyone" or "invited".'),
+    };
+  }
+
   return {
     ok: true,
     body: {
@@ -142,6 +154,7 @@ async function parsePushBody(request: Request): Promise<ParsedPush> {
       title: titleGiven ? (typeof title === "string" ? normalizeTitle(title) : null) : undefined,
       html,
       htmlBytes,
+      linkAccess,
     },
   };
 }
@@ -222,9 +235,23 @@ function storageFull(env: Env, publisher: Publisher, limits: PlanLimits): Respon
     `Your ${limits.storageBytes} byte storage allowance is full, including retained versions and pending uploads. Unshare documents to free space. Existing pages remain available.`);
 }
 
-function pushed(env: Env, requestUrl: URL, docId: string, version: number, status: number) {
+function pushed(
+  env: Env,
+  requestUrl: URL,
+  docId: string,
+  version: number,
+  status: number,
+  linkAccess?: LinkAccess,
+) {
   return Response.json(
-    { docId, url: publicDocUrl(env, requestUrl, docId), version },
+    {
+      docId,
+      url: publicDocUrl(env, requestUrl, docId),
+      version,
+      // Only a create reports it. A client that asked for "invited" checks that
+      // it came back, which is how it finds a server that ignored the field.
+      ...(linkAccess === undefined ? {} : { linkAccess }),
+    },
     { status },
   );
 }
@@ -242,6 +269,12 @@ export async function createDoc(
   if (limits && parsed.body.htmlBytes > limits.htmlBytes) {
     return planHtmlExceeded(env, publisher, limits);
   }
+
+  // Before anything is created, so a plan that cannot share privately never
+  // leaves a document behind. A private create is private from its first insert.
+  const linkAccess = parsed.body.linkAccess ?? "anyone";
+  const refused = linkAccess === "invited" ? refusePrivate(env, publisher) : null;
+  if (refused) return refused;
 
   const maxDocs = limits?.documents ?? MAX_DOCS_PER_PUBLISHER;
   const now = Date.now();
@@ -263,6 +296,7 @@ export async function createDoc(
       title,
       created_at: now,
       updated_at: now,
+      link_access: linkAccess,
     },
     maxDocs,
   );
@@ -301,7 +335,17 @@ export async function createDoc(
   }
 
   analytics.record({ name: "document_published", docId, atMs: now, ownerId: owner });
-  return pushed(env, requestUrl, docId, FIRST_VERSION, 201);
+  if (linkAccess === "invited") {
+    analytics.record({
+      name: "document_access_changed",
+      docId,
+      atMs: now,
+      ownerId: owner,
+      linkAccess,
+      people: 0,
+    });
+  }
+  return pushed(env, requestUrl, docId, FIRST_VERSION, 201, linkAccess);
 }
 
 export async function updateDoc(

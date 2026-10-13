@@ -14,7 +14,9 @@ Two surfaces on two domains:
 | Surface | Paths | Auth | Notes |
 | --- | --- | --- | --- |
 | API | `/api/v1/*` | required | Publisher-facing. JSON in, JSON out. |
-| Serving | `/d/*` | none | Reader-facing. Public HTML. Never sets a cookie. |
+| Serving | `/d/*` | none | Reader-facing. Public HTML on `openartifacts.site`, which never sets a cookie. |
+| Private serving | `/d/*` on `{label}.openartifacts.site` | grant | One invited-only document per origin. Sets one grant cookie. See [Private documents](#private-documents). |
+| Reader | `/open/*`, `/signin/*` | session | Human-facing HTML pages on the API host: sign in, and the door a private document opens through. Not a client surface. |
 | Approval | `/approve/*` | none | Human-facing. HTML pages on the API host. Not a client surface. |
 | Device | `/device/*` | none | How a client with no credential gets one. JSON, on the API host. |
 
@@ -115,7 +117,9 @@ rather than a server behaviour, and it carries whatever goes in the header — a
 token or a license key alike, since nothing downstream of the header cares which
 it was.
 
-Reading a doc requires nothing. Serving responses never set a cookie.
+Reading a public doc requires nothing. `openartifacts.site` never sets a cookie; a
+private document's own origin sets one grant cookie
+([Private documents](#private-documents)).
 
 ## The approval page
 
@@ -140,7 +144,9 @@ Three consequences worth stating, because all three are promises made elsewhere:
 - **Nothing under `/api/v1` changes.** The approval paths are additive and sit
   outside that prefix, so every response a license-key caller receives is exactly
   what it was.
-- **This Worker sets no cookie, anywhere.** The OAuth handshake is kept on the
+- **The approval page sets no cookie.** (Reader sign-in, a separate set of pages
+  on the same host, sets a session cookie; see
+  [Private documents](#private-documents).) The OAuth handshake is kept on the
   device code's own row rather than in the browser, so the serving origin's
   cookieless guarantee is a property of the whole Worker rather than of one host.
 - **Proving an identity and approving a device are two steps.** The provider's
@@ -156,10 +162,16 @@ publishing keeps working.
 ## Endpoints
 
 ```http
-POST   /api/v1/docs           {title?, html}  → 201 {docId, url, version}
+POST   /api/v1/docs           {title?, html, linkAccess?}  → 201 {docId, url, version, linkAccess}
 PUT    /api/v1/docs/{docId}   {title?, html}  → 200 {docId, url, version}
 DELETE /api/v1/docs/{docId}                   → 204
 GET    /api/v1/docs?limit&cursor              → 200 {docs[], cursor?}
+GET    /api/v1/docs/{docId}/access                      → 200 Access
+PUT    /api/v1/docs/{docId}/access  {linkAccess}        → 200 Access
+PUT    /api/v1/docs/{docId}/access/people/{email}       → 200 Access
+DELETE /api/v1/docs/{docId}/access/people/{email}       → 200 Access
+GET    /api/v1/docs/{docId}/html                        → 200 the latest stored HTML
+POST   /api/v1/docs/{docId}/open                        → 200 {url, expiresAt}
 GET    /api/v1/tokens                         → 200 {tokens[]}
 DELETE /api/v1/tokens/{tokenId}               → 200 {tokenId, remaining}
 POST   /device/code           {label?}        → 200 {device_code, user_code, …}
@@ -180,6 +192,7 @@ credential — see [Signing in from a terminal](#signing-in-from-a-terminal).
 | --- | --- | --- | --- |
 | `html` | string | yes | A whole HTML document. Max 10MB encoded as UTF-8. |
 | `title` | string | no | Display name in the doc list. Trimmed, capped at 512 characters. Missing, null or blank becomes `Untitled`. |
+| `linkAccess` | `"anyone"` or `"invited"` | no | Who may read it. Default `anyone`: a public document. `"invited"` creates it private from the first insert and needs a plan with private sharing; see [Private documents](#private-documents). Anything else is `400 bad_request`. A `PUT` never changes it. |
 
 ```json
 {"title": "Q3 architecture review", "html": "<!doctype html><html>…</html>"}
@@ -188,8 +201,13 @@ credential — see [Signing in from a terminal](#signing-in-from-a-terminal).
 ```json
 {"docId": "9f2k4mvq7t0xbz3n",
  "url": "https://openartifacts.site/d/9f2k4mvq7t0xbz3n",
- "version": 1}
+ "version": 1,
+ "linkAccess": "anyone"}
 ```
+
+`linkAccess` in the receipt is always the mode the document was created with. A
+client that sent `"invited"` must check that it came back: a server that predates
+private sharing ignores the field and creates a public document.
 
 A `docId` is 16 characters of lowercase Crockford base32 (`0-9`, `a-z` without
 `i`, `l`, `o`, `u`) — 80 bits of randomness. It is the only access control a doc
@@ -259,7 +277,8 @@ whichever of its keys published them.
     "title": "Q3 architecture review",
     "url": "https://openartifacts.site/d/9f2k4mvq7t0xbz3n",
     "version": 2,
-    "updatedAt": 1785000000000}
+    "updatedAt": 1785000000000,
+    "linkAccess": "anyone"}
  ],
  "cursor": "MTc4NTAwMDAwMDAwMC45ZjJrNG12cTd0MHhiejNu"}
 ```
@@ -337,6 +356,85 @@ revokes the least recently used one rather than failing, so revoking is never
 the only way back in. Nobody reaches this by signing in machines; it is the
 bound that lets the list above have no cursor.
 
+## Private documents
+
+A document is public (`linkAccess: "anyone"`, the default, exactly what this API
+always did) or invited-only (`"invited"`). The url is the same either way:
+`https://openartifacts.site/d/{docId}` is what a client prints and copies, and the
+only url it should ever build is the one the API returned. Everything below is
+additive; [private-sharing.md](private-sharing.md) is the design and the reasons.
+
+### The access routes
+
+All owner-only, and a document that is not yours, never existed, or was deleted is
+`404 not_found`. A client changes **one address at a time**: it never sends the
+whole list, so a retry cannot remove everyone, and a repeated `PUT` or `DELETE`
+answers `200` with the same list.
+
+```json
+{"docId": "9f2k4mvq7t0xbz3n",
+ "url": "https://openartifacts.site/d/9f2k4mvq7t0xbz3n",
+ "linkAccess": "invited",
+ "people": [{"email": "alice@acme.com", "addedAt": 1785000000000}]}
+```
+
+- `PUT …/access` takes `{"linkAccess": "anyone" | "invited"}`. Switching to
+  `anyone` keeps the list, and switching back restores it.
+- `PUT …/access/people/{email}` adds one address (URL-encode the `@`; it is
+  lowercased and trimmed). The call that adds an address sends it an invite email;
+  a repeat does not. At most 100 people per document; the 101st is `400`.
+  `DELETE` removes one. Neither needs the address to belong to an account.
+- `GET …/html` returns the latest stored HTML (`text/html`, `private, no-store`,
+  sandboxed), so `openartifacts get` keeps working once a page's public url stops
+  answering.
+- `POST …/open` returns `{"url", "expiresAt"}`. For an invited-only document `url`
+  is the document's own origin with a 60-second grant, which opens it in a browser
+  with no sign-in; for a public one it is the canonical url. **A client opens it
+  and discards it.** Never print it, store it, or put it in a publish receipt:
+  agent wrappers print receipts into transcripts. No plan is needed.
+
+Errors reuse the existing codes: `400 bad_request` for an invalid address or mode,
+a 101st person, or a server that is not set up for private documents, and
+`402 limit_reached` with `"limit": "privateSharing"` when the plan does not
+include it.
+
+### The plan check
+
+On write, and only on two operations: making a document invited-only (`POST` with
+`linkAccess: "invited"`, or `PUT …/access`) and adding a person. Removing people,
+switching to `anyone`, reading, and opening never check a plan, so invitees never
+pay and a lapsed plan keeps what exists. A lapse never makes a private document
+public. License keys on Copilot Plus and accounts on a plan with `privateSharing`
+qualify; the plan lists are configuration, not part of this contract.
+
+### Reading one
+
+`GET /d/{docId}[/v{n}]` on `openartifacts.site` for an invited-only document
+answers `302`, `Cache-Control: no-store`, to
+`https://api.openartifacts.ai/open/{docId}[/v{n}]`, with no body, no cookie and
+the full serving header policy. Unknown ids are still `404` and deleted ones
+`410`. From there a person signs in (Google, GitHub or an emailed code) and is
+redirected to `https://{label}.openartifacts.site/d/{docId}?grant=…`, which swaps
+the grant for a cookie with a `303` and then serves the page.
+
+| | Lifetime | Holds |
+| --- | --- | --- |
+| Reader session `__Host-oa_session`, on the API host | 30 days | An account id. Read only by `/open` and `/signin`; `/api/v1` ignores it. |
+| URL grant `?grant=` | 60 seconds | One document and a principal. Never stays in the address bar. |
+| Document cookie `__Host-oa_grant`, on that document's origin | 1 hour | One document and a principal. The invite list is read again on every request. |
+
+Responses from a document's own origin are `Cache-Control: private, no-store`,
+with `Cross-Origin-Opener-Policy: same-origin-allow-popups` and
+`Cross-Origin-Resource-Policy: same-origin`, and carry the same CSP and robots
+headers as every served document. A person who is not allowed sees the same
+unavailable page as one who never existed. Removing a person takes effect on
+their next request; copies a reader already fetched cannot be recalled.
+
+**Old clients.** Copilot 4.0.14 and CLI 0.2.x keep publishing, updating, listing
+and unsharing and ignore `linkAccess`; their documents stay public. For a document
+another client made private, an old Copilot's "Open" goes through sign-in like any
+reader, and an old CLI's `get` prints the sign-in page.
+
 ### `GET /d/{docId}` and `GET /d/{docId}/v{n}` — read
 
 Unauthenticated. `GET` and `HEAD` only; anything else is `404`.
@@ -361,7 +459,8 @@ X-Content-Type-Options: nosniff
 Uploaded scripts **do** run — interactive figures and embedded simulations are
 why the client uploads HTML at all. What the policy forbids is a doc using the
 origin against its readers: no form submission, no framing, no `<base>`
-retargeting. The origin is cookieless and holds nothing but already-public docs.
+retargeting. The origin is cookieless and holds nothing but already-public docs;
+an invited-only document is redirected to sign-in and never served from it.
 
 The following are injected as the document is served: a
 `<meta name="robots" content="noindex,nofollow">` in the head, a

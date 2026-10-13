@@ -71,7 +71,7 @@ the same page and converge on a shared result.
 | Immutable versions and pinned version links | Available today |
 | Public sharing | Available today |
 | Self-hosting | Available today |
-| Private sharing | Roadmap |
+| Private sharing (invite people by email; paid plans) | Available today |
 | Inline comments and replies | Roadmap |
 | Version-history browser, visual diffs, and rollback UI | Roadmap |
 
@@ -216,8 +216,8 @@ Worker becomes reachable only after Cloudflare attaches both custom domains.
 | [Hosting](docs/hosting.md) | How Workers, R2, and D1 fit together. |
 | [Serving domain](docs/serving-domain.md) | Why uploaded HTML uses a separate registrable domain. |
 | [Identity](docs/identity.md) | Why documents belong to an owner rather than a credential, and how an account is created. |
-| [Private sharing](docs/private-sharing.md) | Designed reader-identity phases. Not built. |
-| [Product analytics](docs/analytics.md) | What the four document events carry, and what they deliberately never carry. |
+| [Private sharing](docs/private-sharing.md) | Invite-only documents: reader sign-in, per-document origins, and how access is checked. |
+| [Product analytics](docs/analytics.md) | What the five document events carry, and what they deliberately never carry. |
 | [Comments](docs/comments.md) | Design sketch for the next product step. Not built. |
 
 ## Maintainer npm release

@@ -98,8 +98,9 @@ resource instead of parsing them out of the page.
 **Comments need reader identity, and there is none.** Reading currently requires
 nothing at all, and an anonymous reader cannot be attributed. Access control is a
 hard prerequisite, not a parallel track, and it is the larger piece of work.
-[private-sharing.md](private-sharing.md) is the design for it — comments are
-Phase 3 there, blocked on the OAuth reader identity in Phase 2.
+[private-sharing.md](private-sharing.md) is that work, and it is built: readers
+sign in on the API host and a private document is served from its own origin.
+Comments are the next step on top of it.
 
 ## Open questions
 

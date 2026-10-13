@@ -73,8 +73,9 @@ async function send(
   key: string | null,
   body?: unknown,
   overrides: Partial<Env> = {},
+  extraHeaders: HeadersInit = {},
 ): Promise<Response> {
-  const headers = new Headers();
+  const headers = new Headers(extraHeaders);
   if (key !== null) headers.set("authorization", `Bearer ${key}`);
 
   const init: RequestInit = { method, headers };
@@ -85,7 +86,7 @@ async function send(
 
   const ctx = createExecutionContext();
   const response = await worker.fetch(
-    new Request(`${API_ORIGIN}${path}`, init),
+    new Request(path.startsWith("https://") ? path : `${API_ORIGIN}${path}`, init),
     {
       ...env,
       SERVING_HOST: "",
@@ -434,6 +435,7 @@ describe("GET /api/v1/docs", () => {
         url: created.url,
         version: updated.version,
         updatedAt: row?.updated_at,
+        linkAccess: "anyone",
       },
     ]);
   });
@@ -763,4 +765,70 @@ it("marks a rejected credential without losing its documents or another key's ac
   expect(await response.text()).toContain(doc.docId);
   expect(await resolvePublisher(KEY_A, { ...env, LICENSE_API_URL: "" }))
     .toMatchObject({ ok: false, reason: "license_unavailable" });
+});
+
+describe("private sharing through the owner's credential", () => {
+  const KEY_PLUS = "cplus_live_5544332211009988";
+  const API = "https://api.openartifacts.ai";
+  const sent: Array<{ to: string; subject: string; text: string }> = [];
+  const hosts = {
+    SERVING_HOST: "openartifacts.site",
+    API_HOST: "api.openartifacts.ai",
+    READER_SESSION_SECRET: "k".repeat(32),
+    EMAIL: { send: async (message: { to: string; subject: string; text: string }) => void sent.push(message) },
+    EMAIL_FROM: "share@mail.openartifacts.ai",
+  } as Partial<Env>;
+
+  async function privateDoc(): Promise<PushResponse & { linkAccess: string }> {
+    await seedPublisher(KEY_PLUS, undefined, "plus");
+    const created = await send("POST", `${API}/api/v1/docs`, KEY_PLUS, {
+      title: "Q3 client report",
+      html: page("<p>owner only</p>"),
+      linkAccess: "invited",
+    }, hosts);
+    expect(created.status).toBe(201);
+    return (await created.json()) as PushResponse & { linkAccess: string };
+  }
+
+  it("opens the owner's private page with no sign-in, and nobody else's", async () => {
+    const created = await privateDoc();
+    expect(created.linkAccess).toBe("invited");
+
+    const opened = await send("POST", `${API}/api/v1/docs/${created.docId}/open`, KEY_PLUS, undefined, hosts);
+    expect(opened.status).toBe(200);
+    expect(opened.headers.get("cache-control")).toBe("no-store");
+    const { url } = (await opened.json()) as { url: string };
+
+    // Follow it as a browser would: the grant becomes a cookie, and the cookie reads the page.
+    const swapped = await send("GET", url, null, undefined, hosts);
+    expect(swapped.status).toBe(303);
+    const cookie = swapped.headers.get("set-cookie")!.split(";")[0]!;
+    const page = await send("GET", new URL(url).origin + new URL(url).pathname, null, undefined, hosts, { cookie });
+    expect(page.status).toBe(200);
+    expect(await page.text()).toContain("owner only");
+
+    // A publisher who does not own it is told it does not exist, as everywhere else.
+    expect((await send("POST", `${API}/api/v1/docs/${created.docId}/open`, KEY_B, undefined, hosts)).status).toBe(404);
+  });
+
+  it("adds a person once, emails them the link and no credential, and removes them again", async () => {
+    const created = await privateDoc();
+    const person = `${API}/api/v1/docs/${created.docId}/access/people/Alice%40Acme.com`;
+    const listOf = async (response: Response) =>
+      ((await response.json()) as { people: Array<{ email: string }> }).people.map((p) => p.email);
+
+    const first = await send("PUT", person, KEY_PLUS, undefined, hosts);
+    const again = await send("PUT", person, KEY_PLUS, undefined, hosts);
+    expect([first.status, again.status]).toEqual([200, 200]);
+    expect(await listOf(first)).toEqual(["alice@acme.com"]);
+    expect(await listOf(again)).toEqual(["alice@acme.com"]);
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.to).toBe("alice@acme.com");
+    expect(sent[0]!.text).toContain(`https://openartifacts.site/d/${created.docId}`);
+    expect(sent[0]!.text).toContain("Q3 client report");
+    expect(sent[0]!.text).not.toContain("grant=");
+
+    expect(await listOf(await send("DELETE", person, KEY_PLUS, undefined, hosts))).toEqual([]);
+  });
 });

@@ -39,7 +39,11 @@ export interface DocRow {
   updated_at: number;
   /** Epoch ms when soft-deleted, else null. Deleted docs serve 410, not 404. */
   deleted_at: number | null;
+  /** `anyone` is a public document; `invited` is sign-in plus the invite list. */
+  link_access: LinkAccess;
 }
+
+export type LinkAccess = "anyone" | "invited";
 
 export interface VersionRow {
   doc_id: string;
@@ -230,14 +234,16 @@ export function d1PublisherStore(db: D1Database): PublisherStore {
  */
 export async function insertDocWithinQuota(
   db: D1Database,
-  doc: Omit<DocRow, "deleted_at" | "latest_version">,
+  doc: Omit<DocRow, "deleted_at" | "latest_version" | "link_access"> & { link_access?: LinkAccess },
   maxDocs: number,
 ): Promise<string | null> {
+  // `link_access` is written by the insert itself, so a private create is never
+  // public, not even for the moment between two statements.
   const inserted = await db
     .prepare(
       `${OWNER_SCOPE_SQL}
-       INSERT INTO docs (id, owner, title, latest_version, created_at, updated_at)
-       SELECT ?, ?, ?, ?, ?, ?
+       INSERT INTO docs (id, owner, title, latest_version, created_at, updated_at, link_access)
+       SELECT ?, ?, ?, ?, ?, ?, ?
         WHERE (SELECT COUNT(*) FROM docs WHERE owner IN (SELECT owner FROM owner_scope) AND deleted_at IS NULL) < ?
        RETURNING ${PUBLISHER_USER_ID_SQL} AS owner`,
     )
@@ -250,6 +256,7 @@ export async function insertDocWithinQuota(
       FIRST_VERSION,
       doc.created_at,
       doc.updated_at,
+      doc.link_access ?? "anyone",
       maxDocs,
     )
     .first<{ owner: string }>();
@@ -412,6 +419,7 @@ export interface ServableVersion {
   deleted_at: number | null;
   /** The version that has bytes, or null when the request names none. */
   version: number | null;
+  link_access: LinkAccess;
 }
 
 /**
@@ -442,7 +450,7 @@ export async function findServableVersion(
   // `return await`: see the note on the router's catch in index.ts.
   return await db
     .prepare(
-      `SELECT d.deleted_at AS deleted_at,
+      `SELECT d.deleted_at AS deleted_at, d.link_access AS link_access,
               (SELECT MAX(v.n)
                  FROM versions v
                 WHERE v.doc_id = d.id
@@ -492,18 +500,27 @@ export async function softDeleteDoc(
   owner: string,
   atMs: number,
 ): Promise<string | null> {
-  const deleted = await db
-    .prepare(
-      `${OWNER_SCOPE_SQL}
-       UPDATE docs
-          SET deleted_at = ?
-        WHERE id = ? AND owner IN (SELECT owner FROM owner_scope) AND deleted_at IS NULL
-        RETURNING ${PUBLISHER_USER_ID_SQL} AS owner`,
-    )
-    .bind(owner, owner, atMs, docId)
-    .first<{ owner: string }>();
+  // The invite list goes with the bytes: a withdrawn document keeps its row and
+  // nothing else. The same transaction, so a retry never finds it half done.
+  const [deleted] = await db.batch<{ owner: string }>([
+    db
+      .prepare(
+        `${OWNER_SCOPE_SQL}
+         UPDATE docs
+            SET deleted_at = ?
+          WHERE id = ? AND owner IN (SELECT owner FROM owner_scope) AND deleted_at IS NULL
+          RETURNING ${PUBLISHER_USER_ID_SQL} AS owner`,
+      )
+      .bind(owner, owner, atMs, docId),
+    db
+      .prepare(
+        `DELETE FROM doc_invites
+          WHERE doc_id = ? AND EXISTS (SELECT 1 FROM docs WHERE id = ? AND deleted_at IS NOT NULL)`,
+      )
+      .bind(docId, docId),
+  ]);
 
-  return deleted === null ? null : deleted.owner;
+  return deleted?.results[0]?.owner ?? null;
 }
 
 /** One row of the publisher's doc list, as the index scan yields it. */
@@ -519,6 +536,7 @@ export interface DocListRow {
    * doc's url does not serve. Null for a doc whose first push never landed.
    */
   version: number | null;
+  link_access: LinkAccess;
 }
 
 /**
@@ -564,7 +582,7 @@ export async function listPublisherDocs(
   limit: number,
 ): Promise<DocListRow[]> {
   const columns = `d.id AS id, d.title AS title, d.created_at AS created_at,
-                   d.updated_at AS updated_at,
+                   d.updated_at AS updated_at, d.link_access AS link_access,
                    (SELECT MAX(v.n) FROM versions v WHERE v.doc_id = d.id) AS version`;
   const order = "ORDER BY d.created_at DESC, d.id DESC LIMIT ?";
 
@@ -1308,4 +1326,159 @@ export async function countLiveTokens(db: D1Database, accountId: string): Promis
     .first<{ n: number }>();
 
   return row?.n ?? 0;
+}
+
+/** What a reader's request to open an invited-only document needs, in one read. */
+export interface PrivateRead {
+  deleted_at: number | null;
+  link_access: LinkAccess;
+  /** The version that has bytes, or null when the request names none. */
+  version: number | null;
+  /** The principal owns the document or is an account on its invite list. */
+  allowed: number;
+}
+
+/**
+ * The document, whether `principal` may read it, and which version to serve.
+ *
+ * `principal` is either a reader's account id or a publisher's owner id, and
+ * one rule covers both. The owner scope makes a linked license key and its
+ * account one owner, as everywhere else. Otherwise the principal has to be an
+ * account whose address is on the invite list. A license-key owner id matches no
+ * account, so it reads only what it owns.
+ *
+ * Asked on every request to a private document's own origin, which is what makes
+ * removing a person take effect on their next request.
+ */
+export async function findPrivateRead(
+  db: D1Database,
+  docId: string,
+  pinned: number | null,
+  principal: string,
+): Promise<PrivateRead | null> {
+  // `return await`: see the note on the router's catch in index.ts.
+  return await db
+    .prepare(
+      `${OWNER_SCOPE_SQL}
+       SELECT d.deleted_at AS deleted_at, d.link_access AS link_access,
+              (SELECT MAX(v.n) FROM versions v
+                WHERE v.doc_id = d.id AND (? IS NULL OR v.n = ?)) AS version,
+              (d.owner IN (SELECT owner FROM owner_scope)
+                OR EXISTS (SELECT 1 FROM accounts a JOIN doc_invites i ON i.email = a.email
+                            WHERE a.id = ? AND i.doc_id = d.id)) AS allowed
+         FROM docs d
+        WHERE d.id = ?`,
+    )
+    .bind(principal, principal, pinned, pinned, principal, docId)
+    .first<PrivateRead>();
+}
+
+/** One person a document is shared with. */
+export interface InviteRow {
+  email: string;
+  created_at: number;
+}
+
+/** A live document's title, mode and invite list. Callers have checked ownership. */
+export async function readAccess(
+  db: D1Database,
+  docId: string,
+): Promise<{ title: string; link_access: LinkAccess; people: InviteRow[] } | null> {
+  const [doc, people] = await db.batch<DocAccessRow | InviteRow>([
+    db.prepare("SELECT title, link_access FROM docs WHERE id = ? AND deleted_at IS NULL").bind(docId),
+    db
+      .prepare("SELECT email, created_at FROM doc_invites WHERE doc_id = ? ORDER BY created_at, email")
+      .bind(docId),
+  ]);
+  const row = doc?.results[0] as DocAccessRow | undefined;
+  return row ? { ...row, people: (people?.results ?? []) as InviteRow[] } : null;
+}
+
+type DocAccessRow = { title: string; link_access: LinkAccess };
+
+/** Set a live document's mode; false when the publisher has no such document. */
+export async function setLinkAccess(
+  db: D1Database,
+  docId: string,
+  owner: string,
+  mode: LinkAccess,
+): Promise<boolean> {
+  const updated = await db
+    .prepare(
+      `${OWNER_SCOPE_SQL}
+       UPDATE docs SET link_access = ?
+        WHERE id = ? AND owner IN (SELECT owner FROM owner_scope) AND deleted_at IS NULL
+        RETURNING id`,
+    )
+    .bind(owner, owner, mode, docId)
+    .first();
+  return updated !== null;
+}
+
+/**
+ * Add an address to a live document's list. True only when this call added it:
+ * false means it was already there, or the list is full, or the publisher has no
+ * such document. The cap is a predicate on the insert for the reason
+ * `insertDocWithinQuota` gives about its own.
+ */
+export async function insertInvite(
+  db: D1Database,
+  docId: string,
+  owner: string,
+  email: string,
+  atMs: number,
+  maxPeople: number,
+): Promise<boolean> {
+  const inserted = await db
+    .prepare(
+      `${OWNER_SCOPE_SQL}
+       INSERT INTO doc_invites (doc_id, email, created_at)
+       SELECT d.id, ?, ? FROM docs d
+        WHERE d.id = ? AND d.owner IN (SELECT owner FROM owner_scope) AND d.deleted_at IS NULL
+          AND (SELECT COUNT(*) FROM doc_invites WHERE doc_id = d.id) < ?
+       ON CONFLICT DO NOTHING
+       RETURNING email`,
+    )
+    .bind(owner, owner, email, atMs, docId, maxPeople)
+    .first();
+  return inserted !== null;
+}
+
+/** Remove an address from a live document's list. Removing an absent one is fine. */
+export async function deleteInvite(
+  db: D1Database,
+  docId: string,
+  owner: string,
+  email: string,
+): Promise<void> {
+  await db
+    .prepare(
+      `${OWNER_SCOPE_SQL}
+       DELETE FROM doc_invites
+        WHERE doc_id = ? AND email = ?
+          AND doc_id IN (SELECT id FROM docs WHERE owner IN (SELECT owner FROM owner_scope) AND deleted_at IS NULL)`,
+    )
+    .bind(owner, owner, docId, email)
+    .run();
+}
+
+/** The address of the account an owner id resolves to, when this Worker knows one. */
+export async function ownerEmail(db: D1Database, owner: string): Promise<string | null> {
+  const row = await db
+    .prepare(
+      `SELECT email FROM accounts
+        WHERE id = COALESCE((SELECT account_id FROM owner_links WHERE external_owner = ?), ?)`,
+    )
+    .bind(owner, owner)
+    .first<{ email: string }>();
+  return row?.email ?? null;
+}
+
+/** An account's address, or null when there is no such account. */
+export async function accountEmail(db: D1Database, accountId: string): Promise<string | null> {
+  const row = await db
+    .prepare("SELECT email FROM accounts WHERE id = ?")
+    .bind(accountId)
+    .first<{ email: string }>();
+  return row?.email ?? null;
 }

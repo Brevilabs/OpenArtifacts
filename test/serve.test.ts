@@ -1,7 +1,8 @@
 import { createExecutionContext, env, waitOnExecutionContext } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Env } from "../src/config.js";
-import { DOC_ID_LENGTH } from "../src/ids.js";
+import { DOC_ID_LENGTH, newAccountId } from "../src/ids.js";
+import { grantUrl, originLabel } from "../src/private.js";
 import { FAVICON_LINK, NOINDEX_META, OPENARTIFACTS_FOOTER, OPENARTIFACTS_HEADER, OPENARTIFACTS_MARK_SVG } from "../src/render.js";
 import { versionObjectKey } from "../src/storage.js";
 import worker from "../src/index.js";
@@ -100,7 +101,7 @@ async function send(
 ): Promise<Response> {
   const ctx = createExecutionContext();
   const response = await worker.fetch(
-    new Request(`${ORIGIN}${path}`, { method, ...init }),
+    new Request(path.startsWith("https://") ? path : `${ORIGIN}${path}`, { method, ...init }),
     {
       ...env,
       SERVING_HOST: "",
@@ -761,5 +762,109 @@ describe("HEAD and conditional requests", () => {
     });
 
     expect(response.status).toBe(304);
+  });
+});
+
+describe("an invited-only document", () => {
+  const PRIVATE = {
+    SERVING_HOST: "openartifacts.site",
+    API_HOST: "api.openartifacts.ai",
+    READER_SESSION_SECRET: "k".repeat(32),
+  } satisfies Partial<Env>;
+
+  /** A private page, and the origin that serves it. The mode is set directly: serving is under test. */
+  async function privateDoc(text = "for invited eyes") {
+    const docId = await push({ title: "Secret", html: page(`<p>${text}</p>`) });
+    await env.DB.prepare("UPDATE docs SET link_access = 'invited' WHERE id = ?").bind(docId).run();
+    return { docId, host: `https://${await originLabel(docId)}.openartifacts.site` };
+  }
+
+  /** What `/open` would redirect `principal` to. */
+  const grantFor = async (docId: string, principal: string) =>
+    (await grantUrl({ ...env, ...PRIVATE }, { docId, pinned: null }, principal, Date.now()))!.url;
+
+  /** Follow a grant url the way a browser does, and return the cookie it is handed. */
+  async function cookieFor(docId: string, principal: string): Promise<string> {
+    const swapped = await get(await grantFor(docId, principal), {}, PRIVATE);
+    expect(swapped.status).toBe(303);
+    return swapped.headers.get("set-cookie")!.split(";")[0]!;
+  }
+
+  it("redirects its canonical url to sign-in, with no bytes, no cookie and no caching", async () => {
+    const { docId } = await privateDoc();
+
+    for (const suffix of ["", "/v1"]) {
+      const response = await get(`https://openartifacts.site/d/${docId}${suffix}`, {}, PRIVATE);
+
+      expect(response.status).toBe(302);
+      expect(response.headers.get("location")).toBe(`https://api.openartifacts.ai/open/${docId}${suffix}`);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      expect(response.headers.get("set-cookie")).toBeNull();
+      expect(await response.text()).toBe("");
+    }
+  });
+
+  it("swaps a grant for a cookie on its own origin, then serves the page private and uncacheable", async () => {
+    const { docId, host } = await privateDoc();
+
+    const swapped = await get(await grantFor(docId, owner), {}, PRIVATE);
+    expect(swapped.status).toBe(303);
+    expect(swapped.headers.get("location")).toBe(`/d/${docId}`);
+    expect(await swapped.text()).toBe("");
+    const cookie = swapped.headers.get("set-cookie")!;
+    expect(cookie).toMatch(/^__Host-oa_grant=.+; HttpOnly; Secure; SameSite=Lax; Path=\/; Max-Age=3600$/);
+
+    const served = await get(`${host}/d/${docId}`, { headers: { cookie: cookie.split(";")[0]! } }, PRIVATE);
+    expect(served.status).toBe(200);
+    expect(served.headers.get("cache-control")).toBe("private, no-store");
+    expect(served.headers.get("cross-origin-opener-policy")).toBe("same-origin-allow-popups");
+    expect(served.headers.get("cross-origin-resource-policy")).toBe("same-origin");
+    expect(served.headers.get("set-cookie")).toBeNull();
+    expect(await served.text()).toContain("for invited eyes");
+
+    // With no cookie the same url sends the reader to sign in rather than serving.
+    expect((await get(`${host}/d/${docId}`, {}, PRIVATE)).status).toBe(302);
+  });
+
+  it("refuses a grant for one document on another document's host or path", async () => {
+    const a = await privateDoc("text of document A");
+    const b = await privateDoc("text of document B");
+    const grantA = new URL(await grantFor(a.docId, owner)).searchParams.get("grant")!;
+    const cookieA = await cookieFor(a.docId, owner);
+
+    // B's origin, A's path: not a document that origin serves at all.
+    const wrongHost = await get(`${b.host}/d/${a.docId}?grant=${grantA}`, {}, PRIVATE);
+    expect(wrongHost.status).toBe(404);
+    // B's origin and path, A's grant or A's cookie: neither names B.
+    for (const attempt of [
+      get(`${b.host}/d/${b.docId}?grant=${grantA}`, {}, PRIVATE),
+      get(`${b.host}/d/${b.docId}`, { headers: { cookie: cookieA } }, PRIVATE),
+    ]) {
+      const response = await attempt;
+      expect(response.status).toBe(302);
+      expect(response.headers.get("set-cookie")).toBeNull();
+      expect(await response.text()).not.toContain("text of document B");
+    }
+  });
+
+  it("404s a reader who is not on the list on their next request, never invited or just removed", async () => {
+    const { docId, host } = await privateDoc();
+    const alice = newAccountId();
+    await env.DB.prepare("INSERT INTO accounts (id, email, created_at) VALUES (?, 'alice@acme.com', ?)")
+      .bind(alice, Date.now())
+      .run();
+    const cookie = await cookieFor(docId, alice);
+    const read = () => get(`${host}/d/${docId}`, { headers: { cookie } }, PRIVATE);
+
+    expect((await read()).status).toBe(404);
+
+    await env.DB.prepare("INSERT INTO doc_invites (doc_id, email, created_at) VALUES (?, 'alice@acme.com', ?)")
+      .bind(docId, Date.now())
+      .run();
+    expect((await read()).status).toBe(200);
+
+    // The grant cookie is still valid for an hour; the list is what changed.
+    await env.DB.prepare("DELETE FROM doc_invites WHERE doc_id = ?").bind(docId).run();
+    expect((await read()).status).toBe(404);
   });
 });

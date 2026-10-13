@@ -43,6 +43,7 @@ import { d1PublisherStore, findLiveToken, touchTokenUse, type PublisherStore } f
 import { errorResponse, type ErrorCode } from "./errors.js";
 import { sha256Hex } from "./hash.js";
 import { accountPlan, type RefreshStatus } from "./entitlement.js";
+import { planLimits } from "./plans.js";
 import { TOKEN_PREFIX } from "./ids.js";
 
 /** tRPC endpoint on the license server, appended to `LICENSE_API_URL`. */
@@ -70,6 +71,25 @@ const UNKNOWN_PLAN = "unknown";
  * before it gets here, and because `publishers.plan` stores the folded form.
  */
 const PUBLISHING_PLANS: ReadonlySet<string> = new Set(["plus", "believer"]);
+
+/**
+ * The Copilot plans that may make a document invited-only or add people to one.
+ * Plus only for now; Supporter (`believer`) is a pricing decision, and an
+ * unlisted plan fails closed like it does for publishing.
+ */
+const PRIVATE_SHARING_LICENSE_PLANS: ReadonlySet<string> = new Set(["plus"]);
+
+/**
+ * Whether this publisher's plan includes private sharing: a flag on the account
+ * plan, or a listed license plan. Asked only on the two writes that spend it;
+ * reading a private document never checks a plan, and a lapsed plan keeps what
+ * already exists.
+ */
+export function maySharePrivately(env: Env, publisher: Publisher): boolean {
+  return publisher.authKind === "account"
+    ? planLimits(env, publisher.plan).privateSharing === true
+    : PRIVATE_SHARING_LICENSE_PLANS.has(publisher.plan);
+}
 
 /**
  * Entitlement is per *operation*, not per identity, so this is deliberately not
@@ -162,6 +182,16 @@ export function isPublishingRequest(request: Request): boolean {
      (docId !== undefined && request.method === "PUT"));
 }
 
+/**
+ * `PUT /api/v1/docs/{docId}/access` and `…/access/people/{email}`: the writes
+ * that need `privateSharing`. Like publishing, they read the plan fresh.
+ */
+function isAccessWrite(request: Request): boolean {
+  const [collection, , section, ...extra] = new URL(request.url).pathname
+    .slice("/api/v1".length).split("/").filter(Boolean);
+  return request.method === "PUT" && collection === "docs" && section === "access" && extra.length <= 2;
+}
+
 export async function authenticateRequest(
   request: Request,
   env: Env,
@@ -179,7 +209,8 @@ export async function authenticateRequest(
   const path = new URL(request.url).pathname;
   const account = request.method === "GET" && path === "/api/v1/account";
   const publishing = isPublishingRequest(request);
-  return await resolvePublisher(token, env, { ...deps, forceAccountRefresh: account, skipAccountRefresh: !account && !publishing });
+  const planMatters = publishing || isAccessWrite(request);
+  return await resolvePublisher(token, env, { ...deps, forceAccountRefresh: account, skipAccountRefresh: !account && !planMatters });
 }
 
 export async function resolvePublisher(

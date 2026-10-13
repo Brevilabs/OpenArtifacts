@@ -53,7 +53,7 @@ export function createClient({ host, token, fetcher = fetch }) {
         method: "POST",
         body: JSON.stringify({ device_code: deviceCode }),
       }),
-    /** @param {{title?: string, html: string}} body */
+    /** @param {{title?: string, html: string, linkAccess?: "anyone" | "invited"}} body */
     createDoc: (body) =>
       request("/api/v1/docs", { method: "POST", body: JSON.stringify(body) }),
     /** @param {string} docId @param {{title?: string, html: string}} body */
@@ -75,6 +75,26 @@ export function createClient({ host, token, fetcher = fetch }) {
     },
     /** @param {string} url */
     readDocument: (url) => request(url, {}, [], false),
+    /** The owner's latest stored HTML, which works once a page is private. @param {string} docId */
+    getHtml: (docId) => request(`/api/v1/docs/${encodeURIComponent(docId)}/html`),
+    /** @param {string} docId */
+    getAccess: (docId) => request(`/api/v1/docs/${encodeURIComponent(docId)}/access`),
+    /** @param {string} docId @param {"anyone" | "invited"} linkAccess */
+    setLinkAccess: (docId, linkAccess) =>
+      request(`/api/v1/docs/${encodeURIComponent(docId)}/access`, {
+        method: "PUT",
+        body: JSON.stringify({ linkAccess }),
+      }),
+    /** @param {string} docId @param {string} email */
+    addPerson: (docId, email) =>
+      request(`/api/v1/docs/${encodeURIComponent(docId)}/access/people/${encodeURIComponent(email)}`, {
+        method: "PUT",
+      }),
+    /** @param {string} docId @param {string} email */
+    removePerson: (docId, email) =>
+      request(`/api/v1/docs/${encodeURIComponent(docId)}/access/people/${encodeURIComponent(email)}`, {
+        method: "DELETE",
+      }),
     /** @param {string} docId */
     unshare: (docId) =>
       request(`/api/v1/docs/${encodeURIComponent(docId)}`, { method: "DELETE" }, [404]),

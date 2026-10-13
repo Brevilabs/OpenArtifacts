@@ -1005,7 +1005,7 @@ describe("through the router", () => {
     const { docId } = body;
     // `docs/http-api.md` is frozen, and a publisher must not be able to tell
     // from any response whether analytics succeeded, failed, or is configured.
-    expect(body).toEqual({ docId, url: `${ORIGIN}/d/${docId}`, version: 1 });
+    expect(body).toEqual({ docId, url: `${ORIGIN}/d/${docId}`, version: 1, linkAccess: "anyone" });
 
     const updated = await api("PUT", `/api/v1/docs/${docId}`, { html: "<p>second</p>" });
     expect(updated.status).toBe(200);

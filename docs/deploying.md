@@ -411,6 +411,72 @@ merge corrects them.
 All changes ship through a pull request; never push to `main`.
 
 
+## Private sharing
+
+The Worker that introduces private sharing needs four settings made once, before
+the deploy, and each one is harmless to the Worker that is running now. Then the
+launch is three merges in one sitting. [private-sharing.md](private-sharing.md)
+says what each piece is for.
+
+### One-time setup, before the deploy
+
+1. **The signing secret.** At least 32 random characters. Without it private
+   sharing is off: documents stay public, and a request to make one invited-only
+   is refused.
+
+   ```bash
+   openssl rand -hex 32 | npx wrangler secret put READER_SESSION_SECRET
+   ```
+
+   Rotating it signs every reader out.
+2. **The wildcard DNS record.** In the `openartifacts.site` zone, a proxied
+   `*.openartifacts.site` record, `AAAA` to `100::`. The route that catches it,
+   `*.openartifacts.site/*`, is in `wrangler.jsonc` (a custom domain cannot be a
+   wildcard). Universal SSL already covers first-level wildcards. The Worker
+   serves only a 26-character label there and fails closed on every other
+   subdomain.
+3. **The sending domain.** Onboard `mail.openartifacts.ai` in Cloudflare Email
+   Service (Compute → Email Service → Email Sending → Onboard Domain). The
+   `send_email` binding and `EMAIL_FROM` (`share@mail.openartifacts.ai`) are in
+   `wrangler.jsonc`; a subdomain keeps abuse off the brand domain's mail
+   reputation. Without the binding no invite is sent and the emailed-code form is
+   not offered; Google and GitHub still work.
+4. **Migration `0014`.** `npx wrangler d1 migrations apply symposium --remote`.
+   The deploy workflow refuses to ship over an unapplied migration, and the
+   running Worker ignores the new column and tables.
+
+Which plans include private sharing is configuration: `privateSharing` on the
+account plan in `PLAN_LIMITS`, and `PRIVATE_SHARING_LICENSE_PLANS` in
+`src/auth.ts`. Set both to the pricing decision before the deploy.
+
+### Launch, in one sitting
+
+1. Merge the privacy policy and Terms change in `Brevilabs/app-sites`; it deploys
+   on merge, so the legal copy is live first.
+2. Merge the OpenArtifacts pull request. CI deploys the Worker; approve the npm
+   release prompt. Its title is the CLI's next patch version, so the one merge
+   also starts the CLI release.
+3. Publish the Obsidian Copilot release, and announce.
+
+If the deploy in step 2 fails, fix it before step 3. Until then, the legal pages
+are the only visible change.
+
+### Rollback floor
+
+Once any document is invited-only, a Worker older than this deploy would serve it
+publicly at its canonical url. **Never activate a version older than the first
+version that contains private sharing.** Record that version's id as the hard
+floor in the deployment record, as the domain cutover did, and see
+[Rolling back](#rolling-back).
+
+### Self-hosting
+
+Private sharing is on when `READER_SESSION_SECRET` is set and `SERVING_HOST` and
+`API_HOST` are configured. The document host needs to be a zone apex so the free
+wildcard certificate covers its subdomains; add the `*.{SERVING_HOST}/*` route and
+the proxied wildcard record yourself. Email and the two limiters
+(`SIGNIN_EMAIL_LIMITER`, `INVITE_EMAIL_LIMITER`) are optional.
+
 ## Standalone account launch order
 
 Apply additive D1 migrations through `0012_newsletter_delivery.sql` before this Worker.

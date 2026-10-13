@@ -222,11 +222,14 @@ Commands:
   install            Install or upgrade the CLI and detected agent skills
   login              Approve this machine and store its token
   account [--open]   Refresh plan, limits, and usage; open account management with --open
-  publish <file.html> [--title <title>] [--doc-id <docId>]
-                     Publish an HTML file; pass --doc-id to update an existing document
+  publish <file.html> [--title <title>] [--doc-id <docId>] [--private]
+                     Publish an HTML file; pass --doc-id to update an existing document,
+                     or --private to publish it for invited people only
+  share <docId> [--add <email>] [--remove <email>] [--link anyone|invited]
+                     Show who a document is shared with, or change it
   list               List published documents
   get <docId>        Print a document's current HTML
-  unshare <docId>    Withdraw a public document
+  unshare <docId>    Withdraw a document
   tokens             List this account's machine tokens
   revoke <tokenId>   Revoke a machine token`;
 
@@ -235,25 +238,58 @@ Commands:
  * defaults the title to the file name; an update omits it so the server keeps the
  * current title unless --title was given.
  * @param {string} file @param {string[]} options
- * @returns {Promise<{docId?: string, body: {title?: string, html: string}}>}
+ * @returns {Promise<{docId?: string, body: {title?: string, html: string, linkAccess?: "invited"}}>}
  */
 export async function preparePublish(file, options) {
   if (![".html", ".htm"].includes(extname(file).toLowerCase())) {
     throw new Error("Publish an HTML file (.html, .htm). Render other formats to HTML first.");
   }
-  /** @type {{title?: string, docId?: string}} */
+  /** @type {{title?: string, docId?: string, private?: boolean}} */
   const flags = {};
-  for (let index = 0; index < options.length; index += 2) {
-    const [flag, value] = [options[index], options[index + 1]];
+  for (let index = 0; index < options.length; index += 1) {
+    const flag = options[index];
+    if (flag === "--private" && !flags.private) {
+      flags.private = true;
+      continue;
+    }
+    const value = options[++index];
     if (!value || value.startsWith("--")) throw new Error(HELP);
     if (flag === "--title" && flags.title === undefined) flags.title = value;
     else if (flag === "--doc-id" && flags.docId === undefined) flags.docId = value;
     else throw new Error(HELP);
   }
+  if (flags.private && flags.docId) {
+    throw new Error("--private applies to a new document. Change an existing one with `openartifacts share <docId> --link invited`.");
+  }
   const path = resolve(file);
   const html = await readFile(path, "utf8");
   const title = flags.title ?? (flags.docId ? undefined : basename(path, extname(path)));
-  return { docId: flags.docId, body: title === undefined ? { html } : { title, html } };
+  return {
+    docId: flags.docId,
+    body: { ...(title === undefined ? {} : { title }), html, ...(flags.private ? { linkAccess: "invited" } : {}) },
+  };
+}
+
+/**
+ * The access changes `share` was asked for, in order, read before any
+ * authentication. Each flag changes one thing: one address added, one removed,
+ * or the link setting. There is no way to send a whole list, so a retry or a
+ * mistake cannot remove everyone.
+ * @param {string[]} options
+ * @returns {Array<["link" | "add" | "remove", string]>}
+ */
+export function prepareShare(options) {
+  /** @type {Array<["link" | "add" | "remove", string]>} */
+  const changes = [];
+  for (let index = 0; index < options.length; index += 2) {
+    const [flag, value] = [options[index], options[index + 1]];
+    if (!value || value.startsWith("--")) throw new Error(HELP);
+    if (flag === "--add") changes.push(["add", value]);
+    else if (flag === "--remove") changes.push(["remove", value]);
+    else if (flag === "--link" && (value === "anyone" || value === "invited")) changes.push(["link", value]);
+    else throw new Error(HELP);
+  }
+  return changes;
 }
 
 /** CLI entry point. */
@@ -264,16 +300,17 @@ export async function main(args) {
     console.log(HELP);
     return;
   }
-  if (!["install", "login", "account", "publish", "list", "get", "unshare", "tokens", "revoke"].includes(command)) {
+  if (!["install", "login", "account", "publish", "share", "list", "get", "unshare", "tokens", "revoke"].includes(command)) {
     throw new Error(HELP);
   }
-  const needsArgument = ["publish", "get", "unshare", "revoke"].includes(command);
-  if ((extra.length && command !== "publish") || (needsArgument && !argument) || (!needsArgument && argument && !(command === "account" && argument === "--open"))) {
+  const needsArgument = ["publish", "share", "get", "unshare", "revoke"].includes(command);
+  if ((extra.length && command !== "publish" && command !== "share") || (needsArgument && !argument) || (!needsArgument && argument && !(command === "account" && argument === "--open"))) {
     throw new Error(HELP);
   }
   const value = argument ?? "";
   if (command === "install") return install();
   const prepared = command === "publish" ? await preparePublish(value, extra) : undefined;
+  const changes = command === "share" ? prepareShare(extra) : [];
 
   const host = (process.env.OPENARTIFACTS_API_HOST ?? DEFAULT_HOST).replace(/\/$/, "");
   const directory = configDir();
@@ -317,6 +354,17 @@ export async function main(args) {
       const published = prepared.docId
         ? await client.updateDoc(prepared.docId, prepared.body)
         : await client.createDoc(prepared.body);
+      // A server that predates private sharing ignores `linkAccess` and creates a
+      // public page. It never shows the url to anyone, so withdraw it before the
+      // caller can pass it on.
+      if (prepared.body.linkAccess === "invited" && published.linkAccess !== "invited") {
+        try {
+          await client.unshare(published.docId);
+        } catch {
+          throw new Error(`This server does not support private documents, and withdrawing the new public page failed. Run \`openartifacts unshare ${published.docId}\` now.`);
+        }
+        throw new Error("This server does not support private documents. The new page was withdrawn.");
+      }
       console.log(JSON.stringify(published));
     } catch (error) {
       if (prepared.docId && error instanceof APIError && error.status === 404) {
@@ -324,12 +372,18 @@ export async function main(args) {
       }
       throw error;
     }
+  } else if (command === "share") {
+    let access;
+    for (const [change, target] of changes) {
+      access = change === "link"
+        ? await client.setLinkAccess(value, /** @type {"anyone" | "invited"} */ (target))
+        : change === "add" ? await client.addPerson(value, target) : await client.removePerson(value, target);
+    }
+    console.log(JSON.stringify(access ?? await client.getAccess(value), null, 2));
   } else if (command === "list") {
     console.log(JSON.stringify(await client.listDocs(), null, 2));
   } else if (command === "get") {
-    const doc = (await client.listDocs()).find((item) => item.docId === value);
-    if (!doc) throw new Error(`No document with id ${value} is in this account.`);
-    process.stdout.write(await client.readDocument(doc.url));
+    process.stdout.write(await client.getHtml(value));
   } else if (command === "unshare") {
     await client.unshare(value);
     console.log(`Unshared ${value}.`);

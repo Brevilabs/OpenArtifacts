@@ -1,5 +1,6 @@
 import { handleAccount } from "./account.js";
 import { analyticsSink, type AnalyticsSink } from "./analytics.js";
+import { handleDocSection } from "./api/access.js";
 import { deleteDoc, listDocs } from "./api/manage.js";
 import { ADMIN_PREFIX, handleAdmin } from "./admin.js";
 import { APPROVAL_PREFIX, handleApproval } from "./approval/handler.js";
@@ -15,6 +16,9 @@ import type { Env } from "./config.js";
 import { DEVICE_PREFIX, handleDevice } from "./device.js";
 import { errorResponse } from "./errors.js";
 import { listTokens, revokeToken } from "./api/tokens.js";
+import { handlePrivateServing, PRIVATE_LABEL } from "./private.js";
+import { handleReader, OPEN_PREFIX } from "./reader.js";
+import { SIGNIN_PREFIX } from "./reader-pages.js";
 import {
   handleServing,
   servingError,
@@ -27,7 +31,13 @@ import {
  * sacrificial host that never carries the API — a doc that turns out to be
  * phishing should cost us the serving domain, not the brand domain.
  */
-export type Surface = "api" | "serving" | "legacy-serving" | "retired-api" | "unknown";
+export type Surface =
+  | "api"
+  | "serving"
+  | "private-serving"
+  | "legacy-serving"
+  | "retired-api"
+  | "unknown";
 
 export interface SurfaceConfig {
   /** Canonical host serving public docs. Empty/undefined locally. */
@@ -58,6 +68,18 @@ function hostMatches(hostname: string, configured: string | undefined): boolean 
   return normalizeHostname(hostname) === normalizeHostname(configured);
 }
 
+/**
+ * `{26-character label}.{servingHost}`: the origin of one private document. The
+ * label is the whole subdomain, so `a.b.openartifacts.site` and a short or
+ * mixed-case label are the unknown hosts they were before.
+ */
+function isPrivateHost(hostname: string, servingHost: string | undefined): boolean {
+  if (!servingHost?.trim()) return false;
+  const serving = normalizeHostname(servingHost);
+  const host = normalizeHostname(hostname);
+  return host.endsWith(`.${serving}`) && PRIVATE_LABEL.test(host.slice(0, -serving.length - 1));
+}
+
 function pathIsUnder(pathname: string, prefix: string): boolean {
   return pathname === prefix || pathname.startsWith(`${prefix}/`);
 }
@@ -85,6 +107,7 @@ export function resolveSurface(hostname: string, pathname: string, config: Surfa
   if (hostMatches(hostname, config.legacyServingHost)) return "legacy-serving";
   if (hostMatches(hostname, config.apiHost)) return "api";
   if (hostMatches(hostname, config.retiredApiHost)) return "retired-api";
+  if (isPrivateHost(hostname, config.servingHost)) return "private-serving";
 
   if (hostsAreConfigured(config)) return "unknown";
 
@@ -95,6 +118,8 @@ export function resolveSurface(hostname: string, pathname: string, config: Surfa
   // serve them too.
   if (pathIsUnder(pathname, APPROVAL_PREFIX)) return "api";
   if (pathIsUnder(pathname, DEVICE_PREFIX)) return "api";
+  if (pathIsUnder(pathname, OPEN_PREFIX)) return "api";
+  if (pathIsUnder(pathname, SIGNIN_PREFIX)) return "api";
   if (pathIsUnder(pathname, SERVING_PREFIX)) return "serving";
   return "unknown";
 }
@@ -142,6 +167,14 @@ async function handleApi(
 
   // Every dispatch is `return await`, never a bare `return` of the handler's
   // promise, for the reason spelled out on the catch below.
+  // `/docs/{docId}/access…`, `/html` and `/open`: who a document is shared
+  // with and how its owner opens it. Null means no such route, which falls
+  // through to the same `404` as every other unclaimed path.
+  if (collection === "docs" && docId !== undefined && extra.length > 0) {
+    const section = await handleDocSection(request, url, env, auth.publisher, docId, extra, analytics);
+    if (section !== null) return section;
+  }
+
   if (collection === "docs" && extra.length === 0) {
     if (docId === undefined && request.method === "POST") {
       return await createDoc(request, url, env, auth.publisher, analytics);
@@ -214,6 +247,7 @@ export default {
     // only on an explicit serving/API host; an unknown Host still fails closed.
     if (
       url.pathname === "/health" &&
+      surface !== "private-serving" &&
       (surface !== "unknown" || !hostsAreConfigured(surfaceConfig))
     ) {
       return Response.json({ ok: true });
@@ -249,6 +283,12 @@ export default {
           if (pathIsUnder(url.pathname, APPROVAL_PREFIX)) {
             return await handleApproval(request, url, env);
           }
+          // Reader sign-in and the door a private document opens through: pages
+          // a person reaches with a browser, not API routes, so they sit outside
+          // `/api/v1` for the same reason approval does.
+          if (pathIsUnder(url.pathname, OPEN_PREFIX) || pathIsUnder(url.pathname, SIGNIN_PREFIX)) {
+            return await handleReader(request, url, env);
+          }
           // Likewise before `handleApi`: a terminal asking for a device code
           // has no credential yet, which is the entire reason it is asking.
           // Outside `/api/v1`, so the promise that every request under that
@@ -259,6 +299,8 @@ export default {
           return await handleApi(request, url, env, analytics);
         case "serving":
           return await handleServing(request, url, env, analytics);
+        case "private-serving":
+          return await handlePrivateServing(request, url, env, analytics);
         default:
           return errorResponse("not_found", `No route for ${url.pathname}`);
       }
@@ -271,7 +313,7 @@ export default {
       const message = "Something went wrong on our end. Please try again.";
       // The surface still decides the headers. A 500 on a doc url is a serving
       // response like any other, and has to carry the robots tag that proves it.
-      return surface === "serving"
+      return surface === "serving" || surface === "private-serving"
         ? servingError(request.method, "internal")
         : errorResponse("internal", message);
     }

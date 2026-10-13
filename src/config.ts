@@ -156,6 +156,41 @@ export interface Env {
    * out of them rather than the one that folds them in.
    */
   ANALYTICS_ENVIRONMENT?: string;
+
+  /**
+   * Key for reader sessions and grants (docs/private-sharing.md). At least 32
+   * characters; anything shorter counts as unset.
+   *
+   * **Absent means private sharing is off**, not broken: documents stay public,
+   * and a request to make one invited-only is refused. A secret rather than a
+   * var because anyone holding it can mint a session or a grant.
+   */
+  READER_SESSION_SECRET?: string;
+
+  /**
+   * Cloudflare Email Service `send_email` binding, for invite emails and
+   * sign-in codes. Absent means neither is sent and the code form is not
+   * offered; Google and GitHub sign-in work without it.
+   */
+  EMAIL?: EmailSender;
+  /** Sending address on a domain onboarded to Email Service. Absent means no email. */
+  EMAIL_FROM?: string;
+
+  /** Emailed sign-in codes, counted per address and per client. Absent means no limit. */
+  SIGNIN_EMAIL_LIMITER?: RateLimit;
+  /** Invite emails, counted per owner. Absent means no limit. */
+  INVITE_EMAIL_LIMITER?: RateLimit;
+}
+
+/** The part of the Email Service binding this Worker uses. */
+export interface EmailSender {
+  send(message: {
+    from: string | { email: string; name?: string };
+    to: string;
+    subject: string;
+    text: string;
+    html: string;
+  }): Promise<unknown>;
 }
 
 /**
@@ -170,6 +205,9 @@ export const MAX_DOC_BYTES = 10 * 1024 * 1024;
 
 /** Pushes a single owner may make in one UTC day, across credentials. */
 export const MAX_PUSHES_PER_DAY = 100;
+
+/** People one document can be shared with, so its list never needs paging. */
+export const MAX_INVITES_PER_DOC = 100;
 
 /** Live (non-deleted) docs a paid license owner may hold. */
 export const MAX_DOCS_PER_PUBLISHER = 500;

@@ -228,22 +228,29 @@ Ownership no longer is, which makes it a fair question. Three reasons:
 
 The hash never leaves `src/auth.ts`. It is an index, not an identity.
 
-## Why there is no session
+## Why publishers have no session, and what a reader's is
 
-A session is a credential that outlives the request that created it, and here it
-would exist to serve a dashboard that does not exist: listing documents,
+A publisher session is a credential that outlives the request that created it, and
+here it would exist to serve a dashboard that does not exist: listing documents,
 unsharing one, and revoking a token are all CLI commands. Without a dashboard, a
 session buys nothing and costs a store, an expiry policy, and a cookie on a
-browser that has no further business with us.
+browser that has no further business with us. **A publisher authenticates with a
+bearer credential on every request, and `/api/v1` ignores cookies.** Even the
+OAuth handshake lives on the device code's own row: the browser is not the thing
+being authorized, so it has nothing to remember between the three requests.
 
-**This Worker sets no cookie, on any surface.** Even the OAuth handshake, which
-would be the obvious thing to keep in one, lives on the device code's own row
-instead: the browser is not the thing being authorized, so it has nothing to
-remember between the three requests. That keeps the serving origin's cookieless
-guarantee — which [`http-api.md`](http-api.md) promises and a test asserts on
-every reader-facing response — a property of the whole Worker rather than an
-argument about which host is safe. Publishers' own scripts run on that origin,
-and that is only acceptable while there is nothing on it for them to steal.
+**A reader has exactly one session, and it lives on the API host.** Opening an
+invited-only document needs a reader to sign in once and not again for thirty
+days, which a row on a device code cannot give. `__Host-oa_session` is a signed
+cookie, stateless, set by `/signin` and read only by `/open` and `/signin`
+(`src/reader.ts`). It names an `accounts` row, the same principal a publisher is.
+
+The rule the cookieless promise was a special case of is now stated outright: **no
+origin that runs more than one author's scripts ever holds a credential.**
+`openartifacts.site` still sets no cookie on any response and still holds nothing
+but public documents. A private document is served from `{label}.openartifacts.site`,
+which runs only that author's scripts and holds one cookie, a one-document grant.
+[`private-sharing.md`](private-sharing.md) is why, and how access is checked.
 
 ## What this does not do
 
@@ -262,8 +269,9 @@ and that is only acceptable while there is nothing on it for them to steal.
   allowance and one document ceiling. Isolation is per account, and
   [`http-api.md`](http-api.md) says so.
 - **It does not scope a token to anything.** A token can do everything its
-  account can, which is what Phase 4 of [`private-sharing.md`](private-sharing.md)
-  eventually wants narrowed to a single document. Suggested follow-up: `Scope an
+  account can, which the agent step at the end of
+  [`private-sharing.md`](private-sharing.md) eventually wants narrowed to a
+  single document. Suggested follow-up: `Scope an
   agent token to one document`.
 - **It does not survive the account being deleted.** Nothing reacts to a `User`
   row disappearing upstream, and nothing deletes an `accounts` row here. The

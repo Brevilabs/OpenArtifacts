@@ -55,8 +55,10 @@ These are day-one decisions, not retrofits:
   `openartifacts.ai`. `docs/serving-domain.md` is why, and why a subdomain does not
   substitute. There is no migration path once links are in the wild.
 - Shared docs are **`noindex` + `nofollow` by default**.
-- **Publisher-gated, reader-open**: publishing requires a key; reading requires
-  nothing.
+- **Publisher-gated, reader-open**: publishing requires a key; reading a public
+  document requires nothing. An invited-only document is the exception, and it
+  never leaves its own origin: **no origin that runs more than one author's
+  scripts may ever hold a credential** (`docs/private-sharing.md`).
 - **Documents belong to an account, not to the credential that published them.**
   `docs.owner` is an app-sites `User.id`, and it is always *derived* — from a
   validated license key, later from a signed session — and **never accepted as

@@ -103,15 +103,24 @@ The remaining serving work is unchanged:
    above. Once there is an edge cache, an unshared doc keeps being served from
    it. Shipping caching without purging is how a withdrawn document stays
    readable.
+   Making a document invited-only must purge exactly the same way.
 
-## What changes when reading stops being anonymous
+## What changed when reading stopped being anonymous
 
 The argument above rests on the serving origin being cookieless, which is also
-what lets uploaded documents run scripts. Private sharing breaks that, and the
-way out is to keep identity on the brand domain and grant access per document
-rather than by session — and that is not sufficient on its own. A hostile public
-document can `window.open` a private one and read the grant off the popup once it
-returns to this origin, so isolating documents from each other is a prerequisite,
-not an enhancement. It is nearly free to adopt now and effectively impossible
-once readers hold private links.
-[private-sharing.md](private-sharing.md) has the reasoning and the phases.
+what lets uploaded documents run scripts. Private sharing could not break that,
+so it did not: `openartifacts.site` is still cookieless and still holds nothing
+but public documents.
+
+Identity lives on the brand domain, and grants are per document rather than a
+session. That is not sufficient on its own, because a hostile public document can
+`window.open` a private one and read the grant off the popup once it returns to a
+shared origin. So each private document is served from an origin of its own,
+`{label}.openartifacts.site`, where only its author's scripts run. The rule is
+that **no origin that runs more than one author's scripts ever holds a
+credential**; a label host holds exactly one document's grant. The wildcard route
+and DNS record are one-time setup in [deploying.md](deploying.md#private-sharing),
+and the label is derived from the doc id by a one-way hash so the hostname never
+reveals it. It was nearly free to adopt while every link was disposable and would
+have been effectively impossible afterwards.
+[private-sharing.md](private-sharing.md) has the reasoning and the whole flow.

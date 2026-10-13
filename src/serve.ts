@@ -28,9 +28,6 @@ import { STORED_CONTENT_TYPE, versionObjectKey } from "./storage.js";
 /** Path prefix of the serving surface, used by the router's path fallback. */
 export const SERVING_PREFIX = "/d";
 
-/** Everything this surface serves lives under `/d/`. `/d` alone is not a doc. */
-const DOC_PATH_PREFIX = `${SERVING_PREFIX}/`;
-
 /**
  * `v` then a decimal with no leading zeros, so one version has exactly one url.
  * Bounded at nine digits: the number only ever reaches R2 as part of a key, and
@@ -50,10 +47,12 @@ const VERSION_SEGMENT = /^v([1-9][0-9]{0,8})$/;
  * using our origin to harm *readers*, and to keep one doc's blast radius off
  * the rest of the internet.
  *
- * Three things make that a defensible trade, none of them in this string: the
- * origin is cookieless and holds nothing but already-public docs, so there is
- * no session or private data on it to steal; docs are served from a sacrificial
- * host, never the brand domain; and publishing is gated on a paid license key.
+ * Three things make that a defensible trade, none of them in this string: no
+ * origin that runs more than one author's scripts ever holds a credential, so
+ * the shared origin is cookieless and holds nothing but already-public docs and
+ * there is no session or private data on it to steal; docs are served from a
+ * sacrificial host, never the brand domain; and publishing is gated on a paid
+ * license key.
  *
  * Directive by directive:
  *
@@ -142,14 +141,22 @@ const LATEST_CACHE_CONTROL = "public, max-age=60";
 const PINNED_CACHE_CONTROL = "public, max-age=31536000, immutable";
 
 /**
+ * Invited-only documents, pinned versions included. Nothing about who may read
+ * one can be left to a shared cache, and a browser keeps no copy either.
+ */
+const PRIVATE_CACHE_CONTROL = "private, no-store";
+
+/**
  * Every response this surface produces, including its errors, carries the whole
  * policy. Built fresh per response because `Headers` is mutable and one shared
  * instance would let a handler leak a header into the next request's reply.
  *
- * No `Set-Cookie` is ever added here or anywhere downstream. The origin being
- * cookieless is not an accident of having nothing to store — it is the property
- * that makes running strangers' scripts on a shared origin acceptable, so it
- * belongs in this file's contract next to the CSP.
+ * No `Set-Cookie` is ever added here or on `openartifacts.site`. The origin
+ * being cookieless is not an accident of having nothing to store — it is the
+ * property that makes running strangers' scripts on a shared origin acceptable,
+ * so it belongs in this file's contract next to the CSP. The one cookie this
+ * surface ever sets is a private document's grant, on that document's own
+ * origin, where only its author's scripts run (`src/private.ts`).
  */
 function servingHeaders(cacheControl: string): Headers {
   return new Headers({
@@ -204,7 +211,7 @@ const SERVING_PAGES: Record<ServingPageKind, ServingPageCopy> = {
  * temporary. Keeping one response path makes the serving security policy and
  * HEAD behavior properties of the surface rather than per-error conventions.
  */
-function servingPageResponse(method: string, kind: ServingPageKind): Response {
+export function servingPageResponse(method: string, kind: ServingPageKind): Response {
   const copy = SERVING_PAGES[kind];
   const headers = servingHeaders("no-store");
   headers.set("content-type", STORED_CONTENT_TYPE);
@@ -219,11 +226,20 @@ export function servingError(method: string, code: "not_found" | "internal"): Re
   return servingPageResponse(method, code);
 }
 
-/** Temporary legacy-host redirect with the serving origin's full safety policy. */
-export function servingRedirect(location: string): Response {
+/**
+ * A redirect with the serving origin's full safety policy. `307` for the legacy
+ * host; private documents use `302` to sign in and `303` to swap a grant for a
+ * cookie, which is the only `Set-Cookie` this surface produces.
+ */
+export function servingRedirect(
+  location: string,
+  status: 302 | 303 | 307 = 307,
+  setCookie?: string,
+): Response {
   const headers = servingHeaders("no-store");
   headers.set("location", location);
-  return new Response(null, { status: 307, headers });
+  if (setCookie !== undefined) headers.set("set-cookie", setCookie);
+  return new Response(null, { status, headers });
 }
 
 /** One neutral page for every miss, so it never confirms whether an id existed. */
@@ -231,14 +247,20 @@ function noDocAt(method: string): Response {
   return servingError(method, "not_found");
 }
 
-interface DocRoute {
+export interface DocRoute {
   docId: string;
   /** The version from `/v{n}`, or null for the latest-version url. */
   pinned: number | null;
 }
 
+/** `{prefix}/{docId}` or `{prefix}/{docId}/v{n}`, the inverse of `parseDocPath`. */
+export function docPath(prefix: string, route: DocRoute): string {
+  return `${prefix}/${route.docId}${route.pinned === null ? "" : `/v${route.pinned}`}`;
+}
+
 /**
- * Parse `/d/{docId}` and `/d/{docId}/v{n}`, or null for anything else.
+ * Parse `/d/{docId}` and `/d/{docId}/v{n}` (or the same under another prefix,
+ * which is how `/open/…` on the API host is read), or null for anything else.
  *
  * The prefix is matched rather than sliced off blind: on the serving host every
  * path lands here, so `/dx{docId}` reaches this function too and must not be
@@ -247,10 +269,10 @@ interface DocRoute {
  * `isDocId` runs before anything else touches the database (phase 1), so junk
  * and crawler noise cost a regex rather than a D1 read.
  */
-function parseDocPath(pathname: string): DocRoute | null {
-  if (!pathname.startsWith(DOC_PATH_PREFIX)) return null;
+export function parseDocPath(pathname: string, prefix: string = SERVING_PREFIX): DocRoute | null {
+  if (!pathname.startsWith(`${prefix}/`)) return null;
 
-  const segments = pathname.slice(DOC_PATH_PREFIX.length).split("/");
+  const segments = pathname.slice(prefix.length + 1).split("/");
   // `/d/{docId}/` is the same page as `/d/{docId}`; a trailing slash is a
   // browser and copy-paste artifact, not a different resource.
   if (segments.length > 1 && segments.at(-1) === "") segments.pop();
@@ -385,15 +407,20 @@ function matchesConditions(conditions: Headers, object: R2Object): boolean {
  * metadata: we wrote these bytes and we know what they are, and reading it back
  * off the object would let a stored value decide how a page is interpreted.
  */
-async function serveObject(
+export async function serveObject(
   request: Request,
   env: Env,
   route: DocRoute,
   version: number,
+  invitedOnly = false,
 ): Promise<Response> {
   const key = versionObjectKey(route.docId, version);
   const headers = servingHeaders(
-    route.pinned === null ? LATEST_CACHE_CONTROL : PINNED_CACHE_CONTROL,
+    invitedOnly
+      ? PRIVATE_CACHE_CONTROL
+      : route.pinned === null
+        ? LATEST_CACHE_CONTROL
+        : PINNED_CACHE_CONTROL,
   );
 
   const conditions = notModifiedConditions(request.headers);
@@ -479,20 +506,47 @@ export async function handleServing(
   if (found.deleted_at !== null) {
     return servingPageResponse(request.method, "deleted");
   }
+  // An invited-only document never answers here: the link every reader holds is
+  // this one, so it sends them to sign in. Before the version check, so a
+  // pinned `/v{n}` that does not exist reads the same as one that does. No body,
+  // no cookie and no view: this origin learns nothing about who asked.
+  if (found.link_access === "invited") {
+    const apiHost = env.API_HOST?.trim();
+    return apiHost
+      ? servingRedirect(`https://${apiHost}${docPath("/open", route)}`, 302)
+      : noDocAt(request.method);
+  }
   if (found.version === null) return noDocAt(request.method);
 
-  // Awaited into a local rather than handed back, and not only so the status
-  // can be read below: an async function that returns somebody else's promise
-  // unawaited drops itself out of the rejection's stack and, in workerd, gets
-  // the rejection reported as unhandled even though the router catches it. The
-  // same reason index.ts gives at every dispatch it makes.
-  const response = await serveObject(request, env, route, found.version);
+  return await serveAndCount(request, env, route, found.version, analytics, atMs);
+}
+
+/**
+ * Serve one version and count the view.
+ *
+ * Awaited into a local rather than handed back, and not only so the status
+ * can be read below: an async function that returns somebody else's promise
+ * unawaited drops itself out of the rejection's stack and, in workerd, gets
+ * the rejection reported as unhandled even though the router catches it. The
+ * same reason index.ts gives at every dispatch it makes.
+ */
+export async function serveAndCount(
+  request: Request,
+  env: Env,
+  route: DocRoute,
+  version: number,
+  analytics: AnalyticsSink,
+  atMs: number,
+  invitedOnly = false,
+): Promise<Response> {
+  const response = await serveObject(request, env, route, version, invitedOnly);
 
   // One view per GET that served the document: counted after R2 answered,
   // because a missing object still turns into a 404 here. `304` counts, since
   // that reader asked for this document and was told to use their copy. `HEAD`
   // never records, so it cannot spend a document's view allowance either. The
-  // sink applies that allowance; docs/analytics.md has the whole rule.
+  // sink applies that allowance; docs/analytics.md has the whole rule. A private
+  // document is counted the same way, per document and never per reader.
   if (request.method === "GET" && (response.status === 200 || response.status === 304)) {
     analytics.record({
       name: "document_viewed",

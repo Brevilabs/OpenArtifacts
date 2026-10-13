@@ -3,7 +3,8 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { Env } from "../src/config.js";
 import { handleApproval, normalizeUserCode } from "../src/approval/handler.js";
 import type { OAuthClient, ProviderId } from "../src/approval/providers.js";
-import { ACCOUNT_ID_PREFIX } from "../src/ids.js";
+import { findOrCreateAccount } from "../src/db.js";
+import { ACCOUNT_ID_PREFIX, newAccountId } from "../src/ids.js";
 import { versionObjectKey } from "../src/storage.js";
 import worker from "../src/index.js";
 
@@ -46,7 +47,7 @@ const configured = (over: Partial<Env> = {}): Env =>
 async function send(path: string, init: RequestInit = {}, over: Partial<Env> = {}) {
   const ctx = createExecutionContext();
   const response = await worker.fetch(
-    new Request(`${ORIGIN}${path}`, { redirect: "manual", ...init }),
+    new Request(path.startsWith("https://") ? path : `${ORIGIN}${path}`, { redirect: "manual", ...init }),
     configured(over),
     ctx,
   );
@@ -1200,4 +1201,96 @@ describe("new-account signup", () => {
       expect(new Set(ids).size).toBe(1);
     },
   );
+});
+
+describe("reader sign-in", () => {
+  const API = "https://api.openartifacts.ai";
+  const SERVING = "https://openartifacts.site";
+  const DOC_ID = "0123456789abcdef";
+  const NEXT = `/open/${DOC_ID}`;
+  const hosts = {
+    SERVING_HOST: "openartifacts.site",
+    API_HOST: "api.openartifacts.ai",
+    READER_SESSION_SECRET: "k".repeat(32),
+  } satisfies Partial<Env>;
+
+  const asBrowser = (path: string, cookie: string, over: Partial<Env> = hosts) =>
+    send(path, { headers: { cookie } }, over);
+
+  it("sets a session only on the API host, only for the browser that started it, and /api/v1 ignores it", async () => {
+    await findOrCreateAccount(env.DB, newAccountId(), "alice@acme.com", NOW);
+
+    const started = await post(`${API}/signin/start/google`, { next: NEXT }, hosts);
+    expect(started.status).toBe(303);
+    const login = started.headers.get("set-cookie")!;
+    expect(login).toMatch(/^__Host-oa_login=.+; HttpOnly; Secure; SameSite=Lax; Path=\/; Max-Age=600$/);
+    const state = new URL(started.headers.get("location")!).searchParams.get("state")!;
+
+    // A callback link forwarded to somebody who never started the handshake: they
+    // hold no login cookie, or one from a handshake of their own.
+    const theirs = await post(`${API}/signin/start/google`, { next: NEXT }, hosts);
+    const url = new URL(`${API}/approve/callback/google?state=${state}&code=authorization-code`);
+    const answer = (cookie?: string) =>
+      handleApproval(
+        new Request(url, cookie ? { headers: { cookie } } : {}),
+        url,
+        configured(hosts),
+        { now: () => NOW, oauth: oauthAnswering("alice@acme.com") },
+      );
+    for (const cookie of [undefined, theirs.headers.get("set-cookie")!.split(";")[0]]) {
+      const forwarded = await answer(cookie);
+      expect(forwarded.status).toBe(400);
+      expect(forwarded.headers.get("set-cookie")).toBeNull();
+    }
+
+    const signedIn = await answer(login.split(";")[0]);
+    expect(signedIn.status).toBe(303);
+    expect(signedIn.headers.get("location")).toBe(NEXT);
+    const session = signedIn.headers.get("set-cookie")!;
+    expect(session).toMatch(/^__Host-oa_session=.+; HttpOnly; Secure; SameSite=Lax; Path=\/; Max-Age=2592000$/);
+    const cookie = session.split(";")[0]!;
+
+    // The session is recognised where it is meant to be: /open names the signed-in address.
+    const opened = await asBrowser(`${API}${NEXT}`, cookie);
+    expect(opened.status).toBe(404);
+    expect(await opened.text()).toContain("alice@acme.com");
+    // And nowhere else: the bearer API refuses it, and the document host neither reads nor sets one.
+    expect((await asBrowser(`${API}/api/v1/docs`, cookie)).status).toBe(401);
+    const document = await asBrowser(`${SERVING}/d/${DOC_ID}`, cookie);
+    expect(document.status).toBe(404);
+    expect(document.headers.get("set-cookie")).toBeNull();
+  });
+
+  it("emails a code to an address with no provider, and refuses one whose account signs in with Google", async () => {
+    const sent: Array<{ to: string; subject: string }> = [];
+    const mail = {
+      EMAIL: { send: async (message: { to: string; subject: string }) => void sent.push(message) },
+      EMAIL_FROM: "share@mail.openartifacts.ai",
+    };
+    const over = { ...hosts, ...mail } as Partial<Env>;
+    const code = () => /(\d{6}) is your/.exec(sent.at(-1)?.subject ?? "")?.[1] ?? "";
+
+    // Bob has no account: the page offers the Terms, and a wrong code is not a sign-in.
+    const asked = await post(`${API}/signin/email`, { email: "Bob@Acme.com", next: NEXT }, over);
+    expect(asked.status).toBe(200);
+    expect(await asked.text()).toContain('name="terms"');
+    expect(sent.map((message) => message.to)).toEqual(["bob@acme.com"]);
+    const wrong = await post(`${API}/signin/code`, { email: "bob@acme.com", code: "000000", terms: "yes", next: NEXT }, over);
+    expect(wrong.headers.get("set-cookie")).toBeNull();
+    const right = await post(`${API}/signin/code`, { email: "bob@acme.com", code: code(), terms: "yes", next: NEXT }, over);
+    expect(right.status).toBe(303);
+    expect(right.headers.get("location")).toBe(NEXT);
+    expect(right.headers.get("set-cookie")).toContain("__Host-oa_session=");
+    expect(await env.DB.prepare("SELECT 1 FROM accounts WHERE email = 'bob@acme.com'").first()).not.toBeNull();
+
+    // Alice already signs in with Google, so a code cannot stand in for it.
+    const alice = await findOrCreateAccount(env.DB, newAccountId(), "alice@acme.com", NOW);
+    await env.DB.prepare("INSERT INTO identities (provider, subject, account_id, created_at) VALUES ('google', 'sub-alice', ?, ?)")
+      .bind(alice.id, NOW)
+      .run();
+    const refused = await post(`${API}/signin/email`, { email: "alice@acme.com", next: NEXT }, over);
+    expect(await refused.text()).toContain("signs in with Google or GitHub");
+    expect(sent).toHaveLength(1);
+    expect(await env.DB.prepare("SELECT 1 FROM email_codes WHERE email = 'alice@acme.com'").first()).toBeNull();
+  });
 });

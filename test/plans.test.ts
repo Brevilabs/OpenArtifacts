@@ -55,10 +55,26 @@ describe("configured account plans", () => {
 
   it("loads the agreed hosted values from wrangler, not a separate test copy", () => {
     expect(planLimits(local(), "free")).toEqual({ documents: 3, pushesPerDay: 6, htmlBytes: 1048576 });
-    expect(planLimits(local(), "pro")).toEqual({ documents: 500, pushesPerDay: 100, htmlBytes: 10485760 });
+    expect(planLimits(local(), "pro")).toEqual({ documents: 500, pushesPerDay: 100, htmlBytes: 10485760, privateSharing: true });
     for (const PLAN_LIMITS of [undefined, ""]) {
       expect(planLimits(local({ PLAN_LIMITS }), "free")).toEqual(planLimits(local(), "free"));
     }
+  });
+
+  it("refuses a private create on the free plan with 402 privateSharing, and allows it on pro", async () => {
+    const hosts = { SERVING_HOST: "openartifacts.site", API_HOST: "api.openartifacts.ai", READER_SESSION_SECRET: "k".repeat(32) };
+    const createPrivate = () =>
+      send("POST", "/api/v1/docs", { html: "<p>private</p>", linkAccess: "invited" }, hosts, token, "https://api.openartifacts.ai");
+
+    const refused = await createPrivate();
+    expect(refused.status).toBe(402);
+    expect(await error(refused)).toMatchObject({ error: { code: "limit_reached", limit: "privateSharing", plan: "free" } });
+    expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM docs").first()).toEqual({ n: 0 });
+
+    expect((await setPlan("pro")).status).toBe(200);
+    const created = await createPrivate();
+    expect(created.status).toBe(201);
+    expect(await created.json()).toMatchObject({ linkAccess: "invited" });
   });
 
   it("shares three slots across existing tokens, updates at capacity and replaces an unshared doc", async () => {

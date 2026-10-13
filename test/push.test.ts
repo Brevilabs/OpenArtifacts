@@ -179,6 +179,7 @@ describe("POST /api/v1/docs", () => {
       docId: body.docId,
       url: `${API_ORIGIN}/d/${body.docId}`,
       version: 1,
+      linkAccess: "anyone",
     });
 
     // R2 holds the publisher's bytes and nothing else: OpenArtifacts' additions go

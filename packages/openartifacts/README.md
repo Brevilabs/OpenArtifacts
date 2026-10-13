@@ -41,6 +41,21 @@ command with `--doc-id <docId>`, which serves the next version at the same url.
 `openartifacts unshare <docId>` withdraws a page. `list`, `get`, `tokens`, and
 `revoke` round out the account commands.
 
+Pages are public by default. `publish --private` creates a page for invited people
+only, and `share` changes who can read one:
+
+```bash
+openartifacts share <docId> --add alice@acme.com   # emails her the link
+openartifacts share <docId> --remove alice@acme.com
+openartifacts share <docId> --link anyone          # public again, same url
+openartifacts share <docId>                        # print who has access
+```
+
+Invited people sign in once with the invited address (Google, GitHub or an emailed
+code) and open the same url. Private sharing is a paid feature, and a server that
+predates it is detected: `publish --private` withdraws the page it just made rather
+than leave it public.
+
 The CLI never renders Markdown and keeps no record of which file became which page.
 Both are the agent's job: it writes the HTML the user reviewed, and it remembers the
 docId from the url it reported or from `openartifacts list`.

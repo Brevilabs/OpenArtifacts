@@ -1,6 +1,6 @@
 ---
 name: openartifacts
-description: Render a document to HTML, let the user review the file, then publish it as a public OpenArtifacts page. Update or unshare published pages.
+description: Render a document to HTML, let the user review the file, then publish it as an OpenArtifacts page, public or shared with invited people only. Update or unshare published pages.
 metadata:
   hermes:
     category: productivity
@@ -64,13 +64,37 @@ Take the docId from the url you reported earlier (`…/d/<docId>`) or from
 `openartifacts list`. Never guess a docId. If an update answers `not_found`, stop
 and tell the user; do not publish a replacement unless they explicitly ask.
 
-## 4. Withdraw
+## 4. Share privately
+
+Pages are public by default. Make a page private, or add people to one, only when
+the user asks. Never decide this yourself.
+
+```
+openartifacts publish <file.html> --title "Page title" --private
+openartifacts share <docId> --add alice@acme.com
+openartifacts share <docId> --remove alice@acme.com
+openartifacts share <docId> --link anyone
+openartifacts share <docId>
+```
+
+`--private` creates the page for invited people only; it is never public, not even
+briefly. `share` with no flags prints who has access. Each `--add` or `--remove`
+changes one address, so never try to send a whole list. Adding someone emails them
+the link. Tell the user that invitees sign in with the address you added, and that
+`--link anyone` makes the same url public again for everyone. If the CLI says the
+server does not support private documents, relay it: the page was withdrawn, not
+published. On `limit_reached` with `privateSharing`, private sharing needs a paid
+plan; relay the message and the upgrade guidance the way you do for any limit.
+
+## 5. Withdraw
 
 ```
 openartifacts unshare <docId>
 ```
 
 The url then answers 410 Gone. Copies readers already downloaded cannot be recalled.
+Making a public page private takes effect on the next request, but copies fetched
+while it was public cannot be recalled either.
 
 ## Credentials
 

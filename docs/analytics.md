@@ -1,6 +1,6 @@
 # Product analytics
 
-**The rule: OpenArtifacts counts documents, never readers.** Four server-side
+**The rule: OpenArtifacts counts documents, never readers.** Five server-side
 events tell us how much is being published and how much of it is being read.
 Nothing about who read it leaves the Worker, and nothing at all runs in a
 reader's browser.
@@ -9,14 +9,16 @@ reader's browser.
 
 ## What is instrumented today
 
-All four events. `createDoc`, `updateDoc` and `deleteDoc` each record one on
-their success path, and `handleServing` records one per qualifying read; no
+All five events. `createDoc`, `updateDoc` and `deleteDoc` each record one on
+their success path, the access routes record one after each write, and
+`handleServing` and `handlePrivateServing` record one per qualifying read; no
 other code in the Worker calls `record`.
 
 | Events | Where |
 | --- | --- |
 | `document_published`, `document_updated`, `document_unshared` | `createDoc`, `updateDoc`, `deleteDoc`, on their success paths only |
-| `document_viewed` | `handleServing`, once the served response is decided |
+| `document_access_changed` | the access routes after each write, and `createDoc` for a private create |
+| `document_viewed` | `handleServing` and `handlePrivateServing`, once the served response is decided |
 
 Both streams start at the deployment that landed them, and neither can be
 backfilled. A query that returns nothing for an earlier date is reporting the
@@ -24,7 +26,7 @@ absence of instrumentation, not the absence of usage.
 
 ## The events
 
-There are four, and the list is closed. `DocumentEvent` in `src/analytics.ts` is
+There are five, and the list is closed. `DocumentEvent` in `src/analytics.ts` is
 a union of exactly these shapes, so a new event is a change to that type rather
 than a new string somebody passed in.
 
@@ -33,7 +35,8 @@ than a new string somebody passed in.
 | `document_published` | A document was created: its first version was stored and its url started answering. |
 | `document_updated` | A new version was pushed to an existing document. |
 | `document_unshared` | A document was withdrawn by its owner. |
-| `document_viewed` | A reader successfully fetched a public document page. |
+| `document_access_changed` | A document's link setting or invite list was written. It carries the state left behind (`link_access` and `people`, a count), never an address. It is the adoption measure for private sharing. |
+| `document_viewed` | A reader successfully fetched a document page, public or private. Counted per document, never per reader. |
 
 Every event is a POST to `{POSTHOG_HOST}/i/v0/e/` carrying exactly this:
 
@@ -55,7 +58,8 @@ Every event is a POST to `{POSTHOG_HOST}/i/v0/e/` carrying exactly this:
 ```
 
 A `document_viewed` also carries `$raw_user_agent` when the reader sent a
-`User-Agent` header, capped at 512 characters.
+`User-Agent` header, capped at 512 characters. A `document_access_changed` also
+carries `link_access` (`anyone` or `invited`) and `people`.
 
 ### The property allowlist
 
@@ -65,11 +69,11 @@ construction rather than by a check. The sender builds `properties` itself from
 the typed event; there is no property bag, no `Record<string, unknown>`, and no
 `Request` anywhere in the module's interface. A call site that wanted to attach
 a title has nowhere to put one. `test/analytics.test.ts` asserts the complete
-set of keys in the body of all four events, so a field added anywhere in the
+set of keys in the body of the events, so a field added anywhere in the
 payload builder fails a test rather than reaching PostHog.
 
 `$process_person_profile` is `false` for `document_viewed` and `true` for the
-three publication events. A reader must never become a PostHog person; the
+publication and access events. A reader must never become a PostHog person; the
 publisher already is an account this service resolved from a credential it
 validated, and "how many distinct publishers" is worth being able to ask.
 
@@ -121,6 +125,7 @@ the row it describes can never be counted in different reporting intervals.
 | `document_published` | `createDoc`, on the 201 path | `docs.created_at` and `versions.created_at` for version 1 |
 | `document_updated` | `updateDoc`, on the 200 path, after `commitVersionMetadata` | `versions.created_at` for the version this push wrote |
 | `document_unshared` | `deleteDoc`, on the 204 path, as soon as `softDeleteDoc` marks the row | `docs.deleted_at` |
+| `document_access_changed` | An access write that succeeded, and a create that was private from its first insert | The request's own clock read; the access tables keep `doc_invites.created_at` only |
 
 **The event follows the request, not the `versions` table.** A create that
 dies after inserting its `docs` row and before storing version 1 leaves a row

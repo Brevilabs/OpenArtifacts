@@ -182,7 +182,7 @@ test("publish reads only HTML files and parses its options before authentication
 
 async function publishingServer() {
   const requests = [];
-  const control = { staleUpdates: false, missingDeletes: false };
+  const control = { staleUpdates: false, missingDeletes: false, echoLinkAccess: false };
   const server = createServer((request, response) => {
     let body = "";
     request.setEncoding("utf8");
@@ -195,6 +195,12 @@ async function publishingServer() {
         body: body ? JSON.parse(body) : undefined,
       });
       response.setHeader("content-type", "application/json");
+      const docId = "9f2k4mvq7t0xbz3n";
+      const url = `http://${request.headers.host}/d/${docId}`;
+      if (request.url.includes("/access")) {
+        response.end(JSON.stringify({ docId, url, linkAccess: "invited", people: [{ email: "alice@acme.com", addedAt: 1 }] }));
+        return;
+      }
       if ((request.method === "PUT" && control.staleUpdates) || (request.method === "DELETE" && control.missingDeletes)) {
         response.statusCode = 404;
         response.end(JSON.stringify({ error: { code: "not_found", message: "Document not found." } }));
@@ -206,11 +212,9 @@ async function publishingServer() {
         return;
       }
       response.statusCode = request.method === "POST" ? 201 : 200;
-      response.end(JSON.stringify({
-        docId: "9f2k4mvq7t0xbz3n",
-        url: `http://${request.headers.host}/d/9f2k4mvq7t0xbz3n`,
-        version: requests.length,
-      }));
+      // A server without private sharing ignores `linkAccess`, so it never echoes it.
+      const echoed = control.echoLinkAccess && body ? { linkAccess: JSON.parse(body).linkAccess } : {};
+      response.end(JSON.stringify({ docId, url, version: requests.length, ...echoed }));
     });
   });
   server.listen(0, "127.0.0.1");
@@ -254,6 +258,64 @@ test("publish creates, --doc-id updates, and unshare withdraws using the environ
   assert(remote.requests.every((request) => request.authorization === "Bearer opaque-test-token"));
   assert.deepEqual(remote.requests[0].body, { title: "Notes", html });
   assert.deepEqual(remote.requests[1].body, { html });
+});
+
+test("share changes one thing per flag and prints who has access", async () => {
+  const remote = await publishingServer();
+  try {
+    await withEnvironment({
+      OPENARTIFACTS_CONFIG_DIR: await mkdtemp(join(tmpdir(), "openartifacts-share-")),
+      OPENARTIFACTS_API_HOST: remote.host,
+      OPENARTIFACTS_TOKEN: "opaque-test-token",
+    }, async (lines) => {
+      await main(["share", "9f2k4mvq7t0xbz3n", "--link", "invited", "--add", "alice@acme.com", "--remove", "bob@acme.com"]);
+      await main(["share", "9f2k4mvq7t0xbz3n"]);
+      assert.equal(lines.length, 2);
+      assert.deepEqual(JSON.parse(lines[1]).people, [{ email: "alice@acme.com", addedAt: 1 }]);
+      // Options are read before any request, and there is no flag that sends a whole list.
+      await assert.rejects(main(["share", "9f2k4mvq7t0xbz3n", "--add"]), /Usage: openartifacts/);
+      await assert.rejects(main(["share", "9f2k4mvq7t0xbz3n", "--people", "a@b.c"]), /Usage: openartifacts/);
+    });
+  } finally {
+    remote.server.close();
+  }
+  assert.deepEqual(remote.requests.map(({ method, path, body }) => [method, path, body]), [
+    ["PUT", "/api/v1/docs/9f2k4mvq7t0xbz3n/access", { linkAccess: "invited" }],
+    ["PUT", "/api/v1/docs/9f2k4mvq7t0xbz3n/access/people/alice%40acme.com", undefined],
+    ["DELETE", "/api/v1/docs/9f2k4mvq7t0xbz3n/access/people/bob%40acme.com", undefined],
+    ["GET", "/api/v1/docs/9f2k4mvq7t0xbz3n/access", undefined],
+  ]);
+});
+
+test("publish --private withdraws the page when the server does not echo the private mode", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openartifacts-private-"));
+  const page = join(directory, "notes.html");
+  await writeFile(page, "<p>Private</p>");
+  const remote = await publishingServer();
+  try {
+    await withEnvironment({
+      OPENARTIFACTS_CONFIG_DIR: join(directory, "config"),
+      OPENARTIFACTS_API_HOST: remote.host,
+      OPENARTIFACTS_TOKEN: "opaque-test-token",
+    }, async (lines) => {
+      // An older or self-hosted Worker created a public page: it must not survive the command.
+      await assert.rejects(main(["publish", page, "--private"]), /does not support private documents.*withdrawn/);
+      assert.deepEqual(remote.requests.map(({ method }) => method), ["POST", "DELETE"]);
+      assert.deepEqual(remote.requests[0].body, { title: "notes", html: "<p>Private</p>", linkAccess: "invited" });
+      assert.deepEqual(lines, []);
+
+      // A server that echoes the mode keeps the page, and prints the receipt.
+      remote.control.echoLinkAccess = true;
+      await main(["publish", page, "--private"]);
+      assert.deepEqual(remote.requests.map(({ method }) => method), ["POST", "DELETE", "POST"]);
+      assert.equal(JSON.parse(lines[0]).linkAccess, "invited");
+
+      // Access to an existing page changes through share, never through publish.
+      await assert.rejects(main(["publish", page, "--private", "--doc-id", "9f2k4mvq7t0xbz3n"]), /share <docId> --link invited/);
+    });
+  } finally {
+    remote.server.close();
+  }
 });
 
 test("a stale --doc-id is reported, never silently replaced", async () => {
