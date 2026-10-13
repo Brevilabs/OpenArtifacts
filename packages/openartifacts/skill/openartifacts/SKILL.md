@@ -29,7 +29,8 @@ defaults of your own. A missing theme never blocks publishing.
 
 Write the HTML to a new file next to the source, for example `notes.html` for
 `notes.md`. Never overwrite the source. Your reply must contain this link as plain
-text (not in inline code or a code block): `[notes.html](file:///Users/me/My%20Notes/caf%C3%A9.html)`.
+text (not in inline code or a code block): `[/Users/me/My Notes/café.html](file:///Users/me/My%20Notes/caf%C3%A9.html)`.
+Use the absolute path as the link text so the path stays visible where links do not render.
 Build the target by writing `file://` followed by the absolute path of the HTML file, then
 percent-encode the path (`%20` for each space, UTF-8 percent-encoding such as `%C3%A9` for
 each non-ASCII character; on Windows `file:///C:/Users/me/notes.html`). Never give a bare
