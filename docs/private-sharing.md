@@ -140,6 +140,10 @@ never pay. A lapsed plan keeps what exists: private documents stay private and
 current invitees keep reading; new invites and new private documents get
 `402 limit_reached` with `limit: "privateSharing"`.
 
+A license-key publisher gets the same code and limit with the message "Your Copilot
+plan does not include private sharing." and no `upgrade_url`, because they manage
+their plan in Copilot, not with the OpenArtifacts CLI.
+
 Account plans carry `"privateSharing": true` in `PLAN_LIMITS` (the hosted `pro`
 plan). License keys use `PRIVATE_SHARING_LICENSE_PLANS` in `src/auth.ts` (`plus`).
 Which other plans qualify is a pricing decision, not a code one.

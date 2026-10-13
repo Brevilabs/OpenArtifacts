@@ -71,6 +71,17 @@ describe("configured account plans", () => {
     expect(await error(refused)).toMatchObject({ error: { code: "limit_reached", limit: "privateSharing", plan: "free" } });
     expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM docs").first()).toEqual({ n: 0 });
 
+    // A Supporter license key gets a Copilot refusal: no OpenArtifacts command and no checkout link.
+    const key = "cplus_live_0011223344556677";
+    await env.DB.prepare("INSERT INTO publishers (key_hash, plan, validated_at, owner) VALUES (?, 'believer', ?, 'copilot-owner')")
+      .bind(await sha256Hex(key), Date.now()).run();
+    const copilot = await send("POST", "/api/v1/docs", { html: "<p>private</p>", linkAccess: "invited" },
+      { ...hosts, ACCOUNT_ACTION_URL: "https://account.test", UPGRADE_URL: "https://upgrade.test/checkout" }, key, "https://api.openartifacts.ai");
+    expect(copilot.status).toBe(402);
+    expect(await copilot.json()).toEqual({
+      error: { code: "limit_reached", message: "Your Copilot plan does not include private sharing.", limit: "privateSharing", plan: "believer" },
+    });
+
     expect((await setPlan("pro")).status).toBe(200);
     const created = await createPrivate();
     expect(created.status).toBe(201);

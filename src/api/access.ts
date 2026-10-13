@@ -60,7 +60,12 @@ export function parseLinkAccess(value: unknown): LinkAccess | null {
  */
 export function refusePrivate(env: Env, publisher: Publisher): Response | null {
   if (!maySharePrivately(env, publisher)) {
-    return limitReached(env, publisher, "privateSharing", "Private sharing needs a paid plan.");
+    // A license-key publisher manages their plan in Copilot: no CLI command to run, no OpenArtifacts checkout to sell.
+    return publisher.authKind === "account"
+      ? limitReached(env, publisher, "privateSharing", "Private sharing needs a paid plan.")
+      : errorResponse("limit_reached", "Your Copilot plan does not include private sharing.", undefined, {
+        plan: publisher.plan, limit: "privateSharing",
+      });
   }
   if (!privateSharingConfigured(env)) {
     return errorResponse("bad_request", "This server is not set up for private documents.");
