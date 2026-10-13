@@ -23,6 +23,7 @@
  * `ownerId` is the publisher's app-sites user id, resolved by the ownership
  * check, so a linked license key and account token count as one publisher.
  */
+import { linkGuidance } from "../account.js";
 import type { AnalyticsSink } from "../analytics.js";
 import type { Publisher } from "../auth.js";
 import { MAX_DOCS_PER_PUBLISHER, MAX_DOC_BYTES, MAX_PUSHES_PER_DAY } from "../config.js";
@@ -222,9 +223,16 @@ function storageFull(env: Env, publisher: Publisher, limits: PlanLimits): Respon
     `Your ${limits.storageBytes} byte storage allowance is full, including retained versions and pending uploads. Unshare documents to free space. Existing pages remain available.`);
 }
 
-function pushed(env: Env, requestUrl: URL, docId: string, version: number, status: number) {
+function pushed(
+  env: Env,
+  requestUrl: URL,
+  docId: string,
+  version: number,
+  status: number,
+  guidance?: { message: string; url: string },
+) {
   return Response.json(
-    { docId, url: publicDocUrl(env, requestUrl, docId), version },
+    { docId, url: publicDocUrl(env, requestUrl, docId), version, ...(guidance && { guidance }) },
     { status },
   );
 }
@@ -301,7 +309,7 @@ export async function createDoc(
   }
 
   analytics.record({ name: "document_published", docId, atMs: now, ownerId: owner });
-  return pushed(env, requestUrl, docId, FIRST_VERSION, 201);
+  return pushed(env, requestUrl, docId, FIRST_VERSION, 201, await linkGuidance(request, env, publisher));
 }
 
 export async function updateDoc(

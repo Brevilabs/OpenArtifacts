@@ -203,6 +203,29 @@ The API accepts **HTML only**. Copilot renders markdown locally, because that is
 the only way callouts, wikilinks and dataview output survive. There is no
 markdown branch on the server.
 
+#### Client identifier and guidance
+
+Any `/api/v1` request may carry `X-OpenArtifacts-Client: obsidian-copilot`. It
+is a display hint only: it proves nothing and changes no access. A missing
+header or any other value means an unknown client.
+
+A `201` from this endpoint then adds `guidance` to the receipt, only when all of
+these hold: the header is exactly `obsidian-copilot`, the credential is a
+license key and not an `oat_` token, the key's owner is not linked to an
+account, and the Worker has `ACCOUNT_ACTION_URL` set.
+
+```json
+{"docId": "9f2k4mvq7t0xbz3n",
+ "url": "https://openartifacts.site/d/9f2k4mvq7t0xbz3n",
+ "version": 1,
+ "guidance": {"message": "Publish from other agents too? …",
+              "url": "https://openartifacts.ai/account"}}
+```
+
+`message` is human text and can change. `url` is `ACCOUNT_ACTION_URL` with no
+query, code, owner or key. `PUT`, `GET`, `DELETE` and every error never carry
+`guidance`, and a failure to work it out never fails a stored publish.
+
 ### `PUT /api/v1/docs/{docId}` — publish a new version
 
 Same body as `POST`. Omitting `title` keeps the doc's current title rather than

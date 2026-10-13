@@ -34,6 +34,24 @@ export function actionUrl(env: Env): URL | null {
   return url;
 }
 
+const COPILOT_CLIENT = "obsidian-copilot";
+const LINK_MESSAGE = "Publish from other agents too? Link your Copilot for Obsidian account to OpenArtifacts to keep one list of pages and use your Copilot plan there. Nothing is linked until you confirm.";
+
+/** A display hint, never account proof. It must not fail or change a publish. */
+export async function linkGuidance(request: Request, env: Env, publisher: Publisher): Promise<{ message: string; url: string } | undefined> {
+  if (request.headers.get("x-openartifacts-client") !== COPILOT_CLIENT ||
+    publisher.authKind === "account") return undefined;
+  try {
+    const url = actionUrl(env);
+    if (!url) return undefined;
+    const linked = await env.DB.prepare("SELECT 1 FROM owner_links WHERE external_owner = ?")
+      .bind(publisher.owner).first();
+    return linked ? undefined : { message: LINK_MESSAGE, url: url.toString() };
+  } catch {
+    return undefined;
+  }
+}
+
 export async function handleAccount(request: Request, env: Env, publisher: Publisher): Promise<Response> {
   if (publisher.authKind !== "account") return errorResponse("unauthorized", "Sign in with an account token.", { "www-authenticate": "Bearer" });
   const path = new URL(request.url).pathname;
