@@ -207,7 +207,7 @@ Rotating the secret signs every reader out.
 The URL grant also never stays in the address bar. A grant left there would be a
 live credential readers paste to people who were not invited, so the origin swaps
 it for a cookie and redirects to the clean url; the redirect and every page
-carry `Referrer-Policy: no-referrer`.
+on a publisher's origin carry `Referrer-Policy: no-referrer`.
 
 ## Who may read, and who may manage
 
@@ -381,7 +381,10 @@ the plan gate, the invite email, idempotency and the `document_access_changed`
 event cannot differ between the two. A refused write re-renders the dialog with
 the reason, including "Private sharing needs a paid plan." and the upgrade link;
 a successful one redirects (`303`) back to the page. The page is `no-store` with
-`frame-ancestors 'none'` and `Referrer-Policy: no-referrer`; its one script, the
+`frame-ancestors 'none'` and `Referrer-Policy: same-origin` (as on every page of
+the API host that holds a form: a form posted from a `no-referrer` page sends
+`Origin: null`, which would defeat the `Origin` fallback for browsers without
+Fetch Metadata, and `same-origin` still sends no `Referer` anywhere else); its one script, the
 Copy button, is allowed by a hash in the page's own policy, and the page works
 without it.
 

@@ -87,7 +87,7 @@ export async function originLabel(owner: string): Promise<string> {
  * custom domain, a verified `publisher_hosts` lookup, changes this function and
  * no link anyone holds.
  */
-export async function publisherOrigin(
+async function publisherOrigin(
   env: Env,
   owner: string,
 ): Promise<{ label: string; origin: string } | null> {

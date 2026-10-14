@@ -5,6 +5,7 @@ import { handleApproval, normalizeUserCode } from "../src/approval/handler.js";
 import type { OAuthClient, ProviderId } from "../src/approval/providers.js";
 import { findOrCreateAccount } from "../src/db.js";
 import { ACCOUNT_ID_PREFIX, newAccountId } from "../src/ids.js";
+import { clientBucket } from "../src/limits.js";
 import { versionObjectKey } from "../src/storage.js";
 import { macHex, signPayload } from "../src/session.js";
 import worker from "../src/index.js";
@@ -1226,7 +1227,8 @@ describe("reader sign-in", () => {
       ...hosts,
       EMAIL: { send: async (message: { to: string; subject: string }) => void sent.push(message) },
       EMAIL_FROM: "share@mail.openartifacts.ai",
-      // The limiters keep their state across tests; the cases about them reach for the bindings themselves.
+      // The limiters keep their state across tests; the cases about them ("mails
+      // a code at most ..." below) reach for the bindings themselves.
       SIGNIN_EMAIL_LIMITER: undefined,
       SIGNIN_EMAIL_CLIENT_LIMITER: undefined,
     } as Partial<Env>;
@@ -1337,7 +1339,7 @@ describe("reader sign-in", () => {
     expect(other.status).toBe(409);
     expect(cookiesOf(other)[0]).toMatch(LOGIN_CLEARED);
     const claimedHtml = await other.text();
-    expect(claimedHtml).toContain("That address already belongs to another Google sign-in. Try your other provider or an emailed code.");
+    expect(claimedHtml).toContain("That address already belongs to another Google sign-in. Try your other provider.");
     expect(claimedHtml).not.toContain("Approve with your other provider");
   });
 
@@ -1460,6 +1462,74 @@ describe("reader sign-in", () => {
     expect(await env.DB.prepare("SELECT 1 FROM email_codes WHERE email = 'alice@acme.com'").first()).toBeNull();
   });
 
+  it("allows five wrong guesses per code, and asking again neither resets the count nor replaces a used-up code", async () => {
+    const { sent, over, code } = mailbox();
+    const guess = (value: string) => post(`${API}/signin/code`, { email: "guess@acme.com", code: value, next: NEXT }, over);
+    const attempts = async () =>
+      (await env.DB.prepare("SELECT attempts FROM email_codes WHERE email = 'guess@acme.com'").first<{ attempts: number }>())?.attempts;
+
+    await post(`${API}/signin/email`, { email: "guess@acme.com", next: NEXT }, over);
+    await guess("000000");
+    await guess("000000");
+    expect(await attempts()).toBe(2);
+
+    // Asking again sends a fresh code, but the two wrong guesses still count.
+    await post(`${API}/signin/email`, { email: "guess@acme.com", next: NEXT }, over);
+    expect(sent).toHaveLength(2);
+    expect(await attempts()).toBe(2);
+
+    const current = code();
+    const wrong = current === "000001" ? "000002" : "000001";
+    for (let n = 0; n < 3; n += 1) {
+      expect(await (await guess(wrong)).text()).toContain("That code didn’t match.");
+    }
+
+    // The right code after five wrong guesses is refused, and nothing is created.
+    const late = await guess(current);
+    expect(late.headers.get("set-cookie")).toBeNull();
+    expect(await late.text()).toContain("That code has expired or been used up");
+    expect(await env.DB.prepare("SELECT 1 FROM accounts WHERE email = 'guess@acme.com'").first()).toBeNull();
+
+    // A used-up code cannot be replaced until it expires: no mail, and the count stays.
+    const again = await post(`${API}/signin/email`, { email: "guess@acme.com", next: NEXT }, over);
+    expect(again.status).toBe(429);
+    expect(sent).toHaveLength(2);
+    expect(await attempts()).toBe(5);
+  });
+
+  it("mails a code to an address at most three times a minute, and to one client at most as often as its limiter allows", async () => {
+    const { sent, over } = mailbox();
+    const perAddress = { ...over, SIGNIN_EMAIL_LIMITER: env.SIGNIN_EMAIL_LIMITER };
+    const ask = (email: string, headers: Record<string, string>, extra: Partial<Env>) =>
+      send(
+        `${API}/signin/email`,
+        { method: "POST", body: new URLSearchParams({ email, next: NEXT }), headers },
+        extra,
+      );
+
+    // The real per-address binding from wrangler.jsonc: three, then the page that says to wait.
+    for (let n = 0; n < 3; n += 1) {
+      expect((await ask("limited@acme.com", {}, perAddress)).status).toBe(200);
+    }
+    const fourth = await ask("limited@acme.com", {}, perAddress);
+    expect(fourth.status).toBe(429);
+    expect(sent).toHaveLength(3);
+    // Another address is not held back by it.
+    expect((await ask("other-limited@acme.com", {}, perAddress)).status).toBe(200);
+
+    // The per-client limiter is keyed on the caller, never on the address typed,
+    // and a refusal stores and sends nothing.
+    const keys: string[] = [];
+    const refusing = { limit: async ({ key }: { key: string }) => (keys.push(key), { success: false }) } as RateLimit;
+    const before = sent.length;
+    const refused = await ask("client-limited@acme.com", { "cf-connecting-ip": "203.0.113.9" }, { ...over, SIGNIN_EMAIL_CLIENT_LIMITER: refusing });
+    expect(refused.status).toBe(429);
+    expect(sent).toHaveLength(before);
+    expect(await env.DB.prepare("SELECT 1 FROM email_codes WHERE email = 'client-limited@acme.com'").first()).toBeNull();
+    expect(keys).toHaveLength(1);
+    expect(keys[0]).toBe(await clientBucket(new Request(API, { headers: { "cf-connecting-ip": "203.0.113.9" } })));
+  });
+
   it("signs in an address whose account has no provider, such as one Copilot linking created", async () => {
     const { over, code } = mailbox();
     const linked = await findOrCreateAccount(env.DB, newAccountId(), "linked@acme.com", NOW);
@@ -1571,5 +1641,8 @@ describe("reader sign-in", () => {
     for (const headers of ours) {
       expect((await asked(headers)).status).toBe(200);
     }
+    // `Origin: null` above is what a form posted from a no-referrer page sends, so
+    // these pages must not be no-referrer: they keep their real Origin.
+    expect((await asked({})).headers.get("referrer-policy")).toBe("same-origin");
   });
 });

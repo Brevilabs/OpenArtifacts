@@ -36,8 +36,11 @@ to publish, the agent runs:
 openartifacts publish notes.html --title "Notes"
 ```
 
-The command prints `{"docId","url","version"}` (a private publish adds `linkAccess` and `manageUrl`). Updating the same page is the same
-command with `--doc-id <docId>`, which serves the next version at the same url.
+The command prints `{"docId","url","version","linkAccess"}`, where `linkAccess` is
+`"anyone"` for a public page and `"invited"` for a private one. A private publish
+also adds `manageUrl`. Updating the same page is the same command with
+`--doc-id <docId>`, which serves the next version at the same url and prints
+`{"docId","url","version"}`.
 `openartifacts unshare <docId>` withdraws a page. `list`, `get`, `tokens`, and
 `revoke` round out the account commands.
 

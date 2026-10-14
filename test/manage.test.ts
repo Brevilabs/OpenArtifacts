@@ -835,7 +835,10 @@ describe("private sharing through the owner's credential", () => {
     const opened = await send("POST", `${API}/api/v1/docs/${created.docId}/open`, KEY_PLUS, undefined, hosts);
     expect(opened.status).toBe(200);
     expect(opened.headers.get("cache-control")).toBe("no-store");
-    const { url } = (await opened.json()) as { url: string };
+    const { url, expiresAt } = (await opened.json()) as { url: string; expiresAt: number };
+    // The grant lives sixty seconds, no more.
+    expect(expiresAt).toBeGreaterThan(Date.now());
+    expect(expiresAt).toBeLessThanOrEqual(Date.now() + 60_000);
 
     // Follow it as a browser would: the grant becomes a cookie, and the cookie reads the page.
     const swapped = await send("GET", url, null, undefined, hosts);

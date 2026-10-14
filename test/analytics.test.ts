@@ -171,6 +171,28 @@ describe("the capture payload", () => {
     expect(properties.$geoip_disable).toBe(true);
   });
 
+  it("carries only the allowlisted fields for document_access_changed, and a count rather than any address", async () => {
+    const { deliveries } = captureDeliveries();
+
+    await record({ name: "document_access_changed", docId: DOC_ID, atMs: AT_MS, ownerId: OWNER, linkAccess: "invited", people: 2 });
+
+    const delivery = only(deliveries);
+    expect(Object.keys(delivery.body).sort()).toEqual(PAYLOAD_KEYS);
+    expect(delivery.body.event).toBe("document_access_changed");
+    expect(delivery.body.distinct_id).toBe(OWNER);
+    expect(delivery.body.timestamp).toBe(AT_ISO);
+
+    const properties = delivery.body.properties as Record<string, unknown>;
+    expect(Object.keys(properties).sort()).toEqual([...PROPERTY_KEYS, "link_access", "people"].sort());
+    expect(properties.link_access).toBe("invited");
+    expect(properties.people).toBe(2);
+    expect(properties.document_key).toBe(await documentAnalyticsKey(DOC_ID));
+    expect(properties.$process_person_profile).toBe(true);
+    expect(properties.$geoip_disable).toBe(true);
+    // The doc id is a capability and stays out of the payload.
+    expect(delivery.raw).not.toContain(DOC_ID);
+  });
+
   it("carries only the allowlisted fields for document_viewed", async () => {
     const { deliveries } = captureDeliveries();
 

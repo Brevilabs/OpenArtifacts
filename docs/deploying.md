@@ -38,10 +38,12 @@ The D1 command prints a `database_id`. Edit `wrangler.jsonc` before continuing:
 1. Give `name`, `bucket_name`, `database_name`, and `database_id` values from
    your account.
 2. Replace `routes` with exactly two `custom_domain` entries: your document host
-   and API host. Private sharing is optional and adds one more route, the
+   and API host. Private sharing is optional and needs one more route, the
    wildcard `{ "pattern": "*.{your document host}/*", "zone_name": "{your document
-   host}" }`; leave it out and the server has no private sharing. See
-   [Self-hosting](#self-hosting) under Private sharing.
+   host}" }`, and its DNS record. Add both before you set `READER_SESSION_SECRET`:
+   the Worker cannot see routes or DNS, so without them private documents can
+   still be created but nobody can open them. See [Self-hosting](#self-hosting)
+   under Private sharing.
 3. Keep `SERVING_HOST` and `API_HOST` under `vars`, set to those same hosts. A
    fresh install has no legacy or retired host. `EMAIL_FROM` and the `send_email`
    block ship pointing at Brevilabs' sending address: set `EMAIL_FROM` and
@@ -417,6 +419,11 @@ Or the dashboard: **Compute (Workers) → symposium → Deployments**, then
 the default immediate-predecessor rollback for the initial cutover because that
 predecessor is unsafe.
 
+Use this procedure only while no document is invited-only (check
+`SELECT COUNT(*) FROM docs WHERE link_access = 'invited'` against the remote
+database). Once one is, a pre-cutover version serves its bytes to anyone with the
+link on `symposium.site`: do not use this procedure, roll forward.
+
 If a pre-cutover version is ever required, first detach all three of these custom
 domains and verify none invokes this Worker:
 
@@ -434,9 +441,10 @@ and prevents cross-surface access. Never run `wrangler deploy` from an old
 checkout: its config would reattach the old API.
 
 **There is no equivalent emergency procedure below the private-sharing floor.**
-Detaching domains does not help: any older version that serves the apex serves an
-invited-only document's bytes to anyone with the link. Once a document is
-invited-only, fix forward, with a new deploy.
+Detaching domains does not help: any version below the private-sharing floor
+serves an invited-only document's bytes to anyone with the link, on whatever
+document host (the apex or the legacy `symposium.site`) it still answers on. Once
+a document is invited-only, fix forward, with a new deploy.
 
 **Rollback reverts code and nothing else.** D1 rows and R2 objects written by
 the bad version stay written, which is the other half of why migrations are not
@@ -460,7 +468,7 @@ says what each piece is for.
    unset. Without it, or on a server that has no way to sign anyone in (see
    [Self-hosting](#self-hosting)), private sharing is off: the whole private
    family answers `404 not_found` exactly as the Worker running now does, no page
-   carries a `Manage` link, and every document stays public.
+   carries a `Manage` link, and a document that was never invited-only stays public.
 
    ```bash
    openssl rand -hex 32 | npx wrangler secret put READER_SESSION_SECRET
@@ -486,11 +494,12 @@ says what each piece is for.
    GitHub still work.
 4. **Migration `0014`.** `npx wrangler d1 migrations apply symposium --remote`.
    The deploy workflow refuses to ship over an unapplied migration, and the
-   running Worker ignores the new column and tables. Apply migrations only from
-   the merged pull request's files, never from a draft branch: `0014` changed
-   while the pull request was open, and the immutability check sees a file that
-   is new since the last deploy as an addition, so it would not catch a draft's
-   version having been applied.
+   running Worker ignores the new column and tables. Apply it from the pull
+   request's final, approved head (the exact commit that will be merged), just
+   before merging, never from an earlier draft: `0014` changed while the pull
+   request was open, and the immutability check sees a file that is new since the
+   last deploy as an addition, so it would not catch a draft's version having
+   been applied.
 
 Google and GitHub reader sign-in reuse the OAuth apps and the
 `/approve/callback/{provider}` redirect URLs already registered for device
@@ -534,16 +543,22 @@ feature. It is on when **reader sign-in is configured**, which is all of:
 
 - `READER_SESSION_SECRET` set to at least 32 characters (step 1 above);
 - `SERVING_HOST` and `API_HOST` set (the Worker's `vars`);
-- the wildcard route `{ "pattern": "*.{SERVING_HOST}/*", "zone_name":
-  "{SERVING_HOST}" }` in `routes`, and a proxied wildcard DNS record
-  `*.{SERVING_HOST}` `AAAA` to `100::` in the zone; and
 - at least one way to sign in: a Google or GitHub OAuth app (both halves of the
   pair, as for device approval) or Email Service for emailed codes.
 
-Without a sign-in method, or without the secret, the server simply has no private
-sharing: it answers the family `404` like a Worker that predates the feature,
-every document stays public, and clients say "this server does not support private
-documents". There is no half-configured state.
+Before you set the secret, also add the wildcard route `{ "pattern":
+"*.{SERVING_HOST}/*", "zone_name": "{SERVING_HOST}" }` to `routes` and a proxied
+wildcard DNS record `*.{SERVING_HOST}` `AAAA` to `100::` in the zone. These are
+prerequisites the Worker cannot detect: with the four conditions above met but no
+route or record, private documents can be created and switched to invited-only,
+and nobody, the owner included, can open them.
+
+Without a sign-in method, or without the secret, the server answers the family
+`404` like a Worker that predates the feature, and clients say "this server does
+not support private documents". Documents that were never invited-only stay
+public. A document that is already invited-only goes offline instead, and is never
+made public. The Worker's conditions are all or nothing: it is never half
+configured.
 
 **The document host must be a zone apex.** Universal SSL covers `*.example.net`
 only when `example.net` is the zone. A document host that is itself a subdomain

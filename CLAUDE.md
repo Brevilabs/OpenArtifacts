@@ -148,9 +148,9 @@ local development when every host var is empty.
 The first four-domain cutover is one production deployment. Record that Worker
 version id as the hard rollback floor. Never roll back below it while either new
 domain or `api.symposium.md` remains attached: older versions route unknown
-hosts by path and make the retired API live again. A pre-floor emergency
-rollback first detaches those three domains and accepts an API outage; see
-`docs/deploying.md`.
+hosts by path and make the retired API live again. Only while no document is
+invited-only, a pre-floor emergency rollback first detaches those three domains
+and accepts an API outage; see `docs/deploying.md`.
 
 Private sharing adds a second hard floor: the first Worker version that contains
 it. Once any document is invited-only, an older version serves that document

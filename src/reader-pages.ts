@@ -27,7 +27,13 @@ const isSharePath = (next: string): boolean => next.startsWith(`${SHARE_PREFIX}/
 export const READER_CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; frame-ancestors 'none'";
 
 /**
- * A page on the API host. `csp` is for the one page that carries a script, the
+ * A page on the API host. Its referrer policy is `same-origin`, not
+ * `no-referrer`, on purpose: a form posted from a `no-referrer` page carries
+ * `Origin: null`, and a browser without Fetch Metadata (Safari before 16.4) has
+ * only `Origin` for `sameOriginPost` to fall back on. Same-origin keeps the real
+ * `Origin` on these forms and still sends no `Referer` to any other origin.
+ *
+ * `csp` is for the one page that carries a script, the
  * share page's Copy button, which names that script's hash; every other page
  * keeps the closed policy.
  */
@@ -37,7 +43,7 @@ export function readerPage(copy: BrandPage, status: number, csp = READER_CSP): R
     headers: {
       "content-type": "text/html; charset=utf-8",
       "cache-control": "no-store",
-      "referrer-policy": "no-referrer",
+      "referrer-policy": "same-origin",
       "x-content-type-options": "nosniff",
       "content-security-policy": csp,
     },
@@ -198,7 +204,7 @@ export function addressClaimedPage(provider: string, next: string): Response {
     {
       title: "Sign-in didn’t finish",
       heading: "That didn’t work.",
-      message: `That address already belongs to another ${escapeHtml(label)} sign-in. Try your other provider or an emailed code.`,
+      message: `That address already belongs to another ${escapeHtml(label)} sign-in. Try your other provider.`,
       actions: `<div class="actions"><a href="${escapeHtml(next)}">Try again</a></div>`,
     },
     409,

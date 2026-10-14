@@ -48,9 +48,11 @@ person without one, ask for it. An update to a page that is already published ne
 and keeps who can open it. Then end your turn.
 
 Never publish in the same turn that produced the HTML. Publish only when a later
-message from the user clearly asks to publish this page. "publish" approves a public
-page. "publish for alice@acme.com" (several addresses may follow, separated by commas)
-or a request for a private page approves a private one. Treat anything else as
+message from the user clearly asks to publish this page. A reply of "publish" approves
+what the review message offered: a public page after the question, or the confirmed
+choice (private for the confirmed addresses, or public) after a confirmation.
+"publish for alice@acme.com" (several addresses may follow, separated by commas) or a
+request for a private page approves a private one. Treat anything else as
 feedback (revise the same file and repeat this step) or as a cancellation. When
 unsure whether a message is an approval, ask once. Never simulate the user's
 approval.
@@ -71,9 +73,9 @@ Otherwise publish exactly as before, with no flag:
 openartifacts publish <file.html> --title "Page title"
 ```
 
-The command prints `{"docId":"…","url":"…","version":1}`. A private publish also
-prints `"linkAccess":"invited"` and a `manageUrl`; `share` prints `manageUrl` too, and
-`email`, which says whether the server sent invitation emails. Give the user the url
+The command prints `{"docId":"…","url":"…","version":1,"linkAccess":"anyone"}`. A
+private publish prints `"linkAccess":"invited"` and also a `manageUrl`; `share` prints
+`manageUrl` too, and `email`, which says whether the server sent invitation emails. Give the user the url
 and say who can open it.
 
 - Private: "Published privately: {url}. Only you and {addresses} can open it. {Name} got an email and signs in with that address." Say "Only you can open it." when nobody was named. When `email` is false, say the server sent no email, that the user should send the link to the invitee, and that the invitee signs in with that address. Never claim an email was sent unless `email` is true.

@@ -24,21 +24,21 @@
  * check, so a linked license key and account token count as one publisher.
  */
 import type { AnalyticsSink } from "../analytics.js";
-import type { Publisher } from "../auth.js";
+import { maySharePrivately, type Publisher } from "../auth.js";
 import { MAX_DOCS_PER_PUBLISHER, MAX_DOC_BYTES, MAX_PUSHES_PER_DAY } from "../config.js";
 import { limitReached, planLimits, type PlanLimits } from "../plans.js";
 import type { Env } from "../config.js";
-import { refusePrivate } from "./access.js";
+import { planRefusal } from "./access.js";
 import {
   rollbackCreate,
   deleteVersionRow,
+  canManage,
   commitVersionMetadata,
   docIsDeleted,
   FIRST_VERSION,
   insertDocWithinQuota,
   insertVersion,
   type LinkAccess,
-  ownsLiveDoc,
   reserveNextVersion,
 } from "../db.js";
 import { docNotFound, errorResponse } from "../errors.js";
@@ -271,8 +271,7 @@ export async function createDoc(
 
   // Before anything is created, so a plan that cannot share privately never
   // leaves a document behind.
-  const refused = linkAccess === "invited" ? refusePrivate(env, publisher) : null;
-  if (refused) return refused;
+  if (linkAccess === "invited" && !maySharePrivately(env, publisher)) return planRefusal(env, publisher);
 
   const maxDocs = limits?.documents ?? MAX_DOCS_PER_PUBLISHER;
   const now = Date.now();
@@ -365,7 +364,7 @@ export async function updateDoc(
   // so it must not spend one of today's. `reserveNextVersion` re-checks both
   // atomically, which is what actually guarantees it — this read only fixes
   // which error a rejected push gets.
-  if (!(await ownsLiveDoc(env.DB, docId, publisher.owner))) {
+  if (!(await canManage(env.DB, docId, publisher.owner))) {
     return docNotFound(docId);
   }
   if (limits && parsed.body.htmlBytes > limits.htmlBytes) {

@@ -141,8 +141,9 @@ export function resolveSurface(hostname: string, pathname: string, config: Surfa
  * Every API request authenticates before any handler sees it, so a handler can
  * assume a publisher and never has to reason about the license key.
  *
- * `analytics` rides down to the three handlers that change a document, for the
- * reason given where it is built.
+ * `analytics` rides down to the handlers that change a document or who can read
+ * it (create, update, delete, and the access section), for the reason given
+ * where it is built.
  */
 async function handleApi(
   request: Request,
@@ -153,8 +154,9 @@ async function handleApi(
   const auth = await authenticateRequest(request, env);
   if (!auth.ok) return publisherErrorResponse(auth);
 
-  // `/api/v1/docs`, `/api/v1/docs/{docId}` and `/api/v1/tokens/{tokenId}` are
-  // the whole surface. Anything the host matched into the API but that no route
+  // `/api/v1/account`, `/api/v1/docs`, `/api/v1/private-docs`,
+  // `/api/v1/docs/{docId}` with its `/access…`, `/html` and `/open` sections, and
+  // `/api/v1/tokens/{tokenId}` are the whole surface. Anything the host matched into the API but that no route
   // claims is a 404, never a fall-through to the serving surface.
   const [collection, docId, ...extra] = url.pathname
     .slice(API_PREFIX.length)
@@ -179,7 +181,8 @@ async function handleApi(
   // publisher's already-public documents with no way to withdraw them — a
   // worse outcome than the gate exists to prevent.
   //
-  // Scoped to the two routes that actually publish, not to the method: a
+  // Scoped to the three routes that actually publish (`POST /docs`,
+  // `POST /private-docs` and `PUT /docs/{docId}`), not to the method: a
   // `POST` at a path no route claims stays `404`, as the contract says.
   const publishing = isPublishingRequest(request);
   if (publishing && auth.publisher.authKind !== "account" && !mayPublish(auth.publisher.plan)) {

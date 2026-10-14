@@ -1,6 +1,6 @@
 import { createExecutionContext, env, waitOnExecutionContext } from "cloudflare:test";
 import { beforeEach, expect, it } from "vitest";
-import { insertDocWithinQuota, listPublisherDocs, ownsLiveDoc, reserveNextVersion, softDeleteDoc } from "../src/db.js";
+import { canManage, insertDocWithinQuota, listPublisherDocs, reserveNextVersion, softDeleteDoc } from "../src/db.js";
 import { sha256Hex } from "../src/hash.js";
 import { newApiToken, newDocId, newTokenId } from "../src/ids.js";
 import { linkExternalOwner } from "../src/owners.js";
@@ -88,13 +88,13 @@ it("joins both live collections with stable pagination and preserves deleted pro
   // Unlinked, each row's publisher id is the owner that inserted it.
   for (const row of [a, b, c, unrelated]) expect(await insertDocWithinQuota(env.DB, row, 10)).toBe(row.owner);
   await softDeleteDoc(env.DB, c.id, EXTERNAL, 4);
-  expect(await ownsLiveDoc(env.DB, a.id, ACCOUNT)).toBe(false);
+  expect(await canManage(env.DB, a.id, ACCOUNT)).toBe(false);
   await link();
   for (const owner of [ACCOUNT, EXTERNAL]) {
     const first = await listPublisherDocs(env.DB, owner, null, 1);
     expect(first.map((r) => r.id)).toEqual([b.id]);
     expect((await listPublisherDocs(env.DB, owner, { created_at: b.created_at, id: b.id }, 1)).map((r) => r.id)).toEqual([a.id]);
-    expect(await ownsLiveDoc(env.DB, unrelated.id, owner)).toBe(false);
+    expect(await canManage(env.DB, unrelated.id, owner)).toBe(false);
     expect(await reserveNextVersion(env.DB, unrelated.id, owner)).toBeNull();
     expect(await softDeleteDoc(env.DB, unrelated.id, owner, 5)).toBeNull();
   }

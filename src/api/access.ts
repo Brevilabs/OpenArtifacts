@@ -73,12 +73,12 @@ const NO_STORE = { "cache-control": "no-store" };
 const MAX_ADDRESS_LENGTH = 254;
 
 /** The only values `linkAccess` takes. */
-export function parseLinkAccess(value: unknown): LinkAccess | null {
+function parseLinkAccess(value: unknown): LinkAccess | null {
   return value === "anyone" || value === "invited" ? value : null;
 }
 
 /** The only values `role` takes. */
-export function parseInviteRole(value: unknown): InviteRole | null {
+function parseInviteRole(value: unknown): InviteRole | null {
   return value === "view" || value === "comment" ? value : null;
 }
 
@@ -90,7 +90,7 @@ export function parseInviteRole(value: unknown): InviteRole | null {
  * Service recipient: no control characters, and no longer than the protocol
  * allows.
  */
-export function inviteAddress(raw: string): string | null {
+function inviteAddress(raw: string): string | null {
   const email = normalizeEmail(raw);
   if (email === null || email.length > MAX_ADDRESS_LENGTH || /[\u0000-\u001f\u007f]/.test(email)) return null;
   return email;
@@ -108,17 +108,6 @@ export function planRefusal(env: Env, publisher: Publisher): Response {
     : errorResponse("limit_reached", "Your Copilot plan does not include private sharing.", undefined, {
       plan: publisher.plan, limit: "privateSharing",
     });
-}
-
-/**
- * The refusal for a write that spends private sharing when the plan does not
- * include it, or null when it may go ahead. The create route, the mode switch
- * and adding a person all ask this, so the three cannot drift apart. Whether the
- * server does private sharing at all is decided before any of them, by
- * `readerSignInConfigured`.
- */
-export function refusePrivate(env: Env, publisher: Publisher): Response | null {
-  return maySharePrivately(env, publisher) ? null : planRefusal(env, publisher);
 }
 
 /** The document's mode, invite list and pending requests, as `readAccess` reads them. */
@@ -289,7 +278,7 @@ async function invite(
 }
 
 /** The frozen JSON for an `Access`: `url` is always the canonical link, never a grant. */
-export function accessResponse(env: Env, requestUrl: URL, docId: string, state: AccessState): Response {
+function accessResponse(env: Env, requestUrl: URL, docId: string, state: AccessState): Response {
   return Response.json(
     {
       docId,

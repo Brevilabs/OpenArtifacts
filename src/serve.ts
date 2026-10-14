@@ -420,7 +420,7 @@ function manageUrlFor(env: Env, route: DocRoute): string | null {
  * metadata: we wrote these bytes and we know what they are, and reading it back
  * off the object would let a stored value decide how a page is interpreted.
  */
-export async function serveObject(
+async function serveObject(
   request: Request,
   env: Env,
   route: DocRoute,

@@ -532,9 +532,6 @@ export async function canManage(db: D1Database, docId: string, principal: string
   return (await findManagedDoc(db, docId, principal)) !== null;
 }
 
-/** The name the publishing paths and the older tests use for `canManage`. */
-export const ownsLiveDoc = canManage;
-
 /**
  * Soft-delete a doc, returning the publisher's user id — or null
  * when this publisher has no live doc with that id: missing, someone else's, or

@@ -455,7 +455,10 @@ additive; [private-sharing.md](private-sharing.md) is the design and the reasons
 missing or shorter than 32 characters, a missing serving or API host, or no way to
 sign in (no Google, GitHub or email) makes the whole family below answer `404`,
 exactly as a server that predates private sharing does, and no served page carries
-a `Manage` link. Every document stays public, and a client shows the message it
+a `Manage` link. Documents that were never made invited-only stay public. A
+document that is already invited-only goes offline instead: its url still
+redirects to `/open`, which answers `404`, and `GET /api/v1/docs` reports its
+stored `linkAccess`. It is never made public. A client shows the message it
 already has for an old server.
 
 ### `POST /api/v1/private-docs` — publish a new invited-only doc
@@ -830,9 +833,10 @@ Three of these are worth handling deliberately in a client:
   no `403`. A doc belonging to another account answers exactly like a doc that
   never existed, because a distinguishable reply would confirm the id is real.
   That holds on every route that names a document, not only `/api/v1`: `/open`,
-  `/share`, the request route and a publisher's own origin all answer an
-  unavailable `404` (or a redirect to the page that does) for a document the
-  caller may not see, indistinguishable from one that never existed.
+  `/share` and a publisher's own origin all answer an unavailable `404` (or a
+  redirect to the page that does) for a document the caller may not see, and the
+  request route answers the same **Request sent** page for every id, so all of
+  them are indistinguishable from a document that never existed.
 
 ## Account plans
 

@@ -19,12 +19,12 @@ export class APIError extends Error {
 export function createClient({ host, token, fetcher = fetch }) {
   const base = host.replace(/\/$/, "");
 
-  /** @param {string} path @param {RequestInit} [init] @param {number[]} [allowed] @param {boolean} [authenticated] */
-  async function request(path, init = {}, allowed = [], authenticated = true) {
+  /** @param {string} path @param {RequestInit} [init] @param {number[]} [allowed] */
+  async function request(path, init = {}, allowed = []) {
     const headers = new Headers(init.headers);
-    if (token && authenticated) headers.set("authorization", `Bearer ${token}`);
+    if (token) headers.set("authorization", `Bearer ${token}`);
     if (init.body !== undefined) headers.set("content-type", "application/json");
-    const response = await fetcher(path.startsWith("http") ? path : `${base}${path}`, {
+    const response = await fetcher(`${base}${path}`, {
       ...init,
       headers,
     });
