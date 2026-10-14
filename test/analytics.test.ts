@@ -9,11 +9,13 @@ import {
   type AnalyticsSink,
   type DocumentEvent,
 } from "../src/analytics.js";
+import { addPerson, declineRequest, removePerson, setMode } from "../src/api/access.js";
 import { deleteDoc } from "../src/api/manage.js";
 import { createDoc, updateDoc } from "../src/api/push.js";
 import type { Publisher } from "../src/auth.js";
 import type { Env } from "../src/config.js";
 import { MAX_DOC_BYTES } from "../src/config.js";
+import { insertAccessRequest } from "../src/db.js";
 import { sha256Hex } from "../src/hash.js";
 import { DOC_ID_LENGTH } from "../src/ids.js";
 import { linkExternalOwner } from "../src/owners.js";
@@ -507,7 +509,7 @@ const pushRequest = (body: unknown) =>
   });
 
 const create = (sink: AnalyticsSink, body: unknown, caller: Caller = {}) =>
-  createDoc(pushRequest(body), API_URL, caller.env ?? workerEnv(), caller.publisher ?? PUBLISHER, sink);
+  createDoc(pushRequest(body), API_URL, caller.env ?? workerEnv(), caller.publisher ?? PUBLISHER, sink, "anyone");
 
 const update = (sink: AnalyticsSink, docId: string, body: unknown, caller: Caller = {}) =>
   updateDoc(
@@ -853,6 +855,38 @@ describe("who a publication is attributed to", () => {
     // under the account token; all three name the app-sites user.
     expect(owners(events)).toEqual([LICENSE_OWNER, LICENSE_OWNER, LICENSE_OWNER]);
     expect(owners(events)).not.toContain(LINKED_ACCOUNT);
+  });
+
+  it("records an access change once per real change under the publisher's id, and nothing for a repeat or a decline", async () => {
+    expect(await linkExternalOwner(env.DB, LICENSE_OWNER, LINKED_ACCOUNT, 1)).toBe("linked");
+    const { sink, events } = collectingSink();
+    const quiet = workerEnv({ EMAIL: { send: async () => {} }, EMAIL_FROM: "share@mail.openartifacts.ai" });
+    // The account token spends the plan; the document was published by the license key.
+    const token: Publisher = { owner: LINKED_ACCOUNT, plan: "pro", authKind: "account" };
+    const docId = await published(await create(sink, VALID_PUSH, BY_LICENSE));
+    events.length = 0;
+    await env.DB.prepare(
+      "INSERT INTO accounts (id, email, created_at, plan) VALUES ('oa_bbbbbbbbbbbbbbbbbbbbbbbbbb', 'bob@other.com', 0, 'free')",
+    ).run();
+
+    await setMode(quiet, token, docId, "invited", sink);
+    await setMode(quiet, token, docId, "invited", sink);
+    await addPerson(quiet, API_URL, token, docId, "alice@acme.com", undefined, sink);
+    await addPerson(quiet, API_URL, token, docId, "alice@acme.com", undefined, sink);
+    await addPerson(quiet, API_URL, token, docId, "alice@acme.com", "view", sink);
+    await addPerson(quiet, API_URL, token, docId, "alice@acme.com", "view", sink);
+    await insertAccessRequest(env.DB, docId, "oa_bbbbbbbbbbbbbbbbbbbbbbbbbb", 1000, 100);
+    expect((await declineRequest(quiet, token, docId, "bob@other.com")).ok).toBe(true);
+    await removePerson(quiet, token, docId, "alice@acme.com", sink);
+    await removePerson(quiet, token, docId, "alice@acme.com", sink);
+    await setMode(quiet, token, docId, "anyone", sink);
+
+    // Mode, add, role, remove, mode: five changes, each under the license owner the publication used.
+    expect(events.map((event) => event.name)).toEqual(Array(5).fill("document_access_changed"));
+    expect(owners(events)).toEqual(Array(5).fill(LICENSE_OWNER));
+    expect(events.map((event) => event.name === "document_access_changed" && [event.linkAccess, event.people])).toEqual([
+      ["invited", 0], ["invited", 1], ["invited", 1], ["invited", 0], ["anyone", 0],
+    ]);
   });
 
   it("names an unlinked account token by its own account id", async () => {

@@ -162,14 +162,16 @@ publishing keeps working.
 ## Endpoints
 
 ```http
-POST   /api/v1/docs           {title?, html, linkAccess?}  → 201 {docId, url, version, linkAccess}
+POST   /api/v1/docs           {title?, html}  → 201 {docId, url, version, linkAccess: "anyone"}
+POST   /api/v1/private-docs   {title?, html}  → 201 {docId, url, version, linkAccess: "invited"}
 PUT    /api/v1/docs/{docId}   {title?, html}  → 200 {docId, url, version}
 DELETE /api/v1/docs/{docId}                   → 204
 GET    /api/v1/docs?limit&cursor              → 200 {docs[], cursor?}
 GET    /api/v1/docs/{docId}/access                      → 200 Access
 PUT    /api/v1/docs/{docId}/access  {linkAccess}        → 200 Access
-PUT    /api/v1/docs/{docId}/access/people/{email}       → 200 Access
+PUT    /api/v1/docs/{docId}/access/people/{email}  {role?}  → 200 Access
 DELETE /api/v1/docs/{docId}/access/people/{email}       → 200 Access
+DELETE /api/v1/docs/{docId}/access/requests/{email}     → 200 Access
 GET    /api/v1/docs/{docId}/html                        → 200 the latest stored HTML
 POST   /api/v1/docs/{docId}/open                        → 200 {url, expiresAt}
 GET    /api/v1/tokens                         → 200 {tokens[]}
@@ -192,7 +194,6 @@ credential — see [Signing in from a terminal](#signing-in-from-a-terminal).
 | --- | --- | --- | --- |
 | `html` | string | yes | A whole HTML document. Max 10MB encoded as UTF-8. |
 | `title` | string | no | Display name in the doc list. Trimmed, capped at 512 characters. Missing, null or blank becomes `Untitled`. |
-| `linkAccess` | `"anyone"` or `"invited"` | no | Who may read it. Default `anyone`: a public document. `"invited"` creates it private from the first insert and needs a plan with private sharing; see [Private documents](#private-documents). Anything else is `400 bad_request`. A `PUT` never changes it. |
 
 ```json
 {"title": "Q3 architecture review", "html": "<!doctype html><html>…</html>"}
@@ -205,9 +206,11 @@ credential — see [Signing in from a terminal](#signing-in-from-a-terminal).
  "linkAccess": "anyone"}
 ```
 
-`linkAccess` in the receipt is always the mode the document was created with. A
-client that sent `"invited"` must check that it came back: a server that predates
-private sharing ignores the field and creates a public document.
+A document made here is public, and the receipt says so with `"linkAccess":
+"anyone"`. An unknown field is ignored, as it always was, so no field can make a
+document private; to create one that is, use `POST /api/v1/private-docs`
+([Private documents](#private-documents)). A `PUT` never changes who can read a
+document.
 
 A `docId` is 16 characters of lowercase Crockford base32 (`0-9`, `a-z` without
 `i`, `l`, `o`, `u`) — 80 bits of randomness. It is the only access control a doc
@@ -364,6 +367,20 @@ always did) or invited-only (`"invited"`). The url is the same either way:
 only url it should ever build is the one the API returned. Everything below is
 additive; [private-sharing.md](private-sharing.md) is the design and the reasons.
 
+### Creating one
+
+`POST /api/v1/private-docs` takes the same `{title?, html}` as `POST /api/v1/docs`
+and is the same create, with the document inserted as invited-only: it is never
+public, not even for a moment. The receipt is `{docId, url, version, linkAccess:
+"invited"}` and `url` is the canonical `https://openartifacts.site/d/{docId}`. It
+needs a plan with private sharing (`402`, below), checked after the usual
+publishing checks.
+
+It is a route and not a field so that a server which predates private sharing, or
+one that is not set up for it, answers `404 not_found` and creates nothing. A
+client reports "this server does not support private documents" and stops. There
+is no receipt to check.
+
 ### The access routes
 
 All owner-only, and a document that is not yours, never existed, or was deleted is
@@ -375,37 +392,61 @@ answers `200` with the same list.
 {"docId": "9f2k4mvq7t0xbz3n",
  "url": "https://openartifacts.site/d/9f2k4mvq7t0xbz3n",
  "linkAccess": "invited",
- "people": [{"email": "alice@acme.com", "addedAt": 1785000000000}]}
+ "email": true,
+ "people": [{"email": "alice@acme.com", "role": "comment", "addedAt": 1785000000000}],
+ "requests": [{"email": "bob@other.com", "requestedAt": 1785000100000}]}
 ```
 
+`url` is always the canonical link, never a grant. `email` says whether this
+server sends invite and request emails: when it is `false` the owner shares the
+link themselves. `role` is `"view"` or `"comment"`; clients may ignore it until
+comments ship. `requests` are the addresses that asked to open the document and
+have not been answered.
+
 - `PUT …/access` takes `{"linkAccess": "anyone" | "invited"}`. Switching to
-  `anyone` keeps the list, and switching back restores it.
+  `anyone` keeps the list and the requests, and switching back restores them.
 - `PUT …/access/people/{email}` adds one address (URL-encode the `@`; it is
-  lowercased and trimmed). The call that adds an address sends it an invite email;
-  a repeat does not. At most 100 people per document; the 101st is `400`.
+  lowercased and trimmed). The body is optional: `{"role": "view" | "comment"}`,
+  default `comment`; any other body is `400`. The call that adds an address sends
+  it an invite email; a repeat does not, and a repeat that names a different role
+  updates the role. At most 100 people per document; the 101st is `400`.
   `DELETE` removes one. Neither needs the address to belong to an account.
+- **Approving a request is adding the address.** There is no approve route:
+  `PUT …/access/people/{email}` for an address with a pending request lists the
+  person, clears the request and sends the invite, which is how the requester
+  learns the answer.
+- `DELETE …/access/requests/{email}` declines a request. It is idempotent, sends
+  nothing, and never needs the plan.
 - `GET …/html` returns the latest stored HTML (`text/html`, `private, no-store`,
   sandboxed), so `openartifacts get` keeps working once a page's public url stops
   answering.
 - `POST …/open` returns `{"url", "expiresAt"}`. For an invited-only document `url`
-  is the document's own origin with a 60-second grant, which opens it in a browser
+  is the publisher's own origin with a 60-second grant, which opens it in a browser
   with no sign-in; for a public one it is the canonical url. **A client opens it
   and discards it.** Never print it, store it, or put it in a publish receipt:
   agent wrappers print receipts into transcripts. No plan is needed.
 
-Errors reuse the existing codes: `400 bad_request` for an invalid address or mode,
-a 101st person, or a server that is not set up for private documents, and
-`402 limit_reached` with `"limit": "privateSharing"` when the plan does not
-include it.
+Errors reuse the existing codes: `400 bad_request` for an invalid address, role or
+mode, or a 101st person, and `402 limit_reached` with `"limit": "privateSharing"`
+when the plan does not include it.
+
+**A server with no reader sign-in configured answers `404 not_found`** to
+`POST /api/v1/private-docs`, every `…/access` route and `…/open`, exactly as a
+Worker that predates private sharing does: after authentication and before any
+plan check. `GET …/html` is not part of that family and keeps working, and
+`GET /api/v1/docs` still reports `linkAccess` for every document.
 
 ### The plan check
 
-On write, and only on two operations: making a document invited-only (`POST` with
-`linkAccess: "invited"`, or `PUT …/access`) and adding a person. Removing people,
-switching to `anyone`, reading, and opening never check a plan, so invitees never
-pay and a lapsed plan keeps what exists. A lapse never makes a private document
-public. License keys on Copilot Plus and accounts on a plan with `privateSharing`
-qualify; the plan lists are configuration, not part of this contract.
+On write, and only on two operations: making a document invited-only that is
+public now (`POST /api/v1/private-docs`, or `PUT …/access` from `anyone` to
+`invited`) and adding a person, which includes approving a request. Naming the
+mode a document already has is a repeat and never checks. Removing people,
+declining a request, switching to `anyone`, reading, and opening never check a
+plan, so invitees never pay and a lapsed plan keeps what exists. A lapse never
+makes a private document public. License keys on Copilot Plus and accounts on a
+plan with `privateSharing` qualify; the plan lists are configuration, not part of
+this contract.
 
 ### Reading one
 

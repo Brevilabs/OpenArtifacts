@@ -28,7 +28,7 @@ import type { Publisher } from "../auth.js";
 import { MAX_DOCS_PER_PUBLISHER, MAX_DOC_BYTES, MAX_PUSHES_PER_DAY } from "../config.js";
 import { limitReached, planLimits, type PlanLimits } from "../plans.js";
 import type { Env } from "../config.js";
-import { parseLinkAccess, refusePrivate } from "./access.js";
+import { refusePrivate } from "./access.js";
 import {
   rollbackCreate,
   deleteVersionRow,
@@ -75,8 +75,6 @@ interface PushBody {
   title: string | null | undefined;
   html: string;
   htmlBytes: number;
-  /** Honoured on create only; an update never changes who can read a document. */
-  linkAccess: LinkAccess | undefined;
 }
 
 type ParsedPush = { ok: true; body: PushBody } | { ok: false; response: Response };
@@ -139,14 +137,6 @@ async function parsePushBody(request: Request): Promise<ParsedPush> {
     return { ok: false, response: errorResponse("bad_request", "`title` must be a string.") };
   }
 
-  const linkAccess = fields.linkAccess === undefined ? undefined : parseLinkAccess(fields.linkAccess);
-  if (linkAccess === null) {
-    return {
-      ok: false,
-      response: errorResponse("bad_request", '`linkAccess` must be "anyone" or "invited".'),
-    };
-  }
-
   return {
     ok: true,
     body: {
@@ -154,7 +144,6 @@ async function parsePushBody(request: Request): Promise<ParsedPush> {
       title: titleGiven ? (typeof title === "string" ? normalizeTitle(title) : null) : undefined,
       html,
       htmlBytes,
-      linkAccess,
     },
   };
 }
@@ -248,20 +237,30 @@ function pushed(
       docId,
       url: publicDocUrl(env, requestUrl, docId),
       version,
-      // Only a create reports it. A client that asked for "invited" checks that
-      // it came back, which is how it finds a server that ignored the field.
+      // Only a create reports it: `anyone` from `POST /docs`, `invited` from
+      // `POST /private-docs`. An update never changes who can read a document,
+      // so its receipt is the one it always was.
       ...(linkAccess === undefined ? {} : { linkAccess }),
     },
     { status },
   );
 }
 
+/**
+ * `POST /api/v1/docs` and `POST /api/v1/private-docs` are this one function.
+ * `linkAccess` comes from the route, never from the body: a private create is a
+ * route an old Worker does not have, so a server that predates private sharing
+ * can never create a public page by ignoring a field. The mode is part of the
+ * same insert that reserves the doc slot, so a private page is never public,
+ * not even for a moment.
+ */
 export async function createDoc(
   request: Request,
   requestUrl: URL,
   env: Env,
   publisher: Publisher,
   analytics: AnalyticsSink,
+  linkAccess: LinkAccess,
 ): Promise<Response> {
   const limits = publisher.authKind === "account" ? planLimits(env, publisher.plan) : null;
   const parsed = await parsePushBody(request);
@@ -271,8 +270,7 @@ export async function createDoc(
   }
 
   // Before anything is created, so a plan that cannot share privately never
-  // leaves a document behind. A private create is private from its first insert.
-  const linkAccess = parsed.body.linkAccess ?? "anyone";
+  // leaves a document behind.
   const refused = linkAccess === "invited" ? refusePrivate(env, publisher) : null;
   if (refused) return refused;
 

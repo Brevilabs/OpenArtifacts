@@ -44,12 +44,28 @@ export function codeMessage(code: string) {
   };
 }
 
+/**
+ * The invite: the title, who shared it when the Worker knows, the canonical
+ * link and the address to sign in with. `sharer` is the owner's account address,
+ * or null for an owner the Worker has no address for, in which case the line is
+ * left out rather than naming "someone". The link is always the sacrificial
+ * domain's, never a grant. An approved request sends this same message, which
+ * is how the requester learns the answer.
+ */
 export function inviteMessage(sharer: string | null, title: string, url: string, recipient: string) {
-  const who = sharer ?? "Someone";
   const name = oneLine(title);
+  const by = sharer === null ? [] : [`Shared by ${sharer}`];
+  const signIn = `Sign in with this address, ${recipient}, to open it.`;
+  const ignore = "If you were not expecting this, ignore this email.";
   return {
-    subject: `${who} shared "${name}" with you`,
-    text: `${who} shared "${name}" with you on OpenArtifacts.\n\nOpen it: ${url}\n\nSign in with this address (${recipient}) to read it. If you were not expecting this, ignore this email.`,
-    html: `<p>${escapeHtml(who)} shared <b>${escapeHtml(name)}</b> with you on OpenArtifacts.</p><p><a href="${escapeHtml(url)}">Open it</a></p><p>Sign in with this address (${escapeHtml(recipient)}) to read it. If you were not expecting this, ignore this email.</p>`,
+    subject: `\u201c${name}\u201d was shared with you`,
+    text: [name, ...by, `Open document: ${url}`, signIn, ignore].join("\n\n"),
+    html: [
+      `<p><b>${escapeHtml(name)}</b></p>`,
+      ...by.map((line) => `<p>${escapeHtml(line)}</p>`),
+      `<p><a href="${escapeHtml(url)}">Open document</a></p>`,
+      `<p>${escapeHtml(signIn)}</p>`,
+      `<p>${ignore}</p>`,
+    ].join(""),
   };
 }

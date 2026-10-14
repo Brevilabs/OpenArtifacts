@@ -487,20 +487,49 @@ export const CAN_READ_SQL = `(d.link_access = 'anyone'
   OR EXISTS (SELECT 1 FROM accounts a JOIN doc_invites i ON i.email = a.email
               WHERE a.id = ? AND i.doc_id = d.id))`;
 
-/**
- * Whether this principal manages a live doc with that id: sets its access,
- * adds people, answers requests. The same conflation of "missing", "someone
- * else's" and "deleted" that `reserveNextVersion` makes, for the same reason,
- * and answered identically for all three so the shape of the reply cannot
- * confirm another publisher's doc exists.
- */
-export async function canManage(db: D1Database, docId: string, principal: string): Promise<boolean> {
-  const row = await db
-    .prepare(`${OWNER_SCOPE_SQL} SELECT 1 FROM docs d WHERE d.id = ? AND ${CAN_MANAGE_SQL} AND d.deleted_at IS NULL`)
-    .bind(principal, principal, docId)
-    .first();
+/** What the operations on a document's access need to know about a document the caller manages. */
+export interface ManagedDoc {
+  title: string;
+  link_access: LinkAccess;
+  /**
+   * The publisher's app-sites `User.id` when one is known, else the local
+   * account id: the same value the publication events carry as `ownerId`, so
+   * an access event and a publish event count one publisher once. It is also
+   * the key an invite is rate-limited under, whichever credential made the
+   * request.
+   */
+  publisher_id: string;
+}
 
-  return row !== null;
+/**
+ * The live document with that id when this principal manages it
+ * (`CAN_MANAGE_SQL`): sets its access, adds people, answers requests. Null for
+ * "missing", "someone else's" and "deleted" alike, the same conflation
+ * `reserveNextVersion` makes and for the same reason: the shape of the reply
+ * must not confirm that another publisher's doc exists.
+ *
+ * One read returns the mode too, so a caller can tell a switch from a repeat
+ * without a second query.
+ */
+export async function findManagedDoc(
+  db: D1Database,
+  docId: string,
+  principal: string,
+): Promise<ManagedDoc | null> {
+  // `return await`: see the note on the router's catch in index.ts.
+  return await db
+    .prepare(
+      `${OWNER_SCOPE_SQL}
+       SELECT d.title AS title, d.link_access AS link_access, ${PUBLISHER_USER_ID_SQL} AS publisher_id
+         FROM docs d WHERE d.id = ? AND ${CAN_MANAGE_SQL} AND d.deleted_at IS NULL`,
+    )
+    .bind(principal, principal, docId)
+    .first<ManagedDoc>();
+}
+
+/** Whether this principal manages a live doc with that id; see `findManagedDoc`. */
+export async function canManage(db: D1Database, docId: string, principal: string): Promise<boolean> {
+  return (await findManagedDoc(db, docId, principal)) !== null;
 }
 
 /** The name the publishing paths and the older tests use for `canManage`. */
@@ -1455,7 +1484,12 @@ export async function readAccess(
 
 type DocAccessRow = { title: string; link_access: LinkAccess };
 
-/** Set a live document's mode; false when the publisher has no such document. */
+/**
+ * Set a live document's mode. True only when this call changed it: false means
+ * the document already had that mode, or the principal manages no such
+ * document. A repeat is therefore not a change, which is what lets the caller
+ * record an access event only for a real one.
+ */
 export async function setLinkAccess(
   db: D1Database,
   docId: string,
@@ -1466,10 +1500,10 @@ export async function setLinkAccess(
     .prepare(
       `${OWNER_SCOPE_SQL}
        UPDATE docs AS d SET link_access = ?
-        WHERE d.id = ? AND ${CAN_MANAGE_SQL} AND d.deleted_at IS NULL
-        RETURNING d.id`,
+        WHERE d.id = ? AND ${CAN_MANAGE_SQL} AND d.deleted_at IS NULL AND d.link_access <> ?
+        RETURNING id`,
     )
-    .bind(owner, owner, mode, docId)
+    .bind(owner, owner, mode, docId, mode)
     .first();
   return updated !== null;
 }
@@ -1574,22 +1608,51 @@ export async function deleteAccessRequest(
     .run();
 }
 
-/** Remove an address from a live document's list. Removing an absent one is fine. */
+/**
+ * Change the role of an address already on a live document's list. True only
+ * when the role actually changed, so naming the role it already has is a repeat.
+ */
+export async function setInviteRole(
+  db: D1Database,
+  docId: string,
+  owner: string,
+  email: string,
+  role: InviteRole,
+): Promise<boolean> {
+  const updated = await db
+    .prepare(
+      `${OWNER_SCOPE_SQL}
+       UPDATE doc_invites SET role = ?
+        WHERE doc_id = ? AND email = ? AND role <> ?
+          AND doc_id IN (SELECT d.id FROM docs d WHERE ${CAN_MANAGE_SQL} AND d.deleted_at IS NULL)
+        RETURNING email`,
+    )
+    .bind(owner, owner, role, docId, email, role)
+    .first();
+  return updated !== null;
+}
+
+/**
+ * Remove an address from a live document's list. True only when this call
+ * removed it; removing an absent one is fine and reports false.
+ */
 export async function deleteInvite(
   db: D1Database,
   docId: string,
   owner: string,
   email: string,
-): Promise<void> {
-  await db
+): Promise<boolean> {
+  const deleted = await db
     .prepare(
       `${OWNER_SCOPE_SQL}
        DELETE FROM doc_invites
         WHERE doc_id = ? AND email = ?
-          AND doc_id IN (SELECT d.id FROM docs d WHERE ${CAN_MANAGE_SQL} AND d.deleted_at IS NULL)`,
+          AND doc_id IN (SELECT d.id FROM docs d WHERE ${CAN_MANAGE_SQL} AND d.deleted_at IS NULL)
+        RETURNING email`,
     )
     .bind(owner, owner, docId, email)
-    .run();
+    .first();
+  return deleted !== null;
 }
 
 /** The address of the account an owner id resolves to, when this Worker knows one. */

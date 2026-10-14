@@ -174,15 +174,22 @@ export function parseBearerToken(header: string | null): string | null {
   return match?.[1] ?? null;
 }
 
-/** Match the API dispatcher, including its normalization of empty path segments. */
+/**
+ * The writes that publish: a create on `/docs` or on `/private-docs`, and an
+ * update. They read the plan fresh and, for a license key, need a plan that may
+ * publish. Matches the API dispatcher, including its normalization of empty
+ * path segments.
+ */
 export function isPublishingRequest(request: Request): boolean {
   const pathname = new URL(request.url).pathname;
   if (!pathname.startsWith("/api/v1/")) return false;
   const [collection, docId, ...extra] = pathname
     .slice("/api/v1".length).split("/").filter(Boolean);
-  return collection === "docs" && extra.length === 0 &&
+  if (extra.length > 0) return false;
+  return (collection === "docs" &&
     ((docId === undefined && request.method === "POST") ||
-     (docId !== undefined && request.method === "PUT"));
+     (docId !== undefined && request.method === "PUT"))) ||
+    (collection === "private-docs" && docId === undefined && request.method === "POST");
 }
 
 /**

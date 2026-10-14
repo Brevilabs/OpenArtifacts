@@ -163,6 +163,14 @@ async function handleApi(
     return await handleAccount(request, env, auth.publisher);
   }
 
+  // `POST /api/v1/private-docs` is the create that is private from its first
+  // insert. A server with no reader sign-in has no such route, as one that
+  // predates private sharing has none: `404` after authentication and before the
+  // publishing gate, so even an ineligible key sees what an old Worker shows.
+  if (collection === "private-docs" && !readerSignInConfigured(env)) {
+    return errorResponse("not_found", `No API route for ${url.pathname}`);
+  }
+
   // Entitlement is per operation. Authentication above says *who* this is;
   // only publishing asks whether their plan may. Applying it to the whole
   // surface instead would refuse `GET` and `DELETE`, stranding a downgraded
@@ -186,9 +194,13 @@ async function handleApi(
     if (section !== null) return section;
   }
 
+  if (collection === "private-docs" && docId === undefined && extra.length === 0 && request.method === "POST") {
+    return await createDoc(request, url, env, auth.publisher, analytics, "invited");
+  }
+
   if (collection === "docs" && extra.length === 0) {
     if (docId === undefined && request.method === "POST") {
-      return await createDoc(request, url, env, auth.publisher, analytics);
+      return await createDoc(request, url, env, auth.publisher, analytics, "anyone");
     }
     if (docId === undefined && request.method === "GET") {
       return await listDocs(url, env, auth.publisher);

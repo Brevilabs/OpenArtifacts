@@ -2,7 +2,7 @@ import { createExecutionContext, env, waitOnExecutionContext } from "cloudflare:
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Env } from "../src/config.js";
 import { MAX_DOC_BYTES } from "../src/config.js";
-import { findOrCreateAccount, resolveAccountForIdentity } from "../src/db.js";
+import { findOrCreateAccount, insertAccessRequest, resolveAccountForIdentity } from "../src/db.js";
 import { sha256Hex } from "../src/hash.js";
 import { newApiToken, newTokenId } from "../src/ids.js";
 import worker from "../src/index.js";
@@ -61,10 +61,12 @@ describe("configured account plans", () => {
     }
   });
 
+  const hosts = { SERVING_HOST: "openartifacts.site", API_HOST: "api.openartifacts.ai", READER_SESSION_SECRET: "k".repeat(32) };
+  const asApi = (method: string, path: string, body?: unknown) =>
+    send(method, path, body, hosts, token, "https://api.openartifacts.ai");
+
   it("refuses a private create on the free plan with 402 privateSharing, and allows it on pro", async () => {
-    const hosts = { SERVING_HOST: "openartifacts.site", API_HOST: "api.openartifacts.ai", READER_SESSION_SECRET: "k".repeat(32) };
-    const createPrivate = () =>
-      send("POST", "/api/v1/docs", { html: "<p>private</p>", linkAccess: "invited" }, hosts, token, "https://api.openartifacts.ai");
+    const createPrivate = () => asApi("POST", "/api/v1/private-docs", { html: "<p>private</p>" });
 
     const refused = await createPrivate();
     expect(refused.status).toBe(402);
@@ -75,7 +77,7 @@ describe("configured account plans", () => {
     const key = "cplus_live_0011223344556677";
     await env.DB.prepare("INSERT INTO publishers (key_hash, plan, validated_at, owner) VALUES (?, 'believer', ?, 'copilot-owner')")
       .bind(await sha256Hex(key), Date.now()).run();
-    const copilot = await send("POST", "/api/v1/docs", { html: "<p>private</p>", linkAccess: "invited" },
+    const copilot = await send("POST", "/api/v1/private-docs", { html: "<p>private</p>" },
       { ...hosts, ACCOUNT_ACTION_URL: "https://account.test", UPGRADE_URL: "https://upgrade.test/checkout" }, key, "https://api.openartifacts.ai");
     expect(copilot.status).toBe(402);
     expect(await copilot.json()).toEqual({
@@ -86,6 +88,45 @@ describe("configured account plans", () => {
     const created = await createPrivate();
     expect(created.status).toBe(201);
     expect(await created.json()).toMatchObject({ linkAccess: "invited" });
+  });
+
+  it("asks for the plan only to turn a public page private and to add a person, and never to take anything back", async () => {
+    const { docId } = await (await create()).json<{ docId: string }>();
+    const access = `/api/v1/docs/${docId}/access`;
+    const person = (email: string) => `${access}/people/${email}`;
+    const refused = async (response: Response) => {
+      expect(response.status).toBe(402);
+      expect(await error(response)).toMatchObject({ error: { code: "limit_reached", limit: "privateSharing", plan: "free" } });
+    };
+    const mode = async () => (await (await asApi("GET", access)).json<{ linkAccess: string }>()).linkAccess;
+
+    // Free: reading the list and staying public are fine; going private and adding someone are not.
+    expect((await asApi("GET", access)).status).toBe(200);
+    expect((await asApi("PUT", access, { linkAccess: "anyone" })).status).toBe(200);
+    await refused(await asApi("PUT", access, { linkAccess: "invited" }));
+    await refused(await asApi("PUT", person("alice%40acme.com")));
+    expect(await mode()).toBe("anyone");
+    expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM doc_invites").first()).toEqual({ n: 0 });
+
+    // Pro: private, one person on the list, one request waiting.
+    expect((await setPlan("pro")).status).toBe(200);
+    expect((await asApi("PUT", access, { linkAccess: "invited" })).status).toBe(200);
+    expect((await asApi("PUT", person("alice%40acme.com"))).status).toBe(200);
+    const bob = await findOrCreateAccount(env.DB, "oa_requester_test", "bob@other.com", Date.now());
+    expect(await insertAccessRequest(env.DB, docId, bob.id, 1000, 100)).not.toBeNull();
+
+    // The plan lapses. What exists stays, naming the mode it has is a repeat, and every way of taking access back still works.
+    expect((await setPlan("free")).status).toBe(200);
+    expect(await mode()).toBe("invited");
+    expect((await asApi("PUT", access, { linkAccess: "invited" })).status).toBe(200);
+    await refused(await asApi("PUT", person("carol%40acme.com")));
+    await refused(await asApi("PUT", person("bob%40other.com")));
+    expect((await asApi("DELETE", `${access}/requests/bob%40other.com`)).status).toBe(200);
+    expect((await asApi("DELETE", person("alice%40acme.com"))).status).toBe(200);
+    const back = await asApi("PUT", access, { linkAccess: "anyone" });
+    expect(back.status).toBe(200);
+    expect(await back.json()).toMatchObject({ linkAccess: "anyone", people: [], requests: [] });
+    await refused(await asApi("PUT", access, { linkAccess: "invited" }));
   });
 
   it("shares three slots across existing tokens, updates at capacity and replaces an unshared doc", async () => {
