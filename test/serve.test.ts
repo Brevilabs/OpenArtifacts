@@ -1068,4 +1068,550 @@ describe("an invited-only document", () => {
     expect(one.host).not.toContain(one.docId);
     expect(one.host).not.toContain(one.owner);
   });
+
+  // ---- Stage S3: sign-in first, requesting access, the Manage link and the share page ----
+
+  const SECRET = PRIVATE.READER_SESSION_SECRET;
+
+  /** The session cookie a browser holds after signing in as `accountId`. */
+  const sessionFor = async (accountId: string) =>
+    `__Host-oa_session=${await signPayload(SECRET, "session", { a: accountId }, Date.now() + 60_000)}`;
+
+  /** An Email Service stub that keeps what it was asked to send. */
+  function mailbox() {
+    const sent: Array<{ to: string; subject: string; text: string; html: string }> = [];
+    const over = {
+      ...PRIVATE,
+      EMAIL: { send: async (message: (typeof sent)[number]) => void sent.push(message) },
+      EMAIL_FROM: "share@mail.openartifacts.ai",
+    } as Partial<Env>;
+    return { sent, over };
+  }
+
+  /** The owner's own browser account: its license-key documents are in its owner scope. */
+  async function ownerAccount(doc: { owner: string }, plan = "pro"): Promise<string> {
+    const id = await reader("owner@acme.com");
+    expect(await linkExternalOwner(env.DB, doc.owner, id, Date.now())).toBe("linked");
+    await env.DB.prepare("UPDATE accounts SET plan = ?, plan_checked_at = ? WHERE id = ?")
+      .bind(plan, Date.now(), id)
+      .run();
+    return id;
+  }
+
+  const requestRows = async (docId: string) =>
+    (
+      await env.DB.prepare("SELECT email, created_at FROM doc_access_requests WHERE doc_id = ? ORDER BY email")
+        .bind(docId)
+        .all<{ email: string; created_at: number }>()
+    ).results;
+
+  const SAME_ORIGIN = { "sec-fetch-site": "same-origin" };
+  const occurrences = (html: string, needle: string) => html.split(needle).length - 1;
+
+  it("shows the sign-in page, and names no address or title, to a reader with no session", async () => {
+    const doc = await privateDoc("for invited eyes");
+    await reader("alice@acme.com", doc.docId);
+
+    const response = await get(`${API}/open/${doc.docId}`, {}, PRIVATE);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    const html = await response.text();
+    expect(html).toContain("Sign in or create an account to open this document");
+    expect(html).toContain("Sign in with GitHub");
+    expect(html).not.toContain("@");
+    expect(html).not.toContain("Secret");
+    expect(html).not.toContain("alice");
+    expect(html).not.toContain(doc.owner);
+  });
+
+  it("measures revocation: a removed reader reaches /open and gets the not-available page with the request form", async () => {
+    const doc = await privateDoc();
+    const alice = await reader("alice@acme.com", doc.docId);
+    const cookie = await cookieFor(doc, alice);
+    const read = () => get(`${doc.host}/d/${doc.docId}`, { headers: { cookie } }, PRIVATE);
+    expect((await read()).status).toBe(200);
+
+    await env.DB.prepare("DELETE FROM doc_invites WHERE doc_id = ?").bind(doc.docId).run();
+    const redirected = await read();
+    expect(redirected.status).toBe(302);
+
+    const opened = await get(redirected.headers.get("location")!, { headers: { cookie: await sessionFor(alice) } }, PRIVATE);
+    expect(opened.status).toBe(404);
+    const html = await opened.text();
+    expect(html).toContain("This document isn't available to <b><bdi>alice@acme.com</bdi></b>");
+    expect(html).toContain("If you were invited with another address, sign in with that address. Otherwise you can ask the owner.");
+    expect(html).toContain(`<form method="post" action="/open/${doc.docId}/request">`);
+    expect(html).toContain("Request access");
+    expect(html).toContain("Use another account");
+    expect(html).not.toContain("Secret");
+    // The same page for a document that never existed, button included.
+    const unknown = await (await get(`${API}/open/${UNKNOWN_DOC_ID}`, { headers: { cookie: await sessionFor(alice) } }, PRIVATE)).text();
+    expect(unknown.replaceAll(UNKNOWN_DOC_ID, "ID")).toBe(html.replaceAll(doc.docId, "ID"));
+  });
+
+  describe("POST /open/{docId}/request", () => {
+    const API_OPEN = (docId: string) => `${API}/open/${docId}/request`;
+    const post = async (docId: string, accountId: string, over: Partial<Env> = PRIVATE, headers: Record<string, string> = SAME_ORIGIN) =>
+      send("POST", API_OPEN(docId), { headers: { cookie: await sessionFor(accountId), ...headers } }, over);
+
+    it("stores one row, nothing on a repeat or for an id that cannot be requested, and answers one page every time", async () => {
+      const doc = await privateDoc();
+      const publicDoc = await privateDoc("a public page", KEY, "anyone");
+      const deleted = await privateDoc("withdrawn");
+      await softDelete(deleted.docId);
+      const invitedDoc = await privateDoc("alice is in");
+      const bob = await reader("bob@other.com");
+      const alice = await reader("alice@acme.com", invitedDoc.docId);
+
+      const first = await post(doc.docId, bob);
+      expect(first.status).toBe(200);
+      expect(first.headers.get("cache-control")).toBe("no-store");
+      const rows = await requestRows(doc.docId);
+      expect(rows.map((row) => row.email)).toEqual(["bob@other.com"]);
+
+      const repeat = await post(doc.docId, bob);
+      expect(await requestRows(doc.docId)).toEqual(rows);
+
+      const bytes = async (response: Response, docId: string) => (await response.text()).replaceAll(docId, "ID");
+      const expected = await bytes(first, doc.docId);
+      expect(expected).toContain("Request sent");
+      expect(expected).toContain("The owner will decide. If they approve, you'll get an email at <b><bdi>bob@other.com</bdi></b> with the link.");
+      expect(await bytes(repeat, doc.docId)).toBe(expected);
+
+      const others: Array<[string, string]> = [
+        [UNKNOWN_DOC_ID, bob],
+        [publicDoc.docId, bob],
+        [deleted.docId, bob],
+        [invitedDoc.docId, alice],
+      ];
+      for (const [docId, account] of others) {
+        const response = await post(docId, account);
+        expect(response.status).toBe(200);
+        expect(await bytes(response, docId)).toBe(account === alice ? (await bytes(await post(docId, alice), docId)) : expected);
+        expect(await requestRows(docId)).toEqual([]);
+      }
+      // Alice, already allowed, sees her own address in the same words.
+      expect(await (await post(invitedDoc.docId, alice)).text()).toContain("alice@acme.com");
+    });
+
+    it("says what will happen instead when the server cannot send email", async () => {
+      const doc = await privateDoc();
+      const bob = await reader("bob@other.com");
+      const response = await post(doc.docId, bob, { ...PRIVATE, EMAIL: undefined });
+      expect(await response.text()).toContain("The owner will decide. If they approve, the link will open for <b><bdi>bob@other.com</bdi></b>.");
+      expect((await requestRows(doc.docId)).length).toBe(1);
+    });
+
+    it("rejects a request made from another site, and stores nothing", async () => {
+      const doc = await privateDoc();
+      const bob = await reader("bob@other.com");
+
+      const foreign: Array<Record<string, string>> = [
+        { "sec-fetch-site": "cross-site" },
+        { "sec-fetch-site": "same-site" },
+        { "sec-fetch-site": "none" },
+        { origin: "https://evil.example" },
+        {},
+      ];
+      for (const headers of foreign) {
+        const response = await post(doc.docId, bob, PRIVATE, headers);
+        expect(response.status).toBe(404);
+        expect(await response.text()).not.toContain("Request sent");
+      }
+      expect(await requestRows(doc.docId)).toEqual([]);
+      // A browser that sends no Fetch Metadata is held to its Origin.
+      expect((await post(doc.docId, bob, PRIVATE, { origin: API })).status).toBe(200);
+      expect((await requestRows(doc.docId)).length).toBe(1);
+    });
+
+    it("takes only a POST from a signed-in session, and sends the rest to sign in or to a 404", async () => {
+      const doc = await privateDoc();
+      const bob = await reader("bob@other.com");
+
+      const anonymous = await send("POST", API_OPEN(doc.docId), { headers: SAME_ORIGIN }, PRIVATE);
+      expect(anonymous.status).toBe(200);
+      const html = await anonymous.text();
+      expect(html).toContain("Sign in or create an account to open this document");
+      expect(html).toContain(`value="/open/${doc.docId}"`);
+      expect(html).not.toContain("request");
+
+      const forged = await send("POST", API_OPEN(doc.docId), { headers: { ...SAME_ORIGIN, cookie: "__Host-oa_session=forged.value" } }, PRIVATE);
+      expect(await forged.text()).toContain("Sign in or create an account");
+
+      for (const method of ["GET", "PUT", "DELETE"]) {
+        expect((await send(method, API_OPEN(doc.docId), { headers: { cookie: await sessionFor(bob) } }, PRIVATE)).status).toBe(404);
+      }
+      expect((await send("POST", `${API}/open/${doc.docId}/v1/request`, { headers: SAME_ORIGIN }, PRIVATE)).status).toBe(404);
+      expect(await requestRows(doc.docId)).toEqual([]);
+    });
+
+    it("stops storing past 100 pending requests, still answering Request sent", async () => {
+      const doc = await privateDoc();
+      for (let n = 0; n < 100; n += 1) {
+        await env.DB.prepare("INSERT INTO doc_access_requests (doc_id, email, created_at) VALUES (?, ?, ?)")
+          .bind(doc.docId, `person${n}@acme.com`, Date.now())
+          .run();
+      }
+      const bob = await reader("bob@other.com");
+
+      const response = await post(doc.docId, bob);
+
+      expect(await response.text()).toContain("Request sent");
+      expect((await requestRows(doc.docId)).length).toBe(100);
+    });
+
+    it("stores nothing once the account is over its allowance, and still answers Request sent", async () => {
+      const bob = await reader("bob@other.com");
+      const docs = [await privateDoc("one"), await privateDoc("two")];
+      // The allowance is 10 a minute per account: ten requests for the first document are one row and nine repeats.
+      for (let n = 0; n < 10; n += 1) await post(docs[0]!.docId, bob);
+      expect((await requestRows(docs[0]!.docId)).length).toBe(1);
+
+      const limited = await post(docs[1]!.docId, bob);
+
+      expect(limited.status).toBe(200);
+      expect(await limited.text()).toContain("Request sent");
+      expect(await requestRows(docs[1]!.docId)).toEqual([]);
+    });
+
+    it("emails the owner once, with the share page link and no token, and never tells the requester who they are", async () => {
+      const { sent, over } = mailbox();
+      const doc = await privateDoc();
+      await ownerAccount(doc);
+      const bob = await reader("bob@other.com");
+
+      const response = await post(doc.docId, bob, over);
+      await post(doc.docId, bob, over);
+
+      expect(sent).toHaveLength(1);
+      const [message] = sent;
+      expect(message!.to).toBe("owner@acme.com");
+      expect(message!.subject).toBe('bob@other.com asked to open "Secret"');
+      const link = `https://api.openartifacts.ai/share/${doc.docId}`;
+      for (const body of [message!.text, message!.html]) {
+        expect(body).toContain(link);
+        expect(body).toContain("Nothing has been shared yet.");
+        expect(body).toContain("bob@other.com");
+        expect(body).not.toMatch(/grant|token|session|signed/i);
+        expect(body.match(/https?:\/\/[^\s"<]+/g)).toEqual([link]);
+      }
+      expect(message!.html).toContain("Review request");
+      expect(await response.text()).not.toContain("owner@acme.com");
+    });
+
+    it("sends no email when the owner's address is unknown, but still lists the request", async () => {
+      const { sent, over } = mailbox();
+      const doc = await privateDoc(); // owned by a license key nobody linked
+      const bob = await reader("bob@other.com");
+
+      await post(doc.docId, bob, over);
+
+      expect(sent).toEqual([]);
+      expect((await requestRows(doc.docId)).length).toBe(1);
+    });
+
+    it("is not there at all on a server with no reader sign-in", async () => {
+      const doc = await privateDoc();
+      const bob = await reader("bob@other.com");
+      expect((await post(doc.docId, bob, { ...PRIVATE, READER_SESSION_SECRET: undefined })).status).toBe(404);
+      expect(await requestRows(doc.docId)).toEqual([]);
+    });
+  });
+
+  describe("the Manage link in the footer", () => {
+    const link = (docId: string) => `href="https://api.openartifacts.ai/share/${docId}"`;
+
+    it("is on public and private pages exactly once, and points at the share page", async () => {
+      const publicDoc = await privateDoc("a public page", KEY, "anyone");
+      const doc = await privateDoc("for invited eyes");
+      const cookie = await cookieFor(doc, doc.owner);
+
+      const open = await (await get(`https://openartifacts.site/d/${publicDoc.docId}`, {}, PRIVATE)).text();
+      const pinned = await (await get(`https://openartifacts.site/d/${publicDoc.docId}/v1`, {}, PRIVATE)).text();
+      const closed = await (await get(`${doc.host}/d/${doc.docId}`, { headers: { cookie } }, PRIVATE)).text();
+
+      for (const [html, docId] of [[open, publicDoc.docId], [pinned, publicDoc.docId], [closed, doc.docId]] as const) {
+        expect(occurrences(html, link(docId))).toBe(1);
+        expect(occurrences(html, ">Manage</a>")).toBe(1);
+        // After the existing footer, which keeps the link smoke.sh looks for.
+        expect(html).toContain("openartifacts.ai</a>");
+        expect(html.indexOf(">Manage</a>")).toBeGreaterThan(html.indexOf("Powered by"));
+      }
+      expect(closed).toContain("for invited eyes");
+    });
+
+    it("is absent on a server with no reader sign-in, and changes nothing else", async () => {
+      const publicDoc = await privateDoc("a public page", KEY, "anyone");
+
+      for (const over of [{ ...PRIVATE, READER_SESSION_SECRET: undefined }, { ...PRIVATE, OAUTH_GITHUB_CLIENT_ID: "", EMAIL: undefined }, { ...PRIVATE, API_HOST: "" }]) {
+        const html = await (await get(`https://openartifacts.site/d/${publicDoc.docId}`, {}, over)).text();
+        expect(html).not.toContain("/share/");
+        expect(html).not.toContain(">Manage</a>");
+        expect(html).toContain(OPENARTIFACTS_FOOTER);
+      }
+    });
+  });
+
+  describe("the share page", () => {
+    const SHARE = (docId: string) => `${API}/share/${docId}`;
+    const open = async (docId: string, accountId: string | null, over: Partial<Env> = PRIVATE, query = "") =>
+      get(`${SHARE(docId)}${query}`, accountId === null ? {} : { headers: { cookie: await sessionFor(accountId) } }, over);
+    const write = async (docId: string, accountId: string, fields: Record<string, string>, over: Partial<Env> = PRIVATE, headers: Record<string, string> = SAME_ORIGIN) =>
+      send("POST", SHARE(docId), { headers: { cookie: await sessionFor(accountId), ...headers }, body: new URLSearchParams(fields) }, over);
+    const access = async (docId: string) =>
+      (await get(`${API}/api/v1/docs/${docId}/access`, { headers: { authorization: `Bearer ${KEY}` } }, PRIVATE)).json<{
+        linkAccess: string;
+        people: Array<{ email: string }>;
+        requests: Array<{ email: string }>;
+      }>();
+
+    it("shows the sign-in page to a reader with no session, to come back to the share page after", async () => {
+      const doc = await privateDoc();
+
+      const response = await open(doc.docId, null);
+
+      expect(response.status).toBe(200);
+      const html = await response.text();
+      expect(html).toContain("Sign in to manage this document");
+      expect(html).toContain("Sign in with the account that published it. New here? Signing in creates a free account.");
+      expect(html).toContain(`name="next" value="/share/${doc.docId}"`);
+      expect(html).not.toContain("Secret");
+      expect(html).not.toContain("@");
+    });
+
+    it("shows the not-available page, with no title, to a signed-in non-owner, and the same one for an id that is not there", async () => {
+      const doc = await privateDoc();
+      const deleted = await privateDoc("gone");
+      await softDelete(deleted.docId);
+      const bob = await reader("bob@other.com", doc.docId); // even an invitee cannot manage
+
+      const responses = await Promise.all([open(doc.docId, bob), open(UNKNOWN_DOC_ID, bob), open(deleted.docId, bob)]);
+
+      const pages: string[] = [];
+      for (const [index, response] of responses.entries()) {
+        expect(response.status).toBe(404);
+        const html = await response.text();
+        expect(html).toContain("This document isn't available to <b><bdi>bob@other.com</bdi></b>");
+        expect(html).toContain("Request access");
+        expect(html).not.toContain("Secret");
+        pages.push(html.replaceAll([doc.docId, UNKNOWN_DOC_ID, deleted.docId][index]!, "ID"));
+      }
+      expect(new Set(pages).size).toBe(1);
+      // "Use another account" comes back here, not to /open.
+      expect(pages[0]).toContain('name="next" value="/share/ID"');
+    });
+
+    it("shows the owner the dialog, with the link, the people and the requests, and no role control", async () => {
+      const { over } = mailbox();
+      const doc = await privateDoc();
+      const owner = await ownerAccount(doc);
+      await env.DB.prepare("INSERT INTO doc_invites (doc_id, email, created_at) VALUES (?, 'alice@acme.com', ?)")
+        .bind(doc.docId, Date.now())
+        .run();
+      await env.DB.prepare("INSERT INTO doc_access_requests (doc_id, email, created_at) VALUES (?, 'bob@other.com', ?)")
+        .bind(doc.docId, Date.now())
+        .run();
+
+      const response = await open(doc.docId, owner, over);
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+      const csp = response.headers.get("content-security-policy")!;
+      expect(csp).toContain("frame-ancestors 'none'");
+      const html = await response.text();
+      // The policy admits exactly the one inline script on the page, by hash.
+      const script = /<script>([\s\S]*?)<\/script>/.exec(html)![1]!;
+      const digest = btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(script)))));
+      expect(csp).toContain(`script-src 'sha256-${digest}'`);
+      expect(occurrences(html, "<script")).toBe(1);
+
+      expect(html).toContain("Manage “Secret”");
+      for (const text of ["Link access", "Anyone with the link", "Only those invited", "Add people", "Requests", "Who has access", "Copy link"]) {
+        expect(html).toContain(text);
+      }
+      expect(html).toContain('value="invited" checked');
+      expect(html).toContain(`value="https://openartifacts.site/d/${doc.docId}"`);
+      expect(html).toContain("<b>You</b><small>Owner</small>");
+      expect(html).toContain("alice@acme.com");
+      expect(html).toContain("Invited · email sent");
+      expect(html).toContain("bob@other.com");
+      expect(html).toContain("Asked to open it");
+      expect(html).toContain("Approve");
+      expect(html).toContain("Decline");
+      expect(html.indexOf("Requests")).toBeLessThan(html.indexOf("Who has access"));
+      expect(html).not.toMatch(/role|Can comment|Can view/);
+      expect(html).not.toContain("may have kept a copy");
+    });
+
+    it("hides the Requests section when nothing is pending, and says to send the link when the server sends no email", async () => {
+      const doc = await privateDoc();
+      const owner = await ownerAccount(doc);
+      await env.DB.prepare("INSERT INTO doc_invites (doc_id, email, created_at) VALUES (?, 'alice@acme.com', ?)")
+        .bind(doc.docId, Date.now())
+        .run();
+
+      const html = await (await open(doc.docId, owner, { ...PRIVATE, EMAIL: undefined })).text();
+
+      expect(html).not.toContain("<h2>Requests</h2>");
+      expect(html).toContain("Invited · send them the link");
+      expect(html).not.toContain("Invited · email sent");
+    });
+
+    it("writes through the page into Access: add, which emails the invitee, then remove", async () => {
+      const { sent, over } = mailbox();
+      const doc = await privateDoc();
+      const owner = await ownerAccount(doc);
+
+      const added = await write(doc.docId, owner, { op: "add", email: "Alice@Acme.com" }, over);
+
+      expect(added.status).toBe(303);
+      expect(added.headers.get("location")).toBe(`/share/${doc.docId}`);
+      expect(added.headers.get("cache-control")).toBe("no-store");
+      expect((await access(doc.docId)).people.map((person) => person.email)).toEqual(["alice@acme.com"]);
+      expect(sent.map((message) => message.to)).toEqual(["alice@acme.com"]);
+      expect(sent[0]!.text).toContain("Sign in with this address, alice@acme.com, to open it.");
+      expect(sent[0]!.text).toContain(`https://openartifacts.site/d/${doc.docId}`);
+      // A repeat is the same list and no second email.
+      await write(doc.docId, owner, { op: "add", email: "alice@acme.com" }, over);
+      expect(sent).toHaveLength(1);
+
+      const removed = await write(doc.docId, owner, { op: "remove", email: "alice@acme.com" }, over);
+      expect(removed.status).toBe(303);
+      expect((await access(doc.docId)).people).toEqual([]);
+    });
+
+    it("approves a request as an add, which clears it and sends the invite, and declines one silently", async () => {
+      const { sent, over } = mailbox();
+      const doc = await privateDoc();
+      const owner = await ownerAccount(doc);
+      for (const email of ["bob@other.com", "carol@other.com"]) {
+        await env.DB.prepare("INSERT INTO doc_access_requests (doc_id, email, created_at) VALUES (?, ?, ?)")
+          .bind(doc.docId, email, Date.now())
+          .run();
+      }
+
+      await write(doc.docId, owner, { op: "add", email: "bob@other.com" }, over);
+      await write(doc.docId, owner, { op: "decline", email: "carol@other.com" }, over);
+
+      const state = await access(doc.docId);
+      expect(state.people.map((person) => person.email)).toEqual(["bob@other.com"]);
+      expect(state.requests).toEqual([]);
+      expect(sent.map((message) => message.to)).toEqual(["bob@other.com"]);
+    });
+
+    it("switches the link access, and shows the copy notice only after a switch to private", async () => {
+      const doc = await privateDoc("a public page", KEY, "anyone");
+      const owner = await ownerAccount(doc);
+
+      const toPrivate = await write(doc.docId, owner, { op: "link", linkAccess: "invited" });
+      expect(toPrivate.status).toBe(303);
+      expect(toPrivate.headers.get("location")).toBe(`/share/${doc.docId}?notice=private`);
+      expect((await access(doc.docId)).linkAccess).toBe("invited");
+      expect(await (await open(doc.docId, owner, PRIVATE, "?notice=private")).text()).toContain(
+        "People who opened it while it was public may have kept a copy.",
+      );
+      expect(await (await open(doc.docId, owner)).text()).not.toContain("may have kept a copy");
+
+      // A repeat is not a switch, and going back to public needs no plan and shows no notice.
+      expect((await write(doc.docId, owner, { op: "link", linkAccess: "invited" })).headers.get("location")).toBe(`/share/${doc.docId}`);
+      const toPublic = await write(doc.docId, owner, { op: "link", linkAccess: "anyone" });
+      expect(toPublic.headers.get("location")).toBe(`/share/${doc.docId}`);
+      expect((await access(doc.docId)).linkAccess).toBe("anyone");
+      expect((await write(doc.docId, owner, { op: "link", linkAccess: "sideways" })).status).toBe(404);
+    });
+
+    it("applies the plan gate to the page's writes, with the upgrade link, and still lets a free plan remove, decline and go public", async () => {
+      const doc = await privateDoc();
+      const owner = await ownerAccount(doc, "free");
+      await env.DB.prepare("INSERT INTO doc_invites (doc_id, email, created_at) VALUES (?, 'alice@acme.com', ?)")
+        .bind(doc.docId, Date.now())
+        .run();
+      await env.DB.prepare("INSERT INTO doc_access_requests (doc_id, email, created_at) VALUES (?, 'bob@other.com', ?)")
+        .bind(doc.docId, Date.now())
+        .run();
+
+      const refused = await write(doc.docId, owner, { op: "add", email: "bob@other.com" });
+      expect(refused.status).toBe(402);
+      const html = await refused.text();
+      expect(html).toContain("Private sharing needs a paid plan. Nothing was changed.");
+      expect(html).toContain('<a href="https://openartifacts.ai/account">Upgrade</a>');
+      expect(html).not.toContain("openartifacts account --open");
+      expect((await access(doc.docId)).people.map((person) => person.email)).toEqual(["alice@acme.com"]);
+      expect((await access(doc.docId)).requests.map((request) => request.email)).toEqual(["bob@other.com"]);
+
+      expect((await write(doc.docId, owner, { op: "decline", email: "bob@other.com" })).status).toBe(303);
+      expect((await write(doc.docId, owner, { op: "remove", email: "alice@acme.com" })).status).toBe(303);
+      expect((await write(doc.docId, owner, { op: "link", linkAccess: "anyone" })).status).toBe(303);
+      const state = await access(doc.docId);
+      expect([state.linkAccess, state.people, state.requests]).toEqual(["anyone", [], []]);
+      // And back to private is the other write the plan guards.
+      expect((await write(doc.docId, owner, { op: "link", linkAccess: "invited" })).status).toBe(402);
+      expect((await access(doc.docId)).linkAccess).toBe("anyone");
+    });
+
+    it("says an address is not an address, and changes nothing", async () => {
+      const doc = await privateDoc();
+      const owner = await ownerAccount(doc);
+
+      const response = await write(doc.docId, owner, { op: "add", email: "not-an-address" });
+
+      expect(response.status).toBe(400);
+      expect(await response.text()).toContain("That is not an email address.");
+      expect((await access(doc.docId)).people).toEqual([]);
+    });
+
+    it("refuses a write from another site, with the header or without it, and changes nothing", async () => {
+      const doc = await privateDoc();
+      const owner = await ownerAccount(doc);
+      const fields = { op: "add", email: "mallory@evil.example" };
+
+      const foreign: Array<Record<string, string>> = [
+        { "sec-fetch-site": "cross-site" },
+        { "sec-fetch-site": "same-site" },
+        { "sec-fetch-site": "none" },
+        { origin: "https://evil.example" },
+        {},
+      ];
+      for (const headers of foreign) {
+        expect((await write(doc.docId, owner, fields, PRIVATE, headers)).status).toBe(404);
+      }
+      expect((await access(doc.docId)).people).toEqual([]);
+      // A browser that sends no Fetch Metadata is held to its Origin.
+      expect((await write(doc.docId, owner, fields, PRIVATE, { origin: API })).status).toBe(303);
+      expect((await access(doc.docId)).people.length).toBe(1);
+    });
+
+    it("lets only the owner write, and never writes on a GET", async () => {
+      const doc = await privateDoc();
+      const bob = await reader("bob@other.com");
+      const owner = await ownerAccount(doc);
+
+      const denied = await write(doc.docId, bob, { op: "add", email: "bob@other.com" });
+      expect(denied.status).toBe(404);
+      expect(await denied.text()).toContain("isn't available to");
+      expect((await write(UNKNOWN_DOC_ID, owner, { op: "add", email: "x@acme.com" })).status).toBe(404);
+      expect((await send("POST", SHARE(doc.docId), { headers: SAME_ORIGIN, body: new URLSearchParams({ op: "add", email: "x@acme.com" }) }, PRIVATE)).status).toBe(200); // sign-in, no write
+      expect((await write(doc.docId, owner, { op: "mystery", email: "x@acme.com" })).status).toBe(404);
+
+      await open(doc.docId, owner, PRIVATE, "?op=add&email=bob@other.com&linkAccess=anyone&notice=private");
+      const state = await access(doc.docId);
+      expect([state.linkAccess, state.people]).toEqual(["invited", []]);
+      for (const method of ["PUT", "DELETE", "PATCH"]) {
+        expect((await send(method, SHARE(doc.docId), { headers: { cookie: await sessionFor(owner), ...SAME_ORIGIN } }, PRIVATE)).status).toBe(404);
+      }
+      expect((await get(`${SHARE(doc.docId)}/v1`, { headers: { cookie: await sessionFor(owner) } }, PRIVATE)).status).toBe(404);
+    });
+
+    it("is not there on a server with no reader sign-in", async () => {
+      const doc = await privateDoc();
+      const owner = await ownerAccount(doc);
+      for (const over of [{ ...PRIVATE, READER_SESSION_SECRET: undefined }, { ...PRIVATE, OAUTH_GITHUB_CLIENT_ID: "", EMAIL: undefined }]) {
+        expect((await open(doc.docId, owner, over)).status).toBe(404);
+        expect((await write(doc.docId, owner, { op: "add", email: "x@acme.com" }, over)).status).toBe(404);
+      }
+      expect((await access(doc.docId)).people).toEqual([]);
+    });
+  });
 });

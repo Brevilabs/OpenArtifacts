@@ -478,8 +478,9 @@ floor in the deployment record, as the domain cutover did, and see
 Private sharing is on when `READER_SESSION_SECRET` is set and `SERVING_HOST` and
 `API_HOST` are configured. The document host needs to be a zone apex so the free
 wildcard certificate covers its subdomains; add the `*.{SERVING_HOST}/*` route and
-the proxied wildcard record yourself. Email and the two limiters
-(`SIGNIN_EMAIL_LIMITER`, `INVITE_EMAIL_LIMITER`) are optional.
+the proxied wildcard record yourself. Email and the limiters
+(`SIGNIN_EMAIL_LIMITER`, `SIGNIN_EMAIL_CLIENT_LIMITER`, `INVITE_EMAIL_LIMITER`,
+`REQUEST_ACCESS_LIMITER`) are optional.
 
 ## Standalone account launch order
 

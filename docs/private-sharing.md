@@ -121,15 +121,15 @@ A reader is an `accounts` row, the same principal a publisher is.
   guesses, and a code that has used them all cannot be replaced until it expires.
 - **The session** is `__Host-oa_session` on the API host (`HttpOnly`, `Secure`,
   `SameSite=Lax`, `Path=/`, thirty days): an HMAC over `{accountId, expiresAt}`
-  keyed by `READER_SESSION_SECRET`. Only `/open` and `/signin` read it, and
-  `/api/v1` stays bearer-only, so the cookie adds no cross-site request surface to
+  keyed by `READER_SESSION_SECRET`. Only `/open`, `/open/{docId}/request`,
+  `/share/{docId}` and `/signin` read it, and `/api/v1` stays bearer-only, so the cookie adds no cross-site request surface to
   the API. Rotating the secret signs every reader out.
 - **Owners with a license key never sign in.** `POST /api/v1/docs/{docId}/open`
   returns their own page's url with a 60-second grant whose principal is their
   owner id. Clients open it and discard it; publish receipts never carry a grant.
 
-The sign-in pages return only to an `/open/…` path, rebuilt from the parsed
-document id, so they cannot become an open redirect.
+The sign-in pages return only to `/open/{docId}[/v{n}]` or `/share/{docId}`,
+rebuilt from the parsed document id, so they cannot become an open redirect.
 
 ## Plans
 

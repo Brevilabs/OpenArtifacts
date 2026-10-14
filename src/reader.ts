@@ -2,25 +2,32 @@
  * Reader sign-in, and the door a private document opens through.
  *
  * ```
- * GET  /open/{docId}[/v{n}]   check the session and `canRead`, then hand off to the publisher's origin
+ * GET  /open/{docId}[/v{n}]      check the session and `canRead`, then hand off to the publisher's origin
+ * POST /open/{docId}/request     ask the owner to let this account in
  * POST /signin/start/{provider}  begin Google or GitHub; the callback is /approve/callback/{provider}
- * POST /signin/email          mail a six-digit code
- * POST /signin/code           trade the code for a session
- * POST /signin/confirm        accept the Terms for a first-time account
- * POST /signin/out            clear the session ("Use another account")
+ * POST /signin/email             mail a six-digit code
+ * POST /signin/code              trade the code for a session, or on to the Terms
+ * POST /signin/confirm           accept the Terms for a first-time provider account
+ * POST /signin/confirm-email     accept the Terms for a first-time emailed-code account
+ * POST /signin/out               clear the session ("Use another account")
  * ```
+ *
+ * `GET`/`POST /share/{docId}` is the owner's side of the same session and lives
+ * in `share.ts`.
  *
  * All of it lives on the API host, which is the one place a reader session
  * exists. The session is a stateless signed cookie (`session.ts`), only these
- * routes read it, and `/api/v1` ignores it, so the cookie adds no cross-site
- * surface to the bearer API. The sign-in pages return only to an `/open/…`
- * path, so they cannot become an open redirect.
+ * routes and the share page read it, and `/api/v1` ignores it, so the cookie
+ * adds no cross-site surface to the bearer API. The sign-in pages return only
+ * to an `/open/…` or `/share/{docId}` path, so they cannot become an open
+ * redirect.
  *
  * A reader is an `accounts` row, the same principal a publisher is. Google and
- * GitHub reuse the device-code handshake and its callback; an emailed code is
- * refused for an address whose account already signs in with a provider, so the
+ * GitHub reuse the device-code handshake and its callback. An emailed code
+ * proves the mailbox, and only then is the account decided: an address whose
+ * account already signs in with Google or GitHub is refused, so the
  * recycled-mailbox refusal in docs/identity.md holds for every provider-backed
- * account.
+ * account, and an address with no account goes through the Terms first.
  */
 import { APPROVAL_PREFIX, READER_USER_CODE_PREFIX, readSmallForm } from "./approval/handler.js";
 import {
@@ -29,53 +36,80 @@ import {
   normalizeEmail,
   type ProviderId,
 } from "./approval/providers.js";
-import type { Env } from "./config.js";
+import { MAX_PENDING_REQUESTS_PER_DOC, type Env } from "./config.js";
 import {
   accountEmail,
   confirmDeviceApproval,
   findOrCreateAccount,
   findReadableDoc,
+  insertAccessRequest,
+  ownerEmail,
   sweepExpired,
 } from "./db.js";
-import { codeMessage, emailConfigured, sendEmail } from "./email.js";
+import { codeMessage, emailConfigured, requestMessage, sendEmail } from "./email.js";
 import { sha256Hex } from "./hash.js";
-import { newAccountId, newHandshakeToken } from "./ids.js";
-import { isTopLevelRequest, withinClientLimit, withinLimit } from "./limits.js";
+import { isDocId, newAccountId, newHandshakeToken } from "./ids.js";
+import { sameOriginPost, withinClientLimit, withinLimit } from "./limits.js";
 import { grantUrl } from "./private.js";
 import { defaultPlan } from "./plans.js";
 import { readerSecret } from "./reader-config.js";
 import {
   codePage,
   notAvailablePage,
+  OPEN_PREFIX,
   READER_NOT_FOUND,
   readerPage,
+  requestSentPage,
+  SHARE_PREFIX,
   SIGNIN_FAILED,
   SIGNIN_PREFIX,
   signInPage,
+  termsPage,
   TOO_MANY,
 } from "./reader-pages.js";
 import { docPath, parseDocPath, servingRedirect, SERVING_PREFIX } from "./serve.js";
 import {
   cookie,
   LOGIN_COOKIE,
-  openPath,
+  macHex,
   readSession,
+  returnPath,
   SESSION_COOKIE,
   sessionRedirect,
   signPayload,
+  verifyPayload,
 } from "./session.js";
 
-export const OPEN_PREFIX = "/open";
-
-/** A provider handshake, and an emailed code, both live ten minutes. */
+/** A provider handshake, an emailed code and the Terms token all live ten minutes. */
 const SIGNIN_TTL_MS = 10 * 60 * 1000;
 
 /** Wrong guesses one code survives. */
 const MAX_CODE_ATTEMPTS = 5;
 
-export async function handleReader(request: Request, url: URL, env: Env): Promise<Response> {
+/**
+ * `/open/{docId}/request`, or null for any other path. The version segment
+ * `parseDocPath` accepts is not part of this route: a request is for a
+ * document, never for one of its versions.
+ */
+function requestRoute(pathname: string): string | null {
+  const [docId, action, ...extra] = pathname.slice(OPEN_PREFIX.length + 1).split("/");
+  return docId !== undefined && isDocId(docId) && action === "request" && extra.length === 0 ? docId : null;
+}
+
+export async function handleReader(
+  request: Request,
+  url: URL,
+  env: Env,
+  ctx?: ExecutionContext,
+): Promise<Response> {
   const now = Date.now();
   if (url.pathname === OPEN_PREFIX || url.pathname.startsWith(`${OPEN_PREFIX}/`)) {
+    const requested = requestRoute(url.pathname);
+    if (requested !== null) {
+      return request.method === "POST"
+        ? await requestAccess(request, url, env, ctx, requested, now)
+        : READER_NOT_FOUND();
+    }
     return request.method === "GET" ? await open(request, url, env, now) : READER_NOT_FOUND();
   }
 
@@ -84,15 +118,14 @@ export async function handleReader(request: Request, url: URL, env: Env): Promis
     .split("/")
     .filter(Boolean);
   // Every sign-in route is a POST from one of our own pages. A cross-site form
-  // cannot start a handshake or sign anyone out; absent header (curl, tests) is allowed.
-  const site = request.headers.get("sec-fetch-site");
-  if (request.method !== "POST" || (site !== null && site !== "same-origin" && site !== "none")) {
-    return READER_NOT_FOUND();
-  }
+  // cannot start a handshake, sign anyone in as somebody else or sign anyone
+  // out. A browser that sends no Fetch Metadata is held to `Origin`; only a
+  // request carrying neither (curl, the tests) passes on its absence.
+  if (request.method !== "POST" || !sameOriginPost(request, url, false)) return READER_NOT_FOUND();
 
   const form = await readSmallForm(request);
   if (form === null || extra.length > 0) return READER_NOT_FOUND();
-  const next = openPath(form.get("next"));
+  const next = returnPath(form.get("next"));
   if (next === null) return READER_NOT_FOUND();
 
   if (section === "start" && provider !== undefined) return await start(request, url, env, provider, next, now);
@@ -100,6 +133,7 @@ export async function handleReader(request: Request, url: URL, env: Env): Promis
   if (section === "email") return await mailCode(request, env, form, next, now);
   if (section === "code") return await verifyCode(request, env, form, next, now);
   if (section === "confirm") return await confirm(env, form, next, now);
+  if (section === "confirm-email") return await confirmEmail(env, form, next, now);
   if (section === "out") {
     return new Response(null, {
       status: 303,
@@ -113,7 +147,8 @@ export async function handleReader(request: Request, url: URL, env: Env): Promis
   return READER_NOT_FOUND();
 }
 
-function signIn(env: Env, next: string, note?: string): Response {
+/** The sign-in page for the methods this server has, returning to `next`. */
+export function signIn(env: Env, next: string, note?: string): Response {
   const providers = configuredProviders(env);
   return signInPage(next, providers, emailConfigured(env), note);
 }
@@ -156,7 +191,72 @@ async function open(request: Request, url: URL, env: Env, now: number): Promise<
   }
 
   const email = await accountEmail(env.DB, accountId);
-  return email === null ? signIn(env, next) : notAvailablePage(email, next);
+  return email === null ? signIn(env, next) : notAvailablePage(email, route.docId, next);
+}
+
+/**
+ * `POST /open/{docId}/request`: the signed-in account asks the owner to let it
+ * in. The only place a reader acts on a document they cannot open, so it is
+ * built to say nothing.
+ *
+ * The page is the same bytes with the same status for every outcome: a stored
+ * request, a repeat, an unknown or deleted id, a public document, an account
+ * that is already allowed, a full list, and a rate limit. Nothing in the
+ * response depends on the document, and the owner's email, the one slow step,
+ * runs after the response is decided, so timing does not either. The address
+ * that goes on the list is the session account's own `accounts.email`, never a
+ * field, and the form that posts here carries none.
+ */
+async function requestAccess(
+  request: Request,
+  url: URL,
+  env: Env,
+  ctx: ExecutionContext | undefined,
+  docId: string,
+  now: number,
+): Promise<Response> {
+  const secret = readerSecret(env);
+  if (secret === null || !sameOriginPost(request, url, true)) return READER_NOT_FOUND();
+
+  const next = docPath(OPEN_PREFIX, { docId, pinned: null });
+  const accountId = await readSession(request, secret, now);
+  if (accountId === null) return signIn(env, next);
+  const email = await accountEmail(env.DB, accountId);
+  if (email === null) return signIn(env, next);
+
+  if (await withinLimit(env.REQUEST_ACCESS_LIMITER, await sha256Hex(`request:${accountId}`))) {
+    const added = await insertAccessRequest(env.DB, docId, accountId, now, MAX_PENDING_REQUESTS_PER_DOC);
+    if (added !== null) {
+      const notified = notifyOwner(env, url, docId, added);
+      if (ctx === undefined) await notified;
+      else ctx.waitUntil(notified);
+    }
+  }
+  return requestSentPage(email, docId, emailConfigured(env));
+}
+
+/**
+ * Tell the owner about a new request, when the Worker has an address for them: an
+ * account owner's own, a license owner's linked account, nothing for an unlinked
+ * license owner. Best effort and never throws, so it can ride `waitUntil`; the
+ * request is on the list whether or not the email goes.
+ */
+async function notifyOwner(
+  env: Env,
+  requestUrl: URL,
+  docId: string,
+  added: { email: string; title: string; owner: string },
+): Promise<void> {
+  try {
+    if (!emailConfigured(env)) return;
+    const to = await ownerEmail(env.DB, added.owner);
+    if (to === null) return;
+    const apiHost = env.API_HOST?.trim();
+    const origin = apiHost ? `https://${apiHost}` : requestUrl.origin;
+    await sendEmail(env, to, requestMessage(added.email, added.title, `${origin}${SHARE_PREFIX}/${docId}`));
+  } catch (error) {
+    console.error("request email failed", { error: error instanceof Error ? error.name : "unknown" });
+  }
 }
 
 /**
@@ -260,16 +360,24 @@ function newEmailCode(): string {
   return String(draw[0]! % 1_000_000).padStart(6, "0");
 }
 
-const codeHash = (email: string, code: string) => sha256Hex(`${email}:${code}`);
+/**
+ * What is stored for a code: a keyed hash, not a plain one. There are only a
+ * million codes, so anyone who could read `email_codes` (an export, a Time
+ * Travel restore) would recover a live one from an unkeyed hash at once.
+ */
+const codeHash = (secret: string, email: string, code: string) =>
+  macHex(secret, "email-code", `${email}:${code}`);
+
+const PROVIDER_BACKED_NOTE = "That address signs in with Google or GitHub. Use that instead.";
 
 /**
  * `POST /signin/email`: mail a code.
  *
- * A code signs in to any address except one whose account already signs in with
- * Google or GitHub; those keep their provider, which is what keeps the
- * recycled-mailbox refusal true for every provider-backed account. Accounts
- * Copilot linking created have no provider and may use codes, since Copilot's
- * own magic link already treats the mailbox as proof of the account.
+ * Any well-formed address gets one, and the page that follows is the same for
+ * all of them. Whether the address has an account, and whether Google or GitHub
+ * backs it, is decided only after the code comes back (`verifyCode`), because
+ * until then nothing has proved the person typing it holds the mailbox, and
+ * answering earlier would tell anyone which addresses have accounts.
  */
 async function mailCode(
   request: Request,
@@ -278,19 +386,16 @@ async function mailCode(
   next: string,
   now: number,
 ): Promise<Response> {
-  if (!emailConfigured(env)) return READER_NOT_FOUND();
+  const secret = readerSecret(env);
+  if (secret === null || !emailConfigured(env)) return READER_NOT_FOUND();
   const email = normalizeEmail(form.get("email") ?? "");
   if (email === null) return signIn(env, next, "That doesn’t look like an email address.");
 
   if (
     !(await withinLimit(env.SIGNIN_EMAIL_LIMITER, await sha256Hex(`signin:${email}`))) ||
-    !(await withinClientLimit(env.SIGNIN_EMAIL_LIMITER, request))
+    !(await withinClientLimit(env.SIGNIN_EMAIL_CLIENT_LIMITER, request))
   ) {
     return TOO_MANY();
-  }
-  const account = await accountOf(env, email);
-  if (account?.providerBacked) {
-    return signIn(env, next, "That address signs in with Google or GitHub. Use that instead.");
   }
 
   const code = newEmailCode();
@@ -307,7 +412,7 @@ async function mailCode(
      WHERE email_codes.expires_at <= ? OR email_codes.attempts < ?
      RETURNING email`,
   )
-    .bind(email, await codeHash(email, code), now + SIGNIN_TTL_MS, now, now, MAX_CODE_ATTEMPTS)
+    .bind(email, await codeHash(secret, email, code), now + SIGNIN_TTL_MS, now, now, MAX_CODE_ATTEMPTS)
     .first();
   if (stored === null) return TOO_MANY();
 
@@ -321,10 +426,18 @@ async function mailCode(
       502,
     );
   }
-  return codePage(email, next, account === null);
+  return codePage(email, next);
 }
 
-/** `POST /signin/code`: trade the code for a session, creating the account on first use. */
+/**
+ * `POST /signin/code`: trade the code for a session.
+ *
+ * The code is checked first. Only a matching code, which proves the mailbox,
+ * reaches the decision about the account: one that signs in with Google or
+ * GitHub keeps its provider and is refused (the code is spent either way), one
+ * with no provider is signed in, and an address with no account goes to the
+ * Terms, carrying a signed token for the proved address.
+ */
 async function verifyCode(
   request: Request,
   env: Env,
@@ -338,8 +451,7 @@ async function verifyCode(
   if (secret === null || email === null || !/^[0-9]{6}$/.test(code)) return SIGNIN_FAILED();
   if (!(await withinClientLimit(env.APPROVAL_LOOKUP_LIMITER, request))) return TOO_MANY();
 
-  const account = await accountOf(env, email);
-  const retry = (note: string) => codePage(email, next, account === null, note);
+  const retry = (note: string) => codePage(email, next, note);
 
   // The count goes up before the comparison, in the same statement that checks
   // it is still under the limit, so concurrent guesses cannot share an attempt.
@@ -350,16 +462,46 @@ async function verifyCode(
     .bind(email, now, MAX_CODE_ATTEMPTS)
     .first<{ code_hash: string }>();
   if (live === null) return retry("That code has expired or been used up. Go back and ask for a new one.");
-  if (live.code_hash !== (await codeHash(email, code))) return retry("That code didn’t match.");
-  if (account?.providerBacked) return SIGNIN_FAILED();
-  if (account === null && form.get("terms") !== "yes") return retry("Accept the Terms to continue.");
+  if (live.code_hash !== (await codeHash(secret, email, code))) return retry("That code didn’t match.");
 
   const spent = await env.DB.prepare("DELETE FROM email_codes WHERE email = ? AND code_hash = ? RETURNING email")
     .bind(email, live.code_hash)
     .first();
   if (spent === null) return SIGNIN_FAILED();
 
-  const id =
-    account?.id ?? (await findOrCreateAccount(env.DB, newAccountId(), email, now, defaultPlan(env))).id;
-  return await sessionRedirect(secret, id, next, now);
+  // The mailbox is proved. Now, and only now, what the address is.
+  const account = await accountOf(env, email);
+  if (account?.providerBacked) return signIn(env, next, PROVIDER_BACKED_NOTE);
+  if (account !== null) return await sessionRedirect(secret, account.id, next, now);
+
+  const signup = await signPayload(secret, "signup", { e: email }, now + SIGNIN_TTL_MS);
+  return termsPage(email, next, { action: `${SIGNIN_PREFIX}/confirm-email`, field: "signup_token", token: signup });
+}
+
+/**
+ * `POST /signin/confirm-email`: a proved address with no account accepts the
+ * Terms, which creates the free account and signs it in.
+ *
+ * The token is what proves the address, signed for this purpose with ten
+ * minutes to live. The account is read again after it is created: a Google or
+ * GitHub sign-in for the same address can land between the code and this press,
+ * and an account a provider now backs must not be handed a session by a code.
+ */
+async function confirmEmail(env: Env, form: URLSearchParams, next: string, now: number): Promise<Response> {
+  const secret = readerSecret(env);
+  if (secret === null) return SIGNIN_FAILED();
+  const signup = await verifyPayload(secret, "signup", form.get("signup_token"), now);
+  const email = typeof signup?.e === "string" ? normalizeEmail(signup.e) : null;
+  if (email === null) return SIGNIN_FAILED(next);
+  if (form.get("terms") !== "yes") {
+    return termsPage(email, next, {
+      action: `${SIGNIN_PREFIX}/confirm-email`,
+      field: "signup_token",
+      token: form.get("signup_token") ?? "",
+    });
+  }
+
+  const created = await findOrCreateAccount(env.DB, newAccountId(), email, now, defaultPlan(env));
+  if ((await accountOf(env, email))?.providerBacked) return signIn(env, next, PROVIDER_BACKED_NOTE);
+  return await sessionRedirect(secret, created.id, next, now);
 }

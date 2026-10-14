@@ -182,8 +182,13 @@ export interface Env {
   /** Sending address on a domain onboarded to Email Service. Absent means no email. */
   EMAIL_FROM?: string;
 
-  /** Emailed sign-in codes, counted per address and per client. Absent means no limit. */
+  /** Emailed sign-in codes, counted per address. Absent means no limit. */
   SIGNIN_EMAIL_LIMITER?: RateLimit;
+  /**
+   * The same codes, counted per client address, so one caller cannot mail codes
+   * to many addresses. Absent means no limit.
+   */
+  SIGNIN_EMAIL_CLIENT_LIMITER?: RateLimit;
   /** Invite emails, counted per owner. Absent means no limit. */
   INVITE_EMAIL_LIMITER?: RateLimit;
   /**

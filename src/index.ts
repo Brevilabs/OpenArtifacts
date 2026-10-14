@@ -17,9 +17,10 @@ import { DEVICE_PREFIX, handleDevice } from "./device.js";
 import { errorResponse } from "./errors.js";
 import { listTokens, revokeToken } from "./api/tokens.js";
 import { handlePublisherServing, isolate, PRIVATE_LABEL } from "./private.js";
-import { handleReader, OPEN_PREFIX } from "./reader.js";
+import { handleReader } from "./reader.js";
 import { readerSignInConfigured } from "./reader-config.js";
-import { READER_NOT_FOUND, SIGNIN_PREFIX } from "./reader-pages.js";
+import { OPEN_PREFIX, READER_NOT_FOUND, SHARE_PREFIX, SIGNIN_PREFIX } from "./reader-pages.js";
+import { handleShare } from "./share.js";
 import {
   handleServing,
   servingError,
@@ -131,6 +132,7 @@ export function resolveSurface(hostname: string, pathname: string, config: Surfa
   if (pathIsUnder(pathname, DEVICE_PREFIX)) return "api";
   if (pathIsUnder(pathname, OPEN_PREFIX)) return "api";
   if (pathIsUnder(pathname, SIGNIN_PREFIX)) return "api";
+  if (pathIsUnder(pathname, SHARE_PREFIX)) return "api";
   if (pathIsUnder(pathname, SERVING_PREFIX)) return "serving";
   return "unknown";
 }
@@ -306,14 +308,20 @@ export default {
           if (pathIsUnder(url.pathname, APPROVAL_PREFIX)) {
             return await handleApproval(request, url, env);
           }
-          // Reader sign-in and the door a private document opens through: pages
-          // a person reaches with a browser, not API routes, so they sit outside
-          // `/api/v1` for the same reason approval does.
-          if (pathIsUnder(url.pathname, OPEN_PREFIX) || pathIsUnder(url.pathname, SIGNIN_PREFIX)) {
+          // Reader sign-in, the door a private document opens through and the
+          // share page: pages a person reaches with a browser, not API routes,
+          // so they sit outside `/api/v1` for the same reason approval does.
+          if (
+            pathIsUnder(url.pathname, OPEN_PREFIX) ||
+            pathIsUnder(url.pathname, SIGNIN_PREFIX) ||
+            pathIsUnder(url.pathname, SHARE_PREFIX)
+          ) {
             // A server with no reader sign-in configured has none of these
             // pages, as one that predates private sharing has none.
             if (!readerSignInConfigured(env)) return READER_NOT_FOUND();
-            return await handleReader(request, url, env);
+            return pathIsUnder(url.pathname, SHARE_PREFIX)
+              ? await handleShare(request, url, env, analytics)
+              : await handleReader(request, url, env, ctx);
           }
           // Likewise before `handleApi`: a terminal asking for a device code
           // has no credential yet, which is the entire reason it is asking.

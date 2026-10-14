@@ -235,21 +235,26 @@ here it would exist to serve a dashboard that does not exist: listing documents,
 unsharing one, and revoking a token are all CLI commands. Without a dashboard, a
 session buys nothing and costs a store, an expiry policy, and a cookie on a
 browser that has no further business with us. **A publisher authenticates with a
-bearer credential on every request, and `/api/v1` ignores cookies.** Even the
-OAuth handshake lives on the device code's own row: the browser is not the thing
-being authorized, so it has nothing to remember between the three requests.
+bearer credential on every request, and `/api/v1` ignores cookies.** The device
+approval's OAuth handshake lives on the device code's own row: the browser is not
+the thing being authorized, so it has nothing to remember between the three
+requests. A reader's handshake is the exception, because it is the browser being
+signed in: it binds its `state` to the browser that started it with a short-lived
+`__Host-oa_login` cookie on the API host, cleared when the handshake ends.
 
 **A reader has exactly one session, and it lives on the API host.** Opening an
 invited-only document needs a reader to sign in once and not again for thirty
 days, which a row on a device code cannot give. `__Host-oa_session` is a signed
-cookie, stateless, set by `/signin` and read only by `/open` and `/signin`
-(`src/reader.ts`). It names an `accounts` row, the same principal a publisher is.
+cookie, stateless, set by `/signin` and read only by `/open` (including
+`/open/{docId}/request`), `/share/{docId}` and `/signin`, and by nothing under
+`/api/v1` (`src/reader.ts`, `src/share.ts`). It names an `accounts` row, the same principal a publisher is.
 
 The rule the cookieless promise was a special case of is now stated outright: **no
 origin that runs more than one author's scripts ever holds a credential.**
 `openartifacts.site` still sets no cookie on any response and still holds nothing
 but public documents. A private document is served from `{label}.openartifacts.site`,
-which runs only that author's scripts and holds one cookie, a one-document grant.
+which runs only that author's scripts and holds one cookie, a read-only grant for
+that publisher's origin.
 [`private-sharing.md`](private-sharing.md) is why, and how access is checked.
 
 ## What this does not do

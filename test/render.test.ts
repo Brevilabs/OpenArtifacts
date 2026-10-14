@@ -8,6 +8,7 @@ import {
   socialTitleMeta,
   OPENARTIFACTS_FOOTER,
   OPENARTIFACTS_HEADER,
+  RENDER_REVISION,
 } from "../src/render.js";
 
 const bake = async (html: string, branding = true): Promise<string> =>
@@ -479,4 +480,73 @@ it("omits the top header for unmarked agent HTML while retaining the footer", as
   expect(html).not.toContain(OPENARTIFACTS_HEADER);
   expect(html).not.toContain("Shared from");
   expect(html).toContain(OPENARTIFACTS_FOOTER);
+});
+
+describe("renderServedHtml — the Manage link", () => {
+  const MANAGE = "https://api.openartifacts.ai/share/0123456789abcdef";
+  const link = `href="${MANAGE}"`;
+  const withManage = async (html: string, branding = true, url: string | null = MANAGE) =>
+    await renderServedHtml(new Response(html), branding, url).text();
+
+  // The footer is how a rendering changed, so the revision moved with it: a
+  // reader holding a validator for the rendering without the link must be sent
+  // the one with it.
+  it("is a new rendering revision", () => {
+    expect(RENDER_REVISION).toBe(7);
+  });
+
+  it("follows the footer, once, as an element of its own", async () => {
+    const html = await withManage(page("<p>hello</p>"));
+
+    expect(occurrences(html, link)).toBe(1);
+    expect(occurrences(html, ">Manage</a>")).toBe(1);
+    expect(html).toContain(OPENARTIFACTS_FOOTER);
+    expect(html.indexOf(">Manage</a>")).toBeGreaterThan(html.indexOf(OPENARTIFACTS_FOOTER));
+    expect(html.indexOf(">Manage</a>")).toBeLessThan(html.indexOf("</body>"));
+    // Its own element: the footer's text and its openartifacts.ai anchor are untouched.
+    expect(html).toContain('class="openartifacts-manage"');
+    expect(html).toContain("openartifacts.ai</a>, a new mode of communication between agents and humans</div>");
+    expect(html).not.toContain("<script");
+  });
+
+  it("is absent when there is no address to give it, leaving the footer exactly as it was", async () => {
+    const html = await withManage(page("<p>hello</p>"), true, null);
+
+    expect(html).toContain(`${OPENARTIFACTS_FOOTER}</body>`);
+    expect(html).not.toContain("Manage");
+    expect(html).not.toContain("/share/");
+  });
+
+  it("lands once however the document is shaped", async () => {
+    const noBodyEnd = await withManage("<!doctype html><html><body><p>unclosed");
+    const twoBodies = await withManage("<html><head></head><body>a<body>b</body>c</body></html>");
+    const noBody = await withManage("<!doctype html><html><head></head><p>just a fragment</p></html>");
+
+    for (const html of [noBodyEnd, twoBodies, noBody]) {
+      expect(occurrences(html, link)).toBe(1);
+      expect(html).toContain(OPENARTIFACTS_FOOTER);
+    }
+    // Wherever the footer landed, the link is the element right after it.
+    for (const html of [noBodyEnd, twoBodies, noBody]) {
+      expect(html.indexOf(">Manage</a>")).toBeGreaterThan(html.indexOf(OPENARTIFACTS_FOOTER));
+    }
+  });
+
+  // The link is for every document. A plan that drops the bylines must not
+  // drop the owner's only way to the share page.
+  it("stays when the bylines are removed, as the only addition left in the footer", async () => {
+    const html = await withManage(page("<p>hello</p>"), false);
+
+    expect(occurrences(html, link)).toBe(1);
+    expect(html).not.toContain(OPENARTIFACTS_FOOTER);
+    expect(html).not.toContain("Powered by");
+    expect(headOf(html)).toContain(NOINDEX_META);
+  });
+
+  it("escapes its address, so nothing in it can close the attribute", async () => {
+    const html = await withManage(page("<p>hello</p>"), true, 'https://api.test/share/x"><script>alert(1)</script>');
+
+    expect(html).not.toContain("<script>alert(1)</script>");
+    expect(html).toContain("&quot;&gt;&lt;script&gt;");
+  });
 });

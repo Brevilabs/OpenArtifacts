@@ -81,6 +81,30 @@ export function isTopLevelRequest(request: Request): boolean {
 }
 
 /**
+ * Whether a cookie-authenticated `POST` came from one of our own pages.
+ *
+ * `SameSite=Lax` is not enough on its own: every host under the brand domain is
+ * same-site with the API host, and Lax cookies ride same-site `POST`s, so a form
+ * on any of them could act as a signed-in reader. Fetch Metadata and `Origin`
+ * are set by the browser and cannot be written by the page, which is what makes
+ * them worth trusting here.
+ *
+ * `Sec-Fetch-Site` decides when the browser sends it: `same-origin`, and for
+ * the sign-in forms also `none` (a person typing the address). A browser that
+ * sends none falls back to `Origin`, which must be this origin. Neither header
+ * is how curl and the tests post, so a request carrying neither passes only
+ * when `strict` is false; the routes that write on a session's behalf (a
+ * request to open a document, every share-page write) are strict.
+ */
+export function sameOriginPost(request: Request, url: URL, strict: boolean): boolean {
+  const site = request.headers.get("sec-fetch-site");
+  if (site !== null) return site === "same-origin" || (!strict && site === "none");
+  const origin = request.headers.get("origin");
+  if (origin !== null) return origin === url.origin;
+  return !strict;
+}
+
+/**
  * Whether this request is within its client's allowance.
  *
  * **An undeclared limiter allows everything, deliberately.** A self-hoster who

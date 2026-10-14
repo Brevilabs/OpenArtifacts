@@ -1,7 +1,8 @@
 /**
- * The two emails private sharing sends: an invite, and a sign-in code.
+ * The three emails private sharing sends: an invite, a sign-in code, and a note
+ * to an owner that someone asked to open their document.
  *
- * Both go through the Cloudflare Email Service binding from a dedicated
+ * All go through the Cloudflare Email Service binding from a dedicated
  * sending subdomain, so abuse cannot touch the brand domain's mail reputation.
  * The binding is optional like the OAuth secrets: without it nothing is sent,
  * the code form is not offered, and Google and GitHub sign-in still work.
@@ -66,6 +67,39 @@ export function inviteMessage(sharer: string | null, title: string, url: string,
       `<p><a href="${escapeHtml(url)}">Open document</a></p>`,
       `<p>${escapeHtml(signIn)}</p>`,
       `<p>${ignore}</p>`,
+    ].join(""),
+  };
+}
+
+/**
+ * Tells an owner that `requesterAddress` asked to open `title`: the requester's
+ * address, the title, that nothing has been shared yet, and one link to the
+ * share page, where the owner approves or declines behind their own session.
+ *
+ * The link carries no token and no grant, so forwarding this email approves
+ * nothing, and it is the only link in the message: never a requester-chosen url.
+ * `shareUrl` is built by the caller from the API host and the document id. The
+ * requester's address is the signed-in account's own, never typed text, and it
+ * is the only thing about the requester the owner learns.
+ */
+export function requestMessage(requesterAddress: string, title: string, shareUrl: string) {
+  const name = oneLine(title);
+  const requester = oneLine(requesterAddress);
+  const nothing = "Nothing has been shared yet.";
+  const copilot = "Or open the note in Copilot and run Publish file to OpenArtifacts.";
+  return {
+    subject: `${requester} asked to open "${name}"`,
+    text: [
+      `${requester} asked to open "${name}".`,
+      nothing,
+      `Review request: ${shareUrl}`,
+      copilot,
+    ].join("\n\n"),
+    html: [
+      `<p><b>${escapeHtml(requester)}</b> asked to open <b>${escapeHtml(name)}</b>.</p>`,
+      `<p>${nothing}</p>`,
+      `<p><a href="${escapeHtml(shareUrl)}">Review request</a></p>`,
+      `<p>${copilot}</p>`,
     ].join(""),
   };
 }

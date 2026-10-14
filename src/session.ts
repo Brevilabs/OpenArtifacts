@@ -12,6 +12,7 @@
  * fails the MAC check for every other, so a URL grant cannot be replayed as a
  * session and a session cannot be presented as a grant.
  */
+import { SHARE_PREFIX } from "./reader-pages.js";
 import { docPath, parseDocPath } from "./serve.js";
 
 export const SESSION_COOKIE = "__Host-oa_session";
@@ -22,8 +23,12 @@ export const LOGIN_COOKIE = "__Host-oa_login";
  * `grant-url` and `grant-cookie` are the same read-only grant for one
  * publisher's origin, in the URL for a minute and in the cookie for an hour.
  * They are separate purposes so a leaked URL grant cannot be planted as a cookie.
+ *
+ * `signup` is the ten-minute token that carries a mailbox proved by an emailed
+ * code from the code page to the Terms step, and `email-code` keys the hash an
+ * emailed code is stored under, so neither can be replayed as any other value.
  */
-export type Purpose = "session" | "grant-url" | "grant-cookie" | "login";
+export type Purpose = "session" | "grant-url" | "grant-cookie" | "login" | "signup" | "email-code";
 
 /** How long a signed-in reader stays signed in on the API host. */
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
@@ -51,6 +56,16 @@ function hmacKey(secret: string, usage: "sign" | "verify"): Promise<CryptoKey> {
   return crypto.subtle.importKey("raw", encoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, [
     usage,
   ]);
+}
+
+/**
+ * `text` keyed by the secret under `purpose`, as lowercase hex. For a value that
+ * is stored rather than handed out: an emailed code is six digits, so an
+ * unkeyed hash of it would be recovered instantly by anyone who read the table.
+ */
+export async function macHex(secret: string, purpose: Purpose, text: string): Promise<string> {
+  const mac = await crypto.subtle.sign("HMAC", await hmacKey(secret, "sign"), encoder.encode(`${purpose}.${text}`));
+  return [...new Uint8Array(mac)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 /** `payload` plus an expiry, signed. The result is a cookie- and URL-safe string. */
@@ -113,13 +128,18 @@ export async function readSession(request: Request, secret: string, now: number)
 }
 
 /**
- * A return path the sign-in pages may redirect to: `/open/{docId}[/v{n}]` and
- * nothing else. Rebuilt from the parsed parts rather than echoed, so what a
- * form field or a cookie carried can never become a different location.
+ * A return path the sign-in pages may redirect to: `/open/{docId}[/v{n}]` or
+ * `/share/{docId}`, and nothing else. Rebuilt from the parsed parts rather than
+ * echoed, so what a form field or a cookie carried can never become a different
+ * location: no absolute url, no `//host`, no query or fragment, and not the
+ * `/open/{docId}/request` route, which answers only a POST.
  */
-export function openPath(candidate: string | null): string | null {
-  const route = candidate === null ? null : parseDocPath(candidate, "/open");
-  return route === null ? null : docPath("/open", route);
+export function returnPath(candidate: string | null): string | null {
+  if (candidate === null) return null;
+  const open = parseDocPath(candidate, "/open");
+  if (open !== null) return docPath("/open", open);
+  const share = parseDocPath(candidate, SHARE_PREFIX);
+  return share !== null && share.pinned === null ? docPath(SHARE_PREFIX, share) : null;
 }
 
 /** Sign `accountId` in and send the browser on to `location`. */

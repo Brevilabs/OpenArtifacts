@@ -6,6 +6,7 @@ import type { OAuthClient, ProviderId } from "../src/approval/providers.js";
 import { findOrCreateAccount } from "../src/db.js";
 import { ACCOUNT_ID_PREFIX, newAccountId } from "../src/ids.js";
 import { versionObjectKey } from "../src/storage.js";
+import { macHex, signPayload } from "../src/session.js";
 import worker from "../src/index.js";
 
 /**
@@ -1208,47 +1209,82 @@ describe("reader sign-in", () => {
   const SERVING = "https://openartifacts.site";
   const DOC_ID = "0123456789abcdef";
   const NEXT = `/open/${DOC_ID}`;
+  const SECRET = "k".repeat(32);
   const hosts = {
     SERVING_HOST: "openartifacts.site",
     API_HOST: "api.openartifacts.ai",
-    READER_SESSION_SECRET: "k".repeat(32),
+    READER_SESSION_SECRET: SECRET,
   } satisfies Partial<Env>;
 
   const asBrowser = (path: string, cookie: string, over: Partial<Env> = hosts) =>
     send(path, { headers: { cookie } }, over);
 
+  /** An address the Email Service would deliver to; the messages are kept for the test to read. */
+  function mailbox() {
+    const sent: Array<{ to: string; subject: string }> = [];
+    const over = {
+      ...hosts,
+      EMAIL: { send: async (message: { to: string; subject: string }) => void sent.push(message) },
+      EMAIL_FROM: "share@mail.openartifacts.ai",
+      // The limiters keep their state across tests; the cases about them reach for the bindings themselves.
+      SIGNIN_EMAIL_LIMITER: undefined,
+      SIGNIN_EMAIL_CLIENT_LIMITER: undefined,
+    } as Partial<Env>;
+    const code = () => /(\d{6}) is your/.exec(sent.at(-1)?.subject ?? "")?.[1] ?? "";
+    return { sent, over, code };
+  }
+
+  /** Start a Google handshake as a browser would, returning its login cookie and state. */
+  async function startGoogle(next = NEXT) {
+    const started = await post(`${API}/signin/start/google`, { next }, hosts);
+    expect(started.status).toBe(303);
+    return {
+      started,
+      login: started.headers.get("set-cookie")!.split(";")[0]!,
+      state: new URL(started.headers.get("location")!).searchParams.get("state")!,
+    };
+  }
+
+  /** The provider's redirect back, with the login cookie of the browser that started it (or none). */
+  function callbackTo(state: string, cookie: string | undefined, email: string, subject?: string) {
+    const url = new URL(`${API}/approve/callback/google?state=${state}&code=authorization-code`);
+    return handleApproval(new Request(url, cookie ? { headers: { cookie } } : {}), url, configured(hosts), {
+      now: () => NOW,
+      oauth: oauthAnswering(email, subject),
+    });
+  }
+
+  /** Every `Set-Cookie` of a response, one entry each. */
+  const cookiesOf = (response: Response) => (response.headers as Headers & { getSetCookie(): string[] }).getSetCookie();
+
+  const LOGIN_CLEARED = /^__Host-oa_login=; HttpOnly; Secure; SameSite=Lax; Path=\/; Max-Age=0$/;
+
   it("sets a session only on the API host, only for the browser that started it, and /api/v1 ignores it", async () => {
     await findOrCreateAccount(env.DB, newAccountId(), "alice@acme.com", NOW);
 
-    const started = await post(`${API}/signin/start/google`, { next: NEXT }, hosts);
-    expect(started.status).toBe(303);
-    const login = started.headers.get("set-cookie")!;
-    expect(login).toMatch(/^__Host-oa_login=.+; HttpOnly; Secure; SameSite=Lax; Path=\/; Max-Age=600$/);
-    const state = new URL(started.headers.get("location")!).searchParams.get("state")!;
+    const { started, login, state } = await startGoogle();
+    expect(started.headers.get("set-cookie")).toMatch(
+      /^__Host-oa_login=.+; HttpOnly; Secure; SameSite=Lax; Path=\/; Max-Age=600$/,
+    );
 
     // A callback link forwarded to somebody who never started the handshake: they
     // hold no login cookie, or one from a handshake of their own.
-    const theirs = await post(`${API}/signin/start/google`, { next: NEXT }, hosts);
-    const url = new URL(`${API}/approve/callback/google?state=${state}&code=authorization-code`);
-    const answer = (cookie?: string) =>
-      handleApproval(
-        new Request(url, cookie ? { headers: { cookie } } : {}),
-        url,
-        configured(hosts),
-        { now: () => NOW, oauth: oauthAnswering("alice@acme.com") },
-      );
-    for (const cookie of [undefined, theirs.headers.get("set-cookie")!.split(";")[0]]) {
-      const forwarded = await answer(cookie);
+    const theirs = await startGoogle();
+    for (const cookie of [undefined, theirs.login]) {
+      const forwarded = await callbackTo(state, cookie, "alice@acme.com");
       expect(forwarded.status).toBe(400);
       expect(forwarded.headers.get("set-cookie")).toBeNull();
     }
 
-    const signedIn = await answer(login.split(";")[0]);
+    const signedIn = await callbackTo(state, login, "alice@acme.com");
     expect(signedIn.status).toBe(303);
     expect(signedIn.headers.get("location")).toBe(NEXT);
-    const session = signedIn.headers.get("set-cookie")!;
+    // The session, and the login cookie it has made useless, cleared in the same response.
+    const [session, cleared, ...others] = cookiesOf(signedIn);
     expect(session).toMatch(/^__Host-oa_session=.+; HttpOnly; Secure; SameSite=Lax; Path=\/; Max-Age=2592000$/);
-    const cookie = session.split(";")[0]!;
+    expect(cleared).toMatch(LOGIN_CLEARED);
+    expect(others).toEqual([]);
+    const cookie = session!.split(";")[0]!;
 
     // The session is recognised where it is meant to be: /open names the signed-in address.
     const opened = await asBrowser(`${API}${NEXT}`, cookie);
@@ -1261,36 +1297,279 @@ describe("reader sign-in", () => {
     expect(document.headers.get("set-cookie")).toBeNull();
   });
 
-  it("emails a code to an address with no provider, and refuses one whose account signs in with Google", async () => {
-    const sent: Array<{ to: string; subject: string }> = [];
-    const mail = {
-      EMAIL: { send: async (message: { to: string; subject: string }) => void sent.push(message) },
-      EMAIL_FROM: "share@mail.openartifacts.ai",
-    };
-    const over = { ...hosts, ...mail } as Partial<Env>;
-    const code = () => /(\d{6}) is your/.exec(sent.at(-1)?.subject ?? "")?.[1] ?? "";
+  it("clears the login cookie on every exit once the browser is proved, and says nothing a terminal would", async () => {
+    // Cancelled at the provider: no `code`.
+    const cancelled = await startGoogle();
+    const url = new URL(`${API}/approve/callback/google?state=${cancelled.state}&error=access_denied`);
+    const refused = await handleApproval(
+      new Request(url, { headers: { cookie: cancelled.login } }),
+      url,
+      configured(hosts),
+      { now: () => NOW, oauth: oauthAnswering("x@acme.com") },
+    );
+    expect(refused.status).toBe(400);
+    expect(cookiesOf(refused)).toHaveLength(1);
+    expect(cookiesOf(refused)[0]).toMatch(LOGIN_CLEARED);
+    const refusedHtml = await refused.text();
+    expect(refusedHtml).toContain(`href="${NEXT}"`);
+    expect(refusedHtml).toContain("Try again");
 
-    // Bob has no account: the page offers the Terms, and a wrong code is not a sign-in.
-    const asked = await post(`${API}/signin/email`, { email: "Bob@Acme.com", next: NEXT }, over);
-    expect(asked.status).toBe(200);
-    expect(await asked.text()).toContain('name="terms"');
-    expect(sent.map((message) => message.to)).toEqual(["bob@acme.com"]);
-    const wrong = await post(`${API}/signin/code`, { email: "bob@acme.com", code: "000000", terms: "yes", next: NEXT }, over);
-    expect(wrong.headers.get("set-cookie")).toBeNull();
-    const right = await post(`${API}/signin/code`, { email: "bob@acme.com", code: code(), terms: "yes", next: NEXT }, over);
-    expect(right.status).toBe(303);
-    expect(right.headers.get("location")).toBe(NEXT);
-    expect(right.headers.get("set-cookie")).toContain("__Host-oa_session=");
-    expect(await env.DB.prepare("SELECT 1 FROM accounts WHERE email = 'bob@acme.com'").first()).not.toBeNull();
+    // A new address: the Terms page, in the reader's words, with the login cookie already spent.
+    const fresh = await startGoogle(`/share/${DOC_ID}`);
+    const terms = await callbackTo(fresh.state, fresh.login, "new@acme.com");
+    expect(terms.status).toBe(200);
+    expect(cookiesOf(terms)).toHaveLength(1);
+    expect(cookiesOf(terms)[0]).toMatch(LOGIN_CLEARED);
+    const html = await terms.text();
+    expect(html).toContain("to manage this document");
+    expect(html).toContain('href="https://openartifacts.ai/privacy"');
+    expect(html).toContain('href="https://openartifacts.ai/terms"');
+    expect(html).not.toContain('name="newsletter"');
+    expect(html).not.toContain("terminal");
 
-    // Alice already signs in with Google, so a code cannot stand in for it.
+    // The address another sign-in with this provider already holds: the reader refusal, not the device page.
+    const alice = await findOrCreateAccount(env.DB, newAccountId(), "alice@acme.com", NOW);
+    await env.DB.prepare("INSERT INTO identities (provider, subject, account_id, created_at) VALUES ('google', 'sub-old', ?, ?)")
+      .bind(alice.id, NOW)
+      .run();
+    const claimed = await startGoogle();
+    const other = await callbackTo(claimed.state, claimed.login, "alice@acme.com", "sub-new");
+    expect(other.status).toBe(409);
+    expect(cookiesOf(other)[0]).toMatch(LOGIN_CLEARED);
+    const claimedHtml = await other.text();
+    expect(claimedHtml).toContain("That address already belongs to another Google sign-in. Try your other provider or an emailed code.");
+    expect(claimedHtml).not.toContain("Approve with your other provider");
+  });
+
+  it("answers an expired callback in the reader's words when the browser holds a login cookie, and the terminal's otherwise", async () => {
+    const { login } = await startGoogle();
+    const gone = await callbackTo("a-state-nobody-started", login, "alice@acme.com");
+    expect(gone.status).toBe(400);
+    const html = await gone.text();
+    expect(html).toContain(`href="${NEXT}"`);
+    expect(html).not.toContain("terminal");
+    // Nothing of ours in the request: the page a terminal's user would see.
+    expect(await (await callbackTo("a-state-nobody-started", undefined, "alice@acme.com")).text()).toContain("terminal");
+  });
+
+  it("takes a new provider account through the Terms and signs it in, and keeps its token out of the device approval", async () => {
+    const { login, state } = await startGoogle();
+    const terms = await callbackTo(state, login, "carol@acme.com");
+    const token = confirmToken(await terms.text());
+    expect(token).not.toBe("");
+
+    // The device approval's presses only take a device's token.
+    for (const path of ["/approve/confirm", "/approve/deny"]) {
+      const refused = await post(path, { confirm_token: token, terms: "yes" });
+      expect(refused.status).toBe(400);
+    }
+    expect(await env.DB.prepare("SELECT 1 FROM accounts WHERE email = 'carol@acme.com'").first()).toBeNull();
+
+    // Its own press, without the Terms and then with them.
+    const declined = await post(`${API}/signin/confirm`, { confirm_token: token, next: NEXT }, hosts);
+    expect(declined.headers.get("set-cookie")).toBeNull();
+    expect(await env.DB.prepare("SELECT 1 FROM accounts WHERE email = 'carol@acme.com'").first()).toBeNull();
+  });
+
+  it("completes a new provider account's sign-in when the Terms are accepted", async () => {
+    const { login, state } = await startGoogle();
+    const token = confirmToken(await (await callbackTo(state, login, "carol@acme.com")).text());
+    const accepted = await post(`${API}/signin/confirm`, { confirm_token: token, terms: "yes", next: NEXT }, hosts);
+    expect(accepted.status).toBe(303);
+    expect(accepted.headers.get("location")).toBe(NEXT);
+    expect(accepted.headers.get("set-cookie")).toContain("__Host-oa_session=");
+    expect(await env.DB.prepare("SELECT 1 FROM accounts WHERE email = 'carol@acme.com'").first()).not.toBeNull();
+  });
+
+  it("offers only the configured methods and names no address on the first screen", async () => {
+    const { over } = mailbox();
+    const both = await (await send(`${API}${NEXT}`, {}, over)).text();
+    expect(both).toContain("Sign in or create an account to open this document");
+    expect(both).toContain(
+      "The owner shared it with specific people. Sign in with the address they invited. New here? Signing in creates a free account.",
+    );
+    expect(both).toContain("Sign in with Google");
+    expect(both).toContain("Sign in with GitHub");
+    expect(both).toContain("Email me a code");
+    expect(both).toContain(">or</p>");
+    expect(both).not.toContain("@");
+
+    // Only a method that exists is offered, and the divider needs two.
+    // (The test pool declares an Email binding, so "no email" is said outright.)
+    const providersOnly = await (await send(`${API}${NEXT}`, {}, { ...hosts, EMAIL: undefined })).text();
+    expect(providersOnly).toContain("Sign in with Google");
+    expect(providersOnly).not.toContain("Email me a code");
+    expect(providersOnly).not.toContain(">or</p>");
+    const emailOnly = await (await send(`${API}${NEXT}`, {}, { ...over, OAUTH_GOOGLE_CLIENT_ID: "", OAUTH_GOOGLE_CLIENT_SECRET: "", OAUTH_GITHUB_CLIENT_ID: "", OAUTH_GITHUB_CLIENT_SECRET: "" })).text();
+    expect(emailOnly).toContain("Email me a code");
+    expect(emailOnly).not.toContain("Sign in with Google");
+    expect(emailOnly).not.toContain("Sign in with GitHub");
+    expect(emailOnly).not.toContain(">or</p>");
+  });
+
+  it("sends a code to any address and gives the same page for each, telling whoever typed it nothing", async () => {
+    const { sent, over } = mailbox();
+    await findOrCreateAccount(env.DB, newAccountId(), "linked@acme.com", NOW);
+    const backed = await findOrCreateAccount(env.DB, newAccountId(), "google@acme.com", NOW);
+    await env.DB.prepare("INSERT INTO identities (provider, subject, account_id, created_at) VALUES ('google', 'sub-g', ?, ?)")
+      .bind(backed.id, NOW)
+      .run();
+
+    const pages: string[] = [];
+    for (const address of ["new@acme.com", "linked@acme.com", "google@acme.com"]) {
+      const asked = await post(`${API}/signin/email`, { email: address, next: NEXT }, over);
+      expect(asked.status).toBe(200);
+      pages.push((await asked.text()).replaceAll(address, "ADDRESS"));
+    }
+    expect(sent.map((message) => message.to)).toEqual(["new@acme.com", "linked@acme.com", "google@acme.com"]);
+    expect(new Set(pages).size).toBe(1);
+    expect(pages[0]).toContain("We sent a 6-digit code");
+    expect(pages[0]).not.toContain('name="terms"');
+    expect(pages[0]).not.toContain("Google");
+  });
+
+  it("stores the code under a keyed hash, so reading the table does not reveal it", async () => {
+    const { over, code } = mailbox();
+    await post(`${API}/signin/email`, { email: "bob@acme.com", next: NEXT }, over);
+    const stored = (await env.DB.prepare("SELECT code_hash FROM email_codes WHERE email = 'bob@acme.com'").first<{ code_hash: string }>())!.code_hash;
+
+    const bytes = new TextEncoder().encode(`bob@acme.com:${code()}`);
+    const plain = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)), (b) => b.toString(16).padStart(2, "0")).join("");
+    expect(stored).not.toBe(plain);
+    expect(stored).toBe(await macHex(SECRET, "email-code", `bob@acme.com:${code()}`));
+  });
+
+  it("refuses a correct code for an address that signs in with Google, after the code is checked and spent", async () => {
+    const { sent, over, code } = mailbox();
     const alice = await findOrCreateAccount(env.DB, newAccountId(), "alice@acme.com", NOW);
     await env.DB.prepare("INSERT INTO identities (provider, subject, account_id, created_at) VALUES ('google', 'sub-alice', ?, ?)")
       .bind(alice.id, NOW)
       .run();
-    const refused = await post(`${API}/signin/email`, { email: "alice@acme.com", next: NEXT }, over);
-    expect(await refused.text()).toContain("signs in with Google or GitHub");
+
+    await post(`${API}/signin/email`, { email: "alice@acme.com", next: NEXT }, over);
     expect(sent).toHaveLength(1);
+
+    // A wrong code is just a wrong code, whatever the address is.
+    const wrong = await post(`${API}/signin/code`, { email: "alice@acme.com", code: "000000", next: NEXT }, over);
+    expect(await wrong.text()).toContain("That code didn’t match.");
+
+    const refused = await post(`${API}/signin/code`, { email: "alice@acme.com", code: code(), next: NEXT }, over);
+    expect(refused.headers.get("set-cookie")).toBeNull();
+    expect(await refused.text()).toContain("That address signs in with Google or GitHub. Use that instead.");
+    // The code is spent: it cannot be tried again for anything.
     expect(await env.DB.prepare("SELECT 1 FROM email_codes WHERE email = 'alice@acme.com'").first()).toBeNull();
+  });
+
+  it("signs in an address whose account has no provider, such as one Copilot linking created", async () => {
+    const { over, code } = mailbox();
+    const linked = await findOrCreateAccount(env.DB, newAccountId(), "linked@acme.com", NOW);
+    await post(`${API}/signin/email`, { email: "linked@acme.com", next: NEXT }, over);
+
+    const signedIn = await post(`${API}/signin/code`, { email: "linked@acme.com", code: code(), next: NEXT }, over);
+    expect(signedIn.status).toBe(303);
+    expect(signedIn.headers.get("location")).toBe(NEXT);
+    const cookie = signedIn.headers.get("set-cookie")!.split(";")[0]!;
+    // The session is the existing account's: /open names its address.
+    expect(await (await asBrowser(`${API}${NEXT}`, cookie, over)).text()).toContain("linked@acme.com");
+    expect(linked.id).toBeTruthy();
+  });
+
+  it("takes an address with no account through the Terms once the code is right, and only then creates it", async () => {
+    const { over, code } = mailbox();
+    await post(`${API}/signin/email`, { email: "new@acme.com", next: `/share/${DOC_ID}` }, over);
+
+    // The page that asked for the code carried no Terms, and a wrong code creates nothing.
+    await post(`${API}/signin/code`, { email: "new@acme.com", code: "000000", next: `/share/${DOC_ID}` }, over);
+    expect(await env.DB.prepare("SELECT 1 FROM accounts WHERE email = 'new@acme.com'").first()).toBeNull();
+
+    const checked = await post(`${API}/signin/code`, { email: "new@acme.com", code: code(), next: `/share/${DOC_ID}` }, over);
+    expect(checked.status).toBe(200);
+    expect(checked.headers.get("set-cookie")).toBeNull();
+    expect(await env.DB.prepare("SELECT 1 FROM accounts WHERE email = 'new@acme.com'").first()).toBeNull();
+    const html = await checked.text();
+    expect(html).toContain("to manage this document");
+    expect(html).toContain('href="https://openartifacts.ai/privacy"');
+    expect(html).toContain('action="/signin/confirm-email"');
+    expect(html).not.toContain('name="newsletter"');
+    const token = /name="signup_token" value="([^"]+)"/.exec(html)![1]!;
+
+    // Pressing without the Terms creates nothing; a forged token is refused.
+    const without = await post(`${API}/signin/confirm-email`, { signup_token: token, next: `/share/${DOC_ID}` }, over);
+    expect(without.status).toBe(200);
+    expect(without.headers.get("set-cookie")).toBeNull();
+    expect((await post(`${API}/signin/confirm-email`, { signup_token: `${token}x`, terms: "yes", next: `/share/${DOC_ID}` }, over)).status).toBe(400);
+    expect(await env.DB.prepare("SELECT 1 FROM accounts WHERE email = 'new@acme.com'").first()).toBeNull();
+
+    const accepted = await post(`${API}/signin/confirm-email`, { signup_token: token, terms: "yes", next: `/share/${DOC_ID}` }, over);
+    expect(accepted.status).toBe(303);
+    expect(accepted.headers.get("location")).toBe(`/share/${DOC_ID}`);
+    expect(accepted.headers.get("set-cookie")).toContain("__Host-oa_session=");
+    expect(await env.DB.prepare("SELECT 1 FROM accounts WHERE email = 'new@acme.com'").first()).not.toBeNull();
+  });
+
+  it("will not turn a code-earned token into a session for an address a provider took in the meantime", async () => {
+    const { over } = mailbox();
+    const token = await signPayload(SECRET, "signup", { e: "race@acme.com" }, Date.now() + 60_000);
+    const taken = await findOrCreateAccount(env.DB, newAccountId(), "race@acme.com", NOW);
+    await env.DB.prepare("INSERT INTO identities (provider, subject, account_id, created_at) VALUES ('github', 'sub-r', ?, ?)")
+      .bind(taken.id, NOW)
+      .run();
+
+    const raced = await post(`${API}/signin/confirm-email`, { signup_token: token, terms: "yes", next: NEXT }, over);
+    expect(raced.headers.get("set-cookie")).toBeNull();
+    expect(await raced.text()).toContain("signs in with Google or GitHub");
+    // A token minted for another purpose is not a signup token.
+    const session = await signPayload(SECRET, "session", { e: "race@acme.com" }, Date.now() + 60_000);
+    expect((await post(`${API}/signin/confirm-email`, { signup_token: session, terms: "yes", next: NEXT }, over)).status).toBe(400);
+  });
+
+  it("returns only to an /open or /share path, and to nothing else", async () => {
+    const out = (next: string, init: Record<string, string> = {}) =>
+      send(`${API}/signin/out`, { method: "POST", body: new URLSearchParams({ next }), headers: init }, hosts);
+
+    for (const next of [`/open/${DOC_ID}`, `/open/${DOC_ID}/v2`, `/share/${DOC_ID}`, `/share/${DOC_ID}/`]) {
+      const response = await out(next);
+      expect(response.status).toBe(303);
+      expect(response.headers.get("location")).toBe(next.replace(/\/$/, ""));
+      expect(response.headers.get("set-cookie")).toMatch(/^__Host-oa_session=; .*Max-Age=0$/);
+    }
+    for (const next of [
+      `/open/${DOC_ID}/request`,
+      `/share/${DOC_ID}/v1`,
+      `/share/${DOC_ID}/extra`,
+      `/share/${DOC_ID}?x=1`,
+      `/share/${DOC_ID}#frag`,
+      "/share",
+      "//evil.example/share/" + DOC_ID,
+      `https://evil.example/open/${DOC_ID}`,
+      "/api/v1/docs",
+      "",
+    ]) {
+      const response = await out(next);
+      expect(response.status, next).toBe(404);
+      expect(response.headers.get("location")).toBeNull();
+    }
+  });
+
+  it("refuses a sign-in form posted from another site, and holds a browser with no Fetch Metadata to its Origin", async () => {
+    const { over, sent } = mailbox();
+    const asked = (headers: Record<string, string>) =>
+      send(`${API}/signin/email`, { method: "POST", body: new URLSearchParams({ email: "bob@acme.com", next: NEXT }), headers }, over);
+
+    const foreign: Array<Record<string, string>> = [
+      { "sec-fetch-site": "cross-site" },
+      { "sec-fetch-site": "same-site" },
+      { origin: "https://evil.example" },
+      { origin: "null" },
+    ];
+    for (const headers of foreign) {
+      expect((await asked(headers)).status).toBe(404);
+    }
+    expect(sent).toHaveLength(0);
+
+    const ours: Array<Record<string, string>> = [{ "sec-fetch-site": "same-origin" }, { "sec-fetch-site": "none" }, { origin: API }, {}];
+    for (const headers of ours) {
+      expect((await asked(headers)).status).toBe(200);
+    }
   });
 });

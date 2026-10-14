@@ -836,9 +836,11 @@ export async function deviceCodeIsPending(
  * false when there is no pending code to record it against.
  *
  * This is where a signed cookie would otherwise be minted. Keeping the handshake
- * in the row instead is what lets this Worker set no cookie anywhere, and it
- * costs nothing: the browser is not the thing being authorized, so it has
- * nothing to remember between the three requests.
+ * in the row instead is what lets the device and browser-login flows set no
+ * cookie, and it costs nothing: the browser is not the thing being authorized,
+ * so it has nothing to remember between the three requests. (A reader's
+ * handshake is the exception: it binds its `state` to the starting browser with
+ * a `__Host-oa_login` cookie on the API host, and ends in a session.)
  *
  * Starting a second handshake overwrites the first while neither provider has
  * proved an identity, which is what a person pressing the other provider's
@@ -1041,6 +1043,29 @@ export async function confirmDeviceApproval(
       .bind(atMs, confirmToken, atMs, terms ? 1 : 0),
   ]);
   return (results[3]?.results[0] as { user_code: string } | undefined)?.user_code ?? null;
+}
+
+/**
+ * Whether a confirm token belongs to a reader's or a browser account login
+ * rather than to a terminal's device code.
+ *
+ * The three flows share one table and one provider callback, so each consumer
+ * has to take only its own kind of row: `/signin/confirm` and
+ * `consumeBrowserLogin` already filter on their prefix, and the device
+ * approval's confirm and deny presses ask this. Otherwise a reader's token
+ * posted to `/approve/confirm` would create the account and mark the row
+ * approved with no session, stranding the reader's own sign-in.
+ */
+export async function isOtherFlowsToken(db: D1Database, confirmToken: string): Promise<boolean> {
+  const row = await db
+    .prepare(
+      `SELECT 1 FROM device_codes
+        WHERE confirm_token = ?
+          AND (user_code LIKE 'reader#_%' ESCAPE '#' OR user_code LIKE 'browser#_%' ESCAPE '#')`,
+    )
+    .bind(confirmToken)
+    .first();
+  return row !== null;
 }
 
 /**

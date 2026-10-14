@@ -44,8 +44,16 @@
  * It is a number and not a content hash on purpose: the injections are string
  * constants in this file, so the thing that changes them is an edit to this
  * file, and a reviewer can see whether the number moved with it.
+ *
+ * One injection is not a constant: the Manage link's address is built from the
+ * deployment's API host and the document id, and is present only when reader
+ * sign-in is configured. So enabling or disabling sign-in, or changing the API
+ * host, changes the rendering without moving this number, and a reader holding a
+ * validator from before the flip keeps getting `304` for the old rendering.
+ * Accepted: it never mixes one publisher's or one document's rendering with
+ * another's, and the next edit to the injections, or the next push, refreshes it.
  */
-export const RENDER_REVISION = 6;
+export const RENDER_REVISION = 7;
 
 /**
  * Belt to the `X-Robots-Tag` header's braces (D9). The header is the
@@ -301,6 +309,26 @@ export const OPENARTIFACTS_FOOTER =
   `Powered by <a href="https://openartifacts.ai" ${BYLINE_LINK}>openartifacts.ai</a>, ` +
   "a new mode of communication between agents and humans</div>";
 
+/**
+ * The link to the share page, in an element of its own right after the
+ * "Powered by" footer. Constant for every viewer: it names no identity and
+ * carries no script, which is what lets public pages stay cacheable, and it is
+ * independent of `branding`, because a plan that removes the bylines must not
+ * remove the owner's only route to the share page.
+ *
+ * It rides the byline's container and anchor resets, so a document's own
+ * stylesheet cannot restyle it, and it leaves the footer's own text and its
+ * `openartifacts.ai` anchor untouched.
+ */
+function manageLink(manageUrl: string): string {
+  return (
+    '<div class="openartifacts-manage" style="' +
+    BYLINE_BASE +
+    ';margin:0;padding:0 0 1rem">' +
+    `<a href="${escapeAttribute(manageUrl)}" ${BYLINE_LINK}>Manage</a></div>`
+  );
+}
+
 /** HTMLRewriter treats injected content as markup, not text, only when asked. */
 const AS_HTML = { html: true } as const;
 
@@ -352,6 +380,11 @@ const AS_HTML = { html: true } as const;
  * passes through the worker without ever being a 10MB string in it, exactly as
  * it did when serving was a passthrough.
  *
+ * `manageUrl` is the share page's address, or null on a server with no reader
+ * sign-in. When set, one **Manage** link follows the footer, on every document
+ * and whatever `branding` says. Like the bylines it is added here on the way
+ * out and never stored.
+ *
  * `branding` will be false for plans that pay to remove the bylines. It takes
  * the favicon and the social card with them — an OpenArtifacts mark in the reader's
  * tab is branding too, and a card carrying OpenArtifacts' own image is the most
@@ -363,7 +396,12 @@ const AS_HTML = { html: true } as const;
  * switched it off would make paid customers' documents indexable — the worst
  * possible bug to ship attached to an upgrade.
  */
-export function renderServedHtml(response: Response, branding = true): Response {
+export function renderServedHtml(
+  response: Response,
+  branding = true,
+  manageUrl: string | null = null,
+): Response {
+  const footer = (branding ? OPENARTIFACTS_FOOTER : "") + (manageUrl === null ? "" : manageLink(manageUrl));
   const head = branding ? NOINDEX_META + FAVICON_LINK + SOCIAL_CARD_META : NOINDEX_META;
   let fromCopilot = false;
   let headPlaced = false;
@@ -442,7 +480,7 @@ export function renderServedHtml(response: Response, branding = true): Response 
         if (branding && fromCopilot) body.prepend(OPENARTIFACTS_HEADER, AS_HTML);
         body.onEndTag((endTag) => {
           footerPlaced = true;
-          if (branding) endTag.before(OPENARTIFACTS_FOOTER, AS_HTML);
+          if (footer !== "") endTag.before(footer, AS_HTML);
         });
       },
     })
@@ -454,7 +492,7 @@ export function renderServedHtml(response: Response, branding = true): Response 
           if (titleMeta.length > 0) end.append(titleMeta, AS_HTML);
         }
         if (branding && fromCopilot && !headerPlaced) end.append(OPENARTIFACTS_HEADER, AS_HTML);
-        if (branding && !footerPlaced) end.append(OPENARTIFACTS_FOOTER, AS_HTML);
+        if (footer !== "" && !footerPlaced) end.append(footer, AS_HTML);
       },
     })
     .transform(response);

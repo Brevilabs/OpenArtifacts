@@ -16,7 +16,7 @@ Two surfaces on two domains:
 | API | `/api/v1/*` | required | Publisher-facing. JSON in, JSON out. |
 | Serving | `/d/*` | none | Reader-facing. Public HTML on `openartifacts.site`, which never sets a cookie. |
 | Private serving | `/d/*` on `{label}.openartifacts.site` | grant | One invited-only document per origin. Sets one grant cookie. See [Private documents](#private-documents). |
-| Reader | `/open/*`, `/signin/*` | session | Human-facing HTML pages on the API host: sign in, and the door a private document opens through. Not a client surface. |
+| Reader | `/open/*`, `/share/*`, `/signin/*` | session | Human-facing HTML pages on the API host: sign in, the door a private document opens through, requesting access, and the owner's share page. Not a client surface. |
 | Approval | `/approve/*` | none | Human-facing. HTML pages on the API host. Not a client surface. |
 | Device | `/device/*` | none | How a client with no credential gets one. JSON, on the API host. |
 
@@ -460,7 +460,7 @@ the grant for a cookie with a `303` and then serves the page.
 
 | | Lifetime | Holds |
 | --- | --- | --- |
-| Reader session `__Host-oa_session`, on the API host | 30 days | An account id. Read only by `/open` and `/signin`; `/api/v1` ignores it. |
+| Reader session `__Host-oa_session`, on the API host | 30 days | An account id. Read only by `/open/*`, `/share/*` and `/signin/*`; `/api/v1` ignores it. |
 | URL grant `?grant=` | 60 seconds | One document and a principal. Never stays in the address bar. |
 | Document cookie `__Host-oa_grant`, on that document's origin | 1 hour | One document and a principal. The invite list is read again on every request. |
 

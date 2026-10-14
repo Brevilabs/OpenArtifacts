@@ -85,13 +85,20 @@
       "namespace_id": "1005",
       "simple": { "limit": 60, "period": 60 }
     },
-    // Emailed sign-in codes, counted per address and per client address: three
-    // a minute is a person retrying, and well under what mailbombing an address
-    // needs. Absent means no limit, as for the limiters above.
+    // Emailed sign-in codes, counted per address: three a minute is a person
+    // retrying, and well under what mailbombing an address needs. Absent means
+    // no limit, as for the limiters above.
     {
       "name": "SIGNIN_EMAIL_LIMITER",
       "namespace_id": "1006",
       "simple": { "limit": 3, "period": 60 }
+    },
+    // The same codes counted per client address, so one caller cannot use the
+    // sign-in form to mail a code to many addresses. Absent means no limit.
+    {
+      "name": "SIGNIN_EMAIL_CLIENT_LIMITER",
+      "namespace_id": "1009",
+      "simple": { "limit": 10, "period": 60 }
     },
     // Invite emails, counted per owner. An owner who exceeds it still adds the
     // person; only the email is skipped.
