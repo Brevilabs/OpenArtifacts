@@ -73,21 +73,55 @@ describe("configured account plans", () => {
     expect(await error(refused)).toMatchObject({ error: { code: "limit_reached", limit: "privateSharing", plan: "free" } });
     expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM docs").first()).toEqual({ n: 0 });
 
-    // A Supporter license key gets a Copilot refusal: no OpenArtifacts command and no checkout link.
-    const key = "cplus_live_0011223344556677";
-    await env.DB.prepare("INSERT INTO publishers (key_hash, plan, validated_at, owner) VALUES (?, 'believer', ?, 'copilot-owner')")
-      .bind(await sha256Hex(key), Date.now()).run();
-    const copilot = await send("POST", "/api/v1/private-docs", { html: "<p>private</p>" },
-      { ...hosts, ACCOUNT_ACTION_URL: "https://account.test", UPGRADE_URL: "https://upgrade.test/checkout" }, key, "https://api.openartifacts.ai");
-    expect(copilot.status).toBe(402);
-    expect(await copilot.json()).toEqual({
-      error: { code: "limit_reached", message: "Your Copilot plan does not include private sharing.", limit: "privateSharing", plan: "believer" },
-    });
-
     expect((await setPlan("pro")).status).toBe(200);
     const created = await createPrivate();
     expect(created.status).toBe(201);
     expect(await created.json()).toMatchObject({ linkAccess: "invited" });
+  });
+
+  it("includes private sharing on every paid plan: pro_lifetime accounts and Supporter (believer) license keys", async () => {
+    // A lifetime account, which has a storage cap and no other difference from pro here.
+    expect((await setPlan("pro_lifetime")).status).toBe(200);
+    const lifetime = await asApi("POST", "/api/v1/private-docs", { html: "<p>lifetime</p>" });
+    expect(lifetime.status).toBe(201);
+    const lifetimeDoc = await lifetime.json<{ docId: string; linkAccess: string }>();
+    expect(lifetimeDoc.linkAccess).toBe("invited");
+    expect((await asApi("PUT", `/api/v1/docs/${lifetimeDoc.docId}/access/people/alice%40acme.com`)).status).toBe(200);
+
+    // A Supporter license key, which publishes and shares privately like Plus.
+    const key = "cplus_live_0011223344556677";
+    await env.DB.prepare("INSERT INTO publishers (key_hash, plan, validated_at, owner) VALUES (?, 'believer', ?, 'copilot-owner')")
+      .bind(await sha256Hex(key), Date.now()).run();
+    const supporter = await send("POST", "/api/v1/private-docs", { html: "<p>supporter</p>" }, hosts, key, "https://api.openartifacts.ai");
+    expect(supporter.status).toBe(201);
+    const supporterDoc = await supporter.json<{ docId: string; linkAccess: string }>();
+    expect(supporterDoc.linkAccess).toBe("invited");
+    const added = await send("PUT", `/api/v1/docs/${supporterDoc.docId}/access/people/bob%40acme.com`, undefined, hosts, key, "https://api.openartifacts.ai");
+    expect(added.status).toBe(200);
+    expect(await added.json()).toMatchObject({ linkAccess: "invited", people: [{ email: "bob@acme.com" }] });
+  });
+
+  it("gives a lapsed license key a Copilot refusal: no OpenArtifacts command and no checkout link", async () => {
+    const key = "cplus_live_8899aabbccddeeff";
+    const keyHash = await sha256Hex(key);
+    await env.DB.prepare("INSERT INTO publishers (key_hash, plan, validated_at, owner) VALUES (?, 'believer', ?, 'copilot-owner')")
+      .bind(keyHash, Date.now()).run();
+    const config = { ...hosts, ACCOUNT_ACTION_URL: "https://account.test", UPGRADE_URL: "https://upgrade.test/checkout" };
+    const api = "https://api.openartifacts.ai";
+    const { docId } = await (await send("POST", "/api/v1/docs", { html: "<p>public</p>" }, config, key, api)).json<{ docId: string }>();
+
+    // The key lapses: it still authenticates for what it owns, but its plan no longer qualifies.
+    await env.DB.prepare("UPDATE publishers SET plan = 'free' WHERE key_hash = ?").bind(keyHash).run();
+    const expected = {
+      error: { code: "limit_reached", message: "Your Copilot plan does not include private sharing.", limit: "privateSharing", plan: "free" },
+    };
+    const mode = await send("PUT", `/api/v1/docs/${docId}/access`, { linkAccess: "invited" }, config, key, api);
+    expect(mode.status).toBe(402);
+    expect(await mode.json()).toEqual(expected);
+    const person = await send("PUT", `/api/v1/docs/${docId}/access/people/alice%40acme.com`, undefined, config, key, api);
+    expect(person.status).toBe(402);
+    expect(await person.json()).toEqual(expected);
+    expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM doc_invites").first()).toEqual({ n: 0 });
   });
 
   it("asks for the plan only to turn a public page private and to add a person, and never to take anything back", async () => {

@@ -1193,8 +1193,8 @@ describe("access requests", () => {
     const ineligible = await send("POST", `${API}/api/v1/private-docs`, KEY_FREE, { html: page("<p>x</p>") }, off);
     expect(ineligible.status).toBe(404);
     expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM docs WHERE owner = ?").bind(`account-${(await sha256Hex(KEY_FREE)).slice(0, 8)}`).first()).toEqual({ n: 0 });
-    // On a configured server the same write by the same Supporter key is a plan refusal, so the 404 above was the gate.
-    expect((await send("PUT", `${API}/api/v1/docs/${believerDoc}/access`, KEY_A, { linkAccess: "invited" }, hosts)).status).toBe(402);
+    // On a configured server the same write by the same Supporter key goes through, so the 404 above was the gate.
+    expect((await send("PUT", `${API}/api/v1/docs/${believerDoc}/access`, KEY_A, { linkAccess: "invited" }, hosts)).status).toBe(200);
     // The owner's own bytes stay reachable: `get` depends on them, and they reveal nothing new.
     expect((await send("GET", `${API}/api/v1/docs/${plusDoc}/html`, KEY_PLUS, undefined, off)).status).toBe(200);
   });

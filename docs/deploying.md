@@ -507,10 +507,10 @@ approval, so no new OAuth registration is needed. The four private-sharing
 limiters are declared in `wrangler.jsonc` and described under
 [The private-sharing limiters](#the-private-sharing-limiters).
 
-Which plans include private sharing is configuration, and the pull request sets
-it: `privateSharing` on the `pro` account plan in `PLAN_LIMITS`, and
-`PRIVATE_SHARING_LICENSE_PLANS` in `src/auth.ts` (`plus`). It is not a step an
-operator performs, and the two move together.
+Every paid plan includes private sharing, and the pull request sets it:
+`"privateSharing": true` on the `pro` and `pro_lifetime` account plans in
+`PLAN_LIMITS`, and any license plan that may publish (`plus`, `believer`) through
+`PUBLISHING_PLANS` in `src/auth.ts`. It is not a step an operator performs.
 
 ### Launch, in one sitting
 
@@ -578,8 +578,8 @@ Optional pieces, none of which blocks the rest:
   works too: codes are a complete sign-in method.
 - **The four limiters** in [The private-sharing limiters](#the-private-sharing-limiters).
 
-Plans are configuration. A seeded key with `plan = 'plus'` gets private sharing the
-moment `PRIVATE_SHARING_LICENSE_PLANS` includes `plus`, and browser accounts get it
+Plans are configuration. A seeded key with `plan = 'plus'` or `'believer'` gets
+private sharing as it gets publishing, and browser accounts get it
 through `"privateSharing": true` in your own `PLAN_LIMITS` plus `DEFAULT_PLAN`. The
 license server stays optional. `scripts/smoke.sh` is unchanged; the private flow
 needs a browser and is verified by hand: publish with `--private`, open the link

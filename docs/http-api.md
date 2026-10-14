@@ -564,9 +564,10 @@ to `invited`), and adding a person, which includes approving a request. Naming
 the mode a document already has is a repeat and never checks. Removing people,
 **declining a request**, switching to `anyone`, reading, and opening never check
 a plan, so invitees never pay and a lapsed plan keeps what exists. A lapse never
-makes a private document public. License plans listed in
-`PRIVATE_SHARING_LICENSE_PLANS` and account plans with `privateSharing` qualify;
-the lists are configuration, not part of this contract.
+makes a private document public. Every paid plan qualifies: a license key whose
+plan may publish (`PLUS`, and `BELIEVER`, sold as Supporter), and an account plan
+with `privateSharing` (`pro` and `pro_lifetime`). Which plans qualify is
+configuration, not part of this contract.
 
 ### Reading one
 
@@ -1087,7 +1088,8 @@ signal maps to configured `pro_lifetime`; absent/null retains the previous
 mapping. A plain `pro` plan or null expiry never implies a storage allowance.
 The resolved plan follows the same cache, outage and newer-refresh rules above.
 `pro_lifetime` has 500 documents, 100 daily pushes, 10 MiB per upload and
-5,368,709,120 bytes across retained HTML versions and outstanding writes.
+5,368,709,120 bytes across retained HTML versions and outstanding writes, and
+includes private sharing like `pro`.
 
 Account responses add `usage.storedBytes`; capped plans add `limits.storageBytes`.
 The CLI's `account` command prints these when supplied and remains compatible

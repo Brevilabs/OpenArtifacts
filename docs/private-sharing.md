@@ -428,11 +428,12 @@ A license-key publisher gets the same code and limit with the message "Your Copi
 plan does not include private sharing." and no `upgrade_url`, because they manage
 their plan in Copilot, not with the OpenArtifacts CLI.
 
-Which plans qualify is configuration, and the two knobs move together: account
-plans carry `"privateSharing": true` in `PLAN_LIMITS` (the hosted `pro` plan), and
-license keys use `PRIVATE_SHARING_LICENSE_PLANS` in `src/auth.ts` (`plus`). The
-lifetime plans (`pro_lifetime`, and `believer`, sold as Supporter) are off until
-that pricing decision is made.
+Every paid plan includes private sharing. Account plans carry
+`"privateSharing": true` in `PLAN_LIMITS` (the hosted `pro` and `pro_lifetime`
+plans), and a license key qualifies whenever its plan may publish at all
+(`plus`, and `believer`, sold as Supporter), so there is no separate list to keep
+in step. A plan that may not publish, an unlisted one, and a lapsed key are
+refused.
 
 ## Email
 

@@ -73,25 +73,19 @@ const UNKNOWN_PLAN = "unknown";
 const PUBLISHING_PLANS: ReadonlySet<string> = new Set(["plus", "believer"]);
 
 /**
- * The Copilot plans that may make a document invited-only or add people to one.
- * Plus only for now; Supporter (`believer`) is a pricing decision, and an
- * unlisted plan fails closed like it does for publishing.
- *
- * This and `privateSharing` on the `pro` plan in `PLAN_LIMITS` (wrangler.jsonc)
- * are the two knobs for who gets private sharing; they move together.
- */
-const PRIVATE_SHARING_LICENSE_PLANS: ReadonlySet<string> = new Set(["plus"]);
-
-/**
- * Whether this publisher's plan includes private sharing: a flag on the account
- * plan, or a listed license plan. Asked only on the two writes that spend it;
- * reading a private document never checks a plan, and a lapsed plan keeps what
- * already exists.
+ * Whether this publisher's plan includes private sharing. Every paid plan does.
+ * A license key qualifies when its plan may publish at all (`PUBLISHING_PLANS`),
+ * so Plus and Supporter (`believer`) share privately and a lapsed or unlisted
+ * plan fails closed. An account plan opts in with `"privateSharing": true` in
+ * `PLAN_LIMITS` (wrangler.jsonc), which `pro` and `pro_lifetime` carry and
+ * `free` does not. Asked only on the two writes that spend it; reading a
+ * private document never checks a plan, and a lapsed plan keeps what already
+ * exists.
  */
 export function maySharePrivately(env: Env, publisher: Publisher): boolean {
   return publisher.authKind === "account"
     ? planLimits(env, publisher.plan).privateSharing === true
-    : PRIVATE_SHARING_LICENSE_PLANS.has(publisher.plan);
+    : PUBLISHING_PLANS.has(publisher.plan);
 }
 
 /**
