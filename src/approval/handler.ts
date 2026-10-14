@@ -44,12 +44,12 @@ import { defaultPlan } from "../plans.js";
 import { isTopLevelRequest, withinClientLimit } from "../limits.js";
 import { readBodyWithin } from "../quota.js";
 import { ABOUT_LINK, brandPageHtml, escapeHtml, type BrandPage } from "../page.js";
+import { readerSecret } from "../reader-config.js";
 import { SIGNIN_FAILED, termsPage } from "../reader-pages.js";
 import {
   LOGIN_COOKIE,
   openPath,
   readCookie,
-  readerSecret,
   sessionRedirect,
   verifyPayload,
 } from "../session.js";

@@ -2,7 +2,10 @@ import { createExecutionContext, env, waitOnExecutionContext } from "cloudflare:
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Env } from "../src/config.js";
 import { DOC_ID_LENGTH, newAccountId } from "../src/ids.js";
-import { grantUrl, originLabel } from "../src/private.js";
+import { linkExternalOwner } from "../src/owners.js";
+import { grantUrl, originLabel, PRIVATE_LABEL } from "../src/private.js";
+import { readerSignInConfigured } from "../src/reader-config.js";
+import { signPayload } from "../src/session.js";
 import { FAVICON_LINK, NOINDEX_META, OPENARTIFACTS_FOOTER, OPENARTIFACTS_HEADER, OPENARTIFACTS_MARK_SVG } from "../src/render.js";
 import { versionObjectKey } from "../src/storage.js";
 import worker from "../src/index.js";
@@ -766,29 +769,75 @@ describe("HEAD and conditional requests", () => {
 });
 
 describe("an invited-only document", () => {
+  const API = "https://api.openartifacts.ai";
   const PRIVATE = {
     SERVING_HOST: "openartifacts.site",
     API_HOST: "api.openartifacts.ai",
     READER_SESSION_SECRET: "k".repeat(32),
+    OAUTH_GITHUB_CLIENT_ID: "github-client",
+    OAUTH_GITHUB_CLIENT_SECRET: "github-secret",
   } satisfies Partial<Env>;
 
-  /** A private page, and the origin that serves it. The mode is set directly: serving is under test. */
-  async function privateDoc(text = "for invited eyes") {
-    const docId = await push({ title: "Secret", html: page(`<p>${text}</p>`) });
-    await env.DB.prepare("UPDATE docs SET link_access = 'invited' WHERE id = ?").bind(docId).run();
-    return { docId, host: `https://${await originLabel(docId)}.openartifacts.site` };
+  /** A second publisher, Q, beside the suite's own publisher, P. */
+  const KEY_Q = "cplus_live_f1e2d3c4b5a60718";
+  let ownerQ = "";
+
+  beforeEach(async () => {
+    const keyHash = await sha256Hex(KEY_Q);
+    ownerQ = `account-${keyHash.slice(0, 8)}`;
+    await env.DB.prepare(
+      `INSERT OR REPLACE INTO publishers (key_hash, plan, validated_at, owner)
+       VALUES (?, 'believer', ?, ?)`,
+    )
+      .bind(keyHash, Date.now(), ownerQ)
+      .run();
+  });
+
+  /**
+   * A private page, and the origin that serves it. The mode is set directly:
+   * serving is under test, and `private-docs` is not what this file is about.
+   */
+  async function privateDoc(text = "for invited eyes", key = KEY, mode: "invited" | "anyone" = "invited") {
+    const response = await send("POST", "/api/v1/docs", {
+      headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+      body: JSON.stringify({ title: "Secret", html: page(`<p>${text}</p>`) }),
+    });
+    expect(response.status).toBe(201);
+    const { docId } = (await response.json()) as { docId: string };
+    await env.DB.prepare("UPDATE docs SET link_access = ? WHERE id = ?").bind(mode, docId).run();
+    const row = await env.DB.prepare("SELECT owner FROM docs WHERE id = ?").bind(docId).first<{ owner: string }>();
+    return { docId, owner: row!.owner, host: `https://${await originLabel(row!.owner)}.openartifacts.site` };
   }
 
   /** What `/open` would redirect `principal` to. */
-  const grantFor = async (docId: string, principal: string) =>
-    (await grantUrl({ ...env, ...PRIVATE }, { docId, pinned: null }, principal, Date.now()))!.url;
+  const grantFor = async (doc: { docId: string; owner: string }, principal: string) =>
+    (await grantUrl({ ...env, ...PRIVATE }, doc.owner, { docId: doc.docId, pinned: null }, principal, Date.now()))!.url;
 
   /** Follow a grant url the way a browser does, and return the cookie it is handed. */
-  async function cookieFor(docId: string, principal: string): Promise<string> {
-    const swapped = await get(await grantFor(docId, principal), {}, PRIVATE);
+  async function cookieFor(doc: { docId: string; owner: string }, principal: string): Promise<string> {
+    const swapped = await get(await grantFor(doc, principal), {}, PRIVATE);
     expect(swapped.status).toBe(303);
     return swapped.headers.get("set-cookie")!.split(";")[0]!;
   }
+
+  /** A reader account, optionally on the invite list of the given documents. */
+  async function reader(email: string, ...invitedTo: string[]): Promise<string> {
+    const id = newAccountId();
+    await env.DB.prepare("INSERT INTO accounts (id, email, created_at) VALUES (?, ?, ?)")
+      .bind(id, email, Date.now())
+      .run();
+    for (const docId of invitedTo) {
+      await env.DB.prepare("INSERT INTO doc_invites (doc_id, email, created_at) VALUES (?, ?, ?)")
+        .bind(docId, email, Date.now())
+        .run();
+    }
+    return id;
+  }
+
+  const ISOLATION = {
+    "cross-origin-opener-policy": "same-origin-allow-popups",
+    "cross-origin-resource-policy": "same-origin",
+  };
 
   it("redirects its canonical url to sign-in, with no bytes, no cookie and no caching", async () => {
     const { docId } = await privateDoc();
@@ -804,59 +853,99 @@ describe("an invited-only document", () => {
     }
   });
 
-  it("swaps a grant for a cookie on its own origin, then serves the page private and uncacheable", async () => {
-    const { docId, host } = await privateDoc();
+  it("swaps a grant for a cookie on its publisher's origin, then serves the page private and uncacheable", async () => {
+    const doc = await privateDoc();
 
-    const swapped = await get(await grantFor(docId, owner), {}, PRIVATE);
+    const swapped = await get(await grantFor(doc, doc.owner), {}, PRIVATE);
     expect(swapped.status).toBe(303);
-    expect(swapped.headers.get("location")).toBe(`/d/${docId}`);
+    expect(swapped.headers.get("location")).toBe(`/d/${doc.docId}`);
     expect(await swapped.text()).toBe("");
     const cookie = swapped.headers.get("set-cookie")!;
     expect(cookie).toMatch(/^__Host-oa_grant=.+; HttpOnly; Secure; SameSite=Lax; Path=\/; Max-Age=3600$/);
 
-    const served = await get(`${host}/d/${docId}`, { headers: { cookie: cookie.split(";")[0]! } }, PRIVATE);
+    const served = await get(`${doc.host}/d/${doc.docId}`, { headers: { cookie: cookie.split(";")[0]! } }, PRIVATE);
     expect(served.status).toBe(200);
     expect(served.headers.get("cache-control")).toBe("private, no-store");
-    expect(served.headers.get("cross-origin-opener-policy")).toBe("same-origin-allow-popups");
-    expect(served.headers.get("cross-origin-resource-policy")).toBe("same-origin");
     expect(served.headers.get("set-cookie")).toBeNull();
     expect(await served.text()).toContain("for invited eyes");
 
     // With no cookie the same url sends the reader to sign in rather than serving.
-    expect((await get(`${host}/d/${docId}`, {}, PRIVATE)).status).toBe(302);
+    const anonymous = await get(`${doc.host}/d/${doc.docId}`, {}, PRIVATE);
+    expect(anonymous.status).toBe(302);
+    expect(anonymous.headers.get("location")).toBe(`${API}/open/${doc.docId}`);
   });
 
-  it("refuses a grant for one document on another document's host or path", async () => {
-    const a = await privateDoc("text of document A");
-    const b = await privateDoc("text of document B");
-    const grantA = new URL(await grantFor(a.docId, owner)).searchParams.get("grant")!;
-    const cookieA = await cookieFor(a.docId, owner);
+  it("serves a second invited document of the same publisher on the same cookie, with no redirect", async () => {
+    const first = await privateDoc("first private page");
+    const second = await privateDoc("second private page");
+    const third = await privateDoc("a page alice is not invited to");
+    expect(second.host).toBe(first.host);
+    const alice = await reader("alice@acme.com", first.docId, second.docId);
 
-    // B's origin, A's path: not a document that origin serves at all.
-    const wrongHost = await get(`${b.host}/d/${a.docId}?grant=${grantA}`, {}, PRIVATE);
-    expect(wrongHost.status).toBe(404);
-    // B's origin and path, A's grant or A's cookie: neither names B.
+    // One grant, minted for the first document, is all the second one needs.
+    const cookie = await cookieFor(first, alice);
+    for (const [doc, text] of [[first, "first private page"], [second, "second private page"]] as const) {
+      const served = await get(`${doc.host}/d/${doc.docId}`, { headers: { cookie } }, PRIVATE);
+      expect(served.status).toBe(200);
+      expect(served.headers.get("cache-control")).toBe("private, no-store");
+      expect(await served.text()).toContain(text);
+    }
+
+    // Not on that document's list: sent to the one not-available page, never shown it.
+    const refused = await get(`${third.host}/d/${third.docId}`, { headers: { cookie } }, PRIVATE);
+    expect(refused.status).toBe(302);
+    expect(refused.headers.get("location")).toBe(`${API}/open/${third.docId}`);
+    expect(await refused.text()).toBe("");
+  });
+
+  it("refuses a grant for publisher P's origin on publisher Q's origin", async () => {
+    const p = await privateDoc("text of P");
+    const q = await privateDoc("text of Q", KEY_Q);
+    expect(q.host).not.toBe(p.host);
+    const grantP = new URL(await grantFor(p, p.owner)).searchParams.get("grant")!;
+    const cookieP = await cookieFor(p, p.owner);
+
+    // The grant names P's origin. Presented on Q's, in the URL or as a cookie, for
+    // Q's document or P's own, it is a miss: sent to sign in, nothing set, nothing served.
     for (const attempt of [
-      get(`${b.host}/d/${b.docId}?grant=${grantA}`, {}, PRIVATE),
-      get(`${b.host}/d/${b.docId}`, { headers: { cookie: cookieA } }, PRIVATE),
+      get(`${q.host}/d/${q.docId}?grant=${grantP}`, {}, PRIVATE),
+      get(`${q.host}/d/${p.docId}?grant=${grantP}`, {}, PRIVATE),
+      get(`${q.host}/d/${q.docId}`, { headers: { cookie: cookieP } }, PRIVATE),
     ]) {
       const response = await attempt;
       expect(response.status).toBe(302);
       expect(response.headers.get("set-cookie")).toBeNull();
-      expect(await response.text()).not.toContain("text of document B");
+      expect(await response.text()).not.toContain("text of Q");
     }
   });
 
-  it("404s a reader who is not on the list on their next request, never invited or just removed", async () => {
-    const { docId, host } = await privateDoc();
-    const alice = newAccountId();
-    await env.DB.prepare("INSERT INTO accounts (id, email, created_at) VALUES (?, 'alice@acme.com', ?)")
-      .bind(alice, Date.now())
-      .run();
-    const cookie = await cookieFor(docId, alice);
+  it("404s a document of publisher Q on publisher P's host, even for P's own valid cookie", async () => {
+    const p = await privateDoc("text of P");
+    const q = await privateDoc("text of Q", KEY_Q);
+    const publicQ = await privateDoc("a public page of Q", KEY_Q, "anyone");
+    const goneQ = await privateDoc("a withdrawn page of Q", KEY_Q);
+    await softDelete(goneQ.docId);
+    const cookieP = await cookieFor(p, p.owner);
+
+    // Whatever Q's document is — private, public, deleted, nonexistent — P's host
+    // answers the same 404, so it cannot be used to learn anything about Q.
+    for (const docId of [q.docId, publicQ.docId, goneQ.docId, UNKNOWN_DOC_ID]) {
+      const response = await get(`${p.host}/d/${docId}`, { headers: { cookie: cookieP } }, PRIVATE);
+      expect(response.status).toBe(404);
+      expect(response.headers.get("location")).toBeNull();
+      expect(await response.text()).not.toContain("text of Q");
+    }
+  });
+
+  it("sends a reader who is not on the list to /open on their next request, never invited or just removed", async () => {
+    const { docId, host, owner: publisher } = await privateDoc();
+    const alice = await reader("alice@acme.com");
+    const cookie = await cookieFor({ docId, owner: publisher }, alice);
     const read = () => get(`${host}/d/${docId}`, { headers: { cookie } }, PRIVATE);
 
-    expect((await read()).status).toBe(404);
+    const refused = await read();
+    expect(refused.status).toBe(302);
+    expect(refused.headers.get("location")).toBe(`${API}/open/${docId}`);
 
     await env.DB.prepare("INSERT INTO doc_invites (doc_id, email, created_at) VALUES (?, 'alice@acme.com', ?)")
       .bind(docId, Date.now())
@@ -865,6 +954,118 @@ describe("an invited-only document", () => {
 
     // The grant cookie is still valid for an hour; the list is what changed.
     await env.DB.prepare("DELETE FROM doc_invites WHERE doc_id = ?").bind(docId).run();
-    expect((await read()).status).toBe(404);
+    const removed = await read();
+    expect(removed.status).toBe(302);
+    expect(removed.headers.get("location")).toBe(`${API}/open/${docId}`);
+    expect(await removed.text()).toBe("");
+  });
+
+  it("answers 410 for a deleted document and sends a document switched to anyone to its public url", async () => {
+    const gone = await privateDoc("withdrawn");
+    const opened = await privateDoc("opened up");
+    const cookie = await cookieFor(gone, gone.owner);
+
+    await softDelete(gone.docId);
+    expect((await get(`${gone.host}/d/${gone.docId}`, { headers: { cookie } }, PRIVATE)).status).toBe(410);
+
+    await env.DB.prepare("UPDATE docs SET link_access = 'anyone' WHERE id = ?").bind(opened.docId).run();
+    const redirected = await get(`${opened.host}/d/${opened.docId}/v1`, { headers: { cookie } }, PRIVATE);
+    expect(redirected.status).toBe(302);
+    expect(redirected.headers.get("location")).toBe(`https://openartifacts.site/d/${opened.docId}/v1`);
+  });
+
+  it("carries the isolation headers on every response a publisher's origin gives, a 500 included", async () => {
+    const doc = await privateDoc();
+    const cookie = await cookieFor(doc, doc.owner);
+    const broken = { ...PRIVATE, DB: { prepare: () => { throw new Error("boom"); } } as unknown as D1Database };
+
+    const responses = [
+      await get(await grantFor(doc, doc.owner), {}, PRIVATE), // 303, the grant swap
+      await get(`${doc.host}/d/${doc.docId}`, { headers: { cookie } }, PRIVATE), // 200
+      await get(`${doc.host}/d/${doc.docId}`, {}, PRIVATE), // 302, to sign in
+      await get(`${doc.host}/d/${UNKNOWN_DOC_ID}`, { headers: { cookie } }, PRIVATE), // 404
+      await get(`${doc.host}/elsewhere`, {}, PRIVATE), // 404
+      await send("POST", `${doc.host}/d/${doc.docId}`, {}, PRIVATE), // 404
+      await get(`${doc.host}/d/${doc.docId}`, { headers: { cookie } }, broken), // 500
+    ];
+    expect(responses.map((response) => response.status)).toEqual([303, 200, 302, 404, 404, 404, 500]);
+    for (const response of responses) {
+      for (const [name, value] of Object.entries(ISOLATION)) expect(response.headers.get(name)).toBe(value);
+    }
+    expect((await get(`${doc.host}/health`, {}, PRIVATE)).status).toBe(404);
+  });
+
+  it("mints /open's grant for the label of the document's own owner, not the reader's account", async () => {
+    const doc = await privateDoc();
+    const alice = await reader("alice@acme.com");
+    // Alice's account is the same owner as the license key that published the document.
+    expect(await linkExternalOwner(env.DB, doc.owner, alice, Date.now())).toBe("linked");
+    const session = await signPayload(PRIVATE.READER_SESSION_SECRET, "session", { a: alice }, Date.now() + 60_000);
+
+    const opened = await get(`${API}/open/${doc.docId}`, { headers: { cookie: `__Host-oa_session=${session}` } }, PRIVATE);
+
+    expect(opened.status).toBe(302);
+    const target = new URL(opened.headers.get("location")!);
+    expect(target.origin).toBe(doc.host);
+    expect(target.origin).not.toBe(`https://${await originLabel(alice)}.openartifacts.site`);
+    expect(target.pathname).toBe(`/d/${doc.docId}`);
+    expect((await get(target.toString(), {}, PRIVATE)).status).toBe(303);
+  });
+
+  it("answers 404 to everything private when reader sign-in is not configured, and never serves the bytes", async () => {
+    const doc = await privateDoc();
+    const cookie = await cookieFor(doc, doc.owner);
+    const noMethod = { ...PRIVATE, OAUTH_GITHUB_CLIENT_ID: "", OAUTH_GITHUB_CLIENT_SECRET: "", EMAIL: undefined };
+
+    for (const over of [
+      { ...PRIVATE, READER_SESSION_SECRET: undefined },
+      { ...PRIVATE, READER_SESSION_SECRET: "short" },
+      noMethod,
+    ]) {
+      expect(readerSignInConfigured({ ...env, ...over } as Env)).toBe(false);
+      // The publisher's origin and the reader pages are not there.
+      expect((await get(`${doc.host}/d/${doc.docId}`, { headers: { cookie } }, over)).status).toBe(404);
+      const open = await get(`${API}/open/${doc.docId}`, {}, over);
+      expect(open.status).toBe(404);
+      expect(open.headers.get("cache-control")).toBe("no-store");
+      expect((await send("POST", `${API}/signin/out`, { body: new URLSearchParams({ next: `/open/${doc.docId}` }) }, over)).status).toBe(404);
+      // The stored mode is not undone: the canonical url still sends the reader to /open, which 404s.
+      const apex = await get(`https://openartifacts.site/d/${doc.docId}`, {}, over);
+      expect(apex.status).toBe(302);
+      expect(apex.headers.get("location")).toBe(`${API}/open/${doc.docId}`);
+      expect(await apex.text()).not.toContain("for invited eyes");
+    }
+    // With no API host there is nowhere to send them: a plain 404, never the bytes.
+    const noApi = await get(`https://openartifacts.site/d/${doc.docId}`, {}, { ...PRIVATE, API_HOST: "" });
+    expect(noApi.status).toBe(404);
+    expect(await noApi.text()).not.toContain("for invited eyes");
+  });
+
+  it("is configured only with a secret, both hosts and at least one sign-in method", () => {
+    const configured = (over: Partial<Env>) => readerSignInConfigured({ ...env, ...PRIVATE, EMAIL: undefined, ...over } as Env);
+    expect(configured({})).toBe(true);
+    expect(configured({ OAUTH_GITHUB_CLIENT_SECRET: "" })).toBe(false); // half a pair is no provider
+    expect(configured({ OAUTH_GITHUB_CLIENT_SECRET: "", OAUTH_GOOGLE_CLIENT_ID: "g", OAUTH_GOOGLE_CLIENT_SECRET: "s" })).toBe(true);
+    const mail = { EMAIL: { send: async () => undefined }, EMAIL_FROM: "share@mail.openartifacts.ai" };
+    expect(configured({ OAUTH_GITHUB_CLIENT_ID: "", ...mail })).toBe(true);
+    expect(configured({ OAUTH_GITHUB_CLIENT_ID: "", ...mail, EMAIL_FROM: " " })).toBe(false);
+    expect(configured({ READER_SESSION_SECRET: "k".repeat(31) })).toBe(false);
+    expect(configured({ SERVING_HOST: "" })).toBe(false);
+    expect(configured({ API_HOST: " " })).toBe(false);
+  });
+
+  it("names a publisher's origin by a one-way hash of docs.owner, the same for all of their documents", async () => {
+    const labels = await Promise.all(["account-a", "account-b", "user_123"].map(originLabel));
+    expect(new Set(labels).size).toBe(3);
+    for (const label of labels) expect(label).toMatch(PRIVATE_LABEL);
+    expect(await originLabel("account-a")).toBe(labels[0]);
+
+    const one = await privateDoc("one");
+    const two = await privateDoc("two");
+    expect(one.docId).not.toBe(two.docId);
+    expect(one.host).toBe(two.host);
+    expect(one.host).toBe(`https://${await originLabel(one.owner)}.openartifacts.site`);
+    expect(one.host).not.toContain(one.docId);
+    expect(one.host).not.toContain(one.owner);
   });
 });

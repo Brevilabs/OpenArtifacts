@@ -126,17 +126,6 @@ export const TOO_MANY = (): Response =>
     429,
   );
 
-export const READER_UNAVAILABLE = (): Response =>
-  readerPage(
-    {
-      title: "Private documents unavailable",
-      heading: "Private documents aren’t set up here.",
-      message: "This deployment cannot open private documents. Public documents are unaffected.",
-      actions: ABOUT_LINK,
-    },
-    503,
-  );
-
 export const READER_NOT_FOUND = (): Response =>
   readerPage(
     {

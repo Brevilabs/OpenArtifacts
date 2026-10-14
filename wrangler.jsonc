@@ -21,11 +21,14 @@
     { "pattern": "symposium.site", "custom_domain": true },
     { "pattern": "api.openartifacts.ai", "custom_domain": true },
     { "pattern": "api.symposium.md", "custom_domain": true },
-    // One origin per private document: `{label}.openartifacts.site`. A custom
-    // domain cannot be a wildcard, so this is a route, and it needs the proxied
-    // DNS record `*.openartifacts.site AAAA 100::` that docs/deploying.md has an
-    // operator add once. `resolveSurface` serves only a 26-character label here
-    // and fails closed on every other subdomain.
+    // One origin per publisher: `{label}.openartifacts.site`, the label being the
+    // first 16 bytes of SHA-256("openartifacts-origin-v1:" + docs.owner) in
+    // lowercase Crockford base32, 26 characters. A publisher's invited-only
+    // documents are served only there; a custom hostname takes the same seat
+    // later. A custom domain cannot be a wildcard, so this is a route, and it
+    // needs the proxied DNS record `*.openartifacts.site AAAA 100::` that
+    // docs/deploying.md has an operator add once. `resolveSurface` serves only a
+    // 26-character label here and fails closed on every other subdomain.
     { "pattern": "*.openartifacts.site/*", "zone_name": "openartifacts.site" }
   ],
 
@@ -96,14 +99,26 @@
       "name": "INVITE_EMAIL_LIMITER",
       "namespace_id": "1007",
       "simple": { "limit": 20, "period": 60 }
+    },
+    // Requests to open a document, counted per requesting account. It bounds
+    // both the request rows one account can write and the emails those rows send
+    // owners. An over-limit request stores nothing and still sees "Request sent".
+    {
+      "name": "REQUEST_ACCESS_LIMITER",
+      "namespace_id": "1008",
+      "simple": { "limit": 10, "period": 60 }
     }
   ],
 
-  // Invite emails and sign-in codes, sent through Cloudflare Email Service from
-  // a dedicated subdomain (`EMAIL_FROM` below) so abuse cannot hurt the brand
-  // domain's mail reputation. Optional: a deployment without it sends no email
-  // and offers no code sign-in, and Google and GitHub still work.
-  "send_email": [{ "name": "EMAIL" }],
+  // Invite emails, request emails to owners, and sign-in codes, sent through
+  // Cloudflare Email Service from a dedicated subdomain (`EMAIL_FROM` below) so
+  // abuse cannot hurt the brand domain's mail reputation. The binding needs
+  // Workers Paid and an onboarded sending domain. `allowed_sender_addresses`
+  // pins what this Worker may send from; a self-hoster changes it together with
+  // `EMAIL_FROM`, and on the free plan deletes this block and `EMAIL_FROM`
+  // altogether. Optional: a deployment without it sends no email and offers no
+  // code sign-in, and Google and GitHub still work.
+  "send_email": [{ "name": "EMAIL", "allowed_sender_addresses": ["share@mail.openartifacts.ai"] }],
 
   // R2 is the system of record: every served byte lives here.
   "r2_buckets": [{ "binding": "DOCS", "bucket_name": "symposium-docs" }],
@@ -151,8 +166,9 @@
     "ACCOUNT_ACTION_URL": "https://openartifacts.ai/account",
     "UPGRADE_URL": "https://openartifacts.ai/account",
     "EMAIL_FROM": "share@mail.openartifacts.ai",
-    // `privateSharing` is on `pro` only. `pro_lifetime` is a pricing decision;
-    // the license-key side is PRIVATE_SHARING_LICENSE_PLANS in src/auth.ts.
+    // `privateSharing` is on `pro` only. `pro_lifetime` and Supporter are a
+    // pricing decision still open; the license-key side is
+    // PRIVATE_SHARING_LICENSE_PLANS in src/auth.ts, and the two move together.
     "PLAN_LIMITS": "{\"free\":{\"documents\":3,\"pushesPerDay\":6,\"htmlBytes\":1048576},\"pro\":{\"documents\":500,\"pushesPerDay\":100,\"htmlBytes\":10485760,\"privateSharing\":true},\"pro_lifetime\":{\"documents\":500,\"pushesPerDay\":100,\"htmlBytes\":10485760,\"storageBytes\":5368709120}}",
 
     // Product analytics labels every event with this; business queries filter

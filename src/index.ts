@@ -16,9 +16,10 @@ import type { Env } from "./config.js";
 import { DEVICE_PREFIX, handleDevice } from "./device.js";
 import { errorResponse } from "./errors.js";
 import { listTokens, revokeToken } from "./api/tokens.js";
-import { handlePrivateServing, PRIVATE_LABEL } from "./private.js";
+import { handlePublisherServing, isolate, PRIVATE_LABEL } from "./private.js";
 import { handleReader, OPEN_PREFIX } from "./reader.js";
-import { SIGNIN_PREFIX } from "./reader-pages.js";
+import { readerSignInConfigured } from "./reader-config.js";
+import { READER_NOT_FOUND, SIGNIN_PREFIX } from "./reader-pages.js";
 import {
   handleServing,
   servingError,
@@ -27,14 +28,17 @@ import {
 } from "./serve.js";
 
 /**
- * The two surfaces. They are separate because user HTML has to be served from a
- * sacrificial host that never carries the API — a doc that turns out to be
- * phishing should cost us the serving domain, not the brand domain.
+ * The surfaces. Public documents and the API are separate because user HTML has
+ * to be served from a sacrificial host that never carries the API — a doc that
+ * turns out to be phishing should cost us the serving domain, not the brand
+ * domain. A third, `publisher-serving`, is one publisher's own origin
+ * (`{label}.{SERVING_HOST}`), where that publisher's invited-only documents are
+ * served and only that publisher's scripts run.
  */
 export type Surface =
   | "api"
   | "serving"
-  | "private-serving"
+  | "publisher-serving"
   | "legacy-serving"
   | "retired-api"
   | "unknown";
@@ -69,15 +73,22 @@ function hostMatches(hostname: string, configured: string | undefined): boolean 
 }
 
 /**
- * `{26-character label}.{servingHost}`: the origin of one private document. The
- * label is the whole subdomain, so `a.b.openartifacts.site` and a short or
- * mixed-case label are the unknown hosts they were before.
+ * The publisher a host belongs to, or null when it is none. Today that is
+ * `{26-character label}.{servingHost}`, the label being the whole subdomain, so
+ * `a.b.openartifacts.site` and a short or mixed-case label are the unknown hosts
+ * they were before. A publisher's verified custom hostname resolves here later,
+ * by lookup; nothing else in the router changes when it does.
  */
-function isPrivateHost(hostname: string, servingHost: string | undefined): boolean {
-  if (!servingHost?.trim()) return false;
+export function resolvePublisherHost(
+  hostname: string,
+  servingHost: string | undefined,
+): { label: string } | null {
+  if (!servingHost?.trim()) return null;
   const serving = normalizeHostname(servingHost);
   const host = normalizeHostname(hostname);
-  return host.endsWith(`.${serving}`) && PRIVATE_LABEL.test(host.slice(0, -serving.length - 1));
+  if (!host.endsWith(`.${serving}`)) return null;
+  const label = host.slice(0, -serving.length - 1);
+  return PRIVATE_LABEL.test(label) ? { label } : null;
 }
 
 function pathIsUnder(pathname: string, prefix: string): boolean {
@@ -107,7 +118,7 @@ export function resolveSurface(hostname: string, pathname: string, config: Surfa
   if (hostMatches(hostname, config.legacyServingHost)) return "legacy-serving";
   if (hostMatches(hostname, config.apiHost)) return "api";
   if (hostMatches(hostname, config.retiredApiHost)) return "retired-api";
-  if (isPrivateHost(hostname, config.servingHost)) return "private-serving";
+  if (resolvePublisherHost(hostname, config.servingHost) !== null) return "publisher-serving";
 
   if (hostsAreConfigured(config)) return "unknown";
 
@@ -247,7 +258,7 @@ export default {
     // only on an explicit serving/API host; an unknown Host still fails closed.
     if (
       url.pathname === "/health" &&
-      surface !== "private-serving" &&
+      surface !== "publisher-serving" &&
       (surface !== "unknown" || !hostsAreConfigured(surfaceConfig))
     ) {
       return Response.json({ ok: true });
@@ -287,6 +298,9 @@ export default {
           // a person reaches with a browser, not API routes, so they sit outside
           // `/api/v1` for the same reason approval does.
           if (pathIsUnder(url.pathname, OPEN_PREFIX) || pathIsUnder(url.pathname, SIGNIN_PREFIX)) {
+            // A server with no reader sign-in configured has none of these
+            // pages, as one that predates private sharing has none.
+            if (!readerSignInConfigured(env)) return READER_NOT_FOUND();
             return await handleReader(request, url, env);
           }
           // Likewise before `handleApi`: a terminal asking for a device code
@@ -299,8 +313,11 @@ export default {
           return await handleApi(request, url, env, analytics);
         case "serving":
           return await handleServing(request, url, env, analytics);
-        case "private-serving":
-          return await handlePrivateServing(request, url, env, analytics);
+        case "publisher-serving": {
+          const publisher = resolvePublisherHost(url.hostname, env.SERVING_HOST);
+          if (publisher === null) return servingError(request.method, "not_found");
+          return await handlePublisherServing(request, url, env, analytics, publisher);
+        }
         default:
           return errorResponse("not_found", `No route for ${url.pathname}`);
       }
@@ -313,7 +330,10 @@ export default {
       const message = "Something went wrong on our end. Please try again.";
       // The surface still decides the headers. A 500 on a doc url is a serving
       // response like any other, and has to carry the robots tag that proves it.
-      return surface === "serving" || surface === "private-serving"
+      // A publisher's origin keeps its isolation headers on a 500 too: the
+      // handler that threw is the one that would have added them.
+      if (surface === "publisher-serving") return isolate(servingError(request.method, "internal"));
+      return surface === "serving"
         ? servingError(request.method, "internal")
         : errorResponse("internal", message);
     }

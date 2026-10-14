@@ -2,7 +2,7 @@
  * Reader sign-in, and the door a private document opens through.
  *
  * ```
- * GET  /open/{docId}[/v{n}]   check the session and the list, then hand off to the document's origin
+ * GET  /open/{docId}[/v{n}]   check the session and `canRead`, then hand off to the publisher's origin
  * POST /signin/start/{provider}  begin Google or GitHub; the callback is /approve/callback/{provider}
  * POST /signin/email          mail a six-digit code
  * POST /signin/code           trade the code for a session
@@ -24,7 +24,6 @@
  */
 import { APPROVAL_PREFIX, READER_USER_CODE_PREFIX, readSmallForm } from "./approval/handler.js";
 import {
-  approvalIsConfigured,
   arcticOAuthClient,
   configuredProviders,
   normalizeEmail,
@@ -35,7 +34,7 @@ import {
   accountEmail,
   confirmDeviceApproval,
   findOrCreateAccount,
-  findPrivateRead,
+  findReadableDoc,
   sweepExpired,
 } from "./db.js";
 import { codeMessage, emailConfigured, sendEmail } from "./email.js";
@@ -44,11 +43,11 @@ import { newAccountId, newHandshakeToken } from "./ids.js";
 import { isTopLevelRequest, withinClientLimit, withinLimit } from "./limits.js";
 import { grantUrl } from "./private.js";
 import { defaultPlan } from "./plans.js";
+import { readerSecret } from "./reader-config.js";
 import {
   codePage,
   notAvailablePage,
   READER_NOT_FOUND,
-  READER_UNAVAILABLE,
   readerPage,
   SIGNIN_FAILED,
   SIGNIN_PREFIX,
@@ -60,7 +59,6 @@ import {
   cookie,
   LOGIN_COOKIE,
   openPath,
-  readerSecret,
   readSession,
   SESSION_COOKIE,
   sessionRedirect,
@@ -91,7 +89,6 @@ export async function handleReader(request: Request, url: URL, env: Env): Promis
   if (request.method !== "POST" || (site !== null && site !== "same-origin" && site !== "none")) {
     return READER_NOT_FOUND();
   }
-  if (readerSecret(env) === null) return READER_UNAVAILABLE();
 
   const form = await readSmallForm(request);
   if (form === null || extra.length > 0) return READER_NOT_FOUND();
@@ -117,26 +114,29 @@ export async function handleReader(request: Request, url: URL, env: Env): Promis
 }
 
 function signIn(env: Env, next: string, note?: string): Response {
-  const providers = approvalIsConfigured(env) ? configuredProviders(env) : [];
-  const emailEnabled = emailConfigured(env);
-  return providers.length === 0 && !emailEnabled
-    ? READER_UNAVAILABLE()
-    : signInPage(next, providers, emailEnabled, note);
+  const providers = configuredProviders(env);
+  return signInPage(next, providers, emailConfigured(env), note);
 }
 
 /**
  * `GET /open/{docId}[/v{n}]`: the one door a private document opens through.
  *
  * No session shows the sign-in page, and says nothing about the document, so a
- * link preview learns nothing. With a session, an invited-only document the
- * reader may read redirects to its own origin with a 60-second grant; a document
- * that has since become public redirects to its public url; everything else —
- * not invited, deleted, never existed — is one page.
+ * link preview learns nothing. With a session, `canRead` decides: an invited-only
+ * document the reader may read redirects to its publisher's origin with a
+ * 60-second grant; a document that has since become public redirects to its
+ * public url; everything else — not invited, deleted, never existed — is one page.
+ *
+ * The grant is minted for the label of the document's own owner, read from its
+ * row. It is never derived from the reader's account or from the doc id: a
+ * publisher whose key was later linked to an account has documents under two
+ * owner ids, and a label from the wrong one would land the reader on a host that
+ * answers `404`.
  */
 async function open(request: Request, url: URL, env: Env, now: number): Promise<Response> {
   const secret = readerSecret(env);
   const servingHost = env.SERVING_HOST?.trim();
-  if (secret === null || !servingHost) return READER_UNAVAILABLE();
+  if (secret === null || !servingHost) return READER_NOT_FOUND();
   const route = parseDocPath(url.pathname, OPEN_PREFIX);
   if (route === null) return READER_NOT_FOUND();
   const next = docPath(OPEN_PREFIX, route);
@@ -144,13 +144,13 @@ async function open(request: Request, url: URL, env: Env, now: number): Promise<
   const accountId = await readSession(request, secret, now);
   if (accountId === null) return signIn(env, next);
 
-  const found = await findPrivateRead(env.DB, route.docId, route.pinned, accountId);
+  const found = await findReadableDoc(env.DB, route.docId, route.pinned, accountId);
   if (found !== null && found.deleted_at === null) {
     if (found.link_access === "anyone") {
       return servingRedirect(`https://${servingHost}${docPath(SERVING_PREFIX, route)}`, 302);
     }
     if (found.allowed) {
-      const grant = await grantUrl(env, route, accountId, now);
+      const grant = await grantUrl(env, found.owner, route, accountId, now);
       if (grant !== null) return servingRedirect(grant.url, 302);
     }
   }

@@ -11,14 +11,14 @@ reader's browser.
 
 All five events. `createDoc`, `updateDoc` and `deleteDoc` each record one on
 their success path, the access routes record one after each write, and
-`handleServing` and `handlePrivateServing` record one per qualifying read; no
+`handleServing` and `handlePublisherServing` record one per qualifying read; no
 other code in the Worker calls `record`.
 
 | Events | Where |
 | --- | --- |
 | `document_published`, `document_updated`, `document_unshared` | `createDoc`, `updateDoc`, `deleteDoc`, on their success paths only |
 | `document_access_changed` | the access routes after each write, and `createDoc` for a private create |
-| `document_viewed` | `handleServing` and `handlePrivateServing`, once the served response is decided |
+| `document_viewed` | `handleServing` and `handlePublisherServing`, once the served response is decided |
 
 Both streams start at the deployment that landed them, and neither can be
 backfilled. A query that returns nothing for an earlier date is reporting the

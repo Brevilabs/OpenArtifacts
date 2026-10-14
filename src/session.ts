@@ -1,6 +1,6 @@
 /**
- * The three signed values private sharing hands out, and the cookies two of
- * them travel in: a reader session, a grant to open one document, and the
+ * The signed values private sharing hands out, and the cookies they travel in:
+ * a reader session, a read-only grant for one publisher's origin, and the
  * binding of an OAuth handshake to the browser that started it.
  *
  * All three are an HMAC over a short JSON payload, keyed by
@@ -12,28 +12,21 @@
  * fails the MAC check for every other, so a URL grant cannot be replayed as a
  * session and a session cannot be presented as a grant.
  */
-import type { Env } from "./config.js";
 import { docPath, parseDocPath } from "./serve.js";
 
 export const SESSION_COOKIE = "__Host-oa_session";
 export const GRANT_COOKIE = "__Host-oa_grant";
 export const LOGIN_COOKIE = "__Host-oa_login";
 
+/**
+ * `grant-url` and `grant-cookie` are the same read-only grant for one
+ * publisher's origin, in the URL for a minute and in the cookie for an hour.
+ * They are separate purposes so a leaked URL grant cannot be planted as a cookie.
+ */
 export type Purpose = "session" | "grant-url" | "grant-cookie" | "login";
 
 /** How long a signed-in reader stays signed in on the API host. */
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
-
-const MIN_SECRET_LENGTH = 32;
-
-/**
- * The signing secret, or null when private sharing is not set up here. Every
- * caller treats null as "nothing private can be opened", never as "unsigned".
- */
-export function readerSecret(env: Env): string | null {
-  const secret = env.READER_SESSION_SECRET?.trim();
-  return secret && secret.length >= MIN_SECRET_LENGTH ? secret : null;
-}
 
 const encoder = new TextEncoder();
 

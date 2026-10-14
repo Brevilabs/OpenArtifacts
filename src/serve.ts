@@ -48,11 +48,12 @@ const VERSION_SEGMENT = /^v([1-9][0-9]{0,8})$/;
  * the rest of the internet.
  *
  * Three things make that a defensible trade, none of them in this string: no
- * origin that runs more than one author's scripts ever holds a credential, so
+ * origin that runs more than one publisher's scripts ever holds a credential, so
  * the shared origin is cookieless and holds nothing but already-public docs and
- * there is no session or private data on it to steal; docs are served from a
- * sacrificial host, never the brand domain; and publishing is gated on a paid
- * license key.
+ * there is no session or private data on it to steal (an invited-only doc is
+ * served from its own publisher's origin instead, `src/private.ts`); docs are
+ * served from a sacrificial host, never the brand domain; and publishing is
+ * gated on a paid license key.
  *
  * Directive by directive:
  *
@@ -154,9 +155,11 @@ const PRIVATE_CACHE_CONTROL = "private, no-store";
  * No `Set-Cookie` is ever added here or on `openartifacts.site`. The origin
  * being cookieless is not an accident of having nothing to store — it is the
  * property that makes running strangers' scripts on a shared origin acceptable,
- * so it belongs in this file's contract next to the CSP. The one cookie this
- * surface ever sets is a private document's grant, on that document's own
- * origin, where only its author's scripts run (`src/private.ts`).
+ * so it belongs in this file's contract next to the CSP: no origin that runs
+ * more than one publisher's scripts ever holds a credential. The one cookie
+ * this surface ever sets is a publisher origin's read-only grant cookie, on
+ * `{label}.openartifacts.site`, where only that publisher's scripts run
+ * (`src/private.ts`).
  */
 function servingHeaders(cacheControl: string): Headers {
   return new Headers({
@@ -510,6 +513,14 @@ export async function handleServing(
   // this one, so it sends them to sign in. Before the version check, so a
   // pinned `/v{n}` that does not exist reads the same as one that does. No body,
   // no cookie and no view: this origin learns nothing about who asked.
+  //
+  // This does not ask whether reader sign-in is configured, and must not fall
+  // through to `serveAndCount` when it is not. A row that is already invited
+  // stays invited on a server whose secret was removed or never set: `/open`
+  // answers `404` there, which takes the document offline. "Every document stays
+  // public on an unconfigured server" is true of documents that were never made
+  // invited, never of one that was. With no API host to send anyone to, the
+  // plain `404`.
   if (found.link_access === "invited") {
     const apiHost = env.API_HOST?.trim();
     return apiHost

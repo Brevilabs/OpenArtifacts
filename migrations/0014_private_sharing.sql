@@ -1,6 +1,7 @@
--- Private sharing: who may read a document, and the sign-in codes readers use.
--- Additive: the running Worker ignores the new column and tables, so this can be
--- applied before the Worker that uses them ships. See docs/private-sharing.md.
+-- Private sharing: who may read a document, who has asked to, and the sign-in
+-- codes readers use. Additive: the running Worker ignores the new column and
+-- tables, so this can be applied before the Worker that uses them ships. See
+-- docs/private-sharing.md.
 --
 -- `anyone` is exactly today's public document and stays the default for every
 -- existing row. `invited` means sign in, then be on the list or own the document.
@@ -8,10 +9,22 @@ ALTER TABLE docs ADD COLUMN link_access TEXT NOT NULL DEFAULT 'anyone'
   CHECK (link_access IN ('anyone', 'invited'));
 
 -- The invite list is independent of the mode: switching to `anyone` keeps it.
--- `email` is `normalizeEmail()`, the folding `accounts.email` uses.
+-- `email` is `normalizeEmail()`, the folding `accounts.email` uses. `role` is
+-- written now for inline comments: what an invited person may do, "Can view" or
+-- "Can comment". Until comments ship every invite is `comment` and it has no effect.
 CREATE TABLE doc_invites (
   doc_id     TEXT    NOT NULL REFERENCES docs(id) ON DELETE CASCADE,
-  email      TEXT    NOT NULL,
+  email      TEXT    NOT NULL,  -- normalizeEmail(), the folding accounts.email uses
+  role       TEXT    NOT NULL DEFAULT 'comment' CHECK (role IN ('view', 'comment')),
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (doc_id, email)
+);
+
+-- Pending "Request access" clicks; a row leaves on approve or decline. One row
+-- per document and address, capped like the invite list.
+CREATE TABLE doc_access_requests (
+  doc_id     TEXT    NOT NULL REFERENCES docs(id) ON DELETE CASCADE,
+  email      TEXT    NOT NULL,  -- the signed-in account's email, never typed
   created_at INTEGER NOT NULL,
   PRIMARY KEY (doc_id, email)
 );

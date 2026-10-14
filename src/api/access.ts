@@ -25,11 +25,12 @@ import type { AnalyticsSink } from "../analytics.js";
 import { maySharePrivately, type Publisher } from "../auth.js";
 import { MAX_INVITES_PER_DOC, type Env } from "../config.js";
 import {
+  canManage,
   deleteInvite,
+  findReadableDoc,
   findServableVersion,
   insertInvite,
   ownerEmail,
-  ownsLiveDoc,
   readAccess,
   setLinkAccess,
   type LinkAccess,
@@ -41,7 +42,8 @@ import { isDocId } from "../ids.js";
 import { withinLimit } from "../limits.js";
 import { normalizeEmail } from "../approval/providers.js";
 import { limitReached } from "../plans.js";
-import { grantUrl, privateSharingConfigured } from "../private.js";
+import { grantUrl } from "../private.js";
+import { readerSignInConfigured } from "../reader-config.js";
 import { stringField } from "../account.js";
 import { STORED_CONTENT_TYPE, versionObjectKey } from "../storage.js";
 import { publicDocUrl } from "../urls.js";
@@ -57,8 +59,13 @@ export function parseLinkAccess(value: unknown): LinkAccess | null {
  * The refusal for making a document private when the plan or the deployment
  * cannot, or null when it may go ahead. One check for `POST /docs`, the mode
  * switch and adding a person, so the three cannot drift apart.
+ *
+ * An unconfigured server is an old server: `404` first, before the plan is
+ * even looked at, so a self-hoster's clients see the message they already show
+ * for a Worker that predates private sharing.
  */
 export function refusePrivate(env: Env, publisher: Publisher): Response | null {
+  if (!readerSignInConfigured(env)) return errorResponse("not_found", "No API route for this request.");
   if (!maySharePrivately(env, publisher)) {
     // A license-key publisher manages their plan in Copilot: no CLI command to run, no OpenArtifacts checkout to sell.
     return publisher.authKind === "account"
@@ -66,9 +73,6 @@ export function refusePrivate(env: Env, publisher: Publisher): Response | null {
       : errorResponse("limit_reached", "Your Copilot plan does not include private sharing.", undefined, {
         plan: publisher.plan, limit: "privateSharing",
       });
-  }
-  if (!privateSharingConfigured(env)) {
-    return errorResponse("bad_request", "This server is not set up for private documents.");
   }
   return null;
 }
@@ -113,6 +117,12 @@ export async function handleDocSection(
   const [section, people, person, ...rest] = extra;
   const method = request.method;
 
+  // Everything but `…/html` is private sharing, and an unconfigured server has
+  // none of it: no route, as on a Worker that predates the feature. After
+  // authentication and before any plan gate, so the answer is `404` however the
+  // caller's plan stands. `…/html` is owner-only bytes and `get` depends on it.
+  if (section !== "html" && !readerSignInConfigured(env)) return null;
+
   const access = section === "access" && rest.length === 0;
   const route =
     (access && people === undefined && (method === "GET" || method === "PUT")) ||
@@ -121,7 +131,7 @@ export async function handleDocSection(
     (section === "open" && people === undefined && method === "POST");
   if (!route) return null;
 
-  if (!isDocId(docId) || !(await ownsLiveDoc(env.DB, docId, publisher.owner))) return docNotFound(docId);
+  if (!isDocId(docId) || !(await canManage(env.DB, docId, publisher.owner))) return docNotFound(docId);
 
   if (section === "html") return await storedHtml(env, docId);
   if (section === "open") return await openOwn(env, publisher, docId, url);
@@ -216,20 +226,23 @@ async function storedHtml(env: Env, docId: string): Promise<Response> {
 
 /**
  * Where the owner's browser opens their own page, with no sign-in. For an
- * invited-only document that is its own origin with a 60-second grant whose
+ * invited-only document that is its publisher's origin with a 60-second grant whose
  * principal is the caller's owner id, which the origin checks like any other. A
  * client opens it and discards it: it is never printed, stored or returned in a
  * publish receipt, because agent wrappers print receipts into transcripts.
  */
 async function openOwn(env: Env, publisher: Publisher, docId: string, requestUrl: URL): Promise<Response> {
-  const access = await readAccess(env.DB, docId);
-  if (access === null) return docNotFound(docId);
+  // The same read `/open` and the publisher's origin make, so the three agree
+  // on who may read. The label comes from the document's own owner, which for a
+  // linked publisher is not necessarily the caller's id.
+  const found = await findReadableDoc(env.DB, docId, null, publisher.owner);
+  if (found === null || found.deleted_at !== null || !found.allowed) return docNotFound(docId);
   const now = Date.now();
-  if (access.link_access === "anyone") {
+  if (found.link_access === "anyone") {
     return Response.json({ url: publicDocUrl(env, requestUrl, docId), expiresAt: now + 60_000 }, { headers: NO_STORE });
   }
-  const grant = await grantUrl(env, { docId, pinned: null }, publisher.owner, now);
+  const grant = await grantUrl(env, found.owner, { docId, pinned: null }, publisher.owner, now);
   return grant
     ? Response.json(grant, { headers: NO_STORE })
-    : errorResponse("bad_request", "This server is not set up for private documents.");
+    : errorResponse("not_found", "No API route for this request.");
 }

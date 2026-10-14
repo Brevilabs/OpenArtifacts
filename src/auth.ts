@@ -76,6 +76,9 @@ const PUBLISHING_PLANS: ReadonlySet<string> = new Set(["plus", "believer"]);
  * The Copilot plans that may make a document invited-only or add people to one.
  * Plus only for now; Supporter (`believer`) is a pricing decision, and an
  * unlisted plan fails closed like it does for publishing.
+ *
+ * This and `privateSharing` on the `pro` plan in `PLAN_LIMITS` (wrangler.jsonc)
+ * are the two knobs for who gets private sharing; they move together.
  */
 const PRIVATE_SHARING_LICENSE_PLANS: ReadonlySet<string> = new Set(["plus"]);
 

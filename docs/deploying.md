@@ -443,7 +443,11 @@ says what each piece is for.
    not offered; Google and GitHub still work.
 4. **Migration `0014`.** `npx wrangler d1 migrations apply symposium --remote`.
    The deploy workflow refuses to ship over an unapplied migration, and the
-   running Worker ignores the new column and tables.
+   running Worker ignores the new column and tables. Apply migrations only from
+   the merged pull request's files, never from a draft branch: `0014` changed
+   while the pull request was open, and the immutability check sees a file that
+   is new since the last deploy as an addition, so it would not catch a draft's
+   version having been applied.
 
 Which plans include private sharing is configuration: `privateSharing` on the
 account plan in `PLAN_LIMITS`, and `PRIVATE_SHARING_LICENSE_PLANS` in
