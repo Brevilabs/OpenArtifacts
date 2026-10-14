@@ -6,13 +6,14 @@
   </picture>
 </h1>
 
-OpenArtifacts publishes rendered HTML at a stable public link and preserves
-every update as an immutable version. Publishers use an authenticated HTTP API;
-readers open the result without an account. The Worker stores document bytes in
-Cloudflare R2 and ownership, version, and deletion metadata in D1.
+OpenArtifacts publishes rendered HTML at a stable link and preserves every
+update as an immutable version. Publishers use an authenticated HTTP API; readers
+open a public document without an account, and a publisher can instead share a
+document only with people they invite, who sign in to open it. The Worker stores
+document bytes in Cloudflare R2 and ownership, version, deletion, and sharing
+metadata in D1.
 
-It is a small API-first publishing service. Reader accounts, permissions, and
-comments do not exist yet.
+It is a small API-first publishing service. Inline comments do not exist yet.
 
 ## What works today
 
@@ -20,8 +21,14 @@ comments do not exist yet.
 - **Keep one stable link.** Every push creates a new version. The shared link
   shows the latest version, while pinned `/v2`-style links keep showing the
   version they name.
-- **Read without signing in.** Publishing needs a bearer key. Reading needs
-  nothing.
+- **Read without signing in.** Publishing needs a bearer key. Reading a public
+  document needs nothing.
+- **Share privately.** Set a document to "Only those invited" and add people by
+  email. They sign in once with Google, GitHub, or an emailed code and open the
+  same link; anyone else can ask the owner for access, and the owner approves or
+  declines from a share page that every served page links to as "Manage".
+  Private sharing is a paid-plan feature on the hosted service, and a self-hosted
+  server needs a sign-in method configured to offer it.
 - **Keep pages out of search results.** Serving responses carry `noindex`
   directives.
 - **Run interactive documents.** Scripts, charts, and simulations work. Pages
@@ -131,8 +138,8 @@ flowchart TD
 
 D1 and R2 keep the persistent data; they are storage services, not additional
 Workers. Use a separate registrable domain for document HTML, not just another
-subdomain of your API's domain. Readers need no account, and the document host
-does not expose the publishing API.
+subdomain of your API's domain. Readers of public documents need no account,
+and the document host does not expose the publishing API.
 
 This deployment uses your own Cloudflare resources. It does not require the
 OpenArtifacts hosted website, a Copilot subscription, or a billing service. The
@@ -176,7 +183,8 @@ The D1 command prints a `database_id`. Update `wrangler.jsonc` for your account:
 2. Set `bucket_name` to your R2 bucket name.
 3. Set `database_name` and `database_id` to your D1 values.
 4. Replace `routes` with exactly two `custom_domain` entries: your document
-   host and your API host.
+   host and your API host. (Private sharing, below, adds one optional wildcard
+   route.)
 5. Set `SERVING_HOST` and `API_HOST` under `vars` to those hosts and remove the two legacy host vars. Keep your chosen `PLAN_LIMITS`/`DEFAULT_PLAN`.
 6. Keep `workers_dev` set to `false`.
 
@@ -208,6 +216,25 @@ Leave `LICENSE_API_URL` and `LICENSE_API_KEY` unset for this pre-seeded-key
 setup. Unknown keys then fail closed. Because `workers_dev` is disabled, the
 Worker becomes reachable only after Cloudflare attaches both custom domains.
 
+### Optional: private sharing
+
+Documents are all public until you configure reader sign-in, and a server without
+it answers the private-sharing routes `404`, like a server that predates the
+feature. To turn it on you need, besides a Google or GitHub OAuth app (or Email
+Service for emailed codes):
+
+- a `READER_SESSION_SECRET` Worker secret of at least 32 characters;
+- a proxied wildcard DNS record `*.{your document host}` `AAAA` to `100::` and
+  the matching `*.{your document host}/*` route in `wrangler.jsonc`, with the
+  document host as a **zone apex** so the free wildcard certificate covers it;
+- if you use email, `EMAIL_FROM` and the `send_email` binding set for a domain you
+  have onboarded to Email Service, which needs Workers Paid. On a free plan,
+  delete the `send_email` block and `EMAIL_FROM` that ship pointing at the hosted
+  service's address.
+
+[Deploying](docs/deploying.md#self-hosting) has the whole list and the plan
+configuration.
+
 ## Documentation
 
 | Document | Contents |
@@ -216,7 +243,7 @@ Worker becomes reachable only after Cloudflare attaches both custom domains.
 | [Hosting](docs/hosting.md) | How Workers, R2, and D1 fit together. |
 | [Serving domain](docs/serving-domain.md) | Why uploaded HTML uses a separate registrable domain. |
 | [Identity](docs/identity.md) | Why documents belong to an owner rather than a credential, and how an account is created. |
-| [Private sharing](docs/private-sharing.md) | Invite-only documents: reader sign-in, per-document origins, and how access is checked. |
+| [Private sharing](docs/private-sharing.md) | Invite-only documents: reader sign-in, per-publisher origins, request access, and how access is checked. |
 | [Product analytics](docs/analytics.md) | What the five document events carry, and what they deliberately never carry. |
 | [Comments](docs/comments.md) | Design sketch for the next product step. Not built. |
 

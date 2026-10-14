@@ -1,7 +1,7 @@
 /**
  * Serving a publisher's invited-only documents from the publisher's own origin.
  *
- * `openartifacts.site` runs every author's scripts on purpose, so it can never
+ * `openartifacts.site` runs every publisher's scripts on purpose, so it can never
  * hold a credential. An invited-only document therefore lives on
  * `{label}.openartifacts.site`, an origin that runs only its publisher's
  * scripts, and that is the only place its bytes are ever served. The rule that

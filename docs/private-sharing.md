@@ -1,29 +1,54 @@
 # Private sharing and reader identity
 
 **Status: built.** A document's owner can make it "Only those invited" and add
-people by email. This file is how it works and why it has this shape; the
-endpoints are in [http-api.md](http-api.md), and the one-time setup is in
-[deploying.md](deploying.md#private-sharing).
+people by email. Someone who is not on the list can sign in, ask the owner to let
+them in, and the owner approves or declines. This file is how it works and why it
+has this shape; the endpoints are in [http-api.md](http-api.md), and the one-time
+setup is in [deploying.md](deploying.md#private-sharing).
 
 [← README](../README.md) · [Serving domain](serving-domain.md) · [Identity](identity.md) · [Comments](comments.md) · [HTTP API](http-api.md)
 
 ## What a person sees
 
-An owner (from Copilot's share dialog or `openartifacts share`) sets a document
-to **Only those invited** and adds `alice@acme.com`. Alice gets an email with the
-title and the same `openartifacts.site/d/…` link every document has. She opens
-it, signs in once with Google, GitHub or an emailed code, and reads. Everyone
-else sees "not available". Removing Alice takes effect on her next request.
-Switching back to **Anyone with the link** makes the same url public again for
-everyone, with no sign-in, exactly as before.
+Example: Logan shares a client report with Alice (`alice@acme.com`). Bob
+(`bob@other.com`) gets the link forwarded and was not invited. Every page here is
+on the API host except the document itself.
+
+| Who opens the link | What they see |
+| --- | --- |
+| Logan, from Copilot's **Open** | The page, with no sign-in |
+| Anyone not signed in, invited or not | **Sign in or create an account to open this document**: Google, GitHub or an emailed code, whichever this server has |
+| Signed in, and on the list (or the owner's own account) | The page, on the publisher's own origin |
+| Signed in, and not on the list | **This document isn't available to {email}**, with **Request access** and **Use another account**. No title, no content. |
+| After pressing **Request access** | **Request sent.** The owner approves or declines; approval sends the invite email. |
+| Anyone, after the owner switches the page to **Anyone with the link** | The page, with no sign-in, as before |
+| Anyone, after the owner unshares it | `410 Gone`, as before |
+
+The first screen names nobody, because a stranger holding a forwarded link is
+almost never signed in and nobody knows yet who they are. A chat app's link
+preview sees only that screen. The "not available to {email}" page comes after
+sign-in, when there is an address to name, and it exists to answer one question:
+which account did I just use? It is the same page for an id that was never
+invited, one the owner removed, one that was deleted and one that never existed,
+so it cannot tell a private document from no document.
+
+Alice opens the link, signs in once with the address Logan invited, and reads;
+the next 30 days of opens are a few redirects with no prompt. Bob signs in, sees
+that the document is not available to him, presses **Request access**, and sees
+**Request sent**. Logan gets an email with a **Review request** link to the share
+page (below), where **Approve** adds Bob exactly as typing his address would,
+so Bob gets the ordinary invite email. **Decline** removes the request and tells
+Bob nothing. Removing Alice takes effect on her next request. Switching back to
+**Anyone with the link** makes the same url public for everyone, with no sign-in.
 
 **Public documents did not change.** `link_access` defaults to `anyone` for every
 document, old and new, and the public path serves the same url, headers, caching
-and bytes it always did, with no sign-in and no cookie.
+and bytes it always did, with no sign-in and no cookie. The one addition to a
+public page is the constant **Manage** link in its footer, described below.
 
 ## The constraint everything else follows from
 
-`openartifacts.site` runs every author's scripts on purpose, with an open
+`openartifacts.site` runs every publisher's scripts on purpose, with an open
 `connect-src`. `src/serve.ts` justifies that policy by what the origin holds:
 nothing to steal. A reader session on that origin would falsify it, because any
 document a reader opens could use it with a same-origin `fetch` to read every
@@ -35,170 +60,533 @@ A grant alone does not fix a shared origin either. A hostile public document can
 the grant out of `popup.location`, because both pages are on one origin.
 
 So the rule that replaces "the origin is cookieless" is: **no origin that runs
-more than one author's scripts ever holds a credential.** Each private document
-therefore lives on an origin of its own, where only its author's scripts run.
+more than one publisher's scripts ever holds a credential.** The only fix left is
+to keep private documents off any origin where another publisher's scripts run.
+Isolation per publisher is enough: a publisher's own scripts can reach only
+documents that publisher already owns.
 
 ## Three hosts, one rule
 
 | Host | Serves | Credential it holds |
 | --- | --- | --- |
-| `openartifacts.site` | Public documents, unchanged. A redirect for private ones. | None, ever |
-| `api.openartifacts.ai` | The bearer API, reader sign-in, `/open/{docId}` | The reader session cookie |
-| `{label}.openartifacts.site` | Exactly one private document, all its versions | That document's grant cookie |
+| `openartifacts.site` | Public documents, unchanged. A redirect for invited-only ones. | None, ever |
+| `api.openartifacts.ai` | The bearer API, reader sign-in, `/open/{docId}`, `/open/{docId}/request`, the share page | The reader session cookie |
+| `{label}.openartifacts.site` | One publisher's invited-only documents, every version of each. Later, the publisher's custom domain takes this seat. | That publisher's read-only grant cookie |
 
-`label` is the first 16 bytes of `SHA-256("openartifacts-origin-v1:" + docId)` in
-Crockford base32, 26 characters, derived and never stored. It is one-way, so the
-hostname in DNS and TLS SNI does not reveal the doc id, which stays in the
-encrypted path where it was always secret. A label host answers `404` for any
-path whose doc id does not hash to its label, so a host never serves another
-document.
+`label` is the first 16 bytes of `SHA-256("openartifacts-origin-v1:" + docs.owner)`
+in lowercase Crockford base32: 26 characters, derived from the owner id the
+serving path already reads, and never stored. It is one-way, so the hostname in
+DNS and TLS SNI reveals neither the owner nor the document.
+
+- **`docs.owner` never changes**, not even when a license key is later linked to
+  an account (`owner_links` joins scopes and rewrites no row), so a document's
+  origin is stable for life. A linked publisher whose documents sit under two
+  owner ids has two label hosts, which costs them one extra sign-in redirect and
+  nothing else.
+- **The label comes from the document's owner, never from the caller.** `/open`
+  and the owner route read `docs.owner` from the document's own row. A label
+  derived from the reader's account or the caller's key would send a linked
+  publisher to a host that answers `404`.
+- **A label host answers `404` for any document whose owner does not hash to its
+  label**, before it reveals anything else about the document, so a host never
+  serves, or even confirms, another publisher's document. The same rule, "this
+  host serves this publisher's documents only", is what a custom hostname will
+  enforce through a verified host-to-owner mapping.
+- **Why per publisher and not per document.** The threat is another publisher's
+  script, and a publisher origin runs only one publisher's scripts. Per-document
+  origins would protect a publisher from their own documents, which they can
+  already read, at three costs: a reader invited to several of one person's
+  documents would be sent through sign-in redirects for each, a publisher's
+  interactive documents could never share storage, and a custom domain would need
+  a wildcard custom hostname per document, which Cloudflare sells only on
+  Enterprise. One origin per publisher is one ordinary custom hostname, which
+  every plan has.
 
 ```
 reader  → openartifacts.site/d/{docId}        302, no-store → api.openartifacts.ai/open/{docId}
-reader  → api.openartifacts.ai/open/{docId}   session? on the list or the owner?
+reader  → api.openartifacts.ai/open/{docId}   session? canRead?
                                               302 → {label}.openartifacts.site/d/{docId}?grant=…   (valid 60 s)
 reader  → {label}.openartifacts.site/d/…?grant=…   303 + Set-Cookie (1 h), to the clean url
 reader  → {label}.openartifacts.site/d/{docId}     200, private, no-store
 ```
 
-- **The grant never stays in the address bar.** The document's own origin swaps
-  it for a one-hour `__Host-oa_grant` cookie with a bodiless `303`, so it is not
-  a live credential a reader can paste to someone who was not invited.
-- **The cookie names a principal, not a permission.** Every request reads the
-  invite list in D1 again, so removing a person takes effect on their next
-  request. A tab they already have open keeps what it loaded.
-- **Lifetimes:** URL grant 60 seconds, document cookie one hour, reader session
-  thirty days. Sign-out ends the session at once.
-- **The three signed values use different prefixes in the signed input**, so none
-  can be replayed as another (`src/session.ts`).
+### What each host does, in order
 
-### Why an author's script cannot steal access
+**`openartifacts.site/d/{docId}[/v{n}]`.** The one D1 read the serving path
+always made also returns `link_access`. Unknown ids are `404` and deleted ones
+`410`, as ever. For `anyone` the existing path runs unchanged. For `invited` the
+answer is `302`, `Cache-Control: no-store`, to `https://{API_HOST}/open/{docId}[/v{n}]`
+with the full serving header policy, no body, no cookie and no view event. A
+pinned `/v{n}` that does not exist reads the same as one that does.
+
+**`api.openartifacts.ai/open/{docId}[/v{n}]`** (`GET` only):
+
+1. No valid session: the sign-in page, which names no address, and returns to
+   this path afterwards.
+2. A session, and the document is live and now `anyone`: `302` to the canonical
+   public url.
+3. A session, and `canRead` says allowed: `302` to
+   `https://{label}.{SERVING_HOST}/d/{docId}[/v{n}]?grant=…`, the label being
+   that of the document's own owner.
+4. Anything else (not on the list, removed, deleted, never existed): `404` with
+   **This document isn't available to {email}**, **Request access** and **Use
+   another account**. The not-available page exists only here and on the share
+   page, so there is exactly one copy of the **Request access** form, and it
+   posts with the session cookie.
+
+**`{label}.openartifacts.site/d/{docId}[/v{n}]`** (`GET` and `HEAD`; anything else
+is `404`):
+
+1. A `?grant=` that verifies for this label sets `__Host-oa_grant` and answers a
+   bodiless `303` to the same path without the query. This step reads no
+   database. A grant that is bad, expired or for another label answers `302` to
+   `https://{API_HOST}/open/{docId}[/v{n}]`.
+2. No cookie, or an invalid or expired one: the same `302` to `/open`, again with
+   no database read.
+3. A valid cookie: one D1 read returns the document, its owner, and whether the
+   cookie's principal passes `canRead`. Then, in this order: unknown id is `404`;
+   an owner that does not hash to this label is `404`; deleted is `410`; `anyone`
+   is `302` to the public url; not allowed is `302` to `/open`; an allowed
+   document with no version is `404`; otherwise `200`.
+
+A label host never renders the not-available page: it must post with the session
+cookie, which this origin can never hold. No loop is possible, because `/open`
+redirects to a label host only when `canRead` says allowed, the same predicate
+this host applies. A reader with a cookie for this origin who opens a second
+document from the same publisher gets it in one request if invited, with no
+redirect.
+
+Allowed responses go through the existing `serveObject` and `renderServedHtml`
+with the same CSP and robots headers as every served document, plus
+`Cache-Control: private, no-store` (pinned versions included),
+`Cross-Origin-Opener-Policy: same-origin-allow-popups` and
+`Cross-Origin-Resource-Policy: same-origin`. The two isolation headers are set on
+every response from a label host, errors and redirects included, and a `500`
+carries them too.
+
+### The three lifetimes
+
+| | Lifetime | Holds |
+| --- | --- | --- |
+| Reader session `__Host-oa_session`, on the API host | 30 days | An account id |
+| URL grant `?grant=` | 60 seconds | A publisher's origin label and a principal |
+| Origin cookie `__Host-oa_grant`, on that publisher's origin | 1 hour | The same grant, re-signed |
+
+All three are `HttpOnly; Secure; SameSite=Lax; Path=/` with no `Domain`, so each
+is a `__Host-` cookie (the URL grant is not a cookie). The grant names the
+origin, not a document: it is refused on any other label host, and **every
+document is checked against `canRead` in D1 again on every request**, which is
+why removing a person takes effect on their next request. Sign-out clears the
+session at once; a publisher origin's grant cookie can outlive it by up to an
+hour, still subject to the live check.
+
+Each value is an HMAC-SHA256 over a short JSON payload with an expiry, keyed by
+`READER_SESSION_SECRET`, and **the purpose is part of the signed input**
+(`session`, `grant-url`, `grant-cookie`, `login`, `signup`, `email-code`), so a
+value minted for one use fails every other: a URL grant cannot be planted as a
+cookie, and a session cannot be presented as a grant (`src/session.ts`).
+Rotating the secret signs every reader out.
+
+### Why a publisher's script cannot steal access
 
 - A hostile document can start a grant by navigating to `/open/{target}`, since a
   top-level navigation is the only request that carries the `Lax` session cookie.
   The grant lands on the target's own origin, which the attacker cannot script,
   and `Cross-Origin-Opener-Policy: same-origin-allow-popups` cuts the attacker's
   window reference.
-- A document's own scripts reach only that document: they never see the URL grant
-  (the label host answers it with a bodiless `303`), and the cookie they can make
-  same-origin requests with opens only the document their author already has.
+- A publisher's scripts reach only that publisher's documents: they never see the
+  URL grant (the label host answers it with a bodiless `303`), and the cookie they
+  can make same-origin requests with opens only documents their publisher
+  already owns, and only the ones this reader is invited to. A publisher who
+  steals a grant from their own origin gains nothing: it reads their own
+  documents and is refused everywhere else.
 - Other origins carry no session cookie on `fetch`, frames or subresources, and
   CORS and `Cross-Origin-Resource-Policy: same-origin` stop them reading a label
   host's response.
 
-## Who may read a document
+The URL grant also never stays in the address bar. A grant left there would be a
+live credential readers paste to people who were not invited, so the origin swaps
+it for a cookie and redirects to the clean url; the redirect and every page
+carry `Referrer-Policy: no-referrer`.
 
-The unit is the document. Two additions, in migration `0014`: `docs.link_access`
-(`anyone` or `invited`) and `doc_invites (doc_id, email)`, at most 100 people so
-the list never needs paging. The invite list is independent of the mode:
-switching to `anyone` keeps it, and switching back restores it. Unshare deletes
-the invites with the bytes and keeps the row for the `410`.
+## Who may read, and who may manage
 
-A principal may read an invited-only document when it is in the document's owner
-scope (`OWNER_SCOPE_SQL`, so a license key and its linked account are one owner)
-or is an account whose email is on the list. The principal is a reader's account
-id, or a publisher's owner id for the owner route below. One query answers it
-(`findPrivateRead`), for both the API host and the document's origin.
+The unit is the document. Migration `0014` adds `docs.link_access` (`anyone` or
+`invited`), `doc_invites (doc_id, email, role)`, `doc_access_requests (doc_id,
+email)` and `email_codes`. The invite list is independent of the mode: switching
+to `anyone` keeps it and the pending requests, and switching back restores them.
+At most 100 people and at most 100 pending requests per document, so neither
+list needs paging. Unshare deletes the invites and requests with the bytes and
+keeps the `docs` row for the `410`.
+
+Two predicates, named once, so every surface asks the same question. They live in
+`src/db.ts` as SQL fragments (`CAN_READ_SQL`, `CAN_MANAGE_SQL`):
+
+- **`canRead(principal, doc)`**: the document is `anyone`; or the principal is in
+  the document's owner scope (`OWNER_SCOPE_SQL`, so a license key and its linked
+  account are one owner); or the principal is an account whose email is on the
+  invite list. The principal is a reader's account id, or a publisher's owner id
+  from the owner route. `/open`, a publisher's origin and the owner route all ask
+  it, through `findReadableDoc`. If any of them used a different rule, a reader
+  could be sent from one to the other forever.
+- **`canManage(principal, doc)`**: the principal is in the owner scope. Access
+  changes, the share page, and later comment moderation.
+
+**Every surface answers "not `canRead`" as `404`, never `403`**, and the label
+hosts, `/open`, `/share` and the request route all keep the convention that a
+document you may not see is indistinguishable from one that never existed.
+
+`canComment` is not built; nothing calls it. When comments ship it is `canRead`,
+and comments are on for the document, and the principal is the owner or an
+invited account whose `role` is `comment` (on an `anyone` document, any signed-in
+reader, as [comments.md](comments.md) has it). `doc_invites.role` is written now
+for it: `view` or `comment`, defaulting to `comment`, with no effect until then.
+There is no edit role or manage role: the owner alone updates a document, through
+the push route.
 
 When spaces arrive, they add `spaces`, `space_invites` and a nullable
-`docs.space_id`, and access becomes "invited to the document or to its space". No
+`docs.space_id`, and `canRead` gains "or invited to the document's space". No
 existing row moves.
 
 ## Reader identity
 
-A reader is an `accounts` row, the same principal a publisher is.
+A reader is an `accounts` row, the same principal a publisher is. There is no
+`readers` table.
 
 - **Google and GitHub** reuse the device-code handshake: a `device_codes` row with
-  a `reader_` prefix, the shared `/approve/callback/{provider}`, and the Terms step
-  for a first-time account. The OAuth `state` is also bound to the starting
-  browser by a short-lived signed `__Host-oa_login` cookie, so a callback link
+  a `reader_` prefix, the shared `/approve/callback/{provider}` (so no new OAuth
+  registration), `holdProvenIdentity`, and the Terms page for a first-time
+  account, which creates a free account on `DEFAULT_PLAN`. The OAuth `state` is
+  also bound to the starting browser by a short-lived signed `__Host-oa_login`
+  cookie, cleared when the callback ends the handshake, so a callback link
   forwarded to somebody else does not sign them in.
-- **Emailed codes:** six digits, ten minutes, five wrong guesses, stored hashed,
-  rate-limited per address and per client. A code signs in to any address except
-  one whose account already signs in with Google or GitHub, which keeps
-  [identity.md](identity.md)'s recycled-mailbox refusal true for every
-  provider-backed account. A request for a new code keeps the count of wrong
-  guesses, and a code that has used them all cannot be replaced until it expires.
+- **Emailed codes:** six digits, ten minutes, five wrong guesses, stored as a keyed
+  hash (an unkeyed one would be recovered instantly from a table of a million
+  codes), rate-limited per address and per client. The same page follows for any
+  well-formed address, because until the code comes back nothing has proved the
+  person typing holds the mailbox. A matching code is then decided three ways: an
+  address whose account already signs in with Google or GitHub is refused with
+  "That address signs in with Google or GitHub. Use that instead." (the code is
+  spent), which keeps [identity.md](identity.md)'s recycled-mailbox refusal true
+  for every provider-backed account; an account with no provider (one created by
+  Copilot linking, or by a code) is signed in; an address with no account goes to
+  the Terms, carrying a signed ten-minute token for the proved address, and
+  accepting them creates the free account and signs it in. A request for a new
+  code keeps the count of wrong guesses, and a code that has used them all cannot
+  be replaced until it expires. There is no newsletter choice for a reader.
 - **The session** is `__Host-oa_session` on the API host (`HttpOnly`, `Secure`,
-  `SameSite=Lax`, `Path=/`, thirty days): an HMAC over `{accountId, expiresAt}`
-  keyed by `READER_SESSION_SECRET`. Only `/open`, `/open/{docId}/request`,
-  `/share/{docId}` and `/signin` read it, and `/api/v1` stays bearer-only, so the cookie adds no cross-site request surface to
-  the API. Rotating the secret signs every reader out.
+  `SameSite=Lax`, `Path=/`, 30 days): an HMAC over `{accountId, expiresAt}`.
+  Stateless, and sign-out (**Use another account**) clears it. Only `/open`,
+  `/open/{docId}/request`, `/share/{docId}` and `/signin` read it, and `/api/v1`
+  stays bearer-only, so the cookie adds no cross-site request surface to the API.
+- **Every cookie-authenticated `POST` is held to a same-origin check**
+  (`sameOriginPost`). `SameSite=Lax` alone is not enough: every host under the brand
+  domain is same-site with the API host, and Lax cookies ride same-site `POST`s.
+  The request route and every share-page write require `Sec-Fetch-Site:
+  same-origin` (or, from a browser that sends none, an `Origin` equal to the API
+  origin); the sign-in forms also accept `none`. A request carrying neither header
+  passes only on a sign-in form, which is how `curl` and the tests post.
 - **Owners with a license key never sign in.** `POST /api/v1/docs/{docId}/open`
   returns their own page's url with a 60-second grant whose principal is their
   owner id. Clients open it and discard it; publish receipts never carry a grant.
+- **The sign-in pages return only to `/open/{docId}[/v{n}]` or `/share/{docId}`**,
+  rebuilt from the parsed document id, so they cannot become an open redirect.
 
-The sign-in pages return only to `/open/{docId}[/v{n}]` or `/share/{docId}`,
-rebuilt from the parsed document id, so they cannot become an open redirect.
+## Credentials by capability
+
+- The **origin grant cookie reads**: documents, and later the threads JSON, on its
+  own origin. It is refused by `/api/v1`, by every sign-in page and by the future
+  comments sidebar. A document's script can use it; that is why it can do nothing
+  but read what its own publisher already holds.
+- The **API-host session signs in and mints**: today the origin grant and the owner
+  route; later the comments sidebar's token, with no second provider sign-in.
+- **Writes never ride a cookie a document can use.** Approving, declining and
+  changing access carry a credential that lives on an origin no publisher's
+  scripts run on: a bearer token, or the session on the API host.
+
+## Creating a private document
+
+`POST /api/v1/private-docs` is the same create as `POST /api/v1/docs` (one shared
+code path) with `link_access = 'invited'` in the same insert, so the document is
+never public, not even for a moment. Its receipt is `{docId, url, version,
+linkAccess: "invited"}`. It is a route and not a field on `POST /api/v1/docs`
+because an old or self-hosted server ignores unknown fields: a client that
+learned the problem from the receipt would already have made a public page and
+would then depend on a delete that might not run. A route a server does not have
+creates nothing, so it answers `404 not_found`, and the client reports "this
+server does not support private documents" and stops. **There is no receipt
+check and no withdraw**; a server that has the route and still ignores it is a
+server bug, not a compatibility case.
+
+## Request access
+
+A request is tied to a signed-in account, not to a typed address. Taking an
+address on an accountless form would let anyone put any address on anyone's list
+and make OpenArtifacts email owners on behalf of people who proved nothing. With
+the account, the address is already verified, approval is the add that already
+exists, and the invite email that add sends is the notice to the requester.
+
+- **Table:** `doc_access_requests (doc_id, email, created_at)`, one pending row
+  per document and address, capped at 100 per document. Past the cap a new request
+  is dropped silently.
+- **Route:** `POST /open/{docId}/request`, on the API host, session required (no
+  session shows the sign-in page), same-origin required. One statement inserts
+  the row only when the document is live and invited-only, the account cannot
+  already read it, no request is pending and the list is under the cap.
+- **It says nothing.** The **Request sent** page is the same status and the same
+  words for every outcome: stored, repeated, unknown id, deleted, public, already
+  allowed, a full list and a rate limit. The owner's email, the one slow step,
+  runs after the response is decided. Without an email binding the page says what
+  will happen instead ("the link will open for {email}").
+- **Rate limit:** per account, by `REQUEST_ACCESS_LIMITER`. Over the limit stores
+  nothing and still shows **Request sent**.
+- **Approve and decline.** Approving is `PUT …/access/people/{email}` (or **Approve** on
+  the share page): one batch inserts the invite and deletes the request, and the
+  invite email goes out. It needs the plan, like any add. Declining deletes the
+  row, is idempotent, never needs the plan and tells the requester nothing. A
+  declined address that asks again is a new row.
+- **The owner is emailed on a new row only.** The address is resolved through the
+  owner scope: an account owner's own, a license owner's linked account (through
+  `owner_links`), nothing for an unlinked license owner, who sees the request in
+  Copilot's dialog, in `share` and on the share page. The message is from
+  `EMAIL_FROM`, with no reply-to: subject `{requester} asked to open "{title}"`,
+  the requester's address, the title, "Nothing has been shared yet.", a **Review
+  request** link to `https://{API_HOST}/share/{docId}`, and a line for Copilot
+  users. **The link carries no token**, so a forwarded email approves nothing and
+  a stale one is harmless, and it is the only link in the message: never a
+  requester-chosen url. The requester never learns the owner's address.
+
+## The share page
+
+`https://{API_HOST}/share/{docId}` is where an owner manages one document. It is
+the dialog Copilot renders, served by the Worker, so it exists for whoever
+published the document and for self-hosters. It is behind the reader session:
+
+- No session: the sign-in page ("Sign in to manage this document"), returning
+  here.
+- A session whose account is in the document's owner scope (`canManage`): the
+  dialog. **Link access** (Anyone with the link / Only those invited), **Add
+  people**, **Requests** (only when some are pending, each with **Approve** and
+  **Decline**), **Who has access** (**You**, **Owner**, then each invitee with
+  **Remove**), **Copy link**, and after a switch from public to private the line
+  "People who opened it while it was public may have kept a copy." There is no
+  role control.
+- Anyone else, and every unknown or deleted id: the same not-available page as
+  `/open`, status `404`, never `403`.
+
+Writes are `POST /share/{docId}` with an `op` of `link`, `add`, `remove` or
+`decline`, same-origin required, and they call **the same operations as
+`/api/v1`** (`src/api/access.ts`) with the session account as the publisher, so
+the plan gate, the invite email, idempotency and the `document_access_changed`
+event cannot differ between the two. A refused write re-renders the dialog with
+the reason, including "Private sharing needs a paid plan." and the upgrade link;
+a successful one redirects (`303`) back to the page. The page is `no-store` with
+`frame-ancestors 'none'` and `Referrer-Policy: no-referrer`; its one script, the
+Copy button, is allowed by a hash in the page's own policy, and the page works
+without it.
+
+**The Manage link.** `renderServedHtml` puts one constant **Manage** link in an
+element of its own after the "Powered by openartifacts.ai" footer on every served
+document, public and private, whatever the plan's branding says. It points at the
+share page and is omitted when reader sign-in is not configured. It is added on
+the way out and stored nowhere, so the page stays a pure function of the stored
+version and the deployment's configuration, and public pages stay cacheable
+(`RENDER_REVISION` is 7).
+
+It is a constant link and not an owner-only bar because the owner's session lives
+on the API host, and a script on the document origin cannot see it: the cookie is
+`SameSite=Lax`, and cross-site cookies are blocked in third-party frames by
+Safari and Firefox and partitioned in Chrome. A bar that appeared only for owners
+would appear for nobody on public pages. A reader who follows the link gets
+sign-in and then the not-available page, the same thing a private link gives them.
+
+**No one-way door.** An author bar at the top of every published page stays
+possible. The link is injected on the way out, so a later rendering can replace it
+with a bar on every document already published; the bar's identity problem is
+solvable with one user gesture (a top-level popup on the API host, which does see
+the session); and the share page stays the dialog's home either way. What would
+close the door is writing any chrome into R2, promising that served pages carry
+no script, or a serving CSP that forbids a script from the API host, and so none
+of those is done.
 
 ## Plans
 
-The plan is checked on write, in the Worker, and only on the two operations that
-spend it: making a document invited-only, and adding a person. Removing people and
-switching to `anyone` never need it, and reading never checks a plan, so invitees
-never pay. A lapsed plan keeps what exists: private documents stay private and
-current invitees keep reading; new invites and new private documents get
-`402 limit_reached` with `limit: "privateSharing"`.
+The plan is checked on write, in the Worker, and only on the operations that spend
+it: creating a private document (`POST /api/v1/private-docs`), switching a public
+document to invited-only, and adding a person, which includes approving a
+request. Removing people, declining a request and switching to `anyone` never
+need it, naming the mode a document already has is a repeat that never checks,
+and reading never checks a plan, so invitees never pay. A lapsed plan keeps what
+exists: private documents stay private and current invitees keep reading; new
+invites and new private documents get `402 limit_reached` with `limit:
+"privateSharing"`. A lapse never makes a private document public.
 
 A license-key publisher gets the same code and limit with the message "Your Copilot
 plan does not include private sharing." and no `upgrade_url`, because they manage
 their plan in Copilot, not with the OpenArtifacts CLI.
 
-Account plans carry `"privateSharing": true` in `PLAN_LIMITS` (the hosted `pro`
-plan). License keys use `PRIVATE_SHARING_LICENSE_PLANS` in `src/auth.ts` (`plus`).
-Which other plans qualify is a pricing decision, not a code one.
+Which plans qualify is configuration, and the two knobs move together: account
+plans carry `"privateSharing": true` in `PLAN_LIMITS` (the hosted `pro` plan), and
+license keys use `PRIVATE_SHARING_LICENSE_PLANS` in `src/auth.ts` (`plus`). The
+lifetime plans (`pro_lifetime`, and `believer`, sold as Supporter) are off until
+that pricing decision is made.
 
 ## Email
 
-Invites and sign-in codes go through the Cloudflare Email Service `send_email`
-binding from a dedicated sending subdomain, so abuse cannot hurt the brand
-domain's mail reputation. It is optional like the OAuth secrets: without the
-binding no invite is sent and the code form is not offered, and Google and GitHub
-still work.
+Invites, requests to owners and sign-in codes go through the Cloudflare Email
+Service `send_email` binding from a dedicated sending subdomain, so abuse cannot
+hurt the brand domain's mail reputation. `allowed_sender_addresses` pins what the
+Worker may send from. It is optional like the OAuth secrets: without the binding
+no email is sent and the code form is not offered, and Google and GitHub still
+work.
 
-The first add of an address sends one invite: who shared it (the owner's account
-email, when the Worker knows it), the title, the canonical link, and "sign in with
-this address". The address is on the list whether or not the email goes out.
-Invite abuse is bounded by paid-only adds, a per-owner limiter, the sending
-subdomain, and links that always point at the sacrificial domain.
+- **The invite** goes out on the call that adds an address, and an approved
+  request sends this same email. It names who shared it when the Worker knows (the
+  owner's account email, or the linked account's), the title, the canonical link
+  `https://{SERVING_HOST}/d/{docId}`, and "Sign in with this address, {email}, to
+  open it." The address is on the list whether or not the email goes out. Invites
+  are rate-limited per owner by `INVITE_EMAIL_LIMITER`, and only paid plans can add.
+- **The request email** is described above. It is rate-limited by the per-account
+  request limiter that bounds the rows it comes from.
+- **Sign-in codes** are limited by `SIGNIN_EMAIL_LIMITER` per address and
+  `SIGNIN_EMAIL_CLIENT_LIMITER` per client.
+
+Links in emails always point at the sacrificial domain or at our own share page,
+never at a grant and never at a requester-chosen url. Without an email binding the
+`email` field of the access JSON is `false`, the share page says "Invited · send
+them the link" instead of "Invited · email sent", and requests are listed without
+a notice to the owner.
+
+## Self-hosting
+
+Nothing in the shape changes, and nothing is Brevilabs-specific: the Worker, the
+share page, the footer link, the sign-in pages and the email templates all live
+in this repo, and plans are configuration.
+
+**One rule: an unconfigured server is an old server.** Reader sign-in is
+configured when all of these hold (`readerSignInConfigured`, the one predicate
+every gate asks): `READER_SESSION_SECRET` is set and at least 32 characters,
+`SERVING_HOST` and `API_HOST` are set, and at least one sign-in method exists:
+Google or GitHub (both halves of the OAuth pair) or emailed codes (the `EMAIL`
+binding and `EMAIL_FROM`). When it is not, `POST /api/v1/private-docs`, every
+`…/access` route, `…/open`, `/open/*`, `/share/*` and `/signin/*` answer `404`
+exactly as a Worker that predates private sharing does, and served pages carry no
+**Manage** link. Every client already knows what to do: `publish --private`
+reports that the server does not support private documents and creates nothing.
+No half-configured state exists. `GET …/html` is not part of the family and keeps
+working, and `GET /api/v1/docs` still reports each document's stored `linkAccess`.
+
+Removing the secret from a server that already has invited-only documents takes
+them offline and never makes them public: the apex still sends them to `/open`,
+which answers `404`.
+
+**One field:** `email` in the access JSON, `true` when the server can send invite
+and request emails. A deployment with email but no OAuth app works too: codes are
+a complete sign-in method.
+
+**The floor.** Everything here runs on the free Workers plan except email: the
+Email Service binding needs Workers Paid and an onboarded sending domain. The
+wildcard DNS record and the Worker route are free, and Universal SSL covers the
+wildcard when the document host is a zone apex; a document host that is itself a
+subdomain needs a paid certificate for `*.docs.example.net`.
+[deploying.md](deploying.md#self-hosting) has the steps.
 
 ## Revocation and caching
 
 - **Removing a person** takes effect on their next request: 0 seconds, because the
-  list is read live.
+  list is read live. A tab already open keeps what it loaded.
 - **Making a public document private** takes effect on the next request. Copies
   fetched while it was public cannot be recalled, including pinned `/v{n}` pages
   a browser may keep for a year. This is the limit [http-api.md](http-api.md)
-  already states for unshare.
+  already states for unshare, and the share page and the agent both say it.
 - **No private bytes reach a shared cache.** Private responses are
   `private, no-store`, pinned versions included, and the redirect on
-  `openartifacts.site` is `no-store`. Label hosts are never cache-rule targets.
-  When an edge cache exists (see [CLAUDE.md](../CLAUDE.md)), "make private" must
-  purge it exactly as delete does.
+  `openartifacts.site` is `no-store`. Label hosts are never cache-rule targets:
+  the Cache Rule matches the hostname `openartifacts.site` only. When an edge
+  cache exists (see [CLAUDE.md](../CLAUDE.md)), "make private" must purge it
+  exactly as delete does.
 - **Cost:** private reads cannot be cached. A first open costs four Worker
   invocations, three D1 reads and one R2 read; a reload costs one of each.
+
+## What is accepted
+
+- **A publisher's documents share one trust boundary and one browser storage**,
+  as the pages of any website do. A third-party script compromised on one of a
+  publisher's pages could read the signed-in reader's other documents from that
+  same publisher. A page's saved state (`localStorage`, `IndexedDB`) does not
+  carry across a switch between public and private, because a private page runs
+  on its own origin.
+- **The URL grant is not single-use.** Someone who reads one out of a reader's
+  browser history within its 60 seconds could open the document as that reader.
+  Making it single-use costs a D1 write on every open.
+- **Label hosts and the apex are same-site siblings.** `openartifacts.site` is not
+  on the Public Suffix List, so `SameSite` does not separate them, and a
+  document's script can set a cookie for all of `openartifacts.site`. Isolation
+  comes from origin-level controls instead: CORS and `Cross-Origin-Resource-Policy:
+  same-origin` keep other origins from reading a label host, `Cross-Origin-Opener-Policy`
+  cuts popup references, `frame-ancestors 'none'` stops framing, and the Worker
+  reads only its own `__Host-` cookies, so a cookie tossed from the apex can never
+  forge a grant.
+- **Address variants** (`+tag`, Gmail dots) are not folded; the invited address is
+  matched as typed, lowercased. `accounts.email` is the address an account was
+  created with, so someone who left `acme.com` and still signs in with the same
+  GitHub subject would pass an invite meant for the mailbox's next holder. It needs
+  a reassigned mailbox and the link reaching the old holder by another route.
+  Reviewed and accepted.
+- **An owner whose plan has lapsed** can make a private page public but cannot
+  make it private again.
+- **A Copilot owner's grant cookie** expires after an hour; "Open" mints a new one.
+
+## State owed to the manifest
+
+`link_access`, the invite list and the pending requests live only in D1, like the
+title and the deleted flag. They belong in the per-document `manifest.json` that
+[CLAUDE.md](../CLAUDE.md) owes, with the same debt: until it exists, a rebuild
+from R2 would turn every private document public, so treat D1 as the system of
+record for them.
 
 ## Rollback floor
 
 Once any document is invited-only, a Worker older than the private-sharing deploy
 would serve it publicly at its canonical url. That deploy is a hard rollback
-floor; [deploying.md](deploying.md#private-sharing) says where to record it.
+floor, beside the domain cutover's; [deploying.md](deploying.md#rollback-floor)
+says where to record it and what to do instead of rolling back.
 
 ## What is not built
 
-- A web share dialog for CLI publishers. The CLI's `share` command covers them.
 - Domain rules ("anyone at acme.com"), which would be one more `link_access` value.
-- Spaces, and folding of address variants (`+tag`, Gmail dots).
+- Spaces, and folding of address variants.
 - Edge caching, which [#33](https://github.com/Brevilabs/OpenArtifacts/issues/33) owns.
-- Single-use URL grants: someone who reads one out of a reader's history within its
-  60 seconds could open the document as that reader. Making it single-use costs a
-  D1 write on every open.
+- Single-use URL grants, and `canComment`, which has no caller yet.
+- An owner-only bar on the page itself (see "No one-way door").
 
 ## What comes next
 
-[comments.md](comments.md) is blocked on reader identity, which now exists. When
-both ship, a private document's threads resource is served from its label host
-behind the same check, and the comments sidebar keeps its own token because it
-runs in a third-party iframe where cookies are unreliable. Agents as first-class
-participants (a token scoped to one document, issued by the human it acts for) is
-the step after that.
+[comments.md](comments.md) builds on this without moving anything here. Four
+small adjustments, none changing its shape:
+
+1. Call `canRead` from the threads resource and every comment route, so a private
+   document's discussion is as private as its page.
+2. Serve a private document's threads resource on the publisher origin, behind the
+   grant cookie: the grant check slots in front of it.
+3. Derive the sidebar's `frame-ancestors` per document from the document's serving
+   origin (`openartifacts.site` for public, the publisher origin for private)
+   instead of the fixed `https://openartifacts.site`.
+4. Mint the sidebar's token from the reader session. The sidebar runs in a
+   third-party iframe where cookies are unreliable, so it keeps its own bearer
+   token, but its top-level popup on the API host sees the session and can return
+   one with no second provider sign-in.
+
+**Custom domains** are the same seat with a different name. `docs.acme.com`
+resolves to a publisher through a verified host-to-owner mapping (a future
+`publisher_hosts` table: hostname, owner id, verified at), and every rule on the
+label host applies unchanged: the host serves that publisher's documents only,
+each document is authorised live, and a grant cookie reads and nothing else. The
+canonical link stays `https://openartifacts.site/d/{docId}`, because Copilot pins
+it and every invite and receipt carries it; `/open` redirects to whatever the
+document's serving origin is at that moment, so moving a publisher onto a custom
+domain changes no link anyone holds. Nothing is keyed by host: documents,
+invites, requests and comments are keyed by `docId`.
+
+Agents as first-class participants (a token scoped to one document, issued by the
+human it acts for) is the step after that.

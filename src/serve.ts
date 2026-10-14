@@ -96,7 +96,7 @@ const VERSION_SEGMENT = /^v([1-9][0-9]{0,8})$/;
  *   directive invites the wrong conclusion — it is not a phishing defence.
  *   `connect-src` hands the same page a `fetch()`, and `frame-src https:` lets
  *   it embed somebody else's login form governed by somebody else's policy.
- *   No CSP closes phishing on an origin that runs the author's scripts (D6);
+ *   No CSP closes phishing on an origin that runs the publisher's scripts (D6);
  *   what bounds it is the sacrificial host, the paid-key gate, and an origin
  *   holding nothing but public docs.
  * - `frame-ancestors 'none'`: no page may frame a doc. That blocks clickjacking

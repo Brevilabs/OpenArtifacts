@@ -22,7 +22,7 @@
  * arrives already rendered by Obsidian, complete with callouts, dataview output
  * and embedded interactive figures, and stripping or escaping any of it would
  * destroy the fidelity that is the whole reason the client renders HTML. Safety
- * comes from the serving headers and a cookieless sacrificial origin, not from
+ * comes from the serving headers and a sacrificial origin that holds no credential, not from
  * rewriting the publisher's markup. The only edits made here are the additions
  * below.
  *

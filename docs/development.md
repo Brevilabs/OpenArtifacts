@@ -92,3 +92,15 @@ npx wrangler d1 execute symposium --local --command \
 
 With no OAuth client configured the page answers `503` and says approval is not
 set up, which is the same thing a self-hosted deployment without one does.
+
+## Private sharing locally
+
+`npm run dev` empties every host var (see its flags in `package.json`), so the
+router falls back to path prefixes, and a publisher's origin (`{label}.{serving host}`) cannot resolve.
+Private sharing is therefore off locally by its own rule: reader sign-in needs a
+serving host and an API host, so `POST /api/v1/private-docs`, the `…/access`
+routes, `/open`, `/share` and `/signin` answer `404`, exactly as on a server that
+has no sign-in configured. The test suite covers the whole flow, including the
+sign-in pages, the label hosts and the share page, with the hosts set per test.
+Trying it by hand needs a deployment: see
+[Self-hosting](deploying.md#self-hosting) under Private sharing.

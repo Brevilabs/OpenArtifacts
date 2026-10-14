@@ -95,12 +95,28 @@ between pushes. Three ways out, and this is a real decision, not a detail:
 [positioning.md](positioning.md) ends on: agents fetch one predictable threads
 resource instead of parsing them out of the page.
 
-**Comments need reader identity, and there is none.** Reading currently requires
-nothing at all, and an anonymous reader cannot be attributed. Access control is a
-hard prerequisite, not a parallel track, and it is the larger piece of work.
-[private-sharing.md](private-sharing.md) is that work, and it is built: readers
-sign in on the API host and a private document is served from its own origin.
-Comments are the next step on top of it.
+**Comments need reader identity, and it now exists for private documents.** On a
+public document an anonymous reader still cannot be attributed, so commenting
+there needs a signed-in reader. Access control was the hard prerequisite, not a
+parallel track, and it is built: [private-sharing.md](private-sharing.md) has
+readers sign in on the API host (one account, one session), and a private
+document is served from its publisher's origin, `{label}.openartifacts.site`,
+not from `openartifacts.site`. Comments are the next step on top of it, and
+take four adjustments from it, none of which changes the shape of this sketch:
+
+1. Call `canRead` from the threads resource and every comment route, so a private
+   document's discussion is as private as its page.
+2. Serve a private document's threads resource on the publisher's origin, behind
+   the grant cookie, which is how the grant check slots in front of it.
+3. Derive the comments sidebar's `frame-ancestors` per document from the document's serving
+   origin (`openartifacts.site` for public, the publisher's origin for private)
+   instead of the fixed `https://openartifacts.site`.
+4. Mint the sidebar's token from the reader session on the API host, which needs
+   no second provider sign-in; the sidebar keeps its own bearer token because it
+   runs in a third-party iframe where cookies are unreliable.
+
+`doc_invites.role` (`view` or `comment`) and the `canComment` predicate are
+reserved for it; nothing calls them yet.
 
 ## Open questions
 

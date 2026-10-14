@@ -97,6 +97,25 @@ The first approval an address makes is the registration. Nothing about the
 browser is remembered at any point, because the token the CLI holds is the
 credential from then on.
 
+**A reader can also create an account, from `/signin`.** That is the other way in,
+and it is the path of someone who was sent a private link and has never published
+anything. It takes one of two forms, and both end in the same free account on
+`DEFAULT_PLAN`, with the Terms accepted and no newsletter choice:
+
+- **Google or GitHub.** `/signin/start/{provider}` writes a `reader_` row on the
+  same `device_codes` table and sends the person to the same
+  `/approve/callback/{provider}`, which holds the proven identity against the row
+  as in step 5. A new address goes to the Terms page; accepting it creates the
+  account and signs it in.
+- **An emailed code.** A six-digit code proves the mailbox. An address with no
+  account then goes to the Terms page, carrying a signed ten-minute token for the
+  proved address, and accepting them creates the account and signs it in.
+
+Either way the result is a reader session, never a publishing token: a reader
+account can open what it is invited to, and publishes only on a plan that allows
+it, through the same device approval as anyone. The Terms and the account row are
+the registration, exactly as the first approval is for the CLI.
+
 ### Which account a sign-in resolves to
 
 Two different questions, answered by two different columns, and conflating them
@@ -135,6 +154,20 @@ documents, and every token issued against that account from then on. Refusing is
 the only safe answer, because the page cannot tell that case from a second
 account someone genuinely owns, and only one of the two is recoverable if it
 guesses wrong.
+
+**An emailed code is a third way to sign in, and it has one rule of its own: it
+is refused for an address whose account already signs in with Google or GitHub.**
+That account has an `identities` row, and the code would otherwise sign whoever
+holds the mailbox into it, which is the recycled-mailbox case above by another
+door. So the code is checked first, because until it matches nothing has proved
+the person typing holds the mailbox, and only then is the address decided: a
+provider-backed account is refused ("That address signs in with Google or GitHub.
+Use that instead."), an account with no provider is signed in, and an address with
+no account registers. Accounts created by Copilot linking have no `identities` row,
+so they may use codes, which is consistent with Copilot's own magic-link sign-in
+treating control of the mailbox as control of the account. The refusal message does
+disclose that a provider-backed account exists for that address, but only to
+someone who has just proved they hold the mailbox, which is accepted.
 
 The first row is what makes an email change harmless: the account keeps the
 address it was created with, the person keeps their documents, and nothing is
@@ -240,21 +273,29 @@ approval's OAuth handshake lives on the device code's own row: the browser is no
 the thing being authorized, so it has nothing to remember between the three
 requests. A reader's handshake is the exception, because it is the browser being
 signed in: it binds its `state` to the browser that started it with a short-lived
-`__Host-oa_login` cookie on the API host, cleared when the handshake ends.
+`__Host-oa_login` cookie on the API host, cleared when the shared callback ends the
+handshake.
 
 **A reader has exactly one session, and it lives on the API host.** Opening an
 invited-only document needs a reader to sign in once and not again for thirty
 days, which a row on a device code cannot give. `__Host-oa_session` is a signed
-cookie, stateless, set by `/signin` and read only by `/open` (including
+cookie (`HttpOnly`, `Secure`, `SameSite=Lax`, `Path=/`), stateless, and it names an
+`accounts` row, the same principal a publisher is. It is *set* by the sign-in
+routes under `/signin` and by `/approve/callback/{provider}` when that callback
+ends a reader's handshake, and it is *read* by `/open` (including
 `/open/{docId}/request`), `/share/{docId}` and `/signin`, and by nothing under
-`/api/v1` (`src/reader.ts`, `src/share.ts`). It names an `accounts` row, the same principal a publisher is.
+`/api/v1` (`src/reader.ts`, `src/share.ts`; a test asserts the API ignores it).
+Signing out clears it. It is never set on a serving origin.
 
 The rule the cookieless promise was a special case of is now stated outright: **no
-origin that runs more than one author's scripts ever holds a credential.**
+origin that runs more than one publisher's scripts ever holds a credential.**
 `openartifacts.site` still sets no cookie on any response and still holds nothing
-but public documents. A private document is served from `{label}.openartifacts.site`,
-which runs only that author's scripts and holds one cookie, a read-only grant for
-that publisher's origin.
+but public documents. An invited-only document is served from
+`{label}.openartifacts.site`, an origin per publisher that runs only that
+publisher's scripts and holds one cookie, a read-only grant for that publisher's
+origin. The grant names the origin and a principal, not a document: it is a
+`canRead` question asked again for every document on every request, and it is
+refused by `/api/v1` and by every sign-in page.
 [`private-sharing.md`](private-sharing.md) is why, and how access is checked.
 
 ## What this does not do
@@ -349,8 +390,9 @@ A browser confirm token also fits `/approve/confirm` and `/approve/deny`. Only
 the finishing browser receives it, so using either route merely finishes or
 cancels that person's own sign-in and leaves browser consume nothing to spend.
 Whichever of confirm, deny, or browser consume lands first wins; every later use
-fails. Rows expire after ten minutes, the Worker sets no cookie, and no schema
-migration is required.
+fails. Rows expire after ten minutes, the browser-login flow sets no cookie (it keeps
+its state in the website's own signed cookie), and no schema migration is
+required.
 
 #### Copilot accounts
 

@@ -38,9 +38,16 @@ The D1 command prints a `database_id`. Edit `wrangler.jsonc` before continuing:
 1. Give `name`, `bucket_name`, `database_name`, and `database_id` values from
    your account.
 2. Replace `routes` with exactly two `custom_domain` entries: your document host
-   and API host.
-3. Keep only `SERVING_HOST` and `API_HOST` under `vars`, set to those same hosts.
-   A fresh install has no legacy or retired host.
+   and API host. Private sharing is optional and adds one more route, the
+   wildcard `{ "pattern": "*.{your document host}/*", "zone_name": "{your document
+   host}" }`; leave it out and the server has no private sharing. See
+   [Self-hosting](#self-hosting) under Private sharing.
+3. Keep `SERVING_HOST` and `API_HOST` under `vars`, set to those same hosts. A
+   fresh install has no legacy or retired host. `EMAIL_FROM` and the `send_email`
+   block ship pointing at Brevilabs' sending address: set `EMAIL_FROM` and
+   `allowed_sender_addresses` to an address on a domain you have onboarded to
+   Email Service, or delete both if you do not use email (the binding needs
+   Workers Paid).
 4. Leave `workers_dev` set to `false`.
 
 Apply the schema, then seed one publisher. Authentication is not pluggable yet:
@@ -105,7 +112,8 @@ means no view events at all.** Those protect your own D1 write budget, so an
 absent one costs only your installation; this one is the only thing between an
 anonymous public url and a metered PostHog bill, so its absence has to refuse
 rather than allow. A deployment without it records publication events and no
-readership. `namespace_id` is unique per account, like the four below.
+readership. `namespace_id` is unique per account, like the sign-in and private-sharing
+limiters below.
 
 **Then set a billing limit on the PostHog project, before the deploy rather than
 after it.** The limiter is per document; the bill is not, and the aggregate
@@ -188,7 +196,7 @@ itself would exhaust the account's daily write budget — see
 [cost at scale](cost-at-scale.md).
 
 For a public deployment, add WAF rate limiting rules on `POST /device/code`,
-`POST /device/token`, and `/approve` as a second layer. The binding runs inside
+`POST /device/token`, `/approve` and `/signin` as a second layer. The binding runs inside
 the Worker, so a request it refuses has still been billed as a request; a WAF
 rule refuses at the edge before that.
 
@@ -199,6 +207,24 @@ Deploy manually until you have adapted all of those values for your account.
 `workers_dev` is disabled, so the Worker answers nowhere until the two custom
 domains attach. The first deploy creates their DNS records; do not create
 conflicting records by hand.
+
+### The private-sharing limiters
+
+Four more optional bindings protect the email and request paths private sharing
+adds. Each is declared in the same `ratelimits` array, with its own
+`namespace_id`, and each follows the rule of the four above: **absent means no
+limit**, and everything else works the same.
+
+| Binding | Namespace | Allowance | Keyed by |
+| --- | --- | --- | --- |
+| `SIGNIN_EMAIL_LIMITER` | `1006` | 3 per 60 s | the address a sign-in code is sent to (hashed) |
+| `SIGNIN_EMAIL_CLIENT_LIMITER` | `1009` | 10 per 60 s | the client address, so one caller cannot use the form to mail codes to many addresses |
+| `INVITE_EMAIL_LIMITER` | `1007` | 20 per 60 s | the publisher (hashed), so a license key, its linked account and the share page draw on one allowance. Over it, the person is still added and only the email is skipped. |
+| `REQUEST_ACCESS_LIMITER` | `1008` | 10 per 60 s | the requesting account (hashed). Over it, nothing is stored and the page still says "Request sent". It bounds both the rows an account can write and the emails those rows send owners. |
+
+Starting a Google or GitHub reader sign-in, and checking a code that was sent, are
+counted by `APPROVAL_LOOKUP_LIMITER`, per client; the existing binding is reused,
+not a fifth one.
 
 ## Brevilabs one-deploy cutover
 
@@ -369,24 +395,29 @@ and closing it needs a billing plan that allows required reviewers.
 
 ## Rolling back
 
-Every deploy creates an immutable version and Cloudflare keeps them all. The
-OpenArtifacts cutover has a hard floor: never activate a version older than the
-`Current Version ID` recorded in `Brevilabs/OpenArtifacts#47` while any of the
-two new domains or the retired API domain remains attached. Older versions
-route the new hosts by path, exposing the wrong surface, and make
-`api.symposium.md` a working API again.
+Every deploy creates an immutable version and Cloudflare keeps them all. There are
+two hard floors, and the effective floor is **the newer of the two**.
+
+- **The domain cutover.** Never activate a version older than the
+  `Current Version ID` recorded in `Brevilabs/OpenArtifacts#47` while any of the
+  two new domains or the retired API domain remains attached. Older versions
+  route the new hosts by path, exposing the wrong surface, and make
+  `api.symposium.md` a working API again.
+- **Private sharing.** Never activate a version older than the first version that
+  contains private sharing once any document is invited-only: older versions serve
+  it publicly at its canonical url. See [Rollback floor](#rollback-floor).
 
 ```bash
 npx wrangler versions list          # ids, timestamps, and the commit in Message
-npx wrangler rollback <version-id>  # cutover floor or newer only
+npx wrangler rollback <version-id>  # the newer of the two floors, or later
 ```
 
 Or the dashboard: **Compute (Workers) → symposium → Deployments**, then
-**⋯ → Rollback** on a version at or above the recorded cutover floor. Do not use
+**⋯ → Rollback** on a version at or above the newer recorded floor. Do not use
 the default immediate-predecessor rollback for the initial cutover because that
 predecessor is unsafe.
 
-If a pre-floor version is ever required, first detach all three of these custom
+If a pre-cutover version is ever required, first detach all three of these custom
 domains and verify none invokes this Worker:
 
 - `openartifacts.site`;
@@ -398,9 +429,14 @@ those three entries from the Worker. Removing a DNS record alone is not enough.
 Refresh that page and proceed only when `symposium.site` is the sole custom
 domain still attached. Then roll back. Documents will serve natively on the old
 host, but every API will be offline until a corrected four-host version is
-deployed. This is the only pre-floor rollback that keeps the retired API retired
+deployed. This is the only pre-cutover rollback that keeps the retired API retired
 and prevents cross-surface access. Never run `wrangler deploy` from an old
 checkout: its config would reattach the old API.
+
+**There is no equivalent emergency procedure below the private-sharing floor.**
+Detaching domains does not help: any older version that serves the apex serves an
+invited-only document's bytes to anyone with the link. Once a document is
+invited-only, fix forward, with a new deploy.
 
 **Rollback reverts code and nothing else.** D1 rows and R2 objects written by
 the bad version stay written, which is the other half of why migrations are not
@@ -420,27 +456,34 @@ says what each piece is for.
 
 ### One-time setup, before the deploy
 
-1. **The signing secret.** At least 32 random characters. Without it private
-   sharing is off: documents stay public, and a request to make one invited-only
-   is refused.
+1. **The signing secret.** At least 32 random characters; a shorter one counts as
+   unset. Without it, or on a server that has no way to sign anyone in (see
+   [Self-hosting](#self-hosting)), private sharing is off: the whole private
+   family answers `404 not_found` exactly as the Worker running now does, no page
+   carries a `Manage` link, and every document stays public.
 
    ```bash
    openssl rand -hex 32 | npx wrangler secret put READER_SESSION_SECRET
    ```
 
-   Rotating it signs every reader out.
+   Rotating it signs every reader out. **Removing it after documents have gone
+   invited-only takes them offline and never makes them public:** the apex still
+   sends them to `/open`, which answers `404`.
 2. **The wildcard DNS record.** In the `openartifacts.site` zone, a proxied
    `*.openartifacts.site` record, `AAAA` to `100::`. The route that catches it,
    `*.openartifacts.site/*`, is in `wrangler.jsonc` (a custom domain cannot be a
    wildcard). Universal SSL already covers first-level wildcards. The Worker
    serves only a 26-character label there and fails closed on every other
-   subdomain.
+   subdomain. This is one publisher origin per publisher
+   (`{label}.openartifacts.site`), not one per document, so it is the only record
+   and route needed however many documents there are.
 3. **The sending domain.** Onboard `mail.openartifacts.ai` in Cloudflare Email
    Service (Compute → Email Service → Email Sending → Onboard Domain). The
-   `send_email` binding and `EMAIL_FROM` (`share@mail.openartifacts.ai`) are in
-   `wrangler.jsonc`; a subdomain keeps abuse off the brand domain's mail
-   reputation. Without the binding no invite is sent and the emailed-code form is
-   not offered; Google and GitHub still work.
+   `send_email` binding (with `allowed_sender_addresses` pinned to the sender) and
+   `EMAIL_FROM` (`share@mail.openartifacts.ai`) are in `wrangler.jsonc`; a
+   subdomain keeps abuse off the brand domain's mail reputation. Without the
+   binding no email is sent and the emailed-code form is not offered; Google and
+   GitHub still work.
 4. **Migration `0014`.** `npx wrangler d1 migrations apply symposium --remote`.
    The deploy workflow refuses to ship over an unapplied migration, and the
    running Worker ignores the new column and tables. Apply migrations only from
@@ -449,9 +492,16 @@ says what each piece is for.
    is new since the last deploy as an addition, so it would not catch a draft's
    version having been applied.
 
-Which plans include private sharing is configuration: `privateSharing` on the
-account plan in `PLAN_LIMITS`, and `PRIVATE_SHARING_LICENSE_PLANS` in
-`src/auth.ts`. Set both to the pricing decision before the deploy.
+Google and GitHub reader sign-in reuse the OAuth apps and the
+`/approve/callback/{provider}` redirect URLs already registered for device
+approval, so no new OAuth registration is needed. The four private-sharing
+limiters are declared in `wrangler.jsonc` and described under
+[The private-sharing limiters](#the-private-sharing-limiters).
+
+Which plans include private sharing is configuration, and the pull request sets
+it: `privateSharing` on the `pro` account plan in `PLAN_LIMITS`, and
+`PRIVATE_SHARING_LICENSE_PLANS` in `src/auth.ts` (`plus`). It is not a step an
+operator performs, and the two move together.
 
 ### Launch, in one sitting
 
@@ -469,18 +519,57 @@ are the only visible change.
 
 Once any document is invited-only, a Worker older than this deploy would serve it
 publicly at its canonical url. **Never activate a version older than the first
-version that contains private sharing.** Record that version's id as the hard
-floor in the deployment record, as the domain cutover did, and see
-[Rolling back](#rolling-back).
+version that contains private sharing.** After the deploy in step 2, record that
+version's `Current Version ID`, the deployed commit SHA and the workflow-run link
+in a comment on `Brevilabs/OpenArtifacts#95`, the issue that tracks this work, as
+the cutover did on `#47`; that comment is the durable record. The effective floor
+is the newer of this one and the cutover floor, and [Rolling back](#rolling-back)
+says what to do instead of going below it: nothing, because there is no safe
+pre-floor emergency rollback once a document is invited-only. Roll forward.
 
 ### Self-hosting
 
-Private sharing is on when `READER_SESSION_SECRET` is set and `SERVING_HOST` and
-`API_HOST` are configured. The document host needs to be a zone apex so the free
-wildcard certificate covers its subdomains; add the `*.{SERVING_HOST}/*` route and
-the proxied wildcard record yourself. Email and the limiters
-(`SIGNIN_EMAIL_LIMITER`, `SIGNIN_EMAIL_CLIENT_LIMITER`, `INVITE_EMAIL_LIMITER`,
-`REQUEST_ACCESS_LIMITER`) are optional.
+Private sharing needs no Brevilabs service, and a self-hoster gets the whole
+feature. It is on when **reader sign-in is configured**, which is all of:
+
+- `READER_SESSION_SECRET` set to at least 32 characters (step 1 above);
+- `SERVING_HOST` and `API_HOST` set (the Worker's `vars`);
+- the wildcard route `{ "pattern": "*.{SERVING_HOST}/*", "zone_name":
+  "{SERVING_HOST}" }` in `routes`, and a proxied wildcard DNS record
+  `*.{SERVING_HOST}` `AAAA` to `100::` in the zone; and
+- at least one way to sign in: a Google or GitHub OAuth app (both halves of the
+  pair, as for device approval) or Email Service for emailed codes.
+
+Without a sign-in method, or without the secret, the server simply has no private
+sharing: it answers the family `404` like a Worker that predates the feature,
+every document stays public, and clients say "this server does not support private
+documents". There is no half-configured state.
+
+**The document host must be a zone apex.** Universal SSL covers `*.example.net`
+only when `example.net` is the zone. A document host that is itself a subdomain
+(`docs.example.net`) would need a paid wildcard certificate for
+`*.docs.example.net`, so use a registrable domain as the document host.
+
+Optional pieces, none of which blocks the rest:
+
+- **Google and GitHub.** Register the callback URLs as for device approval; nothing
+  else is new.
+- **Email Service**, for invite emails, request emails and sign-in codes. It needs
+  Workers Paid and a sending domain you have onboarded. Set `EMAIL_FROM` and
+  `allowed_sender_addresses` in `wrangler.jsonc` to an address on that domain. On a
+  free plan, delete the `send_email` block and `EMAIL_FROM`; the access JSON then
+  reports `"email": false`, the share page says "Invited · send them the link", and
+  the owner sends the link themselves. A deployment with email and no OAuth app
+  works too: codes are a complete sign-in method.
+- **The four limiters** in [The private-sharing limiters](#the-private-sharing-limiters).
+
+Plans are configuration. A seeded key with `plan = 'plus'` gets private sharing the
+moment `PRIVATE_SHARING_LICENSE_PLANS` includes `plus`, and browser accounts get it
+through `"privateSharing": true` in your own `PLAN_LIMITS` plus `DEFAULT_PLAN`. The
+license server stays optional. `scripts/smoke.sh` is unchanged; the private flow
+needs a browser and is verified by hand: publish with `--private`, open the link
+signed out, sign in, read, request access as another account, approve, remove, and
+switch to `anyone`.
 
 ## Standalone account launch order
 
