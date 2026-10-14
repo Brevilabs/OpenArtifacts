@@ -53,9 +53,16 @@ export function createClient({ host, token, fetcher = fetch }) {
         method: "POST",
         body: JSON.stringify({ device_code: deviceCode }),
       }),
-    /** @param {{title?: string, html: string, linkAccess?: "anyone" | "invited"}} body */
+    /** @param {{title?: string, html: string}} body */
     createDoc: (body) =>
       request("/api/v1/docs", { method: "POST", body: JSON.stringify(body) }),
+    /**
+     * Create a document that is private from its first request. A server without
+     * private sharing answers 404, which reaches the caller as an APIError.
+     * @param {{title?: string, html: string}} body
+     */
+    createPrivateDoc: (body) =>
+      request("/api/v1/private-docs", { method: "POST", body: JSON.stringify(body) }),
     /** @param {string} docId @param {{title?: string, html: string}} body */
     updateDoc: (docId, body) =>
       request(`/api/v1/docs/${encodeURIComponent(docId)}`, {
@@ -73,8 +80,6 @@ export function createClient({ host, token, fetcher = fetch }) {
       } while (cursor);
       return docs;
     },
-    /** @param {string} url */
-    readDocument: (url) => request(url, {}, [], false),
     /** The owner's latest stored HTML, which works once a page is private. @param {string} docId */
     getHtml: (docId) => request(`/api/v1/docs/${encodeURIComponent(docId)}/html`),
     /** @param {string} docId */
@@ -93,6 +98,11 @@ export function createClient({ host, token, fetcher = fetch }) {
     /** @param {string} docId @param {string} email */
     removePerson: (docId, email) =>
       request(`/api/v1/docs/${encodeURIComponent(docId)}/access/people/${encodeURIComponent(email)}`, {
+        method: "DELETE",
+      }),
+    /** Decline a pending request. It is idempotent and tells the requester nothing. @param {string} docId @param {string} email */
+    declineRequest: (docId, email) =>
+      request(`/api/v1/docs/${encodeURIComponent(docId)}/access/requests/${encodeURIComponent(email)}`, {
         method: "DELETE",
       }),
     /** @param {string} docId */

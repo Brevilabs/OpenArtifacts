@@ -150,16 +150,25 @@ test("publish reads only HTML files and parses its options before authentication
   await writeFile(markdown, "# Not rendered here");
   assert.deepEqual(await preparePublish(page, []), {
     docId: undefined,
+    private: false,
     body: { title: "My Page", html: "<!doctype html><p>kept</p>" },
   });
   assert.deepEqual(await preparePublish(page, ["--doc-id", "9f2k4mvq7t0xbz3n", "--title", "Notes"]), {
     docId: "9f2k4mvq7t0xbz3n",
+    private: false,
     body: { title: "Notes", html: "<!doctype html><p>kept</p>" },
   });
   // An update without --title omits the field so the server keeps the current title.
   assert.deepEqual(await preparePublish(page, ["--doc-id", "9f2k4mvq7t0xbz3n"]), {
     docId: "9f2k4mvq7t0xbz3n",
+    private: false,
     body: { html: "<!doctype html><p>kept</p>" },
+  });
+  // --private selects the private route; it never rides in the body.
+  assert.deepEqual(await preparePublish(page, ["--private"]), {
+    docId: undefined,
+    private: true,
+    body: { title: "My Page", html: "<!doctype html><p>kept</p>" },
   });
   await assert.rejects(preparePublish(markdown, []), /HTML file.*Render other formats/);
   await assert.rejects(preparePublish(page, ["--title"]), /Usage: openartifacts/);
@@ -182,7 +191,7 @@ test("publish reads only HTML files and parses its options before authentication
 
 async function publishingServer() {
   const requests = [];
-  const control = { staleUpdates: false, missingDeletes: false, echoLinkAccess: false };
+  const control = { staleUpdates: false, missingDeletes: false, privateDocs: true };
   const server = createServer((request, response) => {
     let body = "";
     request.setEncoding("utf8");
@@ -198,7 +207,17 @@ async function publishingServer() {
       const docId = "9f2k4mvq7t0xbz3n";
       const url = `http://${request.headers.host}/d/${docId}`;
       if (request.url.includes("/access")) {
-        response.end(JSON.stringify({ docId, url, linkAccess: "invited", people: [{ email: "alice@acme.com", addedAt: 1 }] }));
+        response.end(JSON.stringify({
+          docId, url, linkAccess: "invited", email: true,
+          people: [{ email: "alice@acme.com", role: "comment", addedAt: 1 }],
+          requests: [{ email: "bob@other.com", requestedAt: 2 }],
+        }));
+        return;
+      }
+      // A Worker that predates private sharing has no such route.
+      if (request.url === "/api/v1/private-docs" && !control.privateDocs) {
+        response.statusCode = 404;
+        response.end(JSON.stringify({ error: { code: "not_found", message: "No API route for /api/v1/private-docs" } }));
         return;
       }
       if ((request.method === "PUT" && control.staleUpdates) || (request.method === "DELETE" && control.missingDeletes)) {
@@ -212,9 +231,8 @@ async function publishingServer() {
         return;
       }
       response.statusCode = request.method === "POST" ? 201 : 200;
-      // A server without private sharing ignores `linkAccess`, so it never echoes it.
-      const echoed = control.echoLinkAccess && body ? { linkAccess: JSON.parse(body).linkAccess } : {};
-      response.end(JSON.stringify({ docId, url, version: requests.length, ...echoed }));
+      const mode = request.url === "/api/v1/private-docs" ? { linkAccess: "invited" } : {};
+      response.end(JSON.stringify({ docId, url, version: requests.length, ...mode }));
     });
   });
   server.listen(0, "127.0.0.1");
@@ -260,7 +278,7 @@ test("publish creates, --doc-id updates, and unshare withdraws using the environ
   assert.deepEqual(remote.requests[1].body, { html });
 });
 
-test("share changes one thing per flag and prints who has access", async () => {
+test("share changes one thing per flag, then prints the access list, requests and the share page", async () => {
   const remote = await publishingServer();
   try {
     await withEnvironment({
@@ -268,10 +286,15 @@ test("share changes one thing per flag and prints who has access", async () => {
       OPENARTIFACTS_API_HOST: remote.host,
       OPENARTIFACTS_TOKEN: "opaque-test-token",
     }, async (lines) => {
-      await main(["share", "9f2k4mvq7t0xbz3n", "--link", "invited", "--add", "alice@acme.com", "--remove", "bob@acme.com"]);
+      await main(["share", "9f2k4mvq7t0xbz3n", "--link", "invited", "--add", "alice@acme.com", "--remove", "bob@acme.com", "--decline", "bob@other.com"]);
       await main(["share", "9f2k4mvq7t0xbz3n"]);
       assert.equal(lines.length, 2);
-      assert.deepEqual(JSON.parse(lines[1]).people, [{ email: "alice@acme.com", addedAt: 1 }]);
+      // The share page is on the API host the CLI talks to, and the output stays one JSON document.
+      const printed = JSON.parse(lines[1]);
+      assert.deepEqual(printed.people, [{ email: "alice@acme.com", role: "comment", addedAt: 1 }]);
+      assert.deepEqual(printed.requests, [{ email: "bob@other.com", requestedAt: 2 }]);
+      assert.equal(printed.manageUrl, `${remote.host}/share/9f2k4mvq7t0xbz3n`);
+      assert.equal(JSON.parse(lines[0]).manageUrl, printed.manageUrl);
       // Options are read before any request, and there is no flag that sends a whole list.
       await assert.rejects(main(["share", "9f2k4mvq7t0xbz3n", "--add"]), /Usage: openartifacts/);
       await assert.rejects(main(["share", "9f2k4mvq7t0xbz3n", "--people", "a@b.c"]), /Usage: openartifacts/);
@@ -283,11 +306,12 @@ test("share changes one thing per flag and prints who has access", async () => {
     ["PUT", "/api/v1/docs/9f2k4mvq7t0xbz3n/access", { linkAccess: "invited" }],
     ["PUT", "/api/v1/docs/9f2k4mvq7t0xbz3n/access/people/alice%40acme.com", undefined],
     ["DELETE", "/api/v1/docs/9f2k4mvq7t0xbz3n/access/people/bob%40acme.com", undefined],
+    ["DELETE", "/api/v1/docs/9f2k4mvq7t0xbz3n/access/requests/bob%40other.com", undefined],
     ["GET", "/api/v1/docs/9f2k4mvq7t0xbz3n/access", undefined],
   ]);
 });
 
-test("publish --private withdraws the page when the server does not echo the private mode", async () => {
+test("publish --private creates through /private-docs and reports the share page", async () => {
   const directory = await mkdtemp(join(tmpdir(), "openartifacts-private-"));
   const page = join(directory, "notes.html");
   await writeFile(page, "<p>Private</p>");
@@ -298,24 +322,60 @@ test("publish --private withdraws the page when the server does not echo the pri
       OPENARTIFACTS_API_HOST: remote.host,
       OPENARTIFACTS_TOKEN: "opaque-test-token",
     }, async (lines) => {
-      // An older or self-hosted Worker created a public page: it must not survive the command.
-      await assert.rejects(main(["publish", page, "--private"]), /does not support private documents.*withdrawn/);
-      assert.deepEqual(remote.requests.map(({ method }) => method), ["POST", "DELETE"]);
-      assert.deepEqual(remote.requests[0].body, { title: "notes", html: "<p>Private</p>", linkAccess: "invited" });
-      assert.deepEqual(lines, []);
-
-      // A server that echoes the mode keeps the page, and prints the receipt.
-      remote.control.echoLinkAccess = true;
       await main(["publish", page, "--private"]);
-      assert.deepEqual(remote.requests.map(({ method }) => method), ["POST", "DELETE", "POST"]);
-      assert.equal(JSON.parse(lines[0]).linkAccess, "invited");
+      assert.deepEqual(remote.requests.map(({ method, path }) => [method, path]), [["POST", "/api/v1/private-docs"]]);
+      // The mode is the route; the body is the same as a public create.
+      assert.deepEqual(remote.requests[0].body, { title: "notes", html: "<p>Private</p>" });
+      assert.deepEqual(JSON.parse(lines[0]), {
+        docId: "9f2k4mvq7t0xbz3n",
+        url: `${remote.host}/d/9f2k4mvq7t0xbz3n`,
+        version: 1,
+        linkAccess: "invited",
+        manageUrl: `${remote.host}/share/9f2k4mvq7t0xbz3n`,
+      });
 
       // Access to an existing page changes through share, never through publish.
       await assert.rejects(main(["publish", page, "--private", "--doc-id", "9f2k4mvq7t0xbz3n"]), /share <docId> --link invited/);
+      assert.equal(remote.requests.length, 1);
     });
   } finally {
     remote.server.close();
   }
+});
+
+test("publish --private against a server without private documents creates nothing", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openartifacts-private-old-"));
+  const page = join(directory, "notes.html");
+  await writeFile(page, "<p>Private</p>");
+  const remote = await publishingServer();
+  remote.control.privateDocs = false;
+  try {
+    await withEnvironment({
+      OPENARTIFACTS_CONFIG_DIR: join(directory, "config"),
+      OPENARTIFACTS_API_HOST: remote.host,
+      OPENARTIFACTS_TOKEN: "opaque-test-token",
+    }, async (lines) => {
+      await assert.rejects(main(["publish", page, "--private"]), (error) =>
+        error.message === "This server does not support private documents. Nothing was published.");
+      assert.deepEqual(lines, []);
+    });
+    // The process exit code is the failure the agent sees.
+    const result = await cliProcess(["publish", page, "--private"], {
+      OPENARTIFACTS_CONFIG_DIR: join(directory, "config"),
+      OPENARTIFACTS_API_HOST: remote.host,
+      OPENARTIFACTS_TOKEN: "opaque-test-token",
+    });
+    assert.notEqual(result.code, 0);
+    assert.match(result.stderr, /This server does not support private documents\. Nothing was published\./);
+    assert.equal(result.stdout, "");
+  } finally {
+    remote.server.close();
+  }
+  // One attempt per run and nothing else: no public create, no delete.
+  assert.deepEqual(remote.requests.map(({ method, path }) => [method, path]), [
+    ["POST", "/api/v1/private-docs"],
+    ["POST", "/api/v1/private-docs"],
+  ]);
 });
 
 test("a stale --doc-id is reported, never silently replaced", async () => {

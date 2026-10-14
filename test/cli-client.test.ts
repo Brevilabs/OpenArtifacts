@@ -46,24 +46,25 @@ describe("the CLI client against the local Worker", () => {
     } satisfies Partial<APIError>);
 
     const issued = await issueToken();
-    let documentAuthorization: string | null | undefined;
-    const observedFetch: typeof fetch = async (input, init) => {
-      const request = new Request(input, init);
-      if (new URL(request.url).pathname.startsWith("/d/")) {
-        documentAuthorization = request.headers.get("authorization");
-      }
-      return localFetch(request);
-    };
-    const client = createClient({ host: ORIGIN, token: issued.token, fetcher: observedFetch });
+    const client = createClient({ host: ORIGIN, token: issued.token, fetcher: localFetch });
     const created = await client.createDoc({ title: "CLI", html: "<!doctype html><p>one</p>" });
     const updated = await client.updateDoc(created.docId, { title: "CLI", html: "<!doctype html><p>two</p>" });
     expect(updated).toMatchObject({ docId: created.docId, version: 2, url: created.url });
     expect(await client.listDocs()).toContainEqual(expect.objectContaining({ docId: created.docId }));
-    expect(await client.readDocument(created.url)).toContain("<p>two</p>");
-    expect(documentAuthorization).toBeNull();
+    expect(await client.getHtml(created.docId)).toContain("<p>two</p>");
     expect(await client.listTokens()).toMatchObject({ tokens: [expect.objectContaining({ tokenId: issued.id })] });
     await client.unshare(created.docId);
-    await expect(client.readDocument(created.url)).rejects.toMatchObject({ status: 410 });
+    await expect(client.getHtml(created.docId)).rejects.toMatchObject({ status: 404 });
     expect(await client.revoke(issued.id)).toEqual({ tokenId: issued.id, remaining: 0 });
+  });
+
+  it("reaches a server without reader sign-in as a 404 that creates nothing", async () => {
+    const issued = await issueToken();
+    const client = createClient({ host: ORIGIN, token: issued.token, fetcher: localFetch });
+    await expect(client.createPrivateDoc({ title: "Private", html: "<p>x</p>" })).rejects.toMatchObject({
+      status: 404,
+      code: "not_found",
+    } satisfies Partial<APIError>);
+    expect(await client.listDocs()).toEqual([]);
   });
 });

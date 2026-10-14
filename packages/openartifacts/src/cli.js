@@ -224,10 +224,12 @@ Commands:
   account [--open]   Refresh plan, limits, and usage; open account management with --open
   publish <file.html> [--title <title>] [--doc-id <docId>] [--private]
                      Publish an HTML file; pass --doc-id to update an existing document,
-                     or --private to publish it for invited people only
-  share <docId> [--add <email>] [--remove <email>] [--link anyone|invited]
-                     Show who a document is shared with, or change it
-  list               List published documents
+                     or --private to create it for invited people only (on a server
+                     that supports private documents; otherwise nothing is created)
+  share <docId> [--add <email>] [--remove <email>] [--decline <email>] [--link anyone|invited]
+                     Show who can open a document, pending requests and its share page,
+                     or change it; --add also approves a request
+  list               List published documents and their link access
   get <docId>        Print a document's current HTML
   unshare <docId>    Withdraw a document
   tokens             List this account's machine tokens
@@ -238,7 +240,7 @@ Commands:
  * defaults the title to the file name; an update omits it so the server keeps the
  * current title unless --title was given.
  * @param {string} file @param {string[]} options
- * @returns {Promise<{docId?: string, body: {title?: string, html: string, linkAccess?: "invited"}}>}
+ * @returns {Promise<{docId?: string, private: boolean, body: {title?: string, html: string}}>}
  */
 export async function preparePublish(file, options) {
   if (![".html", ".htm"].includes(extname(file).toLowerCase())) {
@@ -266,26 +268,38 @@ export async function preparePublish(file, options) {
   const title = flags.title ?? (flags.docId ? undefined : basename(path, extname(path)));
   return {
     docId: flags.docId,
-    body: { ...(title === undefined ? {} : { title }), html, ...(flags.private ? { linkAccess: "invited" } : {}) },
+    private: flags.private === true,
+    body: { ...(title === undefined ? {} : { title }), html },
   };
 }
 
 /**
+ * The share page of a document, on the API host the CLI is talking to. It is
+ * not derived from the document's url, which is on the serving domain.
+ * @param {string} host @param {string} docId
+ */
+function manageUrl(host, docId) {
+  return `${host}/share/${encodeURIComponent(docId)}`;
+}
+
+/**
  * The access changes `share` was asked for, in order, read before any
- * authentication. Each flag changes one thing: one address added, one removed,
- * or the link setting. There is no way to send a whole list, so a retry or a
- * mistake cannot remove everyone.
+ * authentication. Each flag changes one thing: one address added (which also
+ * approves its request), one removed, one request declined, or the link
+ * setting. There is no way to send a whole list, so a retry or a mistake cannot
+ * remove everyone.
  * @param {string[]} options
- * @returns {Array<["link" | "add" | "remove", string]>}
+ * @returns {Array<["link" | "add" | "remove" | "decline", string]>}
  */
 export function prepareShare(options) {
-  /** @type {Array<["link" | "add" | "remove", string]>} */
+  /** @type {Array<["link" | "add" | "remove" | "decline", string]>} */
   const changes = [];
   for (let index = 0; index < options.length; index += 2) {
     const [flag, value] = [options[index], options[index + 1]];
     if (!value || value.startsWith("--")) throw new Error(HELP);
     if (flag === "--add") changes.push(["add", value]);
     else if (flag === "--remove") changes.push(["remove", value]);
+    else if (flag === "--decline") changes.push(["decline", value]);
     else if (flag === "--link" && (value === "anyone" || value === "invited")) changes.push(["link", value]);
     else throw new Error(HELP);
   }
@@ -353,37 +367,56 @@ export async function main(args) {
     try {
       const published = prepared.docId
         ? await client.updateDoc(prepared.docId, prepared.body)
-        : await client.createDoc(prepared.body);
-      // A server that predates private sharing ignores `linkAccess` and creates a
-      // public page. It never shows the url to anyone, so withdraw it before the
-      // caller can pass it on.
-      if (prepared.body.linkAccess === "invited" && published.linkAccess !== "invited") {
-        try {
-          await client.unshare(published.docId);
-        } catch {
-          throw new Error(`This server does not support private documents, and withdrawing the new public page failed. Run \`openartifacts unshare ${published.docId}\` now.`);
-        }
-        throw new Error("This server does not support private documents. The new page was withdrawn.");
-      }
-      console.log(JSON.stringify(published));
+        : prepared.private
+          ? await client.createPrivateDoc(prepared.body)
+          : await client.createDoc(prepared.body);
+      // A 201 from the private route proves the server has the share page, and the
+      // skill ends its report with this url even when the user named nobody.
+      console.log(JSON.stringify(prepared.private
+        ? { ...published, manageUrl: manageUrl(host, published.docId) }
+        : published));
     } catch (error) {
       if (prepared.docId && error instanceof APIError && error.status === 404) {
         error.message += ` No document ${prepared.docId} is in this account. Publish without --doc-id to create a new document.`;
       }
+      // A Worker that predates private sharing, and one without reader sign-in,
+      // both answer 404 and create nothing. There is no fallback to a public page.
+      if (prepared.private && error instanceof APIError && error.status === 404) {
+        throw new Error("This server does not support private documents. Nothing was published.");
+      }
       throw error;
     }
   } else if (command === "share") {
-    let access;
-    for (const [change, target] of changes) {
-      access = change === "link"
-        ? await client.setLinkAccess(value, /** @type {"anyone" | "invited"} */ (target))
-        : change === "add" ? await client.addPerson(value, target) : await client.removePerson(value, target);
+    try {
+      let access;
+      for (const [change, target] of changes) {
+        access = change === "link"
+          ? await client.setLinkAccess(value, /** @type {"anyone" | "invited"} */ (target))
+          : change === "add" ? await client.addPerson(value, target)
+            : change === "remove" ? await client.removePerson(value, target)
+              : await client.declineRequest(value, target);
+      }
+      access ??= await client.getAccess(value);
+      console.log(JSON.stringify({ ...access, manageUrl: manageUrl(host, value) }, null, 2));
+    } catch (error) {
+      // Not yours, deleted, an older Worker and a server without reader sign-in all
+      // answer 404, and the CLI cannot tell them apart.
+      if (error instanceof APIError && error.status === 404) {
+        error.message = "Not found, or this server does not support private documents.";
+      }
+      throw error;
     }
-    console.log(JSON.stringify(access ?? await client.getAccess(value), null, 2));
   } else if (command === "list") {
     console.log(JSON.stringify(await client.listDocs(), null, 2));
   } else if (command === "get") {
-    process.stdout.write(await client.getHtml(value));
+    try {
+      process.stdout.write(await client.getHtml(value));
+    } catch (error) {
+      if (error instanceof APIError && error.status === 404) {
+        error.message += ` No document ${value} is in this account, or this server predates \`get\` for private documents.`;
+      }
+      throw error;
+    }
   } else if (command === "unshare") {
     await client.unshare(value);
     console.log(`Unshared ${value}.`);

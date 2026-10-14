@@ -36,25 +36,33 @@ to publish, the agent runs:
 openartifacts publish notes.html --title "Notes"
 ```
 
-The command prints `{"docId","url","version"}`. Updating the same page is the same
+The command prints `{"docId","url","version"}` (a private publish adds `linkAccess` and `manageUrl`). Updating the same page is the same
 command with `--doc-id <docId>`, which serves the next version at the same url.
 `openartifacts unshare <docId>` withdraws a page. `list`, `get`, `tokens`, and
 `revoke` round out the account commands.
 
 Pages are public by default. `publish --private` creates a page for invited people
-only, and `share` changes who can read one:
+only, through `POST /api/v1/private-docs`, and `share` changes who can read one:
 
 ```bash
-openartifacts share <docId> --add alice@acme.com   # emails her the link
+openartifacts share <docId> --add alice@acme.com   # invites her (and approves her request)
 openartifacts share <docId> --remove alice@acme.com
+openartifacts share <docId> --decline bob@other.com # decline a request, silently
 openartifacts share <docId> --link anyone          # public again, same url
 openartifacts share <docId>                        # print who has access
 ```
 
+`share <docId>` prints the access JSON: who can open the document, the pending access
+requests, whether the server sends invitation emails (`email`), and a `manageUrl`, the
+page where the owner manages access in a browser. `--add` also approves a pending
+request. Where the server sends email, an added person is emailed the link; otherwise
+send it to them yourself. `publish --private` prints `{"docId","url","version","linkAccess","manageUrl"}`.
 Invited people sign in once with the invited address (Google, GitHub or an emailed
-code) and open the same url. Private sharing is a paid feature, and a server that
-predates it is detected: `publish --private` withdraws the page it just made rather
-than leave it public.
+code) and open the same url. Private sharing is a paid feature. A server that predates
+private sharing, or that has no reader sign-in configured, answers 404 to
+`publish --private`: nothing is created, and the CLI says "This server does not
+support private documents." `list` shows each page's `linkAccess`, and `get` prints
+the owner's stored HTML, private pages included.
 
 The CLI never renders Markdown and keeps no record of which file became which page.
 Both are the agent's job: it writes the HTML the user reviewed, and it remembers the
