@@ -403,3 +403,94 @@ test("the frame shows the same to anyone who cannot read, whatever the id", { ti
   assert.ok(shown.open.includes("Open title"), shown.open);
   await context.close();
 });
+
+test("a page that embeds the frame cannot tell from a fragment navigation whether its visitor holds a token", { timeout: 180_000 }, async () => {
+  // Scrolling to a fragment focuses the target when it exists and can take focus,
+  // and a focus change inside the frame shows on the embedding page as a blur and
+  // as `activeElement` becoming the iframe. A same-document navigation does not
+  // reload the frame, so it keeps the view it drew from storage. Every view must
+  // therefore have the same focusable ids, or the page learns what is in storage
+  // without a click. Run the same probes with and without a token and compare.
+  const X = await publish("Fragment oracle", "<p>Mine.</p>");
+  const Y = await publish(
+    "Fragment prober",
+    `<iframe id="f" src="https://${API}/embed/share?doc=${X}&origin=${encodeURIComponent(`https://${SERVING}`)}" style="width:380px;height:480px"></iframe>`,
+  );
+
+  // The ids drawn in any view: the owner view's and the signed-out view's, plus
+  // the two the signed-out view used to carry, which must now be absent from both.
+  const idsIn = (frame) => frame.evaluate(() => Array.from(document.querySelectorAll("[id]"), (element) => element.id));
+
+  const probe = async (context, id) => {
+    const page = await context.newPage();
+    await page.goto(docUrl(Y));
+    const frame = await until("the prober's frame", () => frameOf(page, X));
+    await until("the frame to draw a view", () => frame.locator("main button").first().isVisible());
+    await page.waitForTimeout(500);
+    await page.evaluate(() => {
+      window.__blurred = false;
+      window.addEventListener("blur", () => { window.__blurred = true; });
+    });
+    await page.evaluate((fragment) => {
+      const element = document.getElementById("f");
+      element.src = element.src.split("#")[0] + "#" + fragment;
+    }, id);
+    await page.waitForTimeout(600);
+    const seen = await page.evaluate(() => ({ focused: document.activeElement === document.getElementById("f"), blurred: window.__blurred }));
+    await page.close();
+    return seen;
+  };
+
+  // Signed out: the frame draws the signed-out view.
+  const bare = await newContext(null);
+  const bareProbe = await bare.newPage();
+  await bareProbe.goto(docUrl(Y));
+  const bareFrame = await until("the signed-out frame", () => frameOf(bareProbe, X));
+  await bareFrame.getByRole("button", { name: "Sign in to manage" }).waitFor();
+  const signedOutIds = await idsIn(bareFrame);
+  await bareProbe.close();
+
+  // With a token: the owner signs in through the popover, as in the first test.
+  const owner = await newContext(OWNER_ACCOUNT);
+  const page = await owner.newPage();
+  await page.goto(docUrl(X));
+  await page.locator("a[data-openartifacts-share]").click();
+  const frame = await until("the Share frame", () => frameOf(page, X));
+  const [popup] = await Promise.all([owner.waitForEvent("page"), frame.getByRole("button", { name: "Sign in to manage" }).click()]);
+  await popup.waitForEvent("close").catch(() => {});
+  await frame.getByRole("radio", { name: "Only those invited" }).waitFor();
+  const ownerIds = await idsIn(frame);
+
+  const ids = [...new Set([...signedOutIds, ...ownerIds, "oa-copy", "oa-signin"])];
+  assert.ok(ids.includes("oa-close"), `ids probed: ${ids}`);
+  assert.ok(!signedOutIds.includes("oa-copy") && !signedOutIds.includes("oa-signin"), `signed-out ids: ${signedOutIds}`);
+  for (const id of ids) {
+    const withToken = await probe(owner, id);
+    const withoutToken = await probe(bare, id);
+    assert.deepEqual(withToken, withoutToken, `#${id} behaves the same with and without a token`);
+  }
+  await owner.close();
+  await bare.close();
+});
+
+test("Sign in to manage stays available while a sign-in is pending, and pressing it again starts a new one", { timeout: 120_000 }, async () => {
+  // No session: the popup stops at the sign-in page and the frame waits. The
+  // popup may be closed, or the handoff row may expire before the person is back,
+  // and the frame cannot tell, so the way out must not wait for its own deadline.
+  const X = await publish("Pending sign-in", "<p>Mine.</p>");
+  const context = await newContext(null);
+  const page = await context.newPage();
+  await page.goto(`https://${API}/embed/share?doc=${X}`);
+  const signIn = page.getByRole("button", { name: "Sign in to manage" });
+  const [first] = await Promise.all([context.waitForEvent("page"), signIn.click()]);
+  await page.getByText("Complete sign-in in the window that opened.").waitFor();
+  // The button is in the waiting view, and enabled once the next nonce is ready.
+  await signIn.waitFor();
+  await until("Sign in to manage to be enabled again", () => signIn.isEnabled());
+  assert.equal(await page.evaluate(() => document.querySelectorAll("#oa-account button").length), 1);
+  await first.close();
+  const [second] = await Promise.all([context.waitForEvent("page"), signIn.click()]);
+  assert.match(second.url(), /\/embed\/sign-in\?/);
+  assert.notEqual(new URL(second.url()).searchParams.get("h"), new URL(first.url()).searchParams.get("h"));
+  await context.close();
+});

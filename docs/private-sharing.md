@@ -183,10 +183,16 @@ hour, still subject to the live check.
 
 Each value is an HMAC-SHA256 over a short JSON payload with an expiry, keyed by
 `READER_SESSION_SECRET`, and **the purpose is part of the signed input**
-(`session`, `grant-url`, `grant-cookie`, `login`, `signup`, `email-code`), so a
+(`session`, `grant-url`, `grant-cookie`, `login`, `signup`, `email-code`,
+`share-token`, `embed-signin`), so a
 value minted for one use fails every other: a URL grant cannot be planted as a
 cookie, and a session cannot be presented as a grant (`src/session.ts`).
 Rotating the secret signs every reader out.
+
+The Share popover adds three shorter-lived values of its own, described under
+"The top bar and the Share popover": the popover token `oas_…` (24 hours, purpose
+`share-token`), the binding cookie `__Host-oa_embed_{16 hex}` (ten minutes,
+purpose `embed-signin`) and the handoff row (one minute, one use).
 
 ### Why a publisher's script cannot steal access
 

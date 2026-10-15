@@ -304,10 +304,14 @@ export const FRAME_SCRIPT = String.raw`(() => {
 
   const guest = Array.from(main.children);
   const account = document.getElementById("oa-account");
-  const signInButton = document.getElementById("oa-signin");
+  // Found by position, not by id. An id a view has and another lacks is a fragment
+  // an embedding page can navigate the frame to (a URL fragment), and whether the
+  // browser then focuses something shows as a blur on that page: a read of
+  // storage it has no right to. Only ids every view carries are safe.
+  const signInButton = account.querySelector("button");
   const guestMessage = document.getElementById("oa-msg");
   closeButton(document.getElementById("oa-close"));
-  copyButton(document.getElementById("oa-copy"));
+  copyButton(main.querySelector(".foot button"));
 
   let prepared = null;
   let opened = null;
@@ -328,7 +332,11 @@ export const FRAME_SCRIPT = String.raw`(() => {
 
   const showGuest = (text, waiting) => {
     main.replaceChildren(...guest);
-    account.replaceChildren(...(waiting ? ["Complete sign-in in the window that opened."] : ["Is this your page? ", signInButton]));
+    // The button stays while waiting: the popup may have been closed, the done page
+    // reached after the handoff row expired, or an overlapping sign-in may have
+    // failed at the login binding, and pressing it again is the way out of each.
+    // It starts a new poll, which replaces this one.
+    account.replaceChildren(...(waiting ? ["Complete sign-in in the window that opened. ", signInButton] : ["Is this your page? ", signInButton]));
     signInButton.disabled = prepared === null;
     guestMessage.replaceChildren(...(text ? [text] : []));
   };
@@ -364,7 +372,8 @@ export const FRAME_SCRIPT = String.raw`(() => {
       window.clearTimeout(timer);
       if (Date.now() > deadline) {
         wake = null;
-        showGuest("", false);
+        // A token that arrived another way has already replaced this view.
+        if (readToken() === null) showGuest("", false);
         return;
       }
       busy = true;
@@ -404,7 +413,13 @@ export const FRAME_SCRIPT = String.raw`(() => {
     if (typeof data.token !== "string" || typeof data.expiresAt !== "number") return;
     accept(data.token, data.expiresAt);
   });
-  window.addEventListener("storage", (event) => { if (event.key === KEY) refresh(); });
+  window.addEventListener("storage", (event) => {
+    if (event.key !== KEY) return;
+    // A token written by another tab ends this frame's own poll, which would
+    // otherwise keep claiming for the rest of its window.
+    if (readToken() !== null) { generation += 1; wake = null; }
+    refresh();
+  });
 
   const call = (method, suffix, body) => {
     const stored = readToken();
