@@ -545,13 +545,21 @@ in the list the owner sees.
 `frame-ancestors` is checked once, when the frame loads, and the frame is never
 reloaded, so a hostile public page could keep a frame it embedded while the
 document was public after the owner makes the document private. The frame closes
-that itself. Embedded by the public serving origin, it draws the owner controls of
-an invited-only document only when it made the switch itself (its embedder is then
-the owner's own page); otherwise it shows one constant line, without reloading,
-which the embedding page could see. Before every write it also reads the mode
+that itself, without reloading (a reload the embedding page could see). Embedded by
+the public serving origin, it never draws the full owner view of an invited-only
+document: it shows one constant line. The one exception is a frame that made the
+switch to invited itself, and that is not proof of anything about the page around
+it. A hostile public page can lay the frame invisibly over its own content and
+trick the owner into one click on **Only those invited**, and the switch is then
+made in the hostile page's frame. So that frame draws only what the owner needs
+right after a switch: the mode control, the notice and **Add people**, which needs
+typed input. **Approve**, **Decline** and **Remove**, each a single click on a
+private document, are left out, with a link to the share page for them. Before every
+write on a frame embedded by the public origin the frame also reads the mode
 again, so a click on a view drawn while the document was public does nothing once
-the document is private. The race left is the round trip between that read and the
-write.
+the document is private, and the read fails closed: a failed, malformed or
+non-200 answer stops the write and says nothing was changed. The race left is the
+round trip between that read and the write.
 
 ## The share page
 
@@ -737,7 +745,8 @@ subdomain needs a paid certificate for `*.docs.example.net`.
   the very top is covered by the bar; normal-flow content never is. Anchors inside
   an author's own scroll container, rather than the page, still land under the bar,
   and an author `scroll-padding` on `html` replaces ours, as it should.
-  `direction:rtl` pages mirror the bar (`all` does not reset `direction`); a
+  The bar is always left-to-right, whatever `direction` the page sets (`all` does
+  not reset it), so Share stays at the right edge; a
   transformed `<body>` makes the fixed strip scroll with it; an author script that
   prepends to `<body>` puts its element above our spacer. A collapse control is a
   small addition to the page script if it turns out to matter.

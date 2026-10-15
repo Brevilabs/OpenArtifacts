@@ -113,6 +113,7 @@ async function until(label, read, timeout = 15_000) {
 }
 
 let mf;
+let mfPort;
 let browser;
 let db;
 
@@ -169,6 +170,7 @@ before(async () => {
     },
   });
   const { port } = await mf.ready;
+  mfPort = port;
 
   db = await mf.getD1Database("DB");
   for (const migration of await readD1Migrations(join(ROOT, "migrations"))) {
@@ -340,6 +342,7 @@ test("a frame a hostile page embedded while the document was public shows no con
   const embed = `<iframe id="f" src="https://${API}/embed/share?doc=${X}&origin=${encodeURIComponent(`https://${SERVING}`)}" style="width:380px;height:480px"></iframe>`;
   const Y1 = await publish("Hostile one", embed);
   const Y2 = await publish("Hostile two", embed);
+  const Y3 = await publish("Hostile three", embed);
 
   const context = await newContext(OWNER_ACCOUNT);
   const page = await context.newPage();
@@ -351,9 +354,16 @@ test("a frame a hostile page embedded while the document was public shows no con
   const invitedOnly = frame.getByRole("radio", { name: "Only those invited" });
   await invitedOnly.waitFor();
 
-  // Both hostile pages hold a frame with the owner view, drawn while X is public.
+  // Someone is on the list before X goes private, so a click on Remove in a stale
+  // view has something to remove.
+  const invitee = "invited@example.com";
+  assert.equal((await api(`/api/v1/docs/${X}/access/people/${encodeURIComponent(invitee)}`, { method: "PUT", body: "{}" })).status, 200);
+  const people = async () => (await (await api(`/api/v1/docs/${X}/access`)).json()).people.map((entry) => entry.email);
+  assert.deepEqual(await people(), [invitee]);
+
+  // The hostile pages hold a frame with the owner view, drawn while X is public.
   const hostile = [];
-  for (const id of [Y1, Y2]) {
+  for (const id of [Y1, Y2, Y3]) {
     const tab = await context.newPage();
     await tab.goto(docUrl(id));
     await until("the hostile frame's owner view", () => frameOf(tab, X).getByRole("radio", { name: "Only those invited" }).isVisible());
@@ -373,6 +383,13 @@ test("a frame a hostile page embedded while the document was public shows no con
   assert.equal(await stale.getByRole("radio", { name: "Anyone with the link" }).count(), 0);
   assert.equal((await (await api(`/api/v1/docs/${X}/access`)).json()).linkAccess, "invited");
 
+  // The stale view is checked before any write, not only the mode switch: a
+  // Remove on the third hostile page's stale view removes no one.
+  const stale2 = frameOf(hostile[2], X);
+  await stale2.getByRole("button", { name: "Remove" }).click();
+  await stale2.getByText("Open Share from the document’s own page").waitFor();
+  assert.deepEqual(await people(), [invitee], "a stale Remove changed nothing");
+
   // The second page's frame refreshes when a token is written in the shared
   // storage, and draws the same line instead of the owner view.
   const key = `openartifacts:share-token:${X}`;
@@ -386,8 +403,34 @@ test("a frame a hostile page embedded while the document was public shows no con
   assert.equal(await refreshed.getByRole("radio", { name: "Anyone with the link" }).count(), 0);
   assert.equal(await refreshed.getByRole("button", { name: "Approve" }).count(), 0);
 
-  // The owner's own frame keeps working after its switch.
+  // The owner's own frame keeps its view after a refresh of its own. A token
+  // written by a hostile page's frame reaches it as a storage event while X is
+  // private, which is the case the first write inside the owner's frame never
+  // exercises. It keeps the mode control and the notice, but not the one-click
+  // writes on the private document: a switch made in a frame is not proof that
+  // the page around it is the owner's.
+  await stale.evaluate((name) => {
+    const value = window.localStorage.getItem(name);
+    window.localStorage.removeItem(name);
+    window.localStorage.setItem(name, value);
+  }, key);
+  await until("the owner's frame to redraw", async () => (await frame.getByText("To remove people or answer requests,").count()) > 0);
   assert.equal(await invitedOnly.getAttribute("aria-checked"), "true");
+  await frame.getByText("People who opened it while it was public may have kept a copy.").waitFor();
+  assert.equal(await frame.getByRole("button", { name: "Remove" }).count(), 0);
+  assert.equal(await frame.getByText(invitee).count(), 1, "the list is still shown");
+  assert.equal(await frame.getByPlaceholder("Add people by email").count(), 1);
+
+  // Switching back to public from inside the frame ends the notice.
+  await frame.getByRole("radio", { name: "Anyone with the link" }).click();
+  await until("the owner's frame to show the public document", async () =>
+    (await frame.getByRole("radio", { name: "Anyone with the link" }).getAttribute("aria-checked")) === "true",
+  );
+  assert.equal(await frame.getByText("People who opened it while it was public may have kept a copy.").count(), 0);
+  assert.equal((await (await api(`/api/v1/docs/${X}/access`)).json()).linkAccess, "anyone");
+  assert.equal(await frame.getByRole("button", { name: "Remove" }).count(), 1, "the full view is back while the document is public");
+  await invitedOnly.click();
+  await frame.getByText("People who opened it while it was public may have kept a copy.").waitFor();
 
   // Then X is made public again from elsewhere. The frame's notice is about a
   // switch to private and must not outlive it: the next refresh (a token written
@@ -595,5 +638,148 @@ test("Sign in to manage stays available while a sign-in is pending, and pressing
   const [second] = await Promise.all([context.waitForEvent("page"), signIn.click()]);
   assert.match(second.url(), /\/embed\/sign-in\?/);
   assert.notEqual(new URL(second.url()).searchParams.get("h"), new URL(first.url()).searchParams.get("h"));
+  await context.close();
+});
+
+test("the popover opens inside the viewport whatever the page does to its root, its direction or its scrollbar", { timeout: 120_000 }, async () => {
+  // The popover is placed in script from Share's box and the layout viewport.
+  // Pages that break the obvious ways of measuring that: no doctype (quirks mode,
+  // where documentElement.clientWidth is the <html> box, not the viewport), a wide
+  // or narrow <html>, dir=rtl (the bar mirrors unless it fixes its direction), and a
+  // classic scrollbar that 100vw and innerWidth both count.
+  const publishRaw = async (title, page) => {
+    const response = await api("/api/v1/docs", { method: "POST", body: JSON.stringify({ title, html: page }) });
+    assert.equal(response.status, 201, await response.clone().text());
+    return (await response.json()).docId;
+  };
+  const cases = [
+    ["a wide <html> with no doctype", `<html style="min-width:1200px"><head><meta charset="utf-8"><title>Wide</title></head><body><p>Wide.</p></body></html>`],
+    ["a narrow <html> with no doctype", `<html style="max-width:70ch;margin:auto"><head><meta charset="utf-8"><title>Narrow</title></head><body><p>Narrow.</p></body></html>`],
+    ["a right-to-left page", `<!doctype html><html dir="rtl" lang="ar"><head><meta charset="utf-8"><title>RTL</title></head><body><p>RTL.</p></body></html>`],
+    ["a page wider than the window", `<!doctype html><html><head><meta charset="utf-8"><title>Overflow</title></head><body><p style="width:2000px">Overflow.</p></body></html>`],
+  ];
+  const context = await newContext(null);
+  for (const width of [380, 1280]) {
+    for (const [name, source] of cases) {
+      const id = await publishRaw(name, source);
+      const page = await context.newPage();
+      await page.setViewportSize({ width, height: 600 });
+      await page.goto(docUrl(id));
+      await page.locator("a[data-openartifacts-share]").click();
+      const popover = page.locator(".openartifacts-share-popover");
+      await popover.waitFor();
+      const box = await popover.boundingBox();
+      const viewportWidth = await page.evaluate(() => (document.compatMode === "BackCompat" ? document.body : document.documentElement).clientWidth);
+      assert.ok(box.x >= 0 && box.x + box.width <= viewportWidth, `${name} at ${width}px: popover x ${box.x}..${box.x + box.width} in a ${viewportWidth}px viewport`);
+      const share = await page.locator("a[data-openartifacts-share]").boundingBox();
+      assert.ok(share.x > viewportWidth / 2, `${name} at ${width}px: Share sits at the right edge (x ${share.x})`);
+      await page.close();
+    }
+  }
+  await context.close();
+});
+
+/** The owner signs in to the Share frame of `docId` on its own page, through the popup. */
+async function ownerFrame(context, docId) {
+  const page = await context.newPage();
+  await page.goto(docUrl(docId));
+  await page.locator("a[data-openartifacts-share]").click();
+  const frame = await until("the Share frame", () => frameOf(page, docId));
+  const [popup] = await Promise.all([context.waitForEvent("page"), frame.getByRole("button", { name: "Sign in to manage" }).click()]);
+  await popup.waitForEvent("close").catch(() => {});
+  await frame.getByRole("radio", { name: "Only those invited" }).waitFor();
+  return { page, frame };
+}
+
+test("a stale frame whose pre-write read fails does not write", { timeout: 180_000 }, async () => {
+  const X = await publish("Read fails", "<p>Mine.</p>");
+  const embed = `<iframe src="https://${API}/embed/share?doc=${X}&origin=${encodeURIComponent(`https://${SERVING}`)}" style="width:380px;height:480px"></iframe>`;
+  const Y = await publish("Hostile reader", embed);
+  const invitee = "kept@example.com";
+  assert.equal((await api(`/api/v1/docs/${X}/access/people/${encodeURIComponent(invitee)}`, { method: "PUT", body: "{}" })).status, 200);
+
+  const context = await newContext(OWNER_ACCOUNT);
+  await ownerFrame(context, X);
+  const tab = await context.newPage();
+  await tab.goto(docUrl(Y));
+  const stale = await until("the hostile frame", () => frameOf(tab, X));
+  await stale.getByRole("button", { name: "Remove" }).waitFor();
+
+  // X is private now; the hostile frame still shows the view it drew when public.
+  assert.equal((await api(`/api/v1/docs/${X}/access`, { method: "PUT", body: JSON.stringify({ linkAccess: "invited" }) })).status, 200);
+  const people = async () => (await (await api(`/api/v1/docs/${X}/access`)).json()).people.map((entry) => entry.email);
+
+  // The read before the write fails in each way it can: an error status, a
+  // body that is not the document's state, a dropped connection. No write runs.
+  const failures = [
+    ["a 500", (route) => route.fulfill({ status: 500, body: "boom" })],
+    ["an unparsable 200", (route) => route.fulfill({ status: 200, contentType: "application/json", body: "<html>" })],
+    ["a dropped connection", (route) => route.abort()],
+  ];
+  const writes = [];
+  tab.on("request", (request) => { if (request.method() !== "GET" && request.url().includes("/embed/api/")) writes.push(request.method()); });
+  // A click that lands in the first moments after a new tab is shown can be lost
+  // to the focus change, so let the page settle.
+  await tab.waitForTimeout(1500);
+  for (const [name, fail] of failures) {
+    const url = `https://${API}/embed/api/docs/${X}/access`;
+    const handler = (route) => (route.request().method() === "GET" ? fail(route) : route.continue());
+    await tab.route(url, handler);
+    await Promise.all([
+      tab.waitForRequest((request) => request.method() === "GET" && request.url() === url),
+      stale.getByRole("button", { name: "Remove" }).click(),
+    ]);
+    await stale.getByText("Something went wrong. Nothing was changed.").waitFor();
+    await tab.waitForTimeout(300);
+    assert.deepEqual(await people(), [invitee], `${name}: nothing was removed`);
+    assert.deepEqual(writes, [], `${name}: no write was sent`);
+    await tab.unroute(url, handler);
+    // The view is still the stale owner view, so the click is possible again.
+    assert.equal(await stale.getByRole("button", { name: "Remove" }).count(), 1);
+    // Clear the message so the next failure shows its own.
+    await stale.evaluate(() => { document.getElementById("oa-msg").textContent = ""; });
+  }
+  await context.close();
+});
+
+test("a read that resolves after the owner's own switch does not undo it", { timeout: 180_000 }, async () => {
+  const X = await publish("Late read", "<p>Mine.</p>");
+  const context = await newContext(OWNER_ACCOUNT);
+  const { page, frame } = await ownerFrame(context, X);
+  const key = `openartifacts:share-token:${X}`;
+  const Y = await publish("Other page", `<iframe src="https://${API}/embed/share?doc=${X}&origin=${encodeURIComponent(`https://${SERVING}`)}" style="width:380px;height:480px"></iframe>`);
+  const other = await context.newPage();
+  await other.goto(docUrl(Y));
+  const sibling = await until("the other page's frame", () => frameOf(other, X));
+  await sibling.getByRole("radio", { name: "Only those invited" }).waitFor();
+
+  // Hold one GET: the server answers it now, with X public, and the browser gets
+  // the answer only after the owner's write has landed.
+  let release;
+  const held = new Promise((resolve) => { release = resolve; });
+  let taken = false;
+  const url = `https://${API}/embed/api/docs/${X}/access`;
+  await page.route(url, async (route) => {
+    const request = route.request();
+    if (request.method() !== "GET" || taken) return route.continue();
+    taken = true;
+    const response = await route.fetch({ url: `https://127.0.0.1:${mfPort}/embed/api/docs/${X}/access`, headers: { ...request.headers(), host: API } });
+    const body = await response.body();
+    await held;
+    await route.fulfill({ status: response.status(), headers: response.headers(), body });
+  });
+  // A token written by another page reaches the frame as a storage event and starts the read.
+  await sibling.evaluate((name) => {
+    const value = window.localStorage.getItem(name);
+    window.localStorage.removeItem(name);
+    window.localStorage.setItem(name, value);
+  }, key);
+  await until("the read to be held", () => taken);
+  await frame.getByRole("radio", { name: "Only those invited" }).click();
+  await frame.getByText("People who opened it while it was public may have kept a copy.").waitFor();
+  release();
+  await page.waitForTimeout(500);
+  assert.equal(await frame.getByRole("radio", { name: "Only those invited" }).getAttribute("aria-checked"), "true");
+  assert.equal(await frame.getByText("People who opened it while it was public may have kept a copy.").count(), 1);
   await context.close();
 });

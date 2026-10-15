@@ -347,10 +347,13 @@ export const OPENARTIFACTS_BAR_STYLE =
 /**
  * Fixed rather than sticky, because it survives author `overflow` rules that
  * break `sticky`; the highest z-index there is; a light neutral with `#666` text
- * (contrast at least 5:1) so it sits quietly over any page.
+ * (contrast at least 5:1) so it sits quietly over any page. `direction:ltr`
+ * because `all` resets every property except `direction` and `unicode-bidi`: a
+ * publisher's `dir=rtl` would otherwise draw Share at the left edge, away from
+ * where the popover opens.
  */
 const BAR_STYLE =
-  "all:initial;position:fixed;top:0;left:0;right:0;z-index:2147483647;box-sizing:border-box;" +
+  "all:initial;direction:ltr;position:fixed;top:0;left:0;right:0;z-index:2147483647;box-sizing:border-box;" +
   "height:40px;display:flex;align-items:center;justify-content:space-between;gap:12px;" +
   "padding:0 12px 0 16px;background:#fbfbfa;border-bottom:1px solid rgba(0,0,0,0.1);color:#666;" +
   BAR_FONT;

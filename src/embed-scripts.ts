@@ -64,19 +64,27 @@ export const PAGE_SCRIPT = String.raw`(() => {
   link.setAttribute("aria-haspopup", "dialog");
   link.setAttribute("aria-expanded", "false");
   let host = null, frame = null, fallback = null, timer = 0, ready = false, open = false;
+  // The layout viewport, which a classic scrollbar narrows (innerWidth and 100vw
+  // include it). documentElement.clientWidth is the viewport only in standards
+  // mode; in quirks mode (publisher HTML with no doctype) it is the <html> box
+  // itself, and the viewport is <body>'s.
+  const viewport = () => (document.compatMode === "BackCompat" && document.body ? document.body : document.documentElement);
   const place = () => {
     const box = link.getBoundingClientRect();
+    const view = viewport();
     const top = Math.round(box.bottom + 8);
+    const width = Math.min(380, view.clientWidth - 16);
+    // Anchored by the left edge to Share's right edge, then kept on screen, so it
+    // opens in view wherever Share sits.
+    host.style.width = width + "px";
     host.style.top = top + "px";
-    // clientWidth, not innerWidth: the right offset of a fixed element is measured
-    // from the layout viewport, which a classic scrollbar narrows and innerWidth includes.
-    host.style.right = Math.max(8, Math.round(document.documentElement.clientWidth - box.right)) + "px";
-    host.style.height = Math.max(120, Math.min(480, window.innerHeight - top - 8)) + "px";
+    host.style.left = Math.round(Math.max(8, Math.min(box.right - width, view.clientWidth - width - 8))) + "px";
+    host.style.height = Math.max(120, Math.min(480, view.clientHeight - top - 8)) + "px";
   };
   const build = () => {
     host = document.createElement("div");
     host.className = "openartifacts-share-popover";
-    host.setAttribute("style", "all:initial;position:fixed;z-index:2147483647;display:none;box-sizing:border-box;width:min(380px,calc(100vw - 16px));border-radius:12px;background:#fff;box-shadow:0 12px 32px rgba(0,0,0,.18),0 0 0 1px rgba(0,0,0,.08);overflow:hidden");
+    host.setAttribute("style", "all:initial;position:fixed;z-index:2147483647;display:none;box-sizing:border-box;direction:ltr;border-radius:12px;background:#fff;box-shadow:0 12px 32px rgba(0,0,0,.18),0 0 0 1px rgba(0,0,0,.08);overflow:hidden");
     const root = host.attachShadow ? host.attachShadow({ mode: "closed" }) : host;
     frame = document.createElement("iframe");
     frame.title = "Share";
@@ -335,6 +343,13 @@ export const FRAME_SCRIPT = String.raw`(() => {
   let switched = false;
   let latest = null;
   let message = null;
+  // Orders reads against writes. Each refresh takes a number and is applied only
+  // if no later refresh or write has started, so an older GET resolving after a
+  // write cannot redraw the document as it was. A refresh asked for while a write
+  // is in flight waits for it (deferred), because it could read from before the
+  // write lands.
+  let seq = 0;
+  let deferred = false;
 
   const prepare = () => {
     const nonce = bytesToBase64Url(crypto.getRandomValues(new Uint8Array(32)));
@@ -482,28 +497,51 @@ export const FRAME_SCRIPT = String.raw`(() => {
   // page that embedded the frame while the document was public keeps it alive
   // after the document goes private, and the owner's token in this origin's
   // storage would draw controls under that page. A frame on the public serving
-  // origin therefore shows the owner controls of an invited-only document only
-  // when it switched the document itself: its own embedder is then the owner's
-  // page, which stays on that origin until it reloads. Any other frame there
-  // draws a constant line, never a reload, which the embedding page could see.
-  const exposed = () => parentOrigin !== "" && parentOrigin === publicOrigin && !switched;
+  // origin therefore never draws the full owner view of an invited-only document.
+  // Any such frame draws a constant line, never a reload, which the embedding page
+  // could see, except one that switched the document itself, which draws the
+  // limited view (see limited()).
+  //
+  // Having switched is not proof that the owner's own page is the embedder: a
+  // hostile public page can lay this frame invisibly over its content and trick
+  // the owner into one click on "Only those invited", and the switch is then made
+  // in the hostile page's frame. The switch is vouched for by a click inside the
+  // frame, not by the page around it. So the limited view offers only what the
+  // owner needs right after a switch and nothing that is a single click against
+  // the private document.
+  const onPublicOrigin = parentOrigin !== "" && parentOrigin === publicOrigin;
+  const exposed = () => onPublicOrigin && !switched;
+  const limited = (body) => onPublicOrigin && switched && body.linkAccess === "invited";
   const showMoved = () => {
     latest = null;
     main.replaceChildren(header("Share"), muted(["Open Share from the document’s own page to manage who can open it."]), footer());
   };
   // A view drawn while the document was public may be stale, and a click on it
-  // is a write. Ask first. The window left between this read and the write is
-  // the round trip, and a click lands in it only by luck.
+  // is a write. Ask first, and write only on a clear answer: any failure to read
+  // stops the write. Returns true when the write may go ahead; otherwise it has
+  // already drawn why. The window left between this read and the write is the
+  // round trip, and a click lands in it only by luck.
   const stillPublic = async () => {
     if (!exposed()) return true;
+    let response;
+    let current = null;
     try {
-      const response = await call("GET", "");
-      if (response === null || response.status !== 200) return true;
-      const current = await response.json();
-      return !(current && current.viewer === "owner" && current.linkAccess === "invited");
+      response = await call("GET", "");
+      if (response === null) return true;
+      if (response.status === 200) current = await response.json();
     } catch (error) {
-      return true;
+      response = undefined;
     }
+    if (response === undefined) { message.textContent = "Something went wrong. Nothing was changed."; return false; }
+    if (response.status === 401) { writeToken(null); showGuest("", false); return false; }
+    if (response.status === 404) { showNone(); return false; }
+    if (response.status !== 200 || !current || (current.viewer !== "owner" && current.viewer !== "reader")) {
+      message.textContent = "Something went wrong. Nothing was changed.";
+      return false;
+    }
+    if (current.viewer === "reader") { showReader(current); return false; }
+    if (current.linkAccess === "invited") { showMoved(); return false; }
+    return true;
   };
   const present = (body) => {
     if (body.linkAccess === "invited" && exposed()) showMoved();
@@ -513,8 +551,9 @@ export const FRAME_SCRIPT = String.raw`(() => {
   const write = async (method, suffix, body, modeAfter) => {
     if (writing) return;
     writing = true;
+    seq += 1;
     try {
-      if (!(await stillPublic())) { showMoved(); return; }
+      if (!(await stillPublic())) return;
       const response = await call(method, suffix, body);
       if (response === null) { showGuest("", false); return; }
       let parsed = null;
@@ -536,6 +575,7 @@ export const FRAME_SCRIPT = String.raw`(() => {
       message.textContent = "Something went wrong. Nothing was changed.";
     } finally {
       writing = false;
+      if (deferred) { deferred = false; refresh(); }
     }
   };
 
@@ -547,6 +587,7 @@ export const FRAME_SCRIPT = String.raw`(() => {
     const add = () => { const address = input.value.trim(); if (address) write("PUT", "/people/" + encodeURIComponent(address)); };
     input.addEventListener("keydown", (event) => { if (event.key === "Enter") add(); });
     const choice = (value, label) => node("button", { type: "button", role: "radio", "aria-checked": String(body.linkAccess === value), onclick: () => { if (body.linkAccess !== value) write("PUT", "", { linkAccess: value }, true); } }, [label]);
+    const narrow = limited(body);
     const person = (address, detail, buttons) => node("li", {}, [node("span", {}, [address, node("small", {}, [detail])]), node("div", { class: "row" }, buttons)]);
     const kids = [
       header(quoted(body.title)),
@@ -557,26 +598,33 @@ export const FRAME_SCRIPT = String.raw`(() => {
     ];
     if (notice) kids.push(node("p", { class: "notice" }, ["People who opened it while it was public may have kept a copy."]));
     if (body.requests.length > 0) {
-      kids.push(node("h2", {}, ["Requests"]), node("ul", {}, body.requests.map((request) => person(request.email, "Asked to open it", [
+      kids.push(node("h2", {}, ["Requests"]), node("ul", {}, body.requests.map((request) => person(request.email, "Asked to open it", narrow ? [] : [
         button("Approve", () => write("PUT", "/people/" + encodeURIComponent(request.email))),
         button("Decline", () => write("DELETE", "/requests/" + encodeURIComponent(request.email))),
       ]))));
     }
     const sent = body.email ? "Invited · email sent" : "Invited · send them the link";
-    kids.push(node("h2", {}, ["Who has access"]), node("ul", {}, [person("You", "Owner", [])].concat(body.people.map((entry) => person(entry.email, sent, [
+    kids.push(node("h2", {}, ["Who has access"]), node("ul", {}, [person("You", "Owner", [])].concat(body.people.map((entry) => person(entry.email, sent, narrow ? [] : [
       button("Remove", () => write("DELETE", "/people/" + encodeURIComponent(entry.email))),
-    ])))), footer());
+    ])))));
+    // Approve, Decline and Remove are one click on a private document, and this
+    // frame is on the public origin. See exposed().
+    if (narrow) kids.push(muted(["To remove people or answer requests, ", node("a", { href: location.origin + "/share/" + doc, target: "_blank", rel: "noopener noreferrer" }, ["open the share page"]), "."]));
+    kids.push(footer());
     main.replaceChildren(...kids);
   };
 
   const refresh = async () => {
+    if (writing) { deferred = true; return; }
+    const mine = ++seq;
     const stored = readToken();
     if (stored === null) { showGuest("", false); return; }
     let response;
-    try { response = await call("GET", ""); } catch (error) { showGuest("Couldn’t load the sharing settings. Try again.", false); return; }
-    if (response === null) { showGuest("", false); return; }
+    try { response = await call("GET", ""); } catch (error) { if (mine === seq) showGuest("Couldn’t load the sharing settings. Try again.", false); return; }
+    if (response === null) { if (mine === seq) showGuest("", false); return; }
     let body = null;
     try { body = await response.json(); } catch (error) {}
+    if (mine !== seq) return;
     if (response.status === 200 && body && body.viewer === "owner") present(body);
     else if (response.status === 200 && body && body.viewer === "reader") showReader(body);
     else if (response.status === 401) { writeToken(null); showGuest("", false); }
