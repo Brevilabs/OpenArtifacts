@@ -36,8 +36,8 @@ do not render. Build the target by writing `file://` followed by the absolute pa
 percent-encode the path (`%20` for each space, UTF-8 percent-encoding such as `%C3%A9` for
 each non-ASCII character; on Windows `file:///C:/Users/me/notes.html`). Never give a bare
 path or a target without `file://`; those do not open. This rule overrides any default
-format for file references: the target must start with `file:///`. Say that opening it in a browser shows the page as it will be uploaded; OpenArtifacts adds its
-own header and footer bylines when it serves the page.
+format for file references: the target must start with `file:///`. Say that opening it in a browser shows the page as it will be uploaded; OpenArtifacts adds a
+top bar with a Share button and a footer byline when it serves the page.
 
 For a new page, the review message ends with this line, word for word: "Who should be able to open it? Reply **publish** for anyone with the link, or name people, for example **publish for alice@acme.com**, to share it only with them."
 If the user's request already said who (for example "publish this privately for Alice" or

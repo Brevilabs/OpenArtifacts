@@ -26,7 +26,8 @@ It is a small API-first publishing service. Inline comments do not exist yet.
 - **Share privately.** Set a document to "Only those invited" and add people by
   email. They sign in once with Google, GitHub, or an emailed code and open the
   same link; anyone else can ask the owner for access, and the owner approves or
-  declines from a share page that every served page links to as "Manage".
+  declines from **Share** in the top bar of every served page (a popover, or the
+  share page where scripts do not run).
   Private sharing is a paid-plan feature on the hosted service, and a self-hosted
   server needs a sign-in method configured to offer it.
 - **Keep pages out of search results.** Serving responses carry `noindex`

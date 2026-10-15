@@ -23,6 +23,7 @@ on the API host except the document itself.
 | After pressing **Request access** | **Request sent.** The owner approves or declines; approval sends the invite email. |
 | Anyone, after the owner switches the page to **Anyone with the link** | The page, with no sign-in, as before |
 | Anyone, after the owner unshares it | `410 Gone`, as before |
+| Anyone, on any page, pressing **Share** in the top bar | A popover: **Copy link** and **Sign in to manage**. The owner who signs in there manages the page in place; any other reader sees **Copy link** and who can change access. |
 
 The first screen names nobody, because a stranger holding a forwarded link is
 almost never signed in and nobody knows yet who they are. A chat app's link
@@ -44,7 +45,7 @@ Bob nothing. Removing Alice takes effect on her next request. Switching back to
 **Public documents did not change.** `link_access` defaults to `anyone` for every
 document, old and new, and the public path serves the same url, headers, caching
 and bytes it always did, with no sign-in and no cookie. The one addition to a
-public page is the constant **Manage** link in its footer, described below.
+public page is the top bar with its **Share** button, described below.
 
 ## The constraint everything else follows from
 
@@ -70,7 +71,7 @@ documents that publisher already owns.
 | Host | Serves | Credential it holds |
 | --- | --- | --- |
 | `openartifacts.site` | Public documents, unchanged. A redirect for invited-only ones. | None, ever |
-| `api.openartifacts.ai` | The bearer API, reader sign-in, `/open/{docId}`, `/open/{docId}/request`, the share page | The reader session cookie |
+| `api.openartifacts.ai` | The bearer API, reader sign-in, `/open/{docId}`, `/open/{docId}/request`, the share page, the top bar's script and the Share popover (`/embed/*`) | The reader session cookie |
 | `{label}.openartifacts.site` | One publisher's invited-only documents, every version of each. Later, the publisher's custom domain takes this seat. | That publisher's read-only grant cookie |
 
 `label` is the first 16 bytes of `SHA-256("openartifacts-origin-v1:" + docs.owner)`
@@ -289,8 +290,9 @@ A reader is an `accounts` row, the same principal a publisher is. There is no
 - **The session** is `__Host-oa_session` on the API host (`HttpOnly`, `Secure`,
   `SameSite=Lax`, `Path=/`, 30 days): an HMAC over `{accountId, expiresAt}`.
   Stateless, and sign-out (**Use another account**) clears it. Only `/open`,
-  `/open/{docId}/request`, `/share/{docId}` and `/signin` read it, and `/api/v1`
-  stays bearer-only, so the cookie adds no cross-site request surface to the API.
+  `/open/{docId}/request`, `/share/{docId}`, `/signin` and the Share popover's
+  popup, `/embed/sign-in`, read it, and `/api/v1` stays bearer-only, so the cookie
+  adds no cross-site request surface to the API.
 - **Every cookie-authenticated `POST` is held to a same-origin check**
   (`sameOriginPost`). `SameSite=Lax` alone is not enough: every host under the brand
   domain is same-site with the API host, and Lax cookies ride same-site `POST`s.
@@ -301,8 +303,9 @@ A reader is an `accounts` row, the same principal a publisher is. There is no
 - **Owners with a license key never sign in.** `POST /api/v1/docs/{docId}/open`
   returns their own page's url with a 60-second grant whose principal is their
   owner id. Clients open it and discard it; publish receipts never carry a grant.
-- **The sign-in pages return only to `/open/{docId}[/v{n}]` or `/share/{docId}`**,
-  rebuilt from the parsed document id, so they cannot become an open redirect.
+- **The sign-in pages return only to `/open/{docId}[/v{n}]`, `/share/{docId}` or
+  the Share popover's popup, `/embed/sign-in?doc=…&h=…`**, rebuilt from the parsed
+  document id (and hash), so they cannot become an open redirect.
 
 ## Credentials by capability
 
@@ -310,8 +313,16 @@ A reader is an `accounts` row, the same principal a publisher is. There is no
   own origin. It is refused by `/api/v1`, by every sign-in page and by the future
   comments sidebar. A document's script can use it; that is why it can do nothing
   but read what its own publisher already holds.
-- The **API-host session signs in and mints**: today the origin grant and the owner
-  route; later the comments sidebar's token, with no second provider sign-in.
+- The **API-host session signs in and mints**: the origin grant, the owner route
+  and the Share popover's token; later the comments sidebar reuses that token, with
+  no second provider sign-in.
+- The **popover token writes, for one document**. It lives in the Share frame's own
+  storage on the API host, never on a document's origin, and it is a bearer header
+  on the frame's same-origin `fetch`. It can change that document's access from the
+  popover and read its title; it cannot publish, list, delete or touch another
+  document. `/api/v1` refuses its `oas_` prefix, the share page, `/open` and
+  `/signin` read only the session cookie, and a label host reads only the grant
+  cookie.
 - **Writes never ride a cookie a document can use.** Approving, declining and
   changing access carry a credential that lives on an origin no publisher's
   scripts run on: a bearer token, or the session on the API host.
@@ -368,14 +379,173 @@ exists, and the invite email that add sends is the notice to the requester.
   a stale one is harmless, and it is the only link in the message: never a
   requester-chosen url. The requester never learns the owner's address.
 
+## The top bar and the Share popover
+
+Access control belongs on the page itself, where the owner already is: nobody
+finds a link in a footer. `renderServedHtml` injects a **top bar** into every
+served document, public or private, in place of the header byline, and **Share**
+in it opens a popover with the same controls as the share page.
+
+**The bar.** A spacer as the first child of `<body>` (so the author's content
+starts below the bar, not under it), one small `<style>` element, a strip fixed to
+the top of the viewport, and a `<script defer src="https://{API_HOST}/embed/page.js">`
+tag. On the left is the byline's text, "Shared from Copilot for Obsidian", only on
+Copilot-rendered HTML that has branding: that text exists only where the header
+byline would have, and printing it elsewhere would be false attribution or would
+undo a plan that removes it. On the right is **Share**, a plain link to the share
+page, so it works with no script. The bar is static HTML with inline styles and
+system fonts, and it fetches nothing. **It is the same bytes for every viewer of a
+document**: it names no identity, which is what keeps public pages cacheable. The
+one stylesheet it adds carries a scroll offset the size of the strip (so an anchor
+jump or a focused control does not land under it) and a print rule (so the strip
+does not repeat over the top of every printed page). The footer byline is as it
+was. The bar is added on the way out and stored nowhere, so the page stays a pure
+function of the stored version and the deployment's configuration, and every
+document already published picks up the bar, and any later change to it, on its
+next rendering (`RENDER_REVISION` is 7).
+
+**Why the owner does not simply see more.** The owner's session lives on the API
+host, and a script on the document origin cannot see it: the cookie is
+`SameSite=Lax`, and cross-site cookies are blocked in third-party frames by Safari
+and Firefox and partitioned in Chrome. A bar that appeared only for owners would
+appear for nobody on public pages. So the bar is constant and the popover decides
+who is looking.
+
+**The page script.** `GET /embed/page.js` on the API host turns **Share** into a
+popover anchored under the button. It is a constant that holds no credential,
+reads no cookie and no storage, defines no global and binds only our own link. It
+creates the frame on the first click only, so a page view costs no frame request,
+then hides and shows it and never reloads it, so a switch made inside the frame
+can never re-run its `frame-ancestors` check against the page it is on. The
+popover sits in a closed shadow root hanging off `<html>`, out of reach of author
+CSS and of a transformed or flex `<body>`. A modified click (a new tab) keeps the
+plain link; if the frame does not say it is ready within four seconds (an author
+`frame-src` policy, the network) the popover shows a plain link to the share page;
+and where the author's own policy blocks the script, **Share** is the link. The
+route is a Worker route with a one-hour browser cache and not a Workers Static
+Asset: static assets are matched ahead of the Worker on every hostname it is
+attached to, which would break the router's fail-closed host allowlist. A page view
+still costs no Worker request while the browser's copy is fresh. **The address is
+permanent**: pinned `/v{n}` pages are `immutable` for a year and carry the tag, so a
+fix to the script reaches them through the cache lifetime and never through a new
+path. The serving CSP already admits scripts and frames from `https:`, so it does
+not move.
+
+**The frame.** The popover is a frame on the API host, `GET /embed/share?doc={docId}&origin=…`,
+because its controls change who can read the document and the credential that does
+that must never be on a page whose scripts the author writes.
+
+- **Per-document `frame-ancestors`.** The frame may be embedded only by the
+  document's own serving origin: `https://openartifacts.site` for a live public
+  document, the publisher's own `https://{label}.openartifacts.site` for a live
+  invited-only one, and nobody for an unknown or deleted id. A private document's
+  controls can therefore be embedded only by its own publisher's pages, never by
+  another publisher's. The request is anonymous and serving pages send
+  `no-referrer`, so the server cannot see who embeds it; the page script passes its
+  own `origin`, and the policy echoes it only when it equals the document's serving
+  origin. Deriving the header from the row alone would put an invited-only
+  document's label in a header anyone holding the link can read with `curl -I`,
+  tying the document to its publisher's other documents. The browser checks the
+  policy against the real ancestor, so a forged `origin` frames nothing. Residual,
+  accepted: someone who already knows a label and holds a link can confirm the
+  pairing.
+- **The frame reveals nothing to non-readers.** Anyone can load it with any id.
+  Until a token shows the viewer can read the document, every id looks the same,
+  private, public, unknown or deleted: **Copy link** for the canonical url, built
+  from the id with no lookup, and **Sign in to manage**. No title, no link-access
+  mode, no list. The bodies are equal after replacing the id, except `data-origin`,
+  which echoes the caller's own `origin` only when it equals the serving origin
+  (what the frame's `postMessage` and `frame-ancestors` need; it tells the caller
+  only what it already named). With a token, a non-reader sees what an unknown id
+  shows, never `403`.
+- **It tells the page around it nothing about its viewer.** It has one fixed
+  height (at most 480 px) and scrolls inside it. It posts the page exactly two
+  messages: `ready`, once, before it reads its storage, and `close`, only after a
+  click or key press inside it. Every public page on `openartifacts.site` shares the
+  frame's storage partition, and any of them can embed the frame for any id it
+  knows; a size report, a focus move or an early message would tell that page, with
+  no click, whether its visitor holds a token.
+- **Its views** follow the table: the owner gets **Link access**, **Add people**,
+  each person with **Remove**, **Requests** with **Approve** and **Decline**, the
+  notice after a switch to private, and **Copy link**; any other reader gets **Copy
+  link** and "Only the owner can change who can open this."; someone not yet signed
+  in gets **Copy link** and **Sign in to manage**. Writes call the same operations
+  as `/api/v1` and the share page, so the plan check and the `402` message, both
+  invite caps, the invite email and `document_access_changed` are identical on all
+  three. The role control is not shown: until comments exist every invite is
+  **Can comment** and the control would change nothing.
+
+**Signing in to the popover.** The frame cannot see the reader session, so
+**Sign in to manage** opens a top-level popup at `/embed/sign-in?doc={docId}&h=…`,
+which does see the cookie. With a session it mints a token for this one document at
+once; with none it runs the ordinary sign-in first and returns. Because the page
+outside the frame can open any address, the popup must be bound to our frame: it
+proceeds only if `Sec-Fetch-Site` is `same-origin` (the navigation was initiated by
+an API-host document, which is the frame's `window.open`) or if it carries the
+per-handshake cookie (`__Host-oa_embed_…`, ten minutes) that an earlier bound
+request set, which is what lets the return leg of a Google or GitHub round trip
+through. Otherwise it is refused, even when the owner has a session, so a hostile
+page cannot collect a token by opening the popup with a hash it chose. A browser
+with no Fetch Metadata falls back to the share page.
+
+**The handoff survives a severed popup.** The sign-in pages send a cross-origin
+opener policy, and Google's probably does too, which can cut the popup's link back
+to the frame, so a plain `postMessage` may never arrive. Observed on 2026-10-14 with
+`curl -D -`: `accounts.google.com/signin/oauth/error` sends `Cross-Origin-Opener-Policy:
+same-origin`, enforced; `accounts.google.com/o/oauth2/v2/auth` and
+`/v3/signin/identifier` send it as `Cross-Origin-Opener-Policy-Report-Only`; and
+`github.com/login` sends none. Our own reader pages send `same-origin`. A navigation
+to such a page from a popup whose opener is cross-origin switches browsing-context
+group and nulls `window.opener` for good. So the frame makes a random nonce that
+only it knows and passes its hash, `h`, in the popup's URL. The popup stores the
+account under that hash on the server, **for one minute and one use**, and **also
+posts the token if the opener survives**. The frame collects it with the nonce
+itself, `POST /embed/token`, polling every two seconds for at most ten minutes (and
+again when its tab becomes visible, for a phone that suspended it behind the popup).
+Seeing the popup's URL yields only the hash, which collects nothing; the nonce never
+leaves the frame's memory except in the claim, and the claim is rate limited per
+client address. The row is a `device_codes` row of a third kind, so there is no
+migration. The token is minted at claim time from the stored account id, which is
+equivalent to storing it (it is a stateless signature over the account and the
+document), and no bearer value is ever written to D1. The popup's message goes to
+its own origin, never `*`, and the frame acts only on a message from the window its
+own `window.open` returned, for this document, from this origin: a message from the
+embedding page or any other window does nothing.
+
+**The token** is `oas_` and an HMAC under its own purpose, `share-token`, over the
+account and the document, valid for 24 hours, kept in the frame's `localStorage`
+(with an in-memory copy where storage is blocked). The frame sends it as a bearer
+header on same-origin `fetch` with `credentials: "omit"`, and only
+`/embed/api/docs/{docId}/access…` accepts it, for that document, checking the
+token before the path's document is read. Because the account must still exist and
+each call is authorised live, a token carries no more than the account's own
+current rights.
+
+**Clickjacking.** A hostile page could try to overlay an invisible popover and
+trick the owner into clicking. `frame-ancestors` limits the popover to the
+document's own origin. A private document lives on its publisher's origin, which
+only that publisher's pages run on, so nobody else can embed its controls. A public
+document shares `openartifacts.site` with every public page, so a hostile public
+page could embed its popover, but only if the owner's token is already in the
+frame's storage, or the owner has been tricked into pressing **Sign in to manage**
+in the invisible frame and then completing the popup it opens, which puts the token
+there. The worst outcome is making a public page private or adding a name to its list, both visible
+in the list the owner sees.
+
 ## The share page
 
-`https://{API_HOST}/share/{docId}` is where an owner manages one document. It is
-the dialog Copilot renders, served by the Worker, so it exists for whoever
-published the document and for self-hosters. It is behind the reader session:
+`https://{API_HOST}/share/{docId}` is the top-level form of the same controls: the
+dialog Copilot renders, served by the Worker, so it exists for whoever published the
+document and for self-hosters. It is behind the reader session, and it is where
+**Share** leads when scripts do not run, where the request email's **Review
+request** leads, and the url `share <docId>` prints:
 
-- No session: the sign-in page ("Sign in to manage this document"), returning
-  here.
+- No session, and a live public document: the reader view below, with **Is this
+  your page? Sign in to manage**, which leads to `?signin`. The title and the url are
+  all it shows, and anyone holding the link has both.
+- No session, otherwise (an invited-only, unknown or deleted id, or `?signin`): the
+  sign-in page ("Sign in to manage this document"), returning here. It is the same
+  bytes for all three kinds of id, so the page tells a stranger nothing about an id.
 - A session whose account is in the document's owner scope (`canManage`): the
   dialog. **Link access** (Anyone with the link / Only those invited), **Add
   people**, **Requests** (only when some are pending, each with **Approve** and
@@ -383,6 +553,13 @@ published the document and for self-hosters. It is behind the reader session:
   **Remove**), **Copy link**, and after a switch from public to private the line
   "People who opened it while it was public may have kept a copy." There is no
   role control.
+- A session whose account may read the document but does not manage it: the
+  reader view. The title, "Only the owner can change who can open this.", **Copy
+  link**, **Use another account**, and a line saying that a page published from
+  Copilot is managed from Copilot. That line is for an owner whose license key is
+  not linked to a browser account, who looks like any other reader here. It lists no
+  people, no mode and no requests. A session whose account has no email row is
+  treated as no session.
 - Anyone else, and every unknown or deleted id: the same not-available page as
   `/open`, status `404`, never `403`.
 
@@ -400,30 +577,6 @@ the API host that holds a form: a form posted from a `no-referrer` page sends
 Fetch Metadata, and `same-origin` still sends no `Referer` anywhere else); its one script, the
 Copy button, is allowed by a hash in the page's own policy, and the page works
 without it.
-
-**The Manage link.** `renderServedHtml` puts one constant **Manage** link in an
-element of its own after the "Powered by openartifacts.ai" footer on every served
-document, public and private, whatever the plan's branding says. It points at the
-share page and is omitted when reader sign-in is not configured. It is added on
-the way out and stored nowhere, so the page stays a pure function of the stored
-version and the deployment's configuration, and public pages stay cacheable
-(`RENDER_REVISION` is 7).
-
-It is a constant link and not an owner-only bar because the owner's session lives
-on the API host, and a script on the document origin cannot see it: the cookie is
-`SameSite=Lax`, and cross-site cookies are blocked in third-party frames by
-Safari and Firefox and partitioned in Chrome. A bar that appeared only for owners
-would appear for nobody on public pages. A reader who follows the link gets
-sign-in and then the not-available page, the same thing a private link gives them.
-
-**No one-way door.** An author bar at the top of every published page stays
-possible. The link is injected on the way out, so a later rendering can replace it
-with a bar on every document already published; the bar's identity problem is
-solvable with one user gesture (a top-level popup on the API host, which does see
-the session); and the share page stays the dialog's home either way. What would
-close the door is writing any chrome into R2, promising that served pages carry
-no script, or a serving CSP that forbids a script from the API host, and so none
-of those is done.
 
 ## Plans
 
@@ -483,8 +636,8 @@ a notice to the owner.
 ## Self-hosting
 
 Nothing in the shape changes, and nothing is Brevilabs-specific: the Worker, the
-share page, the footer link, the sign-in pages and the email templates all live
-in this repo, and plans are configuration.
+share page, the top bar and the Share popover, the sign-in pages and the email
+templates all live in this repo, and plans are configuration.
 
 **One rule: an unconfigured server is an old server.** Reader sign-in is
 configured when all of these hold (`readerSignInConfigured`, the one predicate
@@ -492,9 +645,9 @@ every gate asks): `READER_SESSION_SECRET` is set and at least 32 characters,
 `SERVING_HOST` and `API_HOST` are set, and at least one sign-in method exists:
 Google or GitHub (both halves of the OAuth pair) or emailed codes (the `EMAIL`
 binding and `EMAIL_FROM`). When it is not, `POST /api/v1/private-docs`, every
-`…/access` route, `…/open`, `/open/*`, `/share/*` and `/signin/*` answer `404`
-exactly as a Worker that predates private sharing does, and served pages carry no
-**Manage** link. Every client already knows what to do: `publish --private`
+`…/access` route, `…/open`, `/open/*`, `/share/*`, `/signin/*` and `/embed/*` answer
+`404` exactly as a Worker that predates private sharing does, and served pages
+carry no top bar and no page-script tag: the header byline stays as it was. Every client already knows what to do: `publish --private`
 reports that the server does not support private documents and creates nothing.
 No half-configured state exists. `GET …/html` is not part of the family and keeps
 working, and `GET /api/v1/docs` still reports each document's stored `linkAccess`.
@@ -559,6 +712,39 @@ subdomain needs a paid certificate for `*.docs.example.net`.
 - **An owner whose plan has lapsed** can make a private page public but cannot
   make it private again.
 - **A Copilot owner's grant cookie** expires after an hour; "Open" mints a new one.
+- **The top bar has limits an author's page can reach.** An author header fixed to
+  the very top is covered by the bar; normal-flow content never is. Anchors inside
+  an author's own scroll container, rather than the page, still land under the bar,
+  and an author `scroll-padding` on `html` replaces ours, as it should.
+  `direction:rtl` pages mirror the bar (`all` does not reset `direction`); a
+  transformed `<body>` makes the fixed strip scroll with it; an author script that
+  prepends to `<body>` puts its element above our spacer. A collapse control is a
+  small addition to the page script if it turns out to matter.
+- **After a Google or GitHub round trip, Chrome refuses the done page's
+  `window.close()`**, whether or not the page sends an opener policy, so that popup
+  stays on "Signed in. You can close this window and go back to the document." The
+  frame has already collected its token by then.
+- **A person who returns more than a minute after the done page** presses **Sign in
+  to manage** again. The handoff row lives one minute, but the session is still
+  there, so the second popup completes at once.
+- **Two popover sign-ins whose provider steps overlap** fail the earlier one at the
+  login binding (`__Host-oa_login` holds one handshake per browser, as for every
+  reader sign-in). Pressing **Sign in to manage** again then completes at once from
+  the new session. Two that do not overlap are independent, because the popup's
+  binding cookie is per handshake.
+- **The popover is one fixed height**, so its short views have room to spare; the
+  alternative is a frame that reports its size, which would tell any page that can
+  embed it whether its visitor manages the document.
+- **Browsers with no Fetch Metadata** (Safari before 16.4) cannot sign in to the
+  popover and use the share page.
+- **A popover token outlives sign-out** by up to 24 hours. It can do only what that
+  account may already do to that one document, every call is authorised live, and it
+  lives in storage no document's script can read.
+- **A waiting frame polls** once every two seconds for at most ten minutes, and
+  gives up quietly after that.
+- **A Copilot owner whose license key is not linked to a browser account** reaches
+  only the reader view, or the none view, in the popover and on the share page,
+  which tells them to manage access in Copilot.
 
 ## State owed to the manifest
 
@@ -581,7 +767,8 @@ says where to record it and what to do instead of rolling back.
 - Spaces, and folding of address variants.
 - Edge caching, which [#33](https://github.com/Brevilabs/OpenArtifacts/issues/33) owns.
 - Single-use URL grants, and `canComment`, which has no caller yet.
-- An owner-only bar on the page itself (see "No one-way door").
+- The comments button the bar will carry, and the role control the popover hides
+  until comments exist.
 
 ## What comes next
 
@@ -594,11 +781,13 @@ small adjustments, none changing its shape:
    grant cookie: the grant check slots in front of it.
 3. Derive the sidebar's `frame-ancestors` per document from the document's serving
    origin (`openartifacts.site` for public, the publisher origin for private)
-   instead of the fixed `https://openartifacts.site`.
-4. Mint the sidebar's token from the reader session. The sidebar runs in a
-   third-party iframe where cookies are unreliable, so it keeps its own bearer
-   token, but its top-level popup on the API host sees the session and can return
-   one with no second provider sign-in.
+   instead of the fixed `https://openartifacts.site`. The Share frame already does
+   this (the embedder's origin is echoed only when it is the document's serving
+   origin, `src/embed.ts`), and the sidebar follows the same rule.
+4. Accept the Share popover's per-document token in the comment routes. The
+   sidebar runs in a third-party iframe where cookies are unreliable, so it keeps
+   a bearer token, and the popup on the API host that already mints it sees the
+   session, so a reader signs in once per document for both.
 
 **Custom domains** are the same seat with a different name. `docs.acme.com`
 resolves to a publisher through a verified host-to-owner mapping (a future

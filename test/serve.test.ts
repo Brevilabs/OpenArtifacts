@@ -1185,7 +1185,7 @@ describe("an invited-only document", () => {
     expect(one.host).not.toContain(one.owner);
   });
 
-  // ---- Stage S3: sign-in first, requesting access, the Manage link and the share page ----
+  // ---- Stage S3: sign-in first, requesting access, the top bar and the share page ----
 
   const SECRET = PRIVATE.READER_SESSION_SECRET;
 

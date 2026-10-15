@@ -110,10 +110,13 @@ take four adjustments from it, none of which changes the shape of this sketch:
    the grant cookie, which is how the grant check slots in front of it.
 3. Derive the comments sidebar's `frame-ancestors` per document from the document's serving
    origin (`openartifacts.site` for public, the publisher's origin for private)
-   instead of the fixed `https://openartifacts.site`.
-4. Mint the sidebar's token from the reader session on the API host, which needs
-   no second provider sign-in; the sidebar keeps its own bearer token because it
-   runs in a third-party iframe where cookies are unreliable.
+   instead of the fixed `https://openartifacts.site`. The Share popover's frame
+   already follows this rule (the embedder's origin is echoed only when it is the
+   document's serving origin, `src/embed.ts`), and the sidebar follows the same one.
+4. Accept the Share popover's per-document token in the comment routes. The
+   sidebar runs in a third-party iframe where cookies are unreliable, so it carries
+   a bearer token, and the popup on the API host that mints it sees the reader
+   session, so a reader signs in once per document for both.
 
 `doc_invites.role` (`view` or `comment`) and the `canComment` predicate are
 reserved for it; nothing calls them yet.

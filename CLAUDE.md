@@ -74,10 +74,11 @@ These are day-one decisions, not retrofits:
   **This does not hold yet — see below. Do not rely on it.**
 - Every push mints an **immutable version** served with `cache-control: immutable`.
   R2 stores the publisher's own bytes; OpenArtifacts' additions (the robots meta,
-  the favicon, the social card, the two bylines and the Manage link) are injected on
-  the way out by `renderServedHtml`, so a byline change — or a plan that removes
-  one — reaches documents already published. An invited-only version is the
-  exception to `immutable`: it is served `private, no-store`, never cached.
+  the favicon, the social card, the top bar with its page-script tag, and the
+  bylines) are injected on the way out by `renderServedHtml`, so a byline change —
+  or a plan that removes one — reaches documents already published. An
+  invited-only version is the exception to `immutable`: it is served
+  `private, no-store`, never cached.
   Nothing else is composed per read: the additions are a pure function of the
   stored version, so the page stays cacheable.
 - **No per-MAU or per-seat priced dependency** anywhere in the serving path.

@@ -99,8 +99,20 @@ set up, which is the same thing a self-hosted deployment without one does.
 router falls back to path prefixes, and a publisher's origin (`{label}.{serving host}`) cannot resolve.
 Private sharing is therefore off locally by its own rule: reader sign-in needs a
 serving host and an API host, so `POST /api/v1/private-docs`, the `…/access`
-routes, `/open`, `/share` and `/signin` answer `404`, exactly as on a server that
-has no sign-in configured. The test suite covers the whole flow, including the
-sign-in pages, the label hosts and the share page, with the hosts set per test.
+routes, `/open`, `/share`, `/signin` and `/embed/*` answer `404`, exactly as on a
+server that has no sign-in configured. The test suite covers the whole flow,
+including the sign-in pages, the label hosts, the share page and the Share popover's
+frame, popup and token, with the hosts set per test.
 Trying it by hand needs a deployment: see
 [Self-hosting](deploying.md#self-hosting) under Private sharing.
+
+**The top bar cannot be seen from `npm run dev`.** The bar and its **Share**
+popover exist only where reader sign-in is configured, so a page served locally
+keeps the header byline and has no bar, no script tag and no popover. Nor can it
+be switched on there: `wrangler dev` rewrites every local request to one upstream
+host (the route's host, wrangler's `getInferredHost`), so the host router never sees
+the apex, a label host and the API host as different hosts, and the path-prefix
+fallback is the only routing it ever does. The workerd tests set the hosts per test
+and cover the bar's markup and the frame's HTTP contract; they cannot load a page,
+a frame or a popup, so the popover's behaviour in a browser is checked by hand
+against a deployment.

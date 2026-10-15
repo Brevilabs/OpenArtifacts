@@ -212,8 +212,8 @@ conflicting records by hand.
 
 ### The private-sharing limiters
 
-Four more optional bindings protect the email and request paths private sharing
-adds. Each is declared in the same `ratelimits` array, with its own
+Five more optional bindings protect the email, request and popover paths private
+sharing adds. Each is declared in the same `ratelimits` array, with its own
 `namespace_id`, and each follows the rule of the four above: **absent means no
 limit**, and everything else works the same.
 
@@ -223,10 +223,12 @@ limit**, and everything else works the same.
 | `SIGNIN_EMAIL_CLIENT_LIMITER` | `1009` | 10 per 60 s | the client address, so one caller cannot use the form to mail codes to many addresses |
 | `INVITE_EMAIL_LIMITER` | `1007` | 20 per 60 s | the publisher (hashed), so a license key, its linked account and the share page draw on one allowance. Over it, the person is still added and only the email is skipped. |
 | `REQUEST_ACCESS_LIMITER` | `1008` | 10 per 60 s | the requesting account (hashed). Over it, nothing is stored and the page still says "Request sent". It bounds both the rows an account can write and the emails those rows send owners. |
+| `EMBED_TOKEN_LIMITER` | `1010` | 20 per 10 s | the client address. The Share popover's frame polls `POST /embed/token` every two seconds while a sign-in is in progress; this bounds a flood of misses against the D1 read budget and leaves room for several frames behind one address. |
 
 Starting a Google or GitHub reader sign-in, and checking a code that was sent, are
 counted by `APPROVAL_LOOKUP_LIMITER`, per client; the existing binding is reused,
-not a fifth one.
+not a sixth one. So is the Share popover's sign-in popup when it stores a handoff
+for a signed-in reader (`GET /embed/sign-in`).
 
 ## Brevilabs one-deploy cutover
 
@@ -467,8 +469,9 @@ says what each piece is for.
 1. **The signing secret.** At least 32 random characters; a shorter one counts as
    unset. Without it, or on a server that has no way to sign anyone in (see
    [Self-hosting](#self-hosting)), private sharing is off: the whole private
-   family answers `404 not_found` exactly as the Worker running now does, no page
-   carries a `Manage` link, and a document that was never invited-only stays public.
+   family and `/embed/*` answer `404 not_found` exactly as the Worker running now
+   does, no page carries the top bar or its script tag (the header byline stays),
+   and a document that was never invited-only stays public.
 
    ```bash
    openssl rand -hex 32 | npx wrangler secret put READER_SESSION_SECRET
@@ -503,7 +506,7 @@ says what each piece is for.
 
 Google and GitHub reader sign-in reuse the OAuth apps and the
 `/approve/callback/{provider}` redirect URLs already registered for device
-approval, so no new OAuth registration is needed. The four private-sharing
+approval, so no new OAuth registration is needed. The five private-sharing
 limiters are declared in `wrangler.jsonc` and described under
 [The private-sharing limiters](#the-private-sharing-limiters).
 
@@ -576,7 +579,7 @@ Optional pieces, none of which blocks the rest:
   reports `"email": false`, the share page says "Invited · send them the link", and
   the owner sends the link themselves. A deployment with email and no OAuth app
   works too: codes are a complete sign-in method.
-- **The four limiters** in [The private-sharing limiters](#the-private-sharing-limiters).
+- **The five limiters** in [The private-sharing limiters](#the-private-sharing-limiters).
 
 Plans are configuration. A seeded key with `plan = 'plus'` or `'believer'` gets
 private sharing as it gets publishing, and browser accounts get it

@@ -17,7 +17,7 @@ other code in the Worker calls `record`.
 | Events | Where |
 | --- | --- |
 | `document_published`, `document_updated`, `document_unshared` | `createDoc`, `updateDoc`, `deleteDoc`, on their success paths only |
-| `document_access_changed` | the access routes after each write that changed something, the share page's writes (the same operations, in `src/api/access.ts`), and `createDoc` for a `POST /api/v1/private-docs` create, which records both `document_published` and `document_access_changed` |
+| `document_access_changed` | the access routes after each write that changed something, the share page's and the Share popover's writes (the same operations, in `src/api/access.ts`), and `createDoc` for a `POST /api/v1/private-docs` create, which records both `document_published` and `document_access_changed` |
 | `document_viewed` | `handleServing` and `handlePublisherServing`, once the served response is decided |
 
 Both streams start at the deployment that landed them, and neither can be
@@ -138,10 +138,12 @@ because neither changes the mode or the list; an approval shows up as the access
 change it is, because it is an add. A private create is `document_published`
 followed by `document_access_changed` with `people` 0.
 
-For a write through the share page, `ownerId` (and so `distinct_id`) is the
-publisher's `User.id` resolved from the document's owner scope, the same value a
-bearer write to that document carries, not a separate id for the session account.
-The two credentials count one publisher once.
+For a write through the share page or the Share popover, `ownerId` (and so
+`distinct_id`) is the publisher's `User.id` resolved from the document's owner
+scope, the same value a bearer write to that document carries, not a separate id
+for the session account or the popover's token. The credentials count one
+publisher once. Loading the top bar's script or the popover's frame records
+nothing.
 
 **The event follows the request, not the `versions` table.** A create that
 dies after inserting its `docs` row and before storing version 1 leaves a row
