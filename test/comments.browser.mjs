@@ -463,6 +463,8 @@ test("a resolved thread collapses to one line, grey, and expands with its agent 
   assert.deepEqual(await painted(tab, "openartifacts-open"), ["Staffing is unchanged"]);
   const collapsed = await line.boundingBox();
   assert.ok(collapsed.height < 60, `one line (${collapsed.height}px)`);
+  // The whole sentence is readable: a name that does not fit wraps rather than ending in an ellipsis.
+  assert.equal(await line.locator("span").last().evaluate((el) => el.scrollWidth <= el.clientWidth && getComputedStyle(el).textOverflow !== "ellipsis"), true);
   await shoot(tab, "margin-resolved-collapsed");
 
   await line.click();

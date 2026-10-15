@@ -622,7 +622,8 @@ main.overlay{background:#f6f2e9;padding:6px 14px 18px}
 .acts button.danger{color:#b4342b;font-weight:600}
 .who button.link{margin-left:auto;font-weight:400;font-size:11.5px;color:#6d6a62}
 .line{display:flex;align-items:center;gap:6px;width:100%;border:0;background:none;padding:0;font:inherit;font-size:12px;color:#6d6a62;cursor:pointer;text-align:left}
-.line span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.line span{min-width:0;overflow-wrap:anywhere}
+.line .badge{flex:none}
 textarea,input{width:100%;font:inherit;border:1px solid #cbbfa8;border-radius:9px;padding:8px 10px;background:#f7f4ec;color:inherit}
 textarea{resize:vertical;min-height:34px}
 textarea:focus,input:focus{outline:2px solid #16786a;outline-offset:-1px;background:#fff}
