@@ -2076,6 +2076,34 @@ describe("an invited-only document", () => {
       expect((await embedApi(`${doc.docId}/access/extra/x`, await tokenFor(owner, doc.docId), {}, config)).status).toBe(404);
     });
 
+    it("S7: says through `changed` whether a write changed the link access or the invite list", async () => {
+      const { over } = mailbox();
+      const config = { ...over, APPROVAL_LOOKUP_LIMITER: undefined, EMBED_TOKEN_LIMITER: undefined } as Partial<Env>;
+      const doc = await privateDoc("a public page", KEY, "anyone");
+      const owner = await ownerAccount(doc);
+      const token = await tokenFor(owner, doc.docId);
+      const changed = async (method: string, path: string, body?: unknown) => {
+        const response = await embedApi(`${doc.docId}/access${path}`, token, { method, ...(body === undefined ? {} : json(body)) }, config);
+        expect(response.status, `${method} ${path}`).toBe(200);
+        return ((await response.json()) as { changed: boolean }).changed;
+      };
+
+      expect(await changed("GET", "")).toBe(false);
+      // The first switch to invited-only is a change; the repeat of it is not.
+      expect(await changed("PUT", "", { linkAccess: "invited" })).toBe(true);
+      expect(await changed("PUT", "", { linkAccess: "invited" })).toBe(false);
+      expect(await changed("GET", "")).toBe(false);
+      // Adding an address is a change, adding it again is not.
+      expect(await changed("PUT", "/people/alice%40acme.com")).toBe(true);
+      expect(await changed("PUT", "/people/alice%40acme.com")).toBe(false);
+      // A decline deletes the request and answers false: requests are not what `changed` reports.
+      await env.DB.prepare("INSERT INTO doc_access_requests (doc_id, email, created_at) VALUES (?, 'carol@other.com', ?)").bind(doc.docId, Date.now()).run();
+      expect(await changed("DELETE", "/requests/carol@other.com")).toBe(false);
+      expect(await changed("DELETE", "/people/alice@acme.com")).toBe(true);
+      expect(await changed("PUT", "", { linkAccess: "anyone" })).toBe(true);
+      expect(await changed("PUT", "", { linkAccess: "anyone" })).toBe(false);
+    });
+
     it("S8: is not there at all on a server with no reader sign-in", async () => {
       const doc = await privateDoc();
       const owner = await ownerAccount(doc);

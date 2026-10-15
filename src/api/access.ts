@@ -123,8 +123,11 @@ export type AccessRefusal = "not_found" | "bad_email" | "full" | "plan" | "invit
 
 /**
  * What an operation did. `state` is read after the write, and `changed` says
- * whether the write changed anything, so a caller can tell a switch from a
- * repeat: the share page shows its notice only after a real switch to private.
+ * whether the write changed the link access or the invite list, so a caller can
+ * tell a switch from a repeat: the share page shows its notice only after a real
+ * switch to private. A decline, a read and a repeat answer `false`, even when a
+ * pending request was deleted: `changed` lines up with when
+ * `document_access_changed` is recorded, and requests are not recorded.
  */
 export type AccessResult =
   | { ok: true; state: AccessState; changed: boolean }

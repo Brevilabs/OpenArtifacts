@@ -730,8 +730,8 @@ are the five access operations of [The access routes](#the-access-routes) under
 that token, with no CORS. They run the same operations as the access routes and
 the share page, so the plan check and its `402`, both invite caps, the invite email
 and the analytics event are unchanged. `GET` answers `{"viewer": "owner", …}` with
-the `Access` fields, the title and `changed` (whether the write changed anything;
-`false` for a `GET`) for the owner, `{"viewer": "reader", "account",
+the `Access` fields, the title and `changed` (whether the write changed the link
+access or the invite list; a decline, a `GET` and a repeat answer `false`) for the owner, `{"viewer": "reader", "account",
 "docId", "url", "title"}` for a signed-in account that may read the document but
 does not manage it, and `404` for everyone else. A missing, expired or foreign
 token is `401`.
