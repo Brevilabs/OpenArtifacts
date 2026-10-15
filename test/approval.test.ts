@@ -1608,6 +1608,45 @@ describe("reader sign-in", () => {
     expect((await post(`${API}/signin/confirm-email`, { signup_token: session, terms: "yes", next: NEXT }, over)).status).toBe(400);
   });
 
+  it("offers Try again at the share page's sign-in page, not its visitor view, after a failed sign-in", async () => {
+    // With no session /share/{id} shows a public document's visitor view, which has
+    // no provider buttons: a retry that led there would look as though nothing happened.
+    const share = `/share/${DOC_ID}`;
+    const tryAgain = (html: string) => /<a href="([^"]*)">Try again<\/a>/.exec(html)?.[1];
+
+    // The provider sent Cancel.
+    const cancelled = await startGoogle(share);
+    const cancelUrl = new URL(`${API}/approve/callback/google?state=${cancelled.state}&error=access_denied`);
+    const refused = await handleApproval(new Request(cancelUrl, { headers: { cookie: cancelled.login } }), cancelUrl, configured(hosts), {
+      now: () => NOW,
+      oauth: oauthAnswering("x@acme.com"),
+    });
+    expect(tryAgain(await refused.text())).toBe(`${share}?signin`);
+
+    // The handshake expired while the person was at the provider.
+    const { login } = await startGoogle(share);
+    const expired = await callbackTo("a-state-nobody-started", login, "alice@acme.com");
+    expect(expired.status).toBe(400);
+    expect(tryAgain(await expired.text())).toBe(`${share}?signin`);
+
+    // The address another sign-in with this provider already holds.
+    const alice = await findOrCreateAccount(env.DB, newAccountId(), "alice@acme.com", NOW);
+    await env.DB.prepare("INSERT INTO identities (provider, subject, account_id, created_at) VALUES ('google', 'sub-old', ?, ?)")
+      .bind(alice.id, NOW)
+      .run();
+    const claimed = await startGoogle(share);
+    const other = await callbackTo(claimed.state, claimed.login, "alice@acme.com", "sub-new");
+    expect(other.status).toBe(409);
+    expect(tryAgain(await other.text())).toBe(`${share}?signin`);
+
+    // A path that already asks for the sign-in page, and the other return paths, are kept as they are.
+    const picked = await startGoogle(`${share}?signin`);
+    const again = await callbackTo("a-state-nobody-started", picked.login, "alice@acme.com");
+    expect(tryAgain(await again.text())).toBe(`${share}?signin`);
+    const opened = await startGoogle(`/open/${DOC_ID}`);
+    expect(tryAgain(await (await callbackTo("a-state-nobody-started", opened.login, "alice@acme.com")).text())).toBe(`/open/${DOC_ID}`);
+  });
+
   it("returns only to an /open, /share or popup path, and to nothing else", async () => {
     const out = (next: string, init: Record<string, string> = {}) =>
       send(`${API}/signin/out`, { method: "POST", body: new URLSearchParams({ next }), headers: init }, hosts);

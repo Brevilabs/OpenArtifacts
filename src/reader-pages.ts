@@ -279,6 +279,16 @@ export async function popupDonePage(docId: string, token: string, expiresAt: num
 }
 
 /**
+ * Where "Try again" leads after a sign-in that did not finish. The share page
+ * with no session shows a public document's visitor view, with no way to sign in,
+ * so a retry that returned to it would look as though nothing happened; `?signin`
+ * asks for the sign-in page. Other return paths are kept as they are.
+ */
+function retryHref(next: string): string {
+  return next.startsWith(`${SHARE_PREFIX}/`) && !next.includes("?") ? `${next}?signin` : next;
+}
+
+/**
  * A reader's provider sign-in ended on an address that already belongs to
  * another sign-in with the same provider: the recycled-mailbox refusal. In the
  * reader's words, with a way back to the sign-in page.
@@ -290,7 +300,7 @@ export function addressClaimedPage(provider: string, next: string): Response {
       title: "Sign-in didn’t finish",
       heading: "That didn’t work.",
       message: `That address already belongs to another ${escapeHtml(label)} sign-in. Try your other provider.`,
-      actions: `<div class="actions"><a href="${escapeHtml(next)}">Try again</a></div>`,
+      actions: `<div class="actions"><a href="${escapeHtml(retryHref(next))}">Try again</a></div>`,
     },
     409,
   );
@@ -303,7 +313,7 @@ export const SIGNIN_FAILED = (next?: string): Response =>
       title: "Sign-in didn’t finish",
       heading: "That didn’t work.",
       message: "Open the link you were sent again to sign in.",
-      actions: next === undefined ? ABOUT_LINK : `<div class="actions"><a href="${escapeHtml(next)}">Try again</a></div>`,
+      actions: next === undefined ? ABOUT_LINK : `<div class="actions"><a href="${escapeHtml(retryHref(next))}">Try again</a></div>`,
     },
     400,
   );
