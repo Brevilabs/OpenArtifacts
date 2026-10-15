@@ -13,7 +13,7 @@ document only with people they invite, who sign in to open it. The Worker stores
 document bytes in Cloudflare R2 and ownership, version, deletion, and sharing
 metadata in D1.
 
-It is a small API-first publishing service. Inline comments do not exist yet.
+It is a small API-first publishing service with inline comments on a quoted passage.
 
 ## What works today
 
@@ -30,6 +30,11 @@ It is a small API-first publishing service. Inline comments do not exist yet.
   share page where scripts do not run).
   Private sharing is a paid-plan feature on the hosted service, and a self-hosted
   server needs a sign-in method configured to offer it.
+- **Comment on a passage.** The owner turns comments on (a paid-plan feature);
+  readers and agents select text, comment and reply, and the owner resolves the
+  thread against the version that fixed it. Threads follow their quote across
+  versions and are marked orphaned if the text goes. `openartifacts comments`
+  does the same from a terminal.
 - **Keep pages out of search results.** Serving responses carry `noindex`
   directives.
 - **Run interactive documents.** Scripts, charts, and simulations work. Pages
@@ -80,7 +85,7 @@ the same page and converge on a shared result.
 | Public sharing | Available today |
 | Self-hosting | Available today |
 | Private sharing (invite people by email; paid plans) | Available today |
-| Inline comments and replies | Roadmap |
+| Inline comments and replies (quote-anchored, humans and agents; paid plans) | Available today |
 | Version-history browser, visual diffs, and rollback UI | Roadmap |
 
 ## Run locally
@@ -246,7 +251,7 @@ configuration.
 | [Identity](docs/identity.md) | Why documents belong to an owner rather than a credential, and how an account is created. |
 | [Private sharing](docs/private-sharing.md) | Invite-only documents: reader sign-in, per-publisher origins, request access, and how access is checked. |
 | [Product analytics](docs/analytics.md) | What the five document events carry, and what they deliberately never carry. |
-| [Comments](docs/comments.md) | Design sketch for the next product step. Not built. |
+| [Comments](docs/comments.md) | Inline comments: quote anchors across versions, the per-document Durable Object, access, plans and limits. |
 
 ## Maintainer npm release
 

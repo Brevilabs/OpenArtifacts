@@ -589,6 +589,65 @@ needs a browser and is verified by hand: publish with `--private`, open the link
 signed out, sign in, read, request access as another account, approve, remove, and
 switch to `anyone`.
 
+## Inline comments
+
+Comments add a SQLite Durable Object, one D1 migration and two rate limiters. None
+of it needs a new secret or service, and a SQLite-backed Durable Object is available
+on the free Workers plan.
+
+**Order for Brevilabs (and any deployment that applies migrations by hand):**
+
+1. Apply the D1 migration **before** the deploy:
+   `npx wrangler d1 migrations apply symposium --remote`. `0015_comments.sql` adds
+   `docs.comments_enabled` (default `0`, so nothing turns on) and
+   `accounts.display_name`. It is additive and backward compatible: the Worker
+   that is live while it applies ignores both columns. The deploy workflow
+   refuses to ship over an unapplied migration.
+2. Deploy. `wrangler deploy` applies the Durable Object itself: the `COMMENTS`
+   binding in `durable_objects.bindings` and the
+   `migrations: [{"tag": "v1", "new_sqlite_classes": ["DocComments"]}]` block in
+   `wrangler.jsonc` create the class as part of the upload, and the class must
+   exist for a Worker that binds it to upload at all. It is not a separate command,
+   and it is not part of the D1 migrations. A self-hoster adds both blocks to their
+   config and nothing else. Keep the `tag` (and add later migrations with new tags);
+   never edit a tag that has been applied.
+3. The comment limiters are in the same deploy; see below.
+
+**The comment limiters.** Two more optional `ratelimits` bindings, on the same
+rule as the others (absent means no limit). `namespace_id` is unique across the
+whole account:
+
+| Binding | Namespace | Allowance | Keyed by |
+| --- | --- | --- | --- |
+| `COMMENT_WRITE_LIMITER` | `1011` | 30 per 60 s | the writing principal (hashed). Create, reply, resolve and reopen share it. |
+| `COMMENT_EMAIL_LIMITER` | `1012` | 20 per 60 s | the document (hashed), over comment notification emails. |
+
+**Plans.** Comments are a plan feature: add `"comments": true` to the plans that
+should have them in your `PLAN_LIMITS` (Brevilabs: `pro` and `pro_lifetime`, not
+`free`). License keys whose plan may publish (`PLUS`, `BELIEVER`) have them
+without a flag. Nothing turns on by itself: each owner switches a document on.
+
+**Self-hosting.** The feature is on when the Worker has the `COMMENTS` binding and
+reader sign-in is configured ([Self-hosting](#self-hosting)). A deployment whose
+config predates the binding is not broken: every comment route and the threads
+resource answer `404`, the frame is absent and pages are served as before. Email is
+optional; without it comments work and nobody is notified.
+
+### Rollback floor
+
+Record this deploy beside the private-sharing floor: after it ships, note its
+`Current Version ID`, the deployed commit SHA and the workflow-run link in the
+tracking issue's record, as the other two floors are. Unlike them, going below it
+**cannot expose or lose a document or a comment**. A Worker version without the
+`COMMENTS` binding serves every page without comments (there is no button, the
+threads resource and the routes `404`), and the Durable Object's storage persists
+untouched, so rolling forward again finds every thread as it was. It does turn
+comments off for readers while it is live, and the D1 columns stay (rollback reverts
+code only). The effective floor for safety is still the newer of the cutover and
+private-sharing floors; the comments floor is the point below which comments
+disappear. If `wrangler` refuses a rollback across the Durable Object migration,
+roll forward instead.
+
 ## Standalone account launch order
 
 Apply additive D1 migrations through `0012_newsletter_delivery.sql` before this Worker.

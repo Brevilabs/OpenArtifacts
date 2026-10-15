@@ -13,7 +13,10 @@ npm run dev        # wrangler dev — local R2 and D1, no Cloudflare account nee
 
 Tests need no credentials and no deployment: `@cloudflare/vitest-pool-workers`
 runs them in the real runtime with the migrations in `migrations/` applied to a
-per-test D1. CI runs `npm run typecheck` and `npm test`, and nothing else.
+per-test D1. Use Node 22 (the repo's `engines` and CI both do). CI runs the
+account-routing check, `npm run typecheck`, the release-permission test, `npm test`
+and `npm run test:browser`, in that order; the deploy workflow repeats typecheck
+and the unit tests.
 
 `wrangler dev` needs a wrangler whose bundled runtime is new enough for the
 `compatibility_date` in `wrangler.jsonc`; if it refuses to start, `npm install
@@ -119,8 +122,20 @@ a frame or a popup. The browser test does:
 ```bash
 npm run test:browser   # Node 22 and Google Chrome
 OA_HEADED=1 npm run test:browser             # watch it
-OA_SCREENSHOTS=/some/dir npm run test:browser # bar.png, popover-signed-out.png, popover-owner.png, popover-private.png
+OA_SCREENSHOTS=/some/dir npm run test:browser # bar.png, popover-*.png, and the comments shots
 ```
+
+`npm run test:browser` runs two files, one after the other (`--test-concurrency=1`):
+`test/share-popover.browser.mjs` and `test/comments.browser.mjs`. Both need Google
+Chrome installed (they drive the machine's own through `playwright-core`; nothing
+is downloaded). `OA_HEADED=1` shows the window and `OA_SCREENSHOTS=dir` writes
+screenshots to `dir` (the comments test writes the margin, the draft card, a
+resolved and an orphaned thread, the Can-view reader, the phone bottom sheet and
+the popover's Comments switch). The comments test uses the same harness plus the
+`COMMENTS` Durable Object binding, and covers selecting and posting through the
+frame after a real sign-in, card placement, highlights that leave the author's DOM
+untouched, the bar's count and toggle, the narrow-viewport sheet, and an orphaned
+thread after a version without its text.
 
 `test/share-popover.browser.mjs` bundles the Worker (`wrangler deploy --dry-run`)
 and runs it under Miniflare over HTTPS with real D1 and R2 and no `upstream`, so
@@ -137,3 +152,14 @@ frame learns nothing and that the frame says the same about every id a viewer
 cannot read. The browser's own policy decides every request (Fetch Metadata,
 cookies, CSP, `frame-ancestors`, the opener policy), so the test never uses
 `context.route`, which would bypass it. It needs no license server and no network.
+
+## Comments locally
+
+Like private sharing, comments need reader sign-in, so `npm run dev` does not
+expose them: the document routes, the frame and the threads resource answer `404`
+(the account route `PUT /api/v1/account` does not need it). The Durable Object
+itself runs under `wrangler dev` and in the tests, which hold the real
+`DocComments` class: `test/comments-anchor.test.ts` (pure anchoring),
+`test/comments-object.test.ts` (the object, over RPC), `test/comments-api.test.ts`
+(every route, both doors) and the threads resource in `test/serve.test.ts`.
+`test/cli-client.test.ts` round-trips the CLI client through the Worker.

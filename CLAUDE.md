@@ -75,6 +75,9 @@ These are day-one decisions, not retrofits:
 - **R2 is the system of record**, and the stored format is HTML. D1 holds pointer
   rows only — never content — and must be rebuildable by scanning R2 manifests.
   **This does not hold yet — see below. Do not rely on it.**
+  Comment bodies are the one exception to "D1 holds pointer rows": they live in the
+  per-document Durable Object `DocComments`, snapshotted to `docs/{id}/threads.json`
+  in R2 after every change, and never in D1.
 - Every push mints an **immutable version** served with `cache-control: immutable`.
   R2 stores the publisher's own bytes; OpenArtifacts' additions (the robots meta,
   the favicon, the social card, the top bar with its page-script tag, and the
