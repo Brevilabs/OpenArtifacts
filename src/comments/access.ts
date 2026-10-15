@@ -74,10 +74,9 @@ export async function standingOn(
   const principal = caller?.publisher.owner ?? "";
   const doc = await findCommentableDoc(env.DB, docId, principal, pinned);
   if (doc === null || doc.deleted_at !== null || !doc.allowed) return null;
-  const canManage = doc.can_manage === 1;
-  const mayWrite = canManage || doc.invited_comment === 1 || (doc.link_access === "anyone" && principal !== "");
-  const scope = JSON.parse(doc.scope_ids) as string[];
-  return { doc, scope, canManage, mayWrite };
+  const canManage = doc.can_manage;
+  const mayWrite = canManage || doc.invited_comment || (doc.link_access === "anyone" && principal !== "");
+  return { doc, scope: doc.scope_ids, canManage, mayWrite };
 }
 
 /**
@@ -99,7 +98,7 @@ export async function ownerHasComments(env: Env, owner: string, now: number): Pr
 /** `canComment` in full, including the owner's plan, for a viewer flag. */
 export async function viewerCanComment(env: Env, standing: Standing, now: number): Promise<boolean> {
   return (
-    standing.doc.comments_enabled === 1 &&
+    standing.doc.comments_enabled &&
     standing.mayWrite &&
     (await ownerHasComments(env, standing.doc.owner, now))
   );

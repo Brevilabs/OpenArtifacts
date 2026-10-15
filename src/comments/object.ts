@@ -334,7 +334,21 @@ export class DocComments extends DurableObject<Env> {
     if (this.gone) return { ok: false, reason: "purged" };
     if (canon === null) return { ok: false, reason: "version_not_found" };
     const located = locateAnchor(canon, anchor);
-    if (located.status !== "anchored") return { ok: false, reason: "anchor_not_found" };
+    if (located.status !== "anchored") {
+      // `canonicalText` re-implements the browser's text, so a divergence from a
+      // real page surfaces here; the lengths and quote let a report be diagnosed.
+      console.warn(
+        JSON.stringify({
+          event: "anchor_not_found",
+          docId: args.docId,
+          version: args.version,
+          quoteLength: anchor.exact.length,
+          canonicalLength: canon.text.length,
+          quote: anchor.exact.slice(0, 200),
+        }),
+      );
+      return { ok: false, reason: "anchor_not_found" };
+    }
 
     // From here to the insert there is no await, so two posts cannot both pass
     // the caps: the object runs this block to completion before any other.
@@ -368,7 +382,7 @@ export class DocComments extends DurableObject<Env> {
         located.matchedText,
       );
     });
-    await this.snapshot(args.docId);
+    this.ctx.waitUntil(this.snapshot(args.docId));
     const thread = this.readThreads(args.version, threadId)[0] as ThreadRecord;
     return { ok: true, threadId, commentId, anchorStatus: "anchored", thread };
   }
@@ -385,7 +399,7 @@ export class DocComments extends DurableObject<Env> {
       this.insertComment(commentId, args.threadId, args, body, at);
       this.sql.exec(`UPDATE threads SET updated_at = ? WHERE id = ?`, at, args.threadId);
     });
-    await this.snapshot(args.docId);
+    this.ctx.waitUntil(this.snapshot(args.docId));
     // Anchored as far as already memoised: addressing an email needs the quote, not a fresh R2 read.
     const thread = this.readThreads(args.version, args.threadId)[0] as ThreadRecord;
     return { ok: true, commentId, thread };
@@ -424,7 +438,7 @@ export class DocComments extends DurableObject<Env> {
         this.sql.exec(`UPDATE threads SET updated_at = ? WHERE id = ?`, this.stamp(), row.thread_id);
       }
     });
-    await this.snapshot(args.docId);
+    this.ctx.waitUntil(this.snapshot(args.docId));
     return { ok: true, deleted, threadId: row.thread_id };
   }
 
@@ -484,7 +498,7 @@ export class DocComments extends DurableObject<Env> {
           args.threadId,
         );
       }
-      await this.snapshot(args.docId);
+      this.ctx.waitUntil(this.snapshot(args.docId));
     }
     const record = this.readThreads(args.version, args.threadId)[0] as ThreadRecord;
     return { ok: true, changed, thread: record };
@@ -597,7 +611,7 @@ export class DocComments extends DurableObject<Env> {
     });
     // Re-anchoring is a mutation (rows, and on rung 2 a rewritten quote), so the
     // snapshot that rebuilds this object has to carry it too.
-    if (anchored > 0) await this.snapshot(docId);
+    if (anchored > 0) this.ctx.waitUntil(this.snapshot(docId));
     return { ok: true };
   }
 

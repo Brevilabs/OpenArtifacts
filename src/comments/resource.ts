@@ -59,7 +59,7 @@ export async function threadsResource(
   if (verdict === "deleted") {
     return servingJson(method, 410, { error: { code: "gone", message: "This document was deleted." } });
   }
-  if (verdict !== "ok" || doc.comments_enabled !== 1 || doc.version === null) return threadsNotFound(method);
+  if (verdict !== "ok" || !doc.comments_enabled || doc.version === null) return threadsNotFound(method);
 
   const listed = await commentsStub(env, docId).list({
     docId,

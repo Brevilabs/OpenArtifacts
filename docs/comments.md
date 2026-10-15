@@ -131,7 +131,9 @@ needs an author.
 - **Entitlement belongs to the document's owner.** Readers and commenters never
   pay. A lapsed owner keeps the threads readable and stops accepting writes, and
   turning comments off never needs a plan. The plan is read from what D1 stores, so
-  a comment write costs no license-server call.
+  a comment write costs no license-server call. Accepted for v1: those rows are as
+  fresh as the owner's last publish or account refresh, so a lapsed license key
+  keeps accepting comments until its owner next publishes.
 - **Resolve and reopen**: the owner, or the thread's author while they can still
   comment. There is no moderation of other people's comments; a commenter deletes
   only their own words, and an owner who wants a thread gone resolves it or turns

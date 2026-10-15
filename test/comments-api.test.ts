@@ -68,6 +68,13 @@ const page = (body: string) =>
 
 const TEXT = '<p id="intro">The quick brown fox jumps over the lazy dog.</p><p>Revenue grew twelve percent.</p>';
 
+/** Wait for the snapshots a write queued: they run after the write answers. */
+async function drainSnapshots(docId: string): Promise<void> {
+  await runInDurableObject(env.COMMENTS!.get(env.COMMENTS!.idFromName(docId)), async (instance: DocComments) => {
+    await (instance as unknown as { snapshots: Promise<void> }).snapshots;
+  });
+}
+
 interface Person {
   id: string;
   email: string;
@@ -824,6 +831,7 @@ describe("what comments change elsewhere", () => {
   it("answers 404 for a deleted document everywhere, and purges its threads and snapshot", async () => {
     const { owner, alice, priv } = await world();
     await created(await thread(priv, alice.token));
+    await drainSnapshots(priv);
     expect(await env.DOCS.head(threadsObjectKey(priv))).not.toBeNull();
 
     expect((await send("DELETE", `/api/v1/docs/${priv}`, owner.token)).status).toBe(204);
@@ -1055,6 +1063,7 @@ describe("review fixes", () => {
   it("refuses a write that reaches the object after the document was purged, as a 404 with no snapshot", async () => {
     const { alice, priv } = await world();
     const made = await created(await thread(priv, alice.token));
+    await drainSnapshots(priv);
     // The delete's purge ran, but this request had already passed the Worker's check against D1.
     await env.DOCS.delete(threadsObjectKey(priv));
     await env.COMMENTS!.get(env.COMMENTS!.idFromName(priv)).purge();

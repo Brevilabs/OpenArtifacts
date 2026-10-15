@@ -118,7 +118,7 @@ export async function listThreads(env: Env, url: URL, caller: Caller | null, doc
 
   const standing = await standingOn(env, docId, caller, pinned);
   if (standing === null) return docNotFound(docId);
-  if (standing.doc.comments_enabled !== 1) return commentsOff(standing, docId);
+  if (!standing.doc.comments_enabled) return commentsOff(standing, docId);
   // The newest version that has bytes, or the one asked for; none means there is no such page to anchor to.
   if (standing.doc.version === null) return docNotFound(docId);
 
@@ -159,7 +159,7 @@ async function viewerOf(env: Env, standing: Standing, now: number): Promise<View
 async function authoriseWrite(env: Env, docId: string, caller: Caller, now: number): Promise<Standing | Response> {
   const standing = await standingOn(env, docId, caller);
   if (standing === null) return docNotFound(docId);
-  if (standing.doc.comments_enabled !== 1) return commentsOff(standing, docId);
+  if (!standing.doc.comments_enabled) return commentsOff(standing, docId);
   if (!standing.mayWrite) return docNotFound(docId);
   if (!(await ownerHasComments(env, standing.doc.owner, now))) {
     return standing.canManage ? commentsPlanRefusal(env, caller.publisher) : docNotFound(docId);

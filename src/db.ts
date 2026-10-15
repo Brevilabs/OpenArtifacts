@@ -1549,18 +1549,18 @@ export interface CommentableDoc {
   title: string;
   deleted_at: number | null;
   link_access: LinkAccess;
-  /** The owner's switch, as 0 or 1. */
-  comments_enabled: number;
+  /** The owner's switch. */
+  comments_enabled: boolean;
   /** The version asked for (`pinned`) or the newest that has bytes, or null. */
   version: number | null;
   /** The newest version that has bytes, or null before the first lands. */
   latest_version: number | null;
   /** `canRead` for the principal. */
   allowed: boolean;
-  /** `canManage` for the principal, as 0 or 1. */
-  can_manage: number;
-  /** The principal is an invited account whose role is `comment`, as 0 or 1. */
-  invited_comment: number;
+  /** `canManage` for the principal. */
+  can_manage: boolean;
+  /** The principal is an invited account whose role is `comment`. */
+  invited_comment: boolean;
   /**
    * The principal as comments store it: the account id when the principal is a
    * license owner linked to one, else the principal itself. So a linked key and
@@ -1570,15 +1570,24 @@ export interface CommentableDoc {
   /** The owner as comments store it, by the same rule. */
   owner_account: string;
   /**
-   * Every id the principal's comments may be stored under: its whole owner scope,
-   * as a JSON array. A license key that comments and is linked to an account
+   * Every id the principal's comments may be stored under: its whole owner scope.
+   * A license key that comments and is linked to an account
    * afterwards has comments under the key's id while `principal_id` is now the
    * account's, and both are the same author.
    */
-  scope_ids: string;
+  scope_ids: string[];
   /** The principal's display name, or null when it has none (or is no account). */
   viewer_name: string | null;
 }
+
+/** `CommentableDoc` as D1 returns it: flags as 0/1, the scope as a JSON string. */
+type CommentableRow = Omit<CommentableDoc, "comments_enabled" | "allowed" | "can_manage" | "invited_comment" | "scope_ids"> & {
+  comments_enabled: number;
+  allowed: number;
+  can_manage: number;
+  invited_comment: number;
+  scope_ids: string;
+};
 
 /**
  * The document, the principal's standing on it, and the version to answer for,
@@ -1596,7 +1605,6 @@ export async function findCommentableDoc(
   principal: string,
   pinned: number | null,
 ): Promise<CommentableDoc | null> {
-  // `return await`: see the note on the router's catch in index.ts.
   const row = await db
     .prepare(
       `${OWNER_SCOPE_SQL}
@@ -1617,9 +1625,17 @@ export async function findCommentableDoc(
         WHERE d.id = ?`,
     )
     .bind(principal, principal, pinned, pinned, principal, principal, docId)
-    .first<Omit<CommentableDoc, "allowed"> & { allowed: number }>();
-  // As in `findReadableDoc`: the predicate comes back as 0 or 1.
-  return row === null ? null : { ...row, allowed: row.allowed === 1 };
+    .first<CommentableRow>();
+  // D1 hands back 0/1 and a JSON string; callers get booleans and an array.
+  if (row === null) return null;
+  return {
+    ...row,
+    comments_enabled: row.comments_enabled === 1,
+    allowed: row.allowed === 1,
+    can_manage: row.can_manage === 1,
+    invited_comment: row.invited_comment === 1,
+    scope_ids: JSON.parse(row.scope_ids) as string[],
+  };
 }
 
 /**

@@ -1,5 +1,5 @@
 import { env, runInDurableObject } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   DocComments,
   MAX_COMMENTS,
@@ -38,6 +38,13 @@ const mustCreate = (r: CreateThreadResult) => {
 
 const countRows = (state: DurableObjectState, table: string) =>
   state.storage.sql.exec<{ n: number }>(`SELECT COUNT(*) AS n FROM ${table}`).one().n;
+
+/** Wait for the snapshots a write queued: they run after the write answers. */
+async function drain(stub: ReturnType<typeof stubFor>): Promise<void> {
+  await runInDurableObject(stub, async (instance: DocComments) => {
+    await (instance as unknown as { snapshots: Promise<void> }).snapshots;
+  });
+}
 
 describe("DocComments", () => {
   it("creates a thread, lists it with its comment and the principal data", async () => {
@@ -110,6 +117,30 @@ describe("DocComments", () => {
     expect(await stub.createThread({ ...base, anchor: { exact: "no such text" }, body: "x" })).toEqual({ ok: false, reason: "anchor_not_found" });
     expect(await stub.createThread({ ...base, version: 9, anchor: { exact: "fox" }, body: "x" })).toEqual({ ok: false, reason: "version_not_found" });
     expect(await stub.createThread({ ...base, anchor: { exact: "fox" }, body: "x".repeat(4000) })).toMatchObject({ ok: true });
+  });
+
+  it("logs the quote and the canonical length when it refuses one", async () => {
+    const { docId, stub } = await start("<p>the end</p>");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const quote = "no such text ".repeat(30);
+      await runInDurableObject(stub, async (instance: DocComments) => {
+        await instance.createThread({ docId, ...alice, version: 1, anchor: { exact: quote }, body: "x" });
+      });
+      const lines = warn.mock.calls.map((c) => JSON.parse(String(c[0])) as Record<string, unknown>);
+      expect(lines).toEqual([
+        {
+          event: "anchor_not_found",
+          docId,
+          version: 1,
+          quoteLength: quote.length,
+          canonicalLength: "the end".length,
+          quote: quote.slice(0, 200),
+        },
+      ]);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("refuses an ambiguous quote at post time, accepts it with context", async () => {
@@ -427,6 +458,7 @@ describe("DocComments", () => {
     const t = mustCreate(await stub.createThread({ docId, ...alice, version: 1, anchor: { exact: "fox" }, body: "first" }));
     const read = async () =>
       (await (await env.DOCS.get(key))!.json()) as { docId: string; threads: Array<Record<string, unknown>> };
+    await drain(stub);
     let snap = await read();
     expect(snap.docId).toBe(docId);
     expect(snap.threads).toHaveLength(1);
@@ -434,14 +466,17 @@ describe("DocComments", () => {
     expect(snap.threads[0]?.anchors).toEqual([{ version: 1, status: "anchored", matchedText: "fox" }]);
 
     await stub.reply({ docId, threadId: t.threadId, version: 1, ...bob, body: "r" });
+    await drain(stub);
     snap = await read();
     expect((snap.threads[0]?.comments as unknown[]).length).toBe(2);
 
     await stub.resolve({ docId, threadId: t.threadId, version: 1, ...owner, scope: [owner.principal], isOwner: true });
+    await drain(stub);
     snap = await read();
     expect(snap.threads[0]?.state).toBe("resolved");
 
     await stub.deleteComment({ docId, commentId: t.commentId, scope: ["acct_alice"] });
+    await drain(stub);
     snap = await read();
     expect(snap.threads).toEqual([]);
   });
@@ -453,6 +488,7 @@ describe("DocComments", () => {
         stub.createThread({ docId, ...alice, version: 1, anchor: { exact: "fox" }, body: `c${i}` }),
       ),
     );
+    await drain(stub);
     const snap = (await (await env.DOCS.get(threadsObjectKey(docId)))!.json()) as { threads: unknown[] };
     expect(snap.threads).toHaveLength(8);
   });
@@ -477,6 +513,7 @@ describe("DocComments", () => {
   it("purge wipes the object, leaves it empty, and refuses everything afterwards", async () => {
     const { docId, stub } = await start();
     const made = mustCreate(await stub.createThread({ docId, ...alice, version: 1, anchor: { exact: "fox" }, body: "x" }));
+    await drain(stub);
     await env.DOCS.delete(threadsObjectKey(docId)); // the sweep's job; so a snapshot found later was written after the purge
     expect(await stub.purge()).toEqual({ ok: true });
 
@@ -501,6 +538,7 @@ describe("DocComments", () => {
   it("purge beats a write that was parked on its R2 read: nothing lands, no snapshot is written", async () => {
     const { docId, stub } = await start();
     mustCreate(await stub.createThread({ docId, ...alice, version: 1, anchor: { exact: "fox" }, body: "x" }));
+    await drain(stub);
     await env.DOCS.delete(threadsObjectKey(docId)); // so any snapshot found later was written after this point
     await runInDurableObject(stub, async (instance: DocComments, state) => {
       const inner = instance as unknown as { env: Env; canonical: Map<number, unknown> };
@@ -535,9 +573,11 @@ describe("DocComments", () => {
     const { docId, stub } = await start("<p>one two three</p>");
     const made = mustCreate(await stub.createThread({ docId, ...alice, version: 1, anchor: { exact: "one two three" }, body: "a" }));
     await publish(docId, 2, "<p>one\n   two   three</p>");
+    await drain(stub);
     await env.DOCS.delete(threadsObjectKey(docId));
     const listed = await stub.list({ docId, version: 2 });
     expect(listed.ok).toBe(true);
+    await drain(stub);
     const snap = (await (await env.DOCS.get(threadsObjectKey(docId)))!.json()) as {
       threads: Array<{ threadId: string; anchor: { exact: string }; anchors: Array<{ version: number }> }>;
     };

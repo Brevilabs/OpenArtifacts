@@ -842,7 +842,8 @@ field).
 **`GET …/html` is now readable by anyone who can read the document**, not only
 the owner, so a reviewer's agent can quote the page it was invited to. The
 owner's behaviour is unchanged, and a document the caller cannot read is still
-`404`.
+`404`. A `200` from this route therefore no longer proves the caller owns the
+document, and a client must not use it as an ownership check.
 
 ### Threads
 
