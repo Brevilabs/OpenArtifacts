@@ -415,9 +415,11 @@ async function serveObject(
   // The comments switch enters the rendering only on the shared link. A pinned
   // `/v{n}` is immutable for a year and may sit in a shared edge cache, so a
   // flag baked into it would hide comments turned on later: it carries none, and
-  // the page script asks the threads resource there instead.
-  const comments = route.pinned === null ? commentsEnabled : null;
-  const suffix = renderingSuffix(comments);
+  // the page script asks the threads resource there instead. The validator reads
+  // the flag off the bar, so it moves only when the bytes do: no bar (no reader
+  // sign-in) means no flag in either.
+  const bar = topBarFor(env, route, route.pinned === null ? commentsEnabled : null);
+  const suffix = renderingSuffix(bar?.comments ?? null);
   const key = versionObjectKey(route.docId, version);
   const headers = servingHeaders(
     invitedOnly
@@ -485,7 +487,7 @@ async function serveObject(
   headers.set("content-type", STORED_CONTENT_TYPE);
   // Still the stream, never the bytes: HTMLRewriter transforms as it passes, so
   // a 10MB doc is never a 10MB string in the worker.
-  return renderServedHtml(new Response(object.body, { status: 200, headers }), true, topBarFor(env, route, comments));
+  return renderServedHtml(new Response(object.body, { status: 200, headers }), true, bar);
 }
 
 /**

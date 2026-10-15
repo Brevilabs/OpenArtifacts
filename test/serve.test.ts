@@ -692,9 +692,9 @@ describe("HEAD and conditional requests", () => {
 
     expect(v1).not.toBe(v2);
     // The shared link's etag has to move with the version, or a 60s-stale
-    // reader would revalidate into the old page forever.
-    // (It also carries the comments switch, which a pinned url does not.)
-    expect(latest).toBe(v2!.replace(/"$/, '.c0"'));
+    // reader would revalidate into the old page forever. With no reader sign-in
+    // there is no bar, so no comments switch in the validator either.
+    expect(latest).toBe(v2);
   });
 
   // The bytes a reader gets are the object plus a rendering, and only one of
@@ -704,7 +704,7 @@ describe("HEAD and conditional requests", () => {
 
     const etag = (await get(`/d/${docId}`)).headers.get("etag");
 
-    expect(etag).toMatch(/^W\/".+\.r\d+\.c[01]"$/);
+    expect(etag).toMatch(/^W\/".+\.r\d+"$/);
     // Not R2's own validator, which a byline edit cannot move: it identifies
     // the stored object, and a byline edit leaves that alone.
     const object = await env.DOCS.head(versionObjectKey(docId, 2));
@@ -719,7 +719,7 @@ describe("HEAD and conditional requests", () => {
   it("re-serves in full when the client holds an older rendering", async () => {
     const docId = await twoVersionDoc();
     const current = (await get(`/d/${docId}`)).headers.get("etag")!;
-    const older = current.replace(/\.r(\d+)(\.c[01])?"$/, (_, n, c) => `.r${Number(n) - 1}${c ?? ""}"`);
+    const older = current.replace(/\.r(\d+)"$/, (_, n) => `.r${Number(n) - 1}"`);
 
     expect(older).not.toBe(current);
 
@@ -748,7 +748,7 @@ describe("HEAD and conditional requests", () => {
   it("ignores If-Modified-Since when the client's etag names an older rendering", async () => {
     const docId = await twoVersionDoc();
     const current = (await get(`/d/${docId}`)).headers.get("etag")!;
-    const older = current.replace(/\.r(\d+)(\.c[01])?"$/, (_, n, c) => `.r${Number(n) - 1}${c ?? ""}"`);
+    const older = current.replace(/\.r(\d+)"$/, (_, n) => `.r${Number(n) - 1}"`);
 
     for (const method of ["GET", "HEAD"]) {
       const response = await send(method, `/d/${docId}`, {
@@ -1599,7 +1599,10 @@ describe("an invited-only document", () => {
       const docId = await markedPublicDoc();
 
       for (const over of [{ ...PRIVATE, READER_SESSION_SECRET: undefined }, { ...PRIVATE, OAUTH_GITHUB_CLIENT_ID: "", EMAIL: undefined }, { ...PRIVATE, API_HOST: "" }]) {
-        const html = await (await getFrom(`https://openartifacts.site/d/${docId}`, {}, over)).text();
+        const response = await getFrom(`https://openartifacts.site/d/${docId}`, {}, over);
+        // No bar, so the comments switch is not in the bytes and not in the validator.
+        expect(response.headers.get("etag")).not.toMatch(/\.c[01]"$/);
+        const html = await response.text();
         expect(html).toContain(OPENARTIFACTS_HEADER);
         expect(html).toContain(OPENARTIFACTS_FOOTER);
         expect(html).not.toContain("openartifacts-bar");
