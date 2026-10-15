@@ -261,11 +261,17 @@ window.setInterval(() => { if (document.activeElement !== document.body) window.
   await signIn.waitFor();
   assert.equal(await frame.evaluate(() => window.isSecureContext), true);
   await shoot(page, "popover-signed-out");
-  // A short view is a compact panel: Copy link follows the last line of text
-  // instead of being pushed to the bottom of the fixed-height popover.
+  // A short view is the link field and a full-width, centred Copy link under the
+  // sentence, and the account line pinned to the floor of the fixed-height popover.
   const sentence = await frame.getByText("Only the owner can change who can open this.").boundingBox();
   const copyLink = await frame.getByRole("button", { name: "Copy link" }).boundingBox();
-  assert.ok(copyLink.y - (sentence.y + sentence.height) < 40, `Copy link sits ${copyLink.y - (sentence.y + sentence.height)}px below the line above it`);
+  const mainBox = await frame.locator("main").boundingBox();
+  const field = await frame.locator(".field").boundingBox();
+  assert.ok(field.y >= sentence.y + sentence.height && field.y + field.height <= copyLink.y, "the link field sits between the sentence and Copy link");
+  assert.ok(Math.abs(copyLink.x - field.x) < 1 && Math.abs(copyLink.width - field.width) < 1, "Copy link spans the link field's width");
+  const bottom = await frame.locator(".bottom").boundingBox();
+  assert.ok(mainBox.y + mainBox.height - (bottom.y + bottom.height) < 32, "the account line and hint are pinned to the bottom");
+  assert.ok(await frame.getByText("Published from Copilot?").isVisible(), "the guest view carries the Copilot hint");
 
   // 3. Sign in to manage opens the popup, which sees the owner's session through
   //    the browser's own Sec-Fetch-Site and cookie. A 400 here would mean the
@@ -498,7 +504,8 @@ test("the frame shows the same to anyone who cannot read, whatever the id", { ti
     const page = await context.newPage();
     await page.goto(`https://${API}/embed/share?doc=${id}`);
     await page.getByRole("button", { name: "Sign in to manage" }).waitFor();
-    bare[name] = await page.locator("main").innerText();
+    assert.ok((await page.locator(".field").innerText()).endsWith(`/d/${id}`), "the link field shows the id's canonical link");
+    bare[name] = (await page.locator("main").innerText()).replaceAll(id, "ID"); // the link field names the id
     await page.close();
   }
   assert.equal(bare.open, bare.closed);
@@ -515,7 +522,7 @@ test("the frame shows the same to anyone who cannot read, whatever the id", { ti
     const [popup] = await Promise.all([context.waitForEvent("page"), page.getByRole("button", { name: "Sign in to manage" }).click()]);
     await popup.waitForEvent("close").catch(() => {});
     await page.getByRole("button", { name: "Use another account" }).waitFor();
-    shown[name] = await page.locator("main").innerText();
+    shown[name] = (await page.locator("main").innerText()).replaceAll(id, "ID");
     await page.close();
   }
   assert.equal(shown.closed, shown.unknown);

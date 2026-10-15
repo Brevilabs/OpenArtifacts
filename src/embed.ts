@@ -160,6 +160,15 @@ function frameScriptHash(): Promise<string> {
 }
 
 /**
+ * The link glyph in the shell's Copy link, as the frame script draws it. Static
+ * markup, so the no-token view needs no script to look right. Its size and
+ * stroke come from the stylesheet (`FRAME_CSS`).
+ */
+const LINK_ICON_SVG =
+  '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>' +
+  '<path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>';
+
+/**
  * `GET /embed/share?doc={docId}&origin={embedder's origin}`: the popover's
  * frame, as the same shell for every document id.
  *
@@ -203,6 +212,9 @@ async function shareFrame(request: Request, url: URL, env: Env): Promise<Respons
   const matched = servingOrigin !== null && (url.searchParams.get("origin") ?? "").toLowerCase() === servingOrigin;
   const ancestors = matched ? servingOrigin : "'none'";
 
+  // Built from the id alone, like the link beside it, so showing it leaks nothing.
+  const link = publicDocUrl(env, url, doc);
+  const bareLink = link.replace(/^https?:\/\//, "");
   const body = `<!doctype html>
 <html lang="en">
 <head>
@@ -213,12 +225,11 @@ async function shareFrame(request: Request, url: URL, env: Env): Promise<Respons
 <style>${FRAME_CSS}</style>
 </head>
 <body>
-<main data-doc="${escapeHtml(doc)}" data-link="${escapeHtml(publicDocUrl(env, url, doc))}" data-origin="${matched ? escapeHtml(servingOrigin) : ""}" data-hint="${escapeHtml(COPILOT_HINT)}">
+<main data-doc="${escapeHtml(doc)}" data-link="${escapeHtml(link)}" data-origin="${matched ? escapeHtml(servingOrigin) : ""}" data-hint="${escapeHtml(COPILOT_HINT)}">
 <header><h1 id="oa-title">Share</h1><button type="button" aria-label="Close">×</button></header>
 <p class="muted">Only the owner can change who can open this.</p>
-<div class="foot"><button type="button" class="primary">Copy link</button></div>
-<p class="muted" id="oa-account">Is this your page? <button type="button" class="link" disabled>Sign in to manage</button></p>
-<p id="oa-msg" class="err" role="alert"></p>
+<div class="foot"><div class="field"><span>${escapeHtml(bareLink)}</span></div><button type="button" class="primary tall">${LINK_ICON_SVG}<span>Copy link</span></button></div>
+<div class="bottom"><p id="oa-msg" class="err" role="alert"></p><p class="muted" id="oa-account">Is this your page? <button type="button" class="link" disabled>Sign in to manage</button></p><p class="muted hint">${escapeHtml(COPILOT_HINT)}</p></div>
 </main>
 <script>${FRAME_SCRIPT}</script>
 </body>

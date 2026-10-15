@@ -54,7 +54,7 @@
  * Accepted: it never mixes one publisher's or one document's rendering with
  * another's, and the next edit to the injections, or the next push, refreshes it.
  */
-export const RENDER_REVISION = 7;
+export const RENDER_REVISION = 8;
 
 /**
  * Belt to the `X-Robots-Tag` header's braces (D9). The header is the
@@ -248,10 +248,10 @@ const MARK_PATH =
  * hostile one. The byline's own grey is baked in place of `currentColor`, which
  * costs nothing: `BYLINE_BASE` pins the colour anyway.
  */
-const COPILOT_MARK_SRC =
+const copilotMarkSrc = (fill: string): string =>
   "data:image/svg+xml," +
   encodeURIComponent(
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="4 4 152 127" fill="#888">' +
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="4 4 152 127" fill="${fill}">` +
       `<path d="${MARK_PATH}"/></svg>`,
   );
 
@@ -261,12 +261,15 @@ const COPILOT_MARK_SRC =
  * document's figures, and the mark must not be one of them. A background image
  * on an empty span answers to neither selector.
  */
-const COPILOT_MARK =
+const copilotMark = (fill: string): string =>
   '<span aria-hidden="true" style="all:initial;display:inline-block;' +
   "width:17px;height:14px;vertical-align:-0.15em;flex:none;" +
   // `url()` unquoted: `encodeURIComponent` leaves nothing in the value that
   // would close the CSS function or the HTML attribute around it.
-  `background:url(${COPILOT_MARK_SRC}) center/contain no-repeat"></span>`;
+  `background:url(${copilotMarkSrc(fill)}) center/contain no-repeat"></span>`;
+
+/** The header's mark, in the header's own grey. */
+const COPILOT_MARK = copilotMark("#888");
 
 /**
  * The header's link carries the mark as well as the name, so both are clickable.
@@ -314,7 +317,8 @@ export const OPENARTIFACTS_FOOTER =
   "a new mode of communication between agents and humans</div>";
 
 /** System fonts only: the bar fetches nothing. */
-const BAR_FONT = "font:500 13px/1.25 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
+const BAR_FONT_FAMILY = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
+const BAR_FONT = `font:500 13px/1.25 ${BAR_FONT_FAMILY}`;
 
 /**
  * The strip's own height, as the spacer takes it: change both or content starts
@@ -328,46 +332,105 @@ export const OPENARTIFACTS_BAR_SPACER =
 
 /**
  * The one stylesheet the bar adds: a scroll offset the size of the strip, so an
- * anchor jump or a focused control does not land under it, and a print rule,
- * because a fixed strip repeats over the top of every printed page. Neither
- * belongs in an inline style: a print rule needs a media query, and an inline
- * `scroll-padding` would have to go on the author's own `<html>` element, where
- * it would beat the author's own rule. `:where()` has zero specificity, so an
- * author rule on `html` or `:root` wins.
+ * anchor jump or a focused control does not land under it, a print rule,
+ * because a fixed strip repeats over the top of every printed page, and the
+ * states an inline style cannot express (hover and focus). The scroll offset
+ * and the print rule do not belong in an inline style: a print rule needs a
+ * media query, and an inline `scroll-padding` would have to go on the author's
+ * own `<html>` element, where it would beat the author's own rule. `:where()`
+ * has zero specificity, so an author rule on `html` or `:root` wins.
+ *
+ * The state rules are `:where()`-scoped too, but must say `!important`: every
+ * element carries `all:initial` inline, and an inline declaration beats any
+ * stylesheet rule that is not important. That is the same concession
+ * `BYLINE_LINK` already makes: an author `!important` rule with higher
+ * specificity still wins.
  *
  * No `media` attribute: on a page with no head stylesheet this is
  * `document.styleSheets[0]`, and author code calling `insertRule` on it must get
- * rules that apply on screen. It carries no look, and lives in `<body>` with the
- * bar because the bar has one injection site.
+ * rules that apply on screen. It lives in `<body>` with the bar because the bar
+ * has one injection site.
  */
 export const OPENARTIFACTS_BAR_STYLE =
   "<style>:where(html){scroll-padding-top:40px}" +
-  "@media print{.openartifacts-bar,.openartifacts-bar-spacer,.openartifacts-share-popover{display:none!important}}</style>";
+  "@media print{.openartifacts-bar,.openartifacts-bar-spacer,.openartifacts-share-popover{display:none!important}}" +
+  ":where(.openartifacts-share):hover{background:#ffffff!important}" +
+  ":where(.openartifacts-share):focus-visible,:where(.openartifacts-byline):focus-visible{" +
+  "outline:2px solid #f6ae52!important;outline-offset:2px!important}" +
+  ":where(.openartifacts-byline):is(:hover,:focus-visible) .openartifacts-byline-text{text-decoration:underline!important}" +
+  "</style>";
 
 /**
  * Fixed rather than sticky, because it survives author `overflow` rules that
- * break `sticky`; the highest z-index there is; a light neutral with `#666` text
- * (contrast at least 5:1) so it sits quietly over any page. `direction:ltr`
- * because `all` resets every property except `direction` and `unicode-bidi`: a
- * publisher's `dir=rtl` would otherwise draw Share at the left edge, away from
- * where the popover opens.
+ * break `sticky`; the highest z-index there is. Dark, like the reader pages
+ * (`#0b0c10`, nearly the page background `#07080b`), whatever the document
+ * under it looks like, so it reads as the host's chrome and not as a part of the
+ * author's page. The surface is solid and never translucent: a
+ * translucent surface greys out over a white document (an 86% one composites to
+ * about `#2b2c2f`) and then sits visibly apart from the near-black popover
+ * hanging under it, and a solid one is also what a browser without
+ * `backdrop-filter` would show, so the two never differ.
+ * Contrast: the byline's `#8d94a0` on `#0b0c10` is 6.4:1 and its link `#c9ced6`
+ * 12:1, both above 4.5:1.
+ * `direction:ltr` because `all` resets every property except `direction` and
+ * `unicode-bidi`: a publisher's `dir=rtl` would otherwise draw Share at the left
+ * edge, away from where the popover opens.
  */
 const BAR_STYLE =
   "all:initial;direction:ltr;position:fixed;top:0;left:0;right:0;z-index:2147483647;box-sizing:border-box;" +
   "height:40px;display:flex;align-items:center;justify-content:space-between;gap:12px;" +
-  "padding:0 12px 0 16px;background:#fbfbfa;border-bottom:1px solid rgba(0,0,0,0.1);color:#666;" +
+  "padding:0 16px;background:#0b0c10;border-bottom:1px solid rgba(255,255,255,0.08);color:#8d94a0;" +
+  "-webkit-font-smoothing:antialiased;" +
   BAR_FONT;
 
-/** The bar's byline link, reset like `BYLINE_LINK_WITH_MARK` and for the same reasons. */
+/**
+ * The bar's byline link, reset like `BYLINE_LINK_WITH_MARK` and for the same
+ * reasons. `#c9ced6` is a step brighter than the muted text around it, so the
+ * link reads as one; it is underlined on hover and focus only
+ * (`OPENARTIFACTS_BAR_STYLE`). The underline and the focus ring sit outside the
+ * link's text box, so nothing around the link may clip them: its text span has
+ * vertical padding for the underline and the wrapper beside it does not hide
+ * overflow (the text span already ends in an ellipsis).
+ */
 const BAR_BYLINE_LINK =
-  'target="_blank" rel="noopener noreferrer" style="all:initial;font:inherit;display:inline-flex;' +
-  'align-items:center;gap:0.4em;cursor:pointer;color:inherit;text-decoration:none"';
+  'class="openartifacts-byline" target="_blank" rel="noopener noreferrer" style="all:initial;font:inherit;' +
+  "display:flex;align-items:center;gap:0.4em;min-width:0;cursor:pointer;color:#c9ced6;" +
+  'text-decoration:none;border-radius:4px"';
 
+/** The Copilot mark in the link's colour, so it reads on the dark strip. */
+const BAR_COPILOT_MARK = copilotMark("#c9ced6");
+
+/**
+ * Share's glyph, an arrow leaving a box, painted by a mask in the pill's own
+ * ink (`#0b0c10`). Not `currentColor`: the span's `all:initial` resets `color`
+ * to `CanvasText`, which is white on a document that declares a dark
+ * `color-scheme`, and a white glyph on the near-white pill would vanish.
+ * A data-URI background on an empty span, not an inline `<svg>`, for the reason
+ * `copilotMarkSrc` gives: the bar is near the top of the body, and an `<svg>`
+ * there is the first one a document's `querySelector("svg")` finds.
+ */
+const SHARE_ICON_SRC =
+  "data:image/svg+xml," +
+  encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" ' +
+      'stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">' +
+      '<path d="M4 12v7a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7M16 6l-4-4-4 4M12 2v13"/></svg>',
+  );
+const SHARE_ICON =
+  `<span aria-hidden="true" style="all:initial;display:block;flex:none;width:14px;height:14px;` +
+  `background-color:#0b0c10;-webkit-mask:url(${SHARE_ICON_SRC}) center/contain no-repeat;` +
+  `mask:url(${SHARE_ICON_SRC}) center/contain no-repeat"></span>`;
+
+/**
+ * Share is the one action on the strip, so it is the one filled control: the
+ * reader pages' primary button (`#f4f5f7` on `#0b0c10`, 17:1). Its hover and
+ * focus ring are in `OPENARTIFACTS_BAR_STYLE`. It never wraps.
+ */
 const SHARE_STYLE =
-  "all:initial;flex:none;box-sizing:border-box;display:inline-flex;align-items:center;height:28px;" +
-  "padding:0 14px;border:1px solid rgba(0,0,0,0.18);border-radius:6px;background:#ffffff;" +
-  "color:#1f1f1f;cursor:pointer;" +
-  BAR_FONT;
+  "all:initial;flex:none;box-sizing:border-box;display:inline-flex;align-items:center;gap:6px;height:28px;" +
+  "padding:0 12px 0 10px;border-radius:8px;background:#f4f5f7;color:#0b0c10;cursor:pointer;" +
+  "white-space:nowrap;text-decoration:none;letter-spacing:-0.005em;-webkit-font-smoothing:antialiased;" +
+  `font:600 13px/1 ${BAR_FONT_FAMILY}`;
 
 /**
  * Where a served page's Share link leads and which script upgrades it. Both are
@@ -405,14 +468,16 @@ function topBar(bar: TopBar, byline: boolean): string {
     OPENARTIFACTS_BAR_SPACER +
     OPENARTIFACTS_BAR_STYLE +
     `<div class="openartifacts-bar" style="${BAR_STYLE}">` +
-    `<span style="${SPAN_RESET}display:inline-flex;align-items:center;gap:0.4em;min-width:0;overflow:hidden;white-space:nowrap">` +
+    // A flex row, so the text and the link share one centre line. On a narrow
+    // strip the link's own text ends in an ellipsis; Share keeps its width.
+    `<span style="${SPAN_RESET}display:flex;align-items:center;gap:0.4em;flex:1 1 auto;min-width:0;white-space:nowrap">` +
     (byline
-      ? `Shared from <a href="https://obsidiancopilot.com" ${BAR_BYLINE_LINK}>${COPILOT_MARK}` +
-        `<span style="${SPAN_RESET}text-decoration:underline">Copilot for Obsidian</span></a>`
+      ? `Shared from <a href="https://obsidiancopilot.com" ${BAR_BYLINE_LINK}>${BAR_COPILOT_MARK}` +
+        `<span class="openartifacts-byline-text" style="${SPAN_RESET}display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;padding:3px 0;text-decoration:none;text-underline-offset:3px">Copilot for Obsidian</span></a>`
       : "") +
     "</span>" +
     `<a class="openartifacts-share" data-openartifacts-share href="${escapeAttribute(bar.shareUrl)}" ` +
-    `target="_blank" rel="noopener noreferrer" style="${SHARE_STYLE}">Share</a>` +
+    `target="_blank" rel="noopener noreferrer" style="${SHARE_STYLE}">${SHARE_ICON}Share</a>` +
     "</div>" +
     `<script defer src="${escapeAttribute(bar.scriptUrl)}"></script>`
   );

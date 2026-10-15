@@ -510,7 +510,7 @@ describe("renderServedHtml — the top bar", () => {
   // with them: a reader holding a validator for the rendering without them must
   // be sent the one with them.
   it("is a new rendering revision", () => {
-    expect(RENDER_REVISION).toBe(7);
+    expect(RENDER_REVISION).toBe(8);
   });
 
   it("R1: starts the body with the spacer and carries the bar, the Share link and the script once, in place of the header byline", async () => {
