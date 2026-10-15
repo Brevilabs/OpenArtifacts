@@ -9,6 +9,7 @@
  * it), and no backslash (`String.raw` keeps it, but a reader should not have to
  * know that to read the script).
  */
+import { PAGE_COMMENTS_SCRIPT } from "./comments-scripts.js";
 
 /**
  * The script every served page loads, from `https://{API_HOST}/embed/page.js`
@@ -17,7 +18,7 @@
  *
  * It runs inside the publisher's page, so it is written as the least trusting
  * code on that page can be. It defines no global, binds only our own link, reads
- * no cookie and no storage, holds no credential, and sends the frame nothing.
+ * no cookie and no storage, holds no credential, and sends the Share frame nothing.
  * The frame is the thing that holds a credential, and it is a frame precisely
  * because the credential that changes who can read a document must never be on
  * a page whose scripts the author writes.
@@ -49,6 +50,14 @@
  * The URL it is served from is permanent: pinned `/v{n}` pages carry the tag for
  * a year. A fix to this script reaches them by the route's short cache, not by a
  * new address.
+ *
+ * **Comments are the second half** (`PAGE_COMMENTS_SCRIPT`, `src/comments-scripts.ts`,
+ * joined here so both share `api`, `docId` and `link`). It is inert unless the
+ * document's threads resource answers, adds a button to the bar and a margin frame
+ * on the API host, and holds no credential either: everything above about what
+ * the page script holds is true of it too. It reads the Share half's `api`,
+ * `docId`, `link` and `viewport` and changes none of them, and closes its own
+ * sheet when Share is pressed.
  */
 export const PAGE_SCRIPT = String.raw`(() => {
   "use strict";
@@ -137,8 +146,9 @@ export const PAGE_SCRIPT = String.raw`(() => {
   document.addEventListener("keydown", (event) => { if (open && event.key === "Escape") hide(true); }, true);
   document.addEventListener("pointerdown", (event) => { if (open && event.target !== host && !link.contains(event.target)) hide(false); }, true);
   window.addEventListener("resize", () => { if (open) place(); });
-})();
-`;
+` +
+  PAGE_COMMENTS_SCRIPT +
+  "})();\n";
 
 /**
  * What the owner of a Copilot-published page sees when their license key is not

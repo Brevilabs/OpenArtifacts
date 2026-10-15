@@ -5,6 +5,7 @@
  * ```
  * GET|HEAD /embed/page.js                         the script every served page loads
  * GET      /embed/share?doc=&origin=              the popover's frame
+ * GET      /embed/comments?doc=&origin=[&v=]      the margin's frame (src/comments/frame.ts)
  * GET      /embed/sign-in?doc=&h=[&switch=1]      the popup that signs the frame in
  * POST     /embed/token  {doc, nonce}             the frame collects its token
  * GET|PUT|DELETE /embed/api/docs/{docId}/access…  the frame's JSON, behind the token
@@ -66,17 +67,19 @@ import { accountEmail, findReadableDoc, putEmbedHandoff, sweepExpired, takeEmbed
 import { COPILOT_HINT, FRAME_CSS, FRAME_SCRIPT, PAGE_SCRIPT } from "./embed-scripts.js";
 import { accountPlan } from "./entitlement.js";
 import { handleCommentsEmbed } from "./comments/embed-api.js";
+import { commentsFrame } from "./comments/frame.js";
 import { docNotFound, errorResponse } from "./errors.js";
+import { frameContext, frameHeaders } from "./frame-shell.js";
 import { verifyFrameToken } from "./frame-token.js";
 import { scriptHashSource, sha256Hex } from "./hash.js";
 import { isDocId, SHARE_TOKEN_PREFIX } from "./ids.js";
 import { sameOriginPost, withinClientLimit } from "./limits.js";
 import { escapeHtml } from "./page.js";
-import { publisherOrigin } from "./private.js";
 import { readBodyWithin } from "./quota.js";
 import { readerSecret } from "./reader-config.js";
 import {
   EMBED_API_PREFIX,
+  EMBED_COMMENTS_PATH,
   EMBED_SHARE_PATH,
   EMBED_SIGNIN_PATH,
   EMBED_TOKEN_PATH,
@@ -174,45 +177,17 @@ function frameScriptHash(): Promise<string> {
  * `GET /embed/share?doc={docId}&origin={embedder's origin}`: the popover's
  * frame, as the same shell for every document id.
  *
- * **The frame reveals nothing to a non-reader.** Anyone can load this with any
- * id, and until a token proves the viewer can read the document the body is the
- * same bytes for a public, an invited-only, an unknown and a deleted document:
+ * Until a token proves the viewer can read the document the body is the same
+ * bytes for a public, an invited-only, an unknown and a deleted document:
  * `Share`, **Copy link** for the canonical address (built from the id, no
  * lookup) and **Sign in to manage**. No title, no mode, no list. Only the
- * document's title, from `/embed/api/…` after a token, ever follows.
- *
- * The one thing that varies is `frame-ancestors`, and with it `data-origin`
- * (the target of the frame's `postMessage`). The lookup here decides only that:
- * the document's serving origin is `https://{SERVING_HOST}` when it is live and
- * public, its publisher's `https://{label}.{SERVING_HOST}` when it is live and
- * invited-only, and none otherwise. The frame may be embedded only by that
- * origin, and the policy echoes the caller's own `origin` parameter only when it
- * equals it, so the header tells a caller nothing it did not already name. (The
- * parameter is why: the request is anonymous and serving pages send
- * `no-referrer`, so the server cannot see the embedder, and a header derived
- * from the row alone would publish an invited-only document's label origin to
- * anyone holding the link.) The browser checks the policy against the real
- * ancestor, so a forged parameter frames nothing. A private document's controls
- * can therefore be embedded only by its own publisher's pages, never by another
- * publisher's. Residual, accepted: someone who already knows a label and holds a
- * link can confirm the pairing.
+ * document's title, from `/embed/api/…` after a token, ever follows. Which
+ * origin may embed it is `frameContext`'s (`src/frame-shell.ts`).
  */
 async function shareFrame(request: Request, url: URL, env: Env): Promise<Response> {
-  const doc = url.searchParams.get("doc");
-  if (request.method !== "GET" || doc === null || !isDocId(doc)) return READER_NOT_FOUND();
-
-  const row = await findReadableDoc(env.DB, doc, null, "");
-  const live = row !== null && row.deleted_at === null;
-  const serving = !live
-    ? null
-    : row.link_access === "anyone"
-      ? env.SERVING_HOST?.trim()
-        ? `https://${env.SERVING_HOST.trim()}`
-        : null
-      : ((await publisherOrigin(env, row.owner))?.origin ?? null);
-  const servingOrigin = serving?.toLowerCase() ?? null;
-  const matched = servingOrigin !== null && (url.searchParams.get("origin") ?? "").toLowerCase() === servingOrigin;
-  const ancestors = matched ? servingOrigin : "'none'";
+  const context = request.method === "GET" ? await frameContext(url, env) : null;
+  if (context === null) return READER_NOT_FOUND();
+  const { doc, origin, ancestors } = context;
 
   const body = `<!doctype html>
 <html lang="en">
@@ -224,7 +199,7 @@ async function shareFrame(request: Request, url: URL, env: Env): Promise<Respons
 <style>${FRAME_CSS}</style>
 </head>
 <body>
-<main data-doc="${escapeHtml(doc)}" data-link="${escapeHtml(publicDocUrl(env, url, doc))}" data-origin="${matched ? escapeHtml(servingOrigin) : ""}" data-hint="${escapeHtml(COPILOT_HINT)}">
+<main data-doc="${escapeHtml(doc)}" data-link="${escapeHtml(publicDocUrl(env, url, doc))}" data-origin="${origin === null ? "" : escapeHtml(origin)}" data-hint="${escapeHtml(COPILOT_HINT)}">
 <header><h1 id="oa-title">Share</h1><button type="button" aria-label="Close">×</button></header>
 <p class="muted">Only the owner can change who can open this.</p>
 <div class="foot"><button type="button" class="primary">Copy link</button></div>
@@ -235,22 +210,7 @@ async function shareFrame(request: Request, url: URL, env: Env): Promise<Respons
 </body>
 </html>`;
 
-  return new Response(body, {
-    status: 200,
-    headers: {
-      "content-type": "text/html; charset=utf-8",
-      "cache-control": "no-store",
-      "x-content-type-options": "nosniff",
-      // Not `no-referrer`: a Safari from before WebKit bug 256472 was fixed
-      // derived `Sec-Fetch-Site` from the referrer, and would send `none` on the
-      // popup navigation, which the popup refuses. It also keeps a real `Origin`
-      // on the frame's writes.
-      "referrer-policy": "same-origin",
-      "content-security-policy":
-        `default-src 'none'; script-src ${await frameScriptHash()}; style-src 'unsafe-inline'; img-src data:; ` +
-        `connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors ${ancestors}`,
-    },
-  });
+  return new Response(body, { status: 200, headers: frameHeaders(await frameScriptHash(), ancestors) });
 }
 
 /**
@@ -470,6 +430,7 @@ export async function handleEmbed(
   const now = Date.now();
   if (url.pathname === PAGE_SCRIPT_PATH) return await pageScript(request);
   if (url.pathname === EMBED_SHARE_PATH) return await shareFrame(request, url, env);
+  if (url.pathname === EMBED_COMMENTS_PATH) return await commentsFrame(request, url, env);
   if (url.pathname === EMBED_SIGNIN_PATH) return await popup(request, url, env, now);
   if (url.pathname === EMBED_TOKEN_PATH) return await claimToken(request, url, env, now);
   if (url.pathname.startsWith(`${EMBED_API_PREFIX}/`)) {

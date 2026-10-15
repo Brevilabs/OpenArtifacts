@@ -32,6 +32,9 @@ export const PAGE_SCRIPT_PATH = "/embed/page.js";
 /** The Share popover's frame, `GET /embed/share?doc={docId}&origin=…`. */
 export const EMBED_SHARE_PATH = "/embed/share";
 
+/** The comments margin's frame, `GET /embed/comments?doc={docId}&origin=…[&v={n}]`. */
+export const EMBED_COMMENTS_PATH = "/embed/comments";
+
 /** The popover's sign-in popup, `GET /embed/sign-in?doc={docId}&h=…`. */
 export const EMBED_SIGNIN_PATH = "/embed/sign-in";
 

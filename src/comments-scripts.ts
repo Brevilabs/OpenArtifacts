@@ -1,0 +1,1062 @@
+/**
+ * The front-end code for inline comments, in plain strings like
+ * `src/embed-scripts.ts` and under the same rules: plain ES2021, no backtick and
+ * no `${` inside (a template literal here is `String.raw`, and either would end
+ * or interpolate it), and no backslash (a reader should not have to know that
+ * `String.raw` keeps it). Where a pattern needs one (Unicode whitespace) the
+ * script builds it with `String.fromCharCode`.
+ *
+ * Two scripts, one on each side of a cross-origin line:
+ *
+ * - `PAGE_COMMENTS_SCRIPT` runs inside the publisher's page, as the second half
+ *   of `PAGE_SCRIPT` (`embed-scripts.ts` joins them, so both share the Share
+ *   half's `api`, `docId` and `link`). It holds no credential.
+ * - `COMMENTS_FRAME_SCRIPT` runs in the margin's frame on the API host and holds
+ *   the reader's token.
+ */
+
+/**
+ * The comment half of the page script: what the page does when its document has
+ * comments on. Everything here is skipped by the Share half's own guards (no
+ * Share link, no script) and wrapped so that a throw cannot touch Share.
+ *
+ * **Inert unless the threads resource answers.** The first thing it does is
+ * `GET /d/{docId}/threads` on the page's own origin (`404` for every document
+ * with comments off, or on a server without them), and on anything but `200` it
+ * adds no button, no frame and no listener.
+ *
+ * **It paints, it never writes.** Highlights are `CSS.highlights` over Ranges,
+ * styled by an adopted stylesheet, so a chart, a React island or a Pyodide cell
+ * keeps every node it had. The only things added to the document are the
+ * comments button inside our own bar and two hosts on `<html>`, each a closed
+ * shadow root (the frame, and the floating **Comment** button).
+ *
+ * **Canonical text** is what `src/comments/anchor.ts` builds from the stored
+ * HTML: the text of `<body>` in document order, with no separator between text
+ * nodes, skipping `head`, `script`, `style`, `template` and `noscript` subtrees
+ * and our own injections, each text node normalised to NFC with CRLF as LF.
+ * Anchors are quotes in that text, and the same ladder (exact with context, then
+ * whitespace-collapsed) finds each one again here.
+ *
+ * **Messages.** To the frame, `{type, event, …}` with the API origin as the
+ * target: `threads`, `positions`, `draft`, `focus`, `mode`, `visible`. From it,
+ * accepted only from that iframe's window and the API origin: `ready`, `viewer`,
+ * `changed`, `focus`, `close`. Nothing in either direction is a credential.
+ *
+ * **Margin or overlay.** If the author's content leaves 300px at the right of
+ * the viewport the frame is a column there, as tall as the document so it
+ * scrolls with the page, and the cards sit at the heights this script reports in
+ * document coordinates. Otherwise the frame is a bottom sheet, shown only for a
+ * tapped highlight or a new comment.
+ */
+export const PAGE_COMMENTS_SCRIPT = String.raw`
+  // Comments. See src/comments-scripts.ts.
+  try {
+  (() => {
+    if (!window.fetch) return;
+    const NS = "openartifacts:comments";
+    const WS = new RegExp(String.fromCharCode(92) + "s");
+    const CRLF = String.fromCharCode(13, 10), LF = String.fromCharCode(10);
+    const FONT = "font:500 13px/1.25 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
+    const pin = /^[/]d[/][0-9a-z]{16}[/]v([1-9][0-9]{0,8})[/]?$/.exec(location.pathname);
+    const painting = typeof Highlight === "function" && window.CSS && CSS.highlights;
+    let version = pin ? Number(pin[1]) : 0;
+    let data = null, active = false, shown = true, canComment = true, mode = "margin", polling = false;
+    let mhost = null, mframe = null, ready = false, sheet = false, button = null, tipHost = null, tip = null;
+    let canon = null, dirty = true, ranges = new Map(), lost = [], draft = null, draftRange = null, focusId = "", timer = 0;
+    const out = {};
+
+    // ---- canonical text ---------------------------------------------------
+    const SKIP = ["head", "script", "style", "template", "noscript"];
+    const OURS = ["openartifacts-bar", "openartifacts-bar-spacer", "openartifacts-header", "openartifacts-footer"];
+    const skipped = (el) => SKIP.includes(el.localName) || OURS.some((name) => el.classList.contains(name));
+    const inChrome = (node) => {
+      for (let n = node; n && n !== document.body; n = n.parentNode) if (n.nodeType === 1 && skipped(n)) return true;
+      return false;
+    };
+    const normalize = (text) => text.split(CRLF).join(LF).normalize("NFC");
+    const build = () => {
+      let text = "";
+      const nodes = [], map = new Map();
+      const walker = document.createTreeWalker(document.body, 5, (n) => (n.nodeType === 3 ? 1 : skipped(n) ? 2 : 3));
+      for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+        if (n.nodeType !== 3) continue;
+        const raw = n.data, norm = normalize(raw);
+        if (norm === "") continue;
+        const entry = { node: n, start: text.length, end: text.length + norm.length, raw: raw, same: raw === norm };
+        nodes.push(entry);
+        map.set(n, entry);
+        text += norm;
+      }
+      canon = { text: text, nodes: nodes, map: map, flat: null };
+      dirty = false;
+    };
+    const normOff = (e, k) => (e.same ? k : normalize(e.raw.slice(0, k)).length);
+    const rawOff = (e, k) => {
+      if (e.same) return k;
+      let r = 0;
+      while (r < e.raw.length && normalize(e.raw.slice(0, r)).length < k) r++;
+      return r;
+    };
+    // The entry holding offset off, or with atEnd the one that ends at or after it.
+    const entryAt = (off, atEnd) => {
+      let lo = 0, hi = canon.nodes.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1, e = canon.nodes[mid];
+        if (atEnd ? e.end < off : e.end <= off) lo = mid + 1; else hi = mid;
+      }
+      return canon.nodes[lo] || null;
+    };
+    const toRange = (a, b) => {
+      const s = entryAt(a, false), e = entryAt(b, true);
+      if (!s || !e) return null;
+      const range = document.createRange();
+      range.setStart(s.node, rawOff(s, a - s.start));
+      range.setEnd(e.node, rawOff(e, b - e.start));
+      return range;
+    };
+    // A DOM boundary as an offset in the canonical text, -1 for text that is not the author's.
+    const boundary = (c, k) => {
+      if (c.nodeType === 3) {
+        const e = canon.map.get(c);
+        return e ? e.start + normOff(e, k) : -1;
+      }
+      const probe = document.createRange();
+      probe.setStart(c, k);
+      probe.collapse(true);
+      let lo = 0, hi = canon.nodes.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (probe.comparePoint(canon.nodes[mid].node, 0) < 0) lo = mid + 1; else hi = mid;
+      }
+      return lo < canon.nodes.length ? canon.nodes[lo].start : canon.text.length;
+    };
+
+    // ---- the ladder of src/comments/anchor.ts, over the live text -----------
+    const occ = (hay, needle) => {
+      const found = [];
+      if (!needle) return found;
+      for (let i = hay.indexOf(needle); i !== -1; i = hay.indexOf(needle, i + 1)) found.push(i);
+      return found;
+    };
+    const collapse = (t) => {
+      let text = "";
+      const starts = [], ends = [];
+      for (let i = 0; i < t.length;) {
+        let j = i + 1;
+        if (WS.test(t[i])) { while (j < t.length && WS.test(t[j])) j++; text += " "; } else text += t[i];
+        starts.push(i);
+        ends.push(j);
+        i = j;
+      }
+      return { text: text, starts: starts, ends: ends };
+    };
+    const agree = (a, b, fromEnd) => {
+      let n = 0;
+      while (n < a.length && n < b.length && (fromEnd ? a[a.length - 1 - n] === b[b.length - 1 - n] : a[n] === b[n])) n++;
+      return n;
+    };
+    const inSection = (off, id) => {
+      const e = entryAt(off, false);
+      for (let el = e && e.node.parentElement; el && el !== document.body; el = el.parentElement) if (el.id === id) return true;
+      return false;
+    };
+    const pick = (text, len, starts, anchor, pre, suf, origin) => {
+      if (starts.length < 2) return starts.length ? starts[0] : -1;
+      let best = [], top = -1;
+      for (const s of starts) {
+        const score = agree(text.slice(Math.max(0, s - 32), s), pre, true) + agree(text.slice(s + len, s + len + 32), suf, false);
+        if (score > top) { top = score; best = [s]; } else if (score === top) best.push(s);
+      }
+      if (best.length === 1) return best[0];
+      const inside = anchor.section ? best.filter((s) => inSection(origin(s), anchor.section)) : [];
+      return inside.length === 1 ? inside[0] : -1;
+    };
+    const find = (thread, needle) => {
+      const anchor = thread.anchor, pre = anchor.prefix || "", suf = anchor.suffix || "";
+      const hits = occ(canon.text, needle);
+      if (hits.length) {
+        const s = pick(canon.text, needle.length, hits, anchor, pre, suf, (i) => i);
+        return s < 0 ? null : toRange(s, s + needle.length);
+      }
+      canon.flat = canon.flat || collapse(canon.text);
+      const flat = canon.flat, loose = collapse(needle).text;
+      const s = pick(flat.text, loose.length, occ(flat.text, loose), anchor, collapse(pre).text, collapse(suf).text, (i) => flat.starts[i]);
+      return s < 0 ? null : toRange(flat.starts[s], flat.ends[s + loose.length - 1]);
+    };
+    const locate = (thread) => (thread.matchedText && find(thread, thread.matchedText)) || find(thread, thread.anchor.exact);
+
+    // ---- selection ----------------------------------------------------------
+    const capture = () => {
+      const sel = window.getSelection();
+      if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return null;
+      const range = sel.getRangeAt(0);
+      if (!document.body.contains(range.commonAncestorContainer)) return null;
+      if (inChrome(range.startContainer) || inChrome(range.endContainer) || inChrome(range.commonAncestorContainer)) return null;
+      if (Array.from(document.body.children).some((el) => skipped(el) && range.intersectsNode(el))) return null;
+      if (dirty || !canon) build();
+      let a = boundary(range.startContainer, range.startOffset), b = boundary(range.endContainer, range.endOffset);
+      if (a < 0 || b < 0) return null;
+      const text = canon.text;
+      while (a < b && WS.test(text[a])) a++;
+      while (b > a && WS.test(text[b - 1])) b--;
+      b = Math.min(b, a + 1000);
+      if (b <= a) return null;
+      const anchor = { exact: text.slice(a, b), prefix: text.slice(Math.max(0, a - 32), a), suffix: text.slice(b, b + 32) };
+      const first = entryAt(a, false);
+      for (let el = first && first.node.parentElement; el && el !== document.body; el = el.parentElement) {
+        if (el.id && el.id.length <= 128) { anchor.section = el.id; break; }
+      }
+      return { a: a, b: b, anchor: anchor, rect: range.getClientRects()[range.getClientRects().length - 1] || range.getBoundingClientRect() };
+    };
+
+    // ---- the frame ----------------------------------------------------------
+    const deliver = (msg) => { if (ready && mframe.contentWindow) mframe.contentWindow.postMessage(Object.assign({ type: NS }, msg), api); };
+    const send = (msg) => { out[msg.event] = msg; deliver(msg); };
+    const base = "all:initial;direction:ltr;box-sizing:border-box;z-index:2147483000;";
+    const rootOf = (el) => (el.attachShadow ? el.attachShadow({ mode: "closed" }) : el);
+    const hostOnly = (root, css) => {
+      const style = document.createElement("style");
+      style.textContent = css;
+      root.append(style);
+    };
+    const buildHost = () => {
+      mhost = document.createElement("div");
+      mhost.className = "openartifacts-comments";
+      mhost.setAttribute("style", base + "display:none");
+      const root = rootOf(mhost);
+      hostOnly(root, "@media print{:host{display:none!important}}");
+      mframe = document.createElement("iframe");
+      mframe.title = "Comments";
+      mframe.setAttribute("style", "display:block;width:100%;height:100%;border:0;background:transparent;color-scheme:light");
+      mframe.src = api + "/embed/comments?doc=" + docId + "&origin=" + encodeURIComponent(window.location.origin) + "&v=" + version;
+      root.append(mframe);
+      document.documentElement.append(mhost);
+    };
+    const contentRight = () => {
+      let right = 0;
+      for (const el of document.body.children) {
+        if (skipped(el)) continue;
+        const cs = getComputedStyle(el);
+        if (cs.display === "none" || cs.position === "fixed") continue;
+        const r = el.getBoundingClientRect();
+        if (r.width > 0 || r.height > 0) right = Math.max(right, r.right);
+      }
+      return right;
+    };
+    let visible = null;
+    const layout = () => {
+      const vw = viewport().clientWidth, right = contentRight();
+      const next = vw - right >= 300 ? "margin" : "overlay";
+      if (next !== mode) { mode = next; send({ event: "mode", mode: mode }); }
+      if (!active || !shown) {
+        mhost.style.display = "none";
+        if (visible !== false) { visible = false; send({ event: "visible", shown: false }); }
+        return;
+      }
+      const now = mode === "margin" || sheet;
+      if (now !== visible) { visible = now; send({ event: "visible", shown: now }); }
+      if (mode === "margin") {
+        mhost.style.display = "none";
+        const height = Math.max(document.documentElement.scrollHeight, document.body.scrollHeight);
+        mhost.setAttribute("style", base + "display:block;position:absolute;top:0;left:" + Math.round(right + 16 + window.pageXOffset) + "px;width:" + Math.round(Math.min(320, vw - right - 24)) + "px;height:" + height + "px");
+      } else {
+        const phone = vw <= 600;
+        mhost.setAttribute("style", base + "position:fixed;bottom:0;height:min(55vh,560px);display:" + (sheet ? "block" : "none") +
+          ";border-radius:18px 18px 0 0;overflow:hidden;background:#f6f2e9;box-shadow:0 -8px 32px rgba(0,0,0,.18),0 0 0 1px rgba(0,0,0,.08);" +
+          (phone ? "left:0;right:0" : "right:16px;width:420px;max-width:calc(100vw - 32px);border-radius:18px 18px 0 0"));
+      }
+    };
+    const measure = () => {
+      timer = 0;
+      if (!active) return;
+      if (dirty || !canon) locateAll();
+      layout();
+      if (mode === "margin" && shown) {
+        const top = mhost.getBoundingClientRect().top + window.pageYOffset, tops = {}, none = lost.slice();
+        ranges.forEach((range, id) => {
+          const rects = range.getClientRects();
+          if (rects.length) tops[id] = Math.round(rects[0].top + window.pageYOffset - top); else none.push(id);
+        });
+        send({ event: "positions", tops: tops, lost: none, height: Math.round(mhost.getBoundingClientRect().height) });
+      }
+    };
+    const schedule = () => { if (!timer) timer = window.setTimeout(measure, 80); };
+
+    // ---- highlights ---------------------------------------------------------
+    const byId = (id) => (data ? data.threads.find((t) => t.threadId === id) : undefined);
+    const paint = () => {
+      if (!painting) return;
+      const groups = { "openartifacts-open": [], "openartifacts-resolved": [], "openartifacts-focus": [], "openartifacts-draft": [] };
+      if (active && shown) {
+        ranges.forEach((range, id) => groups[byId(id).state === "resolved" ? "openartifacts-resolved" : "openartifacts-open"].push(range));
+        if (focusId && ranges.has(focusId)) groups["openartifacts-focus"].push(ranges.get(focusId));
+        if (draftRange) groups["openartifacts-draft"].push(draftRange);
+      }
+      Object.keys(groups).forEach((name, i) => {
+        if (!groups[name].length) { CSS.highlights.delete(name); return; }
+        const h = new Highlight(...groups[name]);
+        h.priority = i;
+        CSS.highlights.set(name, h);
+      });
+    };
+    const locateAll = () => {
+      if (dirty || !canon) build();
+      ranges = new Map();
+      lost = [];
+      for (const thread of data ? data.threads : []) {
+        if (thread.anchorStatus !== "anchored") continue;
+        const range = locate(thread);
+        if (range) ranges.set(thread.threadId, range); else lost.push(thread.threadId);
+      }
+    };
+
+    // ---- the bar's button ---------------------------------------------------
+    const label = () => {
+      const n = data ? data.threads.filter((t) => t.state === "open").length : 0;
+      button.textContent = String.fromCodePoint(0x1F4AC) + " " + n;
+      button.setAttribute("aria-label", "Comments, " + n + " open");
+      button.setAttribute("aria-pressed", String(shown));
+      button.title = shown ? "Hide comments" : "Show comments";
+      button.style.background = shown ? "#eaf5f1" : "#fff";
+    };
+    const makeButton = () => {
+      button = document.createElement("button");
+      button.type = "button";
+      button.setAttribute("style", "all:initial;flex:none;box-sizing:border-box;display:inline-flex;align-items:center;height:28px;padding:0 10px;margin-left:auto;border:1px solid rgba(0,0,0,0.18);border-radius:6px;color:#1f1f1f;cursor:pointer;" + FONT);
+      button.addEventListener("click", () => {
+        shown = !shown;
+        if (!shown) { sheet = false; hideTip(); }
+        label();
+        paint();
+        measure();
+      });
+      link.parentNode.insertBefore(button, link);
+    };
+
+    // ---- the Comment button on a selection ----------------------------------
+    const hideTip = () => { if (tipHost) tipHost.style.display = "none"; };
+    const refreshTip = () => {
+      if (!active || !shown || !canComment) { hideTip(); return; }
+      const cap = capture();
+      if (!cap) { hideTip(); return; }
+      if (!tipHost) {
+        tipHost = document.createElement("div");
+        tipHost.className = "openartifacts-comment-tip";
+        tipHost.setAttribute("style", "all:initial;position:fixed;z-index:2147483646;display:none");
+        const root = rootOf(tipHost);
+        hostOnly(root, "@media print{:host{display:none!important}}");
+        tip = document.createElement("button");
+        tip.type = "button";
+        tip.textContent = "Comment";
+        tip.setAttribute("style", "all:initial;box-sizing:border-box;display:block;padding:7px 12px;border-radius:9px;background:#18191d;color:#fff;cursor:pointer;user-select:none;box-shadow:0 4px 14px rgba(0,0,0,.3);" + FONT);
+        tip.addEventListener("mousedown", (event) => event.preventDefault());
+        tip.addEventListener("click", startDraft);
+        root.append(tip);
+        document.documentElement.append(tipHost);
+      }
+      const r = cap.rect;
+      const above = r.top - 40 >= 48;
+      tipHost.style.left = Math.round(Math.max(8, Math.min(r.right - 40, viewport().clientWidth - 100))) + "px";
+      tipHost.style.top = Math.round(above ? r.top - 40 : r.bottom + 8) + "px";
+      tipHost.style.display = "block";
+    };
+    const startDraft = () => {
+      const cap = capture();
+      if (!cap) return;
+      draftRange = toRange(cap.a, cap.b);
+      draft = cap.anchor;
+      hideTip();
+      window.getSelection().removeAllRanges();
+      const top = draftRange.getClientRects()[0] || draftRange.getBoundingClientRect();
+      send({ event: "draft", anchor: draft, top: Math.round(top.top + window.pageYOffset - (mhost.getBoundingClientRect().top + window.pageYOffset)) });
+      if (mode === "overlay") openSheet();
+      paint();
+    };
+    const endDraft = () => { draft = null; draftRange = null; send({ event: "draft", anchor: null, top: 0 }); paint(); };
+
+    // ---- the overlay sheet --------------------------------------------------
+    const openSheet = () => { sheet = true; layout(); };
+    const closeSheet = () => {
+      if (!sheet) return;
+      sheet = false;
+      focusId = "";
+      send({ event: "focus", threadId: "" });
+      layout();
+      paint();
+    };
+
+    // ---- data ---------------------------------------------------------------
+    const refresh = async () => {
+      let response, body;
+      try {
+        response = await fetch("/d/" + docId + "/threads" + (version ? "?v=" + version : ""), { credentials: "same-origin", cache: "no-store" });
+        body = response.status === 200 ? await response.json() : null;
+      } catch (error) { return; }
+      if (response.status === 404 || response.status === 410) { if (active) deactivate(); return; }
+      if (!body || !Array.isArray(body.threads)) return;
+      if (!version) version = body.version;
+      data = body;
+      if (!active) activate();
+      locateAll();
+      label();
+      button.style.display = "inline-flex";
+      send({ event: "threads", data: data, version: version });
+      paint();
+      measure();
+    };
+    const deactivate = () => {
+      active = false;
+      button.style.display = "none";
+      mhost.style.display = "none";
+      hideTip();
+      paint();
+    };
+    const activate = () => {
+      active = true;
+      if (!button) makeButton();
+      if (!mhost) buildHost();
+      if (polling) return;
+      polling = true;
+      window.setInterval(() => { if (document.visibilityState === "visible") refresh(); }, 30000);
+      document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") refresh(); });
+      window.addEventListener("resize", schedule);
+      window.addEventListener("load", schedule);
+      window.addEventListener("scroll", () => { if (tipHost && tipHost.style.display === "block") refreshTip(); }, { passive: true });
+      if (window.ResizeObserver) new ResizeObserver(schedule).observe(document.body);
+      if (window.MutationObserver) new MutationObserver((records) => { if (records.some((r) => !link.parentNode.contains(r.target))) { dirty = true; schedule(); } }).observe(document.body, { childList: true, subtree: true, characterData: true });
+      if (document.fonts && document.fonts.ready) document.fonts.ready.then(schedule);
+      let settle = 0;
+      document.addEventListener("selectionchange", () => { window.clearTimeout(settle); settle = window.setTimeout(refreshTip, 150); });
+      link.addEventListener("click", closeSheet);
+      document.addEventListener("keydown", (event) => { if (sheet && event.key === "Escape") { endDraft(); closeSheet(); } }, true);
+      document.addEventListener("pointerdown", (event) => {
+        if (sheet && event.target !== mhost && event.target !== tipHost) { if (draft) endDraft(); closeSheet(); }
+      }, true);
+      document.addEventListener("click", (event) => {
+        if (!active || !shown || event.button !== 0 || ranges.size === 0) return;
+        const sel = window.getSelection();
+        if (sel && !sel.isCollapsed) return;
+        let node, offset;
+        if (document.caretPositionFromPoint) {
+          const p = document.caretPositionFromPoint(event.clientX, event.clientY);
+          if (p) { node = p.offsetNode; offset = p.offset; }
+        } else if (document.caretRangeFromPoint) {
+          const r = document.caretRangeFromPoint(event.clientX, event.clientY);
+          if (r) { node = r.startContainer; offset = r.startOffset; }
+        }
+        if (!node || node.nodeType !== 3) return;
+        for (const [id, range] of ranges) {
+          if (range.isPointInRange(node, offset)) {
+            focusId = id;
+            send({ event: "focus", threadId: id });
+            if (mode === "overlay") openSheet();
+            paint();
+            return;
+          }
+        }
+      });
+      window.addEventListener("message", (event) => {
+        if (!mframe || event.source !== mframe.contentWindow || event.origin !== api) return;
+        const msg = event.data;
+        if (msg === null || typeof msg !== "object" || msg.type !== NS) return;
+        if (msg.event === "ready") {
+          ready = true;
+          schedule();
+          ["mode", "visible", "threads", "positions", "draft", "focus"].forEach((name) => { if (out[name]) deliver(out[name]); });
+        } else if (msg.event === "viewer") {
+          canComment = msg.canComment !== false;
+          if (!canComment) hideTip();
+        } else if (msg.event === "changed") {
+          if (draft) endDraft();
+          refresh();
+        } else if (msg.event === "focus" && typeof msg.threadId === "string") {
+          focusId = msg.threadId;
+          send({ event: "focus", threadId: focusId });
+          if (mode === "overlay") {
+            openSheet();
+            const range = ranges.get(focusId);
+            if (range) {
+              const rect = range.getBoundingClientRect();
+              window.scrollTo({ top: Math.max(0, rect.top + window.pageYOffset - window.innerHeight * 0.15), behavior: "smooth" });
+            }
+          }
+          paint();
+        } else if (msg.event === "close") {
+          if (draft) endDraft();
+          focusId = "";
+          send({ event: "focus", threadId: "" });
+          if (mode === "overlay") closeSheet();
+          paint();
+        }
+      });
+      if (painting) {
+        try {
+          const sheetCss = new CSSStyleSheet();
+          sheetCss.replaceSync("::highlight(openartifacts-open){background-color:rgba(94,200,160,.28);text-decoration:underline;text-decoration-color:#16786a;text-decoration-thickness:2px}" +
+            "::highlight(openartifacts-resolved){background-color:rgba(140,140,140,.18);text-decoration:underline;text-decoration-color:rgba(110,110,110,.7)}" +
+            "::highlight(openartifacts-focus){background-color:rgba(94,200,160,.5)}" +
+            "::highlight(openartifacts-draft){background-color:rgba(255,179,138,.45)}");
+          document.adoptedStyleSheets = document.adoptedStyleSheets.concat([sheetCss]);
+        } catch (error) {}
+      }
+    };
+    refresh();
+  })();
+  } catch (error) {}
+`;
+
+/**
+ * The margin frame's stylesheet (`src/comments/frame.ts` puts it in the shell).
+ * Two layouts of the same cards, chosen by a class on `<main>` that the page
+ * script's `mode` message sets: `margin`, where `.cards` is as tall as the
+ * document and every card is absolutely positioned by the script at the height
+ * of its passage, and `overlay`, a bottom sheet with one card in normal flow.
+ * The frame's own background is transparent in the margin, so the page shows
+ * through between cards; the colours are the design mockups' (green for open
+ * and for the focused card, a violet badge for an agent, grey for resolved).
+ */
+export const COMMENTS_FRAME_CSS = `:root{color-scheme:light;font:13px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:#18191d;background:transparent}
+*{box-sizing:border-box}html,body{height:100%;margin:0;background:transparent}
+main{min-height:100%}
+main.overlay{background:#f6f2e9;padding:6px 14px 18px}
+.cards{position:relative}
+.card{background:#fffdf8;border:1px solid #cbbfa8;border-radius:12px;padding:10px 12px;box-shadow:0 1px 2px rgba(40,30,10,.12),0 14px 28px -20px rgba(40,30,10,.4)}
+.margin .card,.margin .heading{position:absolute;left:4px;right:10px}
+.card.focus{border-color:#16786a;box-shadow:0 0 0 3px #dcf0ea,0 1px 2px rgba(40,30,10,.12)}
+.card.muted{opacity:.8}
+.card.resolved{background:#f4f1ea;border-color:#ddd5c4}
+.heading{font:10px/1.4 ui-monospace,"SF Mono",Menlo,Consolas,monospace;letter-spacing:.1em;text-transform:uppercase;color:#6d6a62}
+.grab{display:flex;align-items:center;justify-content:center;position:relative;height:22px}
+.grab i{width:36px;height:4px;border-radius:2px;background:#cbbfa8}
+.grab button{position:absolute;right:-6px;top:0;border:0;background:none;font-size:20px;line-height:1;color:#6d6a62;cursor:pointer;padding:0 6px}
+.quote{font-size:11.5px;color:#6d6a62;border-left:2px solid #cbbfa8;padding-left:7px;margin:0 0 8px;font-style:italic;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.where{font-size:11.5px;color:#6d6a62;margin:0 0 6px}
+.who{display:flex;align-items:center;gap:6px;font-weight:700;font-size:12.5px;min-width:0}
+.who small{font-weight:400;color:#6d6a62}
+.av{width:20px;height:20px;border-radius:50%;display:inline-grid;place-items:center;font-size:10px;font-weight:700;color:#1b1b1b;background:#9fd6c9;flex:none}
+.av.agent{background:#c9b8f0}
+.badge{font:9.5px/1.4 ui-monospace,"SF Mono",Menlo,Consolas,monospace;letter-spacing:.08em;text-transform:uppercase;padding:1px 6px;border-radius:999px;font-weight:600;background:#fbe3d8;color:#b03d1b}
+.badge.done{background:#ece7da;color:#6d6a62;border:1px solid #ddd5c4}
+.txt{margin:3px 0 8px 26px;white-space:pre-wrap;overflow-wrap:anywhere}
+.acts{display:flex;flex-wrap:wrap;gap:12px;margin:0 0 6px 26px;font-size:11.5px;color:#6d6a62}
+.acts button,button.link{border:0;background:none;padding:0;font:inherit;color:inherit;cursor:pointer}
+.acts button:hover,button.link:hover{color:#18191d;text-decoration:underline}
+.line{display:flex;align-items:center;gap:6px;width:100%;border:0;background:none;padding:0;font:inherit;font-size:12px;color:#6d6a62;cursor:pointer;text-align:left}
+.line span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+textarea,input{width:100%;font:inherit;border:1px solid #cbbfa8;border-radius:9px;padding:8px 10px;background:#f7f4ec;color:inherit}
+textarea{resize:vertical;min-height:38px}
+textarea:focus,input:focus{outline:2px solid #16786a;outline-offset:-1px;background:#fff}
+.btns{display:flex;justify-content:flex-end;gap:8px;margin-top:8px}
+button.b{font:inherit;font-size:12px;font-weight:650;padding:5px 11px;border-radius:8px;border:1px solid #cbbfa8;background:#fffdf8;color:#18191d;cursor:pointer}
+button.b:hover{border-color:#8f8670}button.b:disabled{cursor:default;opacity:.55}
+button.b.primary{background:#18191d;border-color:#18191d;color:#fff}
+.muted-text{font-size:11.5px;color:#6d6a62;margin:6px 0 0}
+.err{font-size:11.5px;color:#b4342b;margin:6px 0 0}.err:empty{display:none}
+.ask{font-size:12px;margin:0 0 6px}
+.signin{margin-top:6px}
+`;
+
+/**
+ * The margin frame's script (`GET /embed/comments`). It draws the cards, holds
+ * the reader's token and does the writing, so it is written as the least
+ * trusting code can be, like the Share popover's: DOM built only with
+ * `createElement` and `textContent` (never `innerHTML`, so a comment is only
+ * ever text), no `<form>`, and no `id` on any element it draws (an id is a
+ * fragment an embedding page can navigate the frame to, and whether the browser
+ * then focuses something would show that page which view this is).
+ *
+ * **Where it gets cards.** From `/embed/api/docs/{doc}/threads` with its token,
+ * which also tells it who is looking (`viewer`, `canResolve`, `mine`). With no
+ * token it draws the anonymous `threads` JSON the page relays from the serving
+ * origin, read-only, which is also how a private document's cards show to a
+ * reader who has not signed in to the API host. The page is the author's, so
+ * relayed data is only ever drawn as text; the title shown above a new comment
+ * is the server's whenever the frame has a token, and nothing a page sends can
+ * post: every write goes to `/embed/api` for this one document.
+ *
+ * **What it tells the page.** `ready`, once, before it touches storage; `viewer`
+ * with `{canComment}` once an authenticated read says; `changed` after its own
+ * write; `focus` when a card is pressed; `close` from a user action. Nothing
+ * else about the viewer.
+ *
+ * **Signing in** is the Share popover's own handshake, copied: a nonce only this
+ * frame knows, its hash in the popup's address, collected by polling
+ * `POST /embed/token`. The token is stored under the Share frame's key, so one
+ * sign-in serves both.
+ */
+export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
+  "use strict";
+  const main = document.querySelector("main");
+  const cards = main.firstElementChild;
+  const doc = main.dataset.doc;
+  const parentOrigin = main.dataset.origin;
+  const NS = "openartifacts:comments";
+  const KEY = "openartifacts:share-token:" + doc;
+  const SIGNIN_WINDOW_MS = 10 * 60 * 1000;
+  const wanted = new URLSearchParams(location.search).get("v") || "";
+  const pinned = /^[1-9][0-9]{0,8}$/.test(wanted) ? Number(wanted) : 0;
+
+  const post = (msg) => {
+    if (parentOrigin && window.parent !== window) window.parent.postMessage(Object.assign({ type: NS }, msg), parentOrigin);
+  };
+  post({ event: "ready" });
+
+  const node = (tag, attrs, kids) => {
+    const element = document.createElement(tag);
+    for (const name of Object.keys(attrs || {})) {
+      const value = attrs[name];
+      if (value === null || value === undefined) continue;
+      if (name.startsWith("on")) element.addEventListener(name.slice(2), value);
+      else element.setAttribute(name, value);
+    }
+    for (const kid of kids || []) element.append(kid);
+    return element;
+  };
+  const button = (label, onclick, cls) => node("button", { type: "button", class: cls || "b", onclick: onclick }, [label]);
+
+  let memory = null;
+  const readToken = () => {
+    let raw;
+    try { raw = window.localStorage.getItem(KEY); } catch (error) { raw = memory; }
+    if (raw === null || raw === undefined) return null;
+    try {
+      const value = JSON.parse(raw);
+      if (value && typeof value.token === "string" && typeof value.expiresAt === "number" && value.expiresAt - Date.now() >= 60000) return value;
+    } catch (error) {}
+    return null;
+  };
+  const writeToken = (value) => {
+    memory = value === null ? null : JSON.stringify(value);
+    try {
+      if (value === null) window.localStorage.removeItem(KEY);
+      else window.localStorage.setItem(KEY, memory);
+    } catch (error) {}
+  };
+  const bytesToBase64Url = (bytes) => btoa(String.fromCharCode(...bytes)).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+  const bytesToHex = (bytes) => Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+
+  let mode = "margin", shown = true, relayed = null, own = null, tops = null, lostIds = [], height = 0;
+  let draft = null, draftTop = 0, focusId = "", loadSeq = 0, lastViewer = null, positionsKey = "";
+  let signState = "", prepared = null, opened = null, generation = 0, wake = null;
+  let confirming = "", needName = "", nameText = "", pending = null;
+  const expanded = new Set(), texts = {}, errors = {}, busy = {};
+
+  const model = () => own || relayed;
+  const viewer = () => (own && own.viewer) || null;
+  const titleOf = () => { const m = model(); return m && typeof m.title === "string" ? m.title : ""; };
+  const versionOf = () => { const m = model(); return m && typeof m.version === "number" ? m.version : 0; };
+  const text = (value) => (typeof value === "string" ? value : "");
+  // The top bar is fixed over the first 40px of the document, so no card starts above it.
+  const BAR = 48;
+
+  // ---- the token and the sign-in handshake (the Share frame's, copied) ----
+  const prepare = () => {
+    const nonce = bytesToBase64Url(crypto.getRandomValues(new Uint8Array(32)));
+    return crypto.subtle.digest("SHA-256", new TextEncoder().encode(nonce)).then((digest) => {
+      prepared = { nonce: nonce, h: bytesToHex(new Uint8Array(digest)) };
+      render();
+    });
+  };
+  const accept = (token, expiresAt) => {
+    generation += 1;
+    wake = null;
+    signState = "";
+    writeToken({ token: token, expiresAt: expiresAt });
+    load();
+  };
+  const claim = async (nonce, mine) => {
+    try {
+      const response = await fetch("/embed/token", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ doc: doc, nonce: nonce }), credentials: "omit", cache: "no-store" });
+      if (mine !== generation || response.status !== 200) return false;
+      const body = await response.json();
+      if (typeof body.token !== "string" || typeof body.expiresAt !== "number") return false;
+      accept(body.token, body.expiresAt);
+      return true;
+    } catch (error) {
+      return false;
+    }
+  };
+  const poll = (nonce) => {
+    generation += 1;
+    const mine = generation;
+    const deadline = Date.now() + SIGNIN_WINDOW_MS;
+    let timer = 0;
+    let working = false;
+    const tick = async () => {
+      if (working || mine !== generation) return;
+      window.clearTimeout(timer);
+      if (Date.now() > deadline) { wake = null; signState = ""; render(); return; }
+      working = true;
+      const found = await claim(nonce, mine);
+      working = false;
+      if (!found && mine === generation) timer = window.setTimeout(tick, 2000);
+    };
+    timer = window.setTimeout(tick, 1000);
+    wake = () => { if (mine === generation && document.visibilityState === "visible") tick(); };
+  };
+  document.addEventListener("visibilitychange", () => { if (wake) wake(); });
+  window.addEventListener("focus", () => { if (wake) wake(); });
+  const signIn = () => {
+    const taken = prepared;
+    if (taken === null) return;
+    prepared = null;
+    prepare();
+    opened = window.open("/embed/sign-in?doc=" + doc + "&h=" + taken.h, "_blank", "popup,width=480,height=720");
+    if (opened === null) { signState = "blocked"; render(); return; }
+    signState = "waiting";
+    render();
+    poll(taken.nonce);
+  };
+  window.addEventListener("message", (event) => {
+    const data = event.data;
+    if (opened === null || event.source !== opened || event.origin !== location.origin) return;
+    if (data === null || typeof data !== "object" || data.type !== "openartifacts:share-token" || data.doc !== doc) return;
+    if (typeof data.token !== "string" || typeof data.expiresAt !== "number") return;
+    accept(data.token, data.expiresAt);
+  });
+  window.addEventListener("storage", (event) => {
+    if (event.key !== KEY) return;
+    if (readToken() !== null) { generation += 1; wake = null; signState = ""; }
+    load();
+  });
+
+  // ---- the API ----
+  const call = async (method, path, body) => {
+    const stored = readToken();
+    if (stored === null) return { status: 401, body: null };
+    const headers = { authorization: "Bearer " + stored.token };
+    if (body) headers["content-type"] = "application/json";
+    let response;
+    try {
+      response = await fetch(path, { method: method, headers: headers, body: body ? JSON.stringify(body) : undefined, credentials: "omit", cache: "no-store" });
+    } catch (error) {
+      return { status: 0, body: null };
+    }
+    let parsed = null;
+    try { parsed = response.status === 204 ? null : await response.json(); } catch (error) {}
+    if (response.status === 401) { writeToken(null); own = null; }
+    return { status: response.status, body: parsed };
+  };
+  const docPath = (suffix) => "/embed/api/docs/" + doc + suffix;
+  const failure = (result) => {
+    const error = result.body && result.body.error;
+    if (result.status === 401) return "Sign in again to comment.";
+    if (result.status === 404) return "This page can’t be commented on.";
+    return error && typeof error.message === "string" ? error.message : "Something went wrong. Nothing was posted.";
+  };
+  const reportViewer = () => {
+    const v = viewer();
+    const can = v ? v.canComment : null;
+    if (can !== lastViewer) {
+      lastViewer = can;
+      if (can !== null) post({ event: "viewer", canComment: can });
+    }
+  };
+  const load = async () => {
+    const mine = ++loadSeq;
+    if (readToken() === null) { own = null; reportViewer(); render(); return; }
+    const result = await call("GET", docPath("/threads" + (pinned ? "?v=" + pinned : "")));
+    if (mine !== loadSeq) return;
+    own = result.status === 200 && result.body && Array.isArray(result.body.threads) ? result.body : null;
+    reportViewer();
+    render();
+  };
+
+  // Runs one write, then reloads the cards and tells the page. A human who has no display name yet is asked for it once and the write is retried.
+  const act = async (key, request, done) => {
+    if (busy[key]) return;
+    busy[key] = true;
+    errors[key] = "";
+    render();
+    const result = await request();
+    busy[key] = false;
+    if (result.status >= 200 && result.status < 300) {
+      if (done) done(result.body);
+      await load();
+      post({ event: "changed" });
+      if (focusId) post({ event: "focus", threadId: focusId });
+      return;
+    }
+    const error = result.body && result.body.error;
+    if (result.status === 409 && error && error.code === "name_required") {
+      needName = key;
+      pending = () => act(key, request, done);
+    } else errors[key] = failure(result);
+    render();
+  };
+  const saveName = async () => {
+    const name = nameText.trim();
+    const key = needName;
+    if (name === "" || name.length > 64) { errors[key] = "Enter a name of up to 64 characters."; render(); return; }
+    const result = await call("PUT", "/embed/api/account", { displayName: name });
+    if (result.status !== 200) { errors[key] = failure(result); render(); return; }
+    const retry = pending;
+    needName = "";
+    pending = null;
+    if (retry) await retry();
+  };
+
+  // ---- drawing ----
+  const ago = (ms) => {
+    const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+    if (s < 60) return "just now";
+    if (s < 3600) return Math.floor(s / 60) + " m";
+    if (s < 86400) return Math.floor(s / 3600) + " h";
+    return Math.floor(s / 86400) + " d";
+  };
+  const muted = (value) => node("p", { class: "muted-text" }, [value]);
+  const errorLine = (key) => node("p", { class: "err", role: "alert" }, errors[key] ? [errors[key]] : []);
+  const authorOf = (a) => ({ name: text(a && a.name) || "Someone", agent: !!a && a.kind === "agent" });
+  const who = (author, at) => {
+    const a = authorOf(author);
+    const kids = [node("span", { class: a.agent ? "av agent" : "av" }, [(a.name.trim()[0] || "?").toUpperCase()]), a.name];
+    if (a.agent) kids.push(node("span", { class: "badge" }, ["agent"]));
+    if (typeof at === "number") kids.push(node("small", {}, [ago(at)]));
+    return node("div", { class: "who" }, kids);
+  };
+
+  const signInBlock = () => {
+    const kids = [button("Sign in to comment", signIn, "b primary")];
+    kids[0].disabled = prepared === null;
+    if (signState === "waiting") kids.push(muted("Complete sign-in in the window that opened."));
+    if (signState === "blocked") kids.push(node("p", { class: "err" }, ["Your browser blocked the sign-in window. Allow pop-ups for this page and try again."]));
+    return node("div", { class: "signin" }, kids);
+  };
+
+  // The box a person writes in: a textarea and its buttons, the name field a first comment may ask for, or the reason there is none.
+  const writer = (key, placeholder, submit, cancel) => {
+    if (readToken() === null) return [signInBlock()];
+    const v = viewer();
+    if (v === null) return [];
+    if (!v.canComment) return [muted("You can view this page.")];
+    if (needName === key) {
+      const input = node("input", { type: "text", maxlength: "64", placeholder: "Your name", "aria-label": "Your name", "data-key": key + ":name", autocomplete: "name" });
+      input.value = nameText;
+      input.addEventListener("input", () => { nameText = input.value; });
+      input.addEventListener("keydown", (event) => { if (event.key === "Enter") saveName(); });
+      return [node("p", { class: "ask" }, ["Add your name so people know who is commenting."]), input, node("div", { class: "btns" }, [button("Save and post", saveName, "b primary")]), errorLine(key)];
+    }
+    const area = node("textarea", { rows: cancel ? "3" : "2", maxlength: "4000", placeholder: placeholder, "aria-label": placeholder, "data-key": key });
+    area.value = texts[key] || "";
+    const send = button("Post", submit, "b primary");
+    const actions = node("div", { class: "btns" }, cancel ? [button("Cancel", cancel), send] : [send]);
+    const sync = () => { send.disabled = area.value.trim() === "" || !!busy[key]; actions.hidden = !cancel && area.value === ""; };
+    area.addEventListener("input", () => { texts[key] = area.value; sync(); });
+    area.addEventListener("keydown", (event) => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && !send.disabled) submit(); });
+    sync();
+    return [area, actions, errorLine(key)];
+  };
+
+  const focusThread = (id) => {
+    if (focusId === id) return;
+    focusId = id;
+    for (const element of cards.querySelectorAll("[data-thread]")) element.classList.toggle("focus", element.dataset.thread === id);
+    post({ event: "focus", threadId: id });
+  };
+
+  const commentRow = (thread, comment, index) => {
+    const kids = [who(comment.author, comment.createdAt), node("div", { class: "txt" }, [text(comment.body)])];
+    if (comment.mine) {
+      const id = text(comment.commentId);
+      if (confirming === id) {
+        const first = index === 0;
+        kids.push(node("div", { class: "acts" }, [
+          first ? "Delete this thread?" : "Delete this comment?",
+          button("Delete", () => { confirming = ""; act("c:" + id, () => call("DELETE", docPath("/comments/" + id)), null); }, "link"),
+          button("Keep", () => { confirming = ""; render(); }, "link"),
+        ]));
+      } else {
+        const remove = () => {
+          if (index === 0) { confirming = id; render(); } else act("c:" + id, () => call("DELETE", docPath("/comments/" + id)), null);
+        };
+        kids.push(node("div", { class: "acts" }, [button("Delete", remove, "link")]));
+      }
+      if (errors["c:" + id]) kids.push(errorLine("c:" + id));
+    }
+    return kids;
+  };
+
+  const threadCard = (thread, orphan, alone) => {
+    const id = text(thread.threadId);
+    const resolved = thread.state === "resolved";
+    const res = resolved && thread.resolution ? thread.resolution : null;
+    const by = res ? authorOf(res.by).name : "";
+    const summary = res ? "Resolved in v" + res.atVersion + " by " + by : "Resolved";
+    const card = node("div", { class: "card" + (resolved ? " resolved" : "") + (orphan ? " muted" : "") + (focusId === id ? " focus" : ""), "data-thread": id });
+    card.addEventListener("mousedown", () => focusThread(id));
+    if (resolved && !expanded.has(id) && !alone) {
+      card.append(button("", () => { expanded.add(id); render(); }, "line"));
+      card.firstChild.replaceChildren(node("span", { class: "badge done" }, ["✓"]), node("span", {}, [summary]));
+      return card;
+    }
+    const quote = text(thread.anchor && thread.anchor.exact);
+    card.append(node("div", { class: "quote" }, [quote]));
+    (Array.isArray(thread.comments) ? thread.comments : []).forEach((comment, index) => card.append(...commentRow(thread, comment, index)));
+    const acts = [];
+    if (resolved) {
+      acts.push(node("span", { class: "badge done" }, [summary]));
+      if (thread.canResolve) acts.push(button("Reopen", () => act("t:" + id, () => call("POST", docPath("/threads/" + id + "/reopen"), { version: versionOf() || undefined }), null), "link"));
+      if (!alone) acts.push(button("Hide", () => { expanded.delete(id); render(); }, "link"));
+    } else if (thread.canResolve) {
+      acts.push(button("Resolve", () => act("t:" + id, () => call("POST", docPath("/threads/" + id + "/resolve"), { version: versionOf() || undefined }), null), "link"));
+    }
+    if (acts.length) card.append(node("div", { class: "acts" }, acts));
+    if (errors["t:" + id]) card.append(errorLine("t:" + id));
+    if (!resolved) {
+      const reply = () => {
+        const body = (texts["r:" + id] || "").trim();
+        if (body) act("r:" + id, () => call("POST", docPath("/threads/" + id + "/comments"), { body: body, version: versionOf() || undefined }), () => { texts["r:" + id] = ""; });
+      };
+      card.append(...writer("r:" + id, "Reply…", reply, null));
+    }
+    return card;
+  };
+
+  const cancelDraft = () => {
+    draft = null;
+    texts.draft = "";
+    errors.draft = "";
+    needName = needName === "draft" ? "" : needName;
+    render();
+    post({ event: "close" });
+  };
+  const draftCard = () => {
+    const card = node("div", { class: "card focus", "data-thread": "" });
+    const name = titleOf();
+    card.append(node("p", { class: "where" }, [name ? "Comment on “" + name + "”" : "New comment"]), node("div", { class: "quote" }, [text(draft.exact)]));
+    const submit = () => {
+      const body = (texts.draft || "").trim();
+      const snapshot = draft;
+      if (!body || !snapshot) return;
+      const request = { anchor: snapshot, body: body };
+      if (pinned) request.version = pinned;
+      act("draft", () => call("POST", docPath("/threads"), request), (result) => {
+        draft = null;
+        texts.draft = "";
+        if (result && typeof result.threadId === "string") focusId = result.threadId;
+      });
+    };
+    card.append(...writer("draft", "Add a comment…", submit, cancelDraft));
+    return card;
+  };
+
+  const threadsOf = () => {
+    const m = model();
+    return m && Array.isArray(m.threads) ? m.threads.filter((t) => t && typeof t === "object" && typeof t.threadId === "string") : [];
+  };
+
+  const renderMargin = () => {
+    const items = [];
+    const threads = threadsOf();
+    const lost = new Set(lostIds);
+    const orphans = threads.filter((t) => t.anchorStatus !== "anchored" || lost.has(t.threadId));
+    if (orphans.length) {
+      items.push({ el: node("div", { class: "heading" }, ["On text that changed in v" + versionOf()]), want: BAR, gap: 4 });
+      for (const t of orphans) items.push({ el: threadCard(t, true), want: 0, gap: 8 });
+    }
+    const flow = [];
+    if (tops !== null) {
+      for (const t of threads) {
+        if (t.anchorStatus === "anchored" && !lost.has(t.threadId) && typeof tops[t.threadId] === "number") flow.push({ el: threadCard(t, false), want: tops[t.threadId], gap: 8 });
+      }
+    }
+    if (draft) flow.push({ el: draftCard(), want: draftTop, gap: 8 });
+    flow.sort((a, b) => a.want - b.want);
+    const all = items.concat(flow);
+    cards.replaceChildren(...all.map((item) => item.el));
+    let floor = BAR;
+    for (const item of all) {
+      const top = Math.max(item.want, floor);
+      item.el.style.top = top + "px";
+      floor = top + item.el.offsetHeight + item.gap;
+    }
+    cards.style.height = Math.max(height, floor) + "px";
+  };
+
+  const renderOverlay = () => {
+    const close = button("×", () => { if (draft) cancelDraft(); else post({ event: "close" }); }, "");
+    close.setAttribute("aria-label", "Close");
+    const kids = [node("div", { class: "grab" }, [node("i"), close])];
+    if (draft) kids.push(draftCard());
+    else {
+      const thread = threadsOf().find((t) => t.threadId === focusId);
+      if (thread) kids.push(threadCard(thread, thread.anchorStatus !== "anchored", true));
+    }
+    cards.replaceChildren(...kids);
+    cards.style.height = "";
+  };
+
+  const render = () => {
+    const active = document.activeElement;
+    const key = active && active.dataset ? active.dataset.key : undefined;
+    const from = key !== undefined && typeof active.selectionStart === "number" ? [active.selectionStart, active.selectionEnd] : null;
+    main.className = mode;
+    try {
+      if (!shown || (mode === "overlay" && !draft && !focusId)) cards.replaceChildren();
+      else if (mode === "overlay") renderOverlay();
+      else renderMargin();
+    } catch (error) {
+      cards.replaceChildren();
+    }
+    if (key !== undefined) {
+      const again = Array.from(cards.querySelectorAll("[data-key]")).find((element) => element.dataset.key === key);
+      if (again) { again.focus(); if (from) again.setSelectionRange(from[0], from[1]); }
+    }
+  };
+
+  // ---- the page ----
+  const listed = (value) => Array.isArray(value) && value.every((x) => typeof x === "string");
+  window.addEventListener("message", (event) => {
+    const msg = event.data;
+    if (!parentOrigin || event.source !== window.parent || event.origin !== parentOrigin) return;
+    if (msg === null || typeof msg !== "object" || msg.type !== NS) return;
+    if (msg.event === "mode") {
+      mode = msg.mode === "overlay" ? "overlay" : "margin";
+      render();
+    } else if (msg.event === "visible") {
+      shown = msg.shown !== false;
+      render();
+    } else if (msg.event === "threads") {
+      relayed = msg.data && typeof msg.data === "object" && Array.isArray(msg.data.threads) ? msg.data : null;
+      if (readToken() !== null) load(); else render();
+    } else if (msg.event === "positions") {
+      const next = msg.tops && typeof msg.tops === "object" ? msg.tops : {};
+      const key = JSON.stringify([next, msg.lost, msg.height]);
+      if (key === positionsKey) return;
+      positionsKey = key;
+      tops = next;
+      lostIds = listed(msg.lost) ? msg.lost : [];
+      height = typeof msg.height === "number" ? msg.height : 0;
+      render();
+    } else if (msg.event === "draft") {
+      const a = msg.anchor;
+      if (a && typeof a === "object" && typeof a.exact === "string" && a.exact !== "") {
+        draft = { exact: a.exact };
+        for (const field of ["prefix", "suffix", "section"]) if (typeof a[field] === "string") draft[field] = a[field];
+        draftTop = typeof msg.top === "number" ? msg.top : 0;
+        texts.draft = "";
+        errors.draft = "";
+        render();
+        const area = cards.querySelector("textarea");
+        if (area) area.focus();
+      } else if (draft) {
+        draft = null;
+        render();
+      }
+    } else if (msg.event === "focus") {
+      focusId = typeof msg.threadId === "string" ? msg.threadId : "";
+      if (mode === "overlay") render();
+      else for (const element of cards.querySelectorAll("[data-thread]")) element.classList.toggle("focus", element.dataset.thread === focusId);
+    }
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    if (draft) cancelDraft();
+    else if (mode === "overlay") post({ event: "close" });
+  });
+
+  try { prepare().catch(() => {}); } catch (error) {}
+  if (readToken() !== null) load();
+})();
+`;
