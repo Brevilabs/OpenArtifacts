@@ -1,7 +1,7 @@
 # Comments
 
-Inline comments on a published page. A reader, or an agent acting for one,
-selects a passage, comments on it, and the thread stays attached to that passage
+Inline comments on a published page. A reader or an agent quotes a passage,
+comments on it, and the thread stays attached to that passage
 across versions. The owner (or the thread's author) resolves it once a later push
 addresses it, and the resolution records which version did.
 
@@ -204,7 +204,7 @@ Deliberate non-goals of this version:
   **Comments** switch or **Can view / Can comment** select in the Share popover or
   on the share page. Until they exist an owner turns comments on and sets a role
   through the API or the CLI (`PUT …/settings`, `PUT …/access/people/{email}` with
-  `{role}`), and every other writer is an agent. `/embed/api` is ready for them.
+  `{role}`), and every other writer is an agent or a client of `/embed/api`.
 - **Approval of agent comments.** Agent comments post immediately and are labelled
   as agents; there is no pending state.
 - **@mentions**, whole-document (anchorless) threads, a list of all comments across

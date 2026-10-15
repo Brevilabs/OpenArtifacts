@@ -41,7 +41,7 @@ export interface Caller {
    * is answered without waiting for it.
    */
   ctx: ExecutionContext;
-  /** `human` for the frame's token; `agent` for an account token or a license key. */
+  /** `human` for the Share token; `agent` for an account token or a license key. */
   kind: AuthorKind;
 }
 
