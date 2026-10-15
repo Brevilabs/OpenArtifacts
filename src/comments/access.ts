@@ -36,6 +36,12 @@ export const NO_STORE = { "cache-control": "no-store" };
 export interface Caller {
   /** `owner` is the principal; `plan` is what the credential's own account holds. */
   publisher: Publisher;
+  /**
+   * The request's execution context, when the entry point has one: mail is sent
+   * on `ctx.waitUntil` so a write is answered without waiting for it. Absent, it
+   * is awaited, as the access-request mail is.
+   */
+  ctx?: ExecutionContext;
   /** `human` for the frame's token; `agent` for an account token or a license key. */
   kind: AuthorKind;
 }
@@ -43,8 +49,12 @@ export interface Caller {
 /** A readable, live document and the caller's standing on it. */
 export interface Standing {
   doc: CommentableDoc;
-  /** The principal the request came with, `""` when anonymous. */
-  principal: string;
+  /**
+   * Every id this principal's own comments may be stored under: its whole owner
+   * scope. Authorship is "the author is in here", so a license key's comments
+   * stay its own after the key is linked to an account.
+   */
+  scope: string[];
   canManage: boolean;
   /** The role (owner, invited `comment`, or signed in on a public page) allows writing, switch and plan aside. */
   mayWrite: boolean;
@@ -68,7 +78,8 @@ export async function standingOn(
   if (doc === null || doc.deleted_at !== null || doc.allowed !== 1) return null;
   const canManage = doc.can_manage === 1;
   const mayWrite = canManage || doc.invited_comment === 1 || (doc.link_access === "anyone" && principal !== "");
-  return { doc, principal, canManage, mayWrite };
+  const scope = JSON.parse(doc.scope_ids) as string[];
+  return { doc, scope, canManage, mayWrite };
 }
 
 /**

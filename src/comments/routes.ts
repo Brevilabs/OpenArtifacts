@@ -13,11 +13,14 @@
  *
  * Null means the segments are none of these, and the caller answers its own
  * not-found. A shape check on the ids comes first, so a junk id costs a regex
- * and not an object. An anonymous caller (null) may only list.
+ * and not an object. On a deployment with no `COMMENTS` binding every one of
+ * these routes is `404` before its body, query or ids are looked at, as on a
+ * Worker that predates comments. (The anonymous list in the embed family does not
+ * come through here: it calls `listThreads` itself.)
  */
 import type { Env } from "../config.js";
-import { docNotFound, errorResponse } from "../errors.js";
-import { NO_STORE, type Caller } from "./access.js";
+import { docNotFound } from "../errors.js";
+import type { Caller } from "./access.js";
 import {
   changeThreadState,
   createThread,
@@ -34,7 +37,7 @@ export async function commentRoute(
   request: Request,
   url: URL,
   env: Env,
-  caller: Caller | null,
+  caller: Caller,
   docId: string,
   extra: string[],
 ): Promise<Response | null> {
@@ -51,10 +54,7 @@ export async function commentRoute(
   const settings = section === "settings" && id === undefined && method === "PUT";
   if (!listing && !threads && !onThread && !comment && !settings) return null;
 
-  if (caller === null) {
-    if (listing) return await listThreads(env, url, null, docId);
-    return errorResponse("unauthorized", "Sign in again to comment.", NO_STORE);
-  }
+  if (env.COMMENTS === undefined) return docNotFound(docId);
 
   if (listing) return await listThreads(env, url, caller, docId);
   if (threads) return await createThread(request, url, env, caller, docId);

@@ -20,27 +20,35 @@
  * is `"human"` for a browser token and `"agent"` for an account token or license
  * key, `onBehalfOf` is the account an agent acts for (null for a human). The
  * object stores them verbatim and returns them verbatim; the Worker turns
- * principals into display names with one batched D1 query. `at` is epoch ms,
- * supplied by the caller so tests are deterministic. `version` is the document
+ * principals into display names with one batched D1 query. `at` is not an
+ * argument: the object stamps every write itself, after its last await, from
+ * a clock that strictly increases per object, so a `since` cursor taken from one
+ * answer can never skip a write that commits later. `version` is the document
  * version the caller's anchors are computed for (and, on writes, the version the
  * writer was looking at).
  *
- *   list({docId, version, latestVersion?, state?, since?})
- *     -> {ok, version, latestVersion, threads: ThreadRecord[]}
+ * Authorship is by owner scope. `scope` on `resolve`/`reopen`/`deleteComment` is
+ * every id the caller's own comments may be stored under (the whole
+ * `owner_scope`: a license key that commented before it was linked to an account
+ * is the same author as that account), and "mine" means the author is in it.
+ *
+ *   list({docId, version, state?, since?})
+ *     -> {ok, version, threads: ThreadRecord[]}
  *     state "open"|"resolved"|"all" (default all); since filters on a thread's
  *     last activity (epoch ms). Re-anchors every thread for `version` the first
  *     time that version is asked for, then answers from the memo.
- *   getThread({docId, threadId, version})
- *     -> {ok, thread: ThreadRecord}   one thread, anchored for `version`
- *   createThread({docId, principal, kind, onBehalfOf, anchor, body, version, at})
- *     -> {ok, threadId, commentId, anchorStatus: "anchored", matchedText}
- *   reply({docId, threadId, principal, kind, onBehalfOf, body, version, at})
- *     -> {ok, commentId}
- *   resolve / reopen({docId, threadId, principal, kind, onBehalfOf, isOwner, version, at})
+ *   createThread({docId, principal, kind, onBehalfOf, anchor, body, version})
+ *     -> {ok, threadId, commentId, anchorStatus: "anchored", matchedText, thread}
+ *   reply({docId, threadId, principal, kind, onBehalfOf, body, version})
+ *     -> {ok, commentId, thread}
+ *   resolve / reopen({docId, threadId, principal, kind, onBehalfOf, isOwner, scope, version})
  *     -> {ok, changed, thread}   (idempotent: a no-op reports changed:false)
- *   deleteComment({docId, commentId, principal})
+ *   deleteComment({docId, commentId, scope})
  *     -> {ok, deleted: "comment"|"thread", threadId}
- *   purge()  -> {ok}   wipes all storage; the caller sweeps R2 afterwards
+ *   purge()  -> {ok}   wipes all storage and leaves a tombstone; the caller sweeps R2 afterwards
+ *
+ * `thread` on a write is the thread as it stands, for the Worker's notification:
+ * it already holds it, so a second call just to address an email is not made.
  *
  * Failure reasons: `invalid_anchor`, `invalid_body` (malformed input, the Worker
  * answers 400 `bad_request`), `anchor_not_found` (400), `thread_not_found`,
@@ -48,7 +56,18 @@
  * comment", so a comment id cannot be probed), `forbidden` (resolve/reopen by
  * someone who is neither the owner nor the thread's author),
  * `limit_threads` / `limit_comments` (402 caps), `version_not_found` (the stored
- * HTML for `version` is missing).
+ * HTML for `version` is missing), `purged` (the document was deleted; every
+ * method refuses with it, the Worker answers 404).
+ *
+ * ## Purge
+ *
+ * `purge()` is final. It sets an in-memory flag first (so a write that is parked
+ * on an R2 read when the purge runs sees it on resuming and writes nothing), then
+ * wipes storage and leaves one durable `purged` key, so even a later call on an
+ * evicted-and-woken object refuses. The schema is created lazily on first use and
+ * never by `purge()`, so an object that was purged, or that never held a comment,
+ * stays empty of tables. `snapshot()` is skipped once purged, because
+ * `docs/{id}/threads.json` is swept right after and must not be rewritten.
  *
  * ## Storage
  *
@@ -104,41 +123,54 @@ export type ThreadRecord = {
 
 type Failure<R extends string> = { ok: false; reason: R };
 type VersionFailure = Failure<"version_not_found">;
+/** The document was deleted; nothing is read or written any more. */
+type PurgedFailure = Failure<"purged">;
 
 export type ListArgs = {
   docId: string;
   version: number;
-  latestVersion?: number;
   state?: "open" | "resolved" | "all";
   since?: number;
 };
 export type ListResult =
-  | { ok: true; version: number; latestVersion: number | null; threads: ThreadRecord[] }
-  | VersionFailure;
+  | { ok: true; version: number; threads: ThreadRecord[] }
+  | VersionFailure
+  | PurgedFailure;
 
-type Writer = { docId: string; principal: string; kind: AuthorKind; onBehalfOf: string | null; at: number };
+type Writer = { docId: string; principal: string; kind: AuthorKind; onBehalfOf: string | null };
 
 export type CreateThreadArgs = Writer & { anchor: unknown; body: unknown; version: number };
 export type CreateThreadResult =
-  | { ok: true; threadId: string; commentId: string; anchorStatus: "anchored"; matchedText: string }
+  | {
+      ok: true;
+      threadId: string;
+      commentId: string;
+      anchorStatus: "anchored";
+      matchedText: string;
+      thread: ThreadRecord;
+    }
   | Failure<"invalid_anchor" | "invalid_body" | "anchor_not_found" | "limit_threads" | "limit_comments">
-  | VersionFailure;
+  | VersionFailure
+  | PurgedFailure;
 
 export type ReplyArgs = Writer & { threadId: string; body: unknown; version: number };
 export type ReplyResult =
-  | { ok: true; commentId: string }
-  | Failure<"invalid_body" | "thread_not_found" | "limit_comments">;
+  | { ok: true; commentId: string; thread: ThreadRecord }
+  | Failure<"invalid_body" | "thread_not_found" | "limit_comments">
+  | PurgedFailure;
 
-export type TransitionArgs = Writer & { threadId: string; isOwner: boolean; version: number };
+export type TransitionArgs = Writer & { threadId: string; isOwner: boolean; scope: string[]; version: number };
 export type TransitionResult =
   | { ok: true; changed: boolean; thread: ThreadRecord }
   | Failure<"thread_not_found" | "forbidden">
-  | VersionFailure;
+  | VersionFailure
+  | PurgedFailure;
 
-export type DeleteCommentArgs = { docId: string; commentId: string; principal: string };
+export type DeleteCommentArgs = { docId: string; commentId: string; scope: string[] };
 export type DeleteCommentResult =
   | { ok: true; deleted: "comment" | "thread"; threadId: string }
-  | Failure<"comment_not_found">;
+  | Failure<"comment_not_found">
+  | PurgedFailure;
 
 type ThreadRow = {
   id: string;
@@ -173,6 +205,9 @@ type AnchorRow = { thread_id: string; version: number; status: "anchored" | "orp
 
 /** Canonical texts kept in memory. Versions are immutable, so a hit is always right. */
 const CANONICAL_CACHE = 2;
+
+/** The durable tombstone `purge()` leaves. */
+const PURGED_KEY = "purged";
 
 const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS threads (
@@ -235,20 +270,50 @@ export class DocComments extends DurableObject<Env> {
   private readonly loading = new Map<number, Promise<CanonicalText | null>>();
   /** The tail of the snapshot queue; each write rebuilds from current state. */
   private snapshots: Promise<void> = Promise.resolve();
+  /** Purged: set the instant `purge()` starts, and restored from storage on wake. Final. */
+  private gone = false;
+  private schema = false;
+  /** The last stamp handed out, so the clock never repeats or runs backwards. */
+  private clock = 0;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     this.sql = ctx.storage.sql;
-    this.init();
+    ctx.blockConcurrencyWhile(async () => {
+      this.gone = (await ctx.storage.get(PURGED_KEY)) === true;
+    });
   }
 
-  private init(): void {
-    for (const statement of SCHEMA) this.sql.exec(statement);
+  /**
+   * Whether the object may be used, creating its tables on first use. Lazy so
+   * that a purged object (and one that never held a comment) stays empty and
+   * can be reclaimed, which a constructor that created tables would prevent.
+   */
+  private usable(): boolean {
+    if (this.gone) return false;
+    if (!this.schema) {
+      for (const statement of SCHEMA) this.sql.exec(statement);
+      this.schema = true;
+    }
+    return true;
+  }
+
+  /**
+   * The time a write happens: now, but always later than any stamp already in
+   * this object. Taken after a write's last await, so `updated_at` is when the
+   * row became visible, not when the Worker began the request, and a client
+   * that polls with `since` cannot miss it.
+   */
+  private stamp(): number {
+    const newest = this.sql.exec<{ n: number | null }>(`SELECT MAX(updated_at) AS n FROM threads`).one().n ?? 0;
+    this.clock = Math.max(Date.now(), this.clock + 1, newest + 1);
+    return this.clock;
   }
 
   // ---------------------------------------------------------------- reads
 
   async list(args: ListArgs): Promise<ListResult> {
+    if (!this.usable()) return { ok: false, reason: "purged" };
     if (!isVersion(args.version)) return { ok: false, reason: "version_not_found" };
     const ready = await this.ensureAnchors(args.docId, args.version);
     if (!ready.ok) return ready;
@@ -257,19 +322,7 @@ export class DocComments extends DurableObject<Env> {
     const threads = this.readThreads(args.version).filter(
       (t) => (state === "all" || t.state === state) && (since === undefined || t.updatedAt > since),
     );
-    return { ok: true, version: args.version, latestVersion: args.latestVersion ?? null, threads };
-  }
-
-  /** One thread as `list` would show it for `version`; the Worker reads it to address a notification. */
-  async getThread(args: { docId: string; threadId: string; version: number }): Promise<
-    { ok: true; thread: ThreadRecord } | Failure<"thread_not_found"> | VersionFailure
-  > {
-    if (!isVersion(args.version)) return { ok: false, reason: "version_not_found" };
-    if (!this.threadRow(args.threadId)) return { ok: false, reason: "thread_not_found" };
-    const ready = await this.ensureAnchors(args.docId, args.version);
-    if (!ready.ok) return ready;
-    const thread = this.readThreads(args.version, args.threadId)[0];
-    return thread ? { ok: true, thread } : { ok: false, reason: "thread_not_found" };
+    return { ok: true, version: args.version, threads };
   }
 
   // --------------------------------------------------------------- writes
@@ -281,7 +334,11 @@ export class DocComments extends DurableObject<Env> {
     if (body === null) return { ok: false, reason: "invalid_body" };
     if (!isVersion(args.version)) return { ok: false, reason: "version_not_found" };
 
+    if (!this.usable()) return { ok: false, reason: "purged" };
+
     const canon = await this.loadCanonical(args.docId, args.version);
+    // The read parked this call with the input gate open, so a purge may have run.
+    if (this.gone) return { ok: false, reason: "purged" };
     if (canon === null) return { ok: false, reason: "version_not_found" };
     const located = locateAnchor(canon, anchor);
     if (located.status !== "anchored") return { ok: false, reason: "anchor_not_found" };
@@ -293,6 +350,7 @@ export class DocComments extends DurableObject<Env> {
 
     const threadId = newId("th_");
     const commentId = newId("cm_");
+    const at = this.stamp();
     this.ctx.storage.transactionSync(() => {
       this.sql.exec(
         `INSERT INTO threads (id, created_version, created_by, created_at, updated_at, section, anchor_exact, anchor_prefix, anchor_suffix)
@@ -300,8 +358,8 @@ export class DocComments extends DurableObject<Env> {
         threadId,
         args.version,
         args.principal,
-        args.at,
-        args.at,
+        at,
+        at,
         anchor.section ?? null,
         // A whitespace-collapsed match stores the text as it reads, so later
         // versions are judged against what the document actually said.
@@ -309,7 +367,7 @@ export class DocComments extends DurableObject<Env> {
         anchor.prefix ?? null,
         anchor.suffix ?? null,
       );
-      this.insertComment(commentId, threadId, args, body);
+      this.insertComment(commentId, threadId, args, body, at);
       this.sql.exec(
         `INSERT INTO anchors (thread_id, version, status, matched_text) VALUES (?, ?, 'anchored', ?)`,
         threadId,
@@ -318,21 +376,26 @@ export class DocComments extends DurableObject<Env> {
       );
     });
     await this.snapshot(args.docId);
-    return { ok: true, threadId, commentId, anchorStatus: "anchored", matchedText: located.matchedText };
+    const thread = this.readThreads(args.version, threadId)[0] as ThreadRecord;
+    return { ok: true, threadId, commentId, anchorStatus: "anchored", matchedText: located.matchedText, thread };
   }
 
   async reply(args: ReplyArgs): Promise<ReplyResult> {
     const body = cleanBody(args.body);
     if (body === null) return { ok: false, reason: "invalid_body" };
+    if (!this.usable()) return { ok: false, reason: "purged" };
     if (!this.threadRow(args.threadId)) return { ok: false, reason: "thread_not_found" };
     if (this.count("comments") >= MAX_COMMENTS) return { ok: false, reason: "limit_comments" };
     const commentId = newId("cm_");
+    const at = this.stamp();
     this.ctx.storage.transactionSync(() => {
-      this.insertComment(commentId, args.threadId, args, body);
-      this.sql.exec(`UPDATE threads SET updated_at = ? WHERE id = ?`, args.at, args.threadId);
+      this.insertComment(commentId, args.threadId, args, body, at);
+      this.sql.exec(`UPDATE threads SET updated_at = ? WHERE id = ?`, at, args.threadId);
     });
     await this.snapshot(args.docId);
-    return { ok: true, commentId };
+    // Anchored as far as already memoised: addressing an email needs the quote, not a fresh R2 read.
+    const thread = this.readThreads(args.version, args.threadId)[0] as ThreadRecord;
+    return { ok: true, commentId, thread };
   }
 
   resolve(args: TransitionArgs): Promise<TransitionResult> {
@@ -344,11 +407,13 @@ export class DocComments extends DurableObject<Env> {
   }
 
   async deleteComment(args: DeleteCommentArgs): Promise<DeleteCommentResult> {
+    if (!this.usable()) return { ok: false, reason: "purged" };
     const row = this.sql
       .exec<CommentRow>(`SELECT * FROM comments WHERE id = ?`, args.commentId)
       .toArray()[0];
-    // Someone else's comment answers exactly like a missing one.
-    if (!row || row.author !== args.principal) return { ok: false, reason: "comment_not_found" };
+    // Someone else's comment answers exactly like a missing one. "Theirs" is any
+    // id in the caller's owner scope: a key's comments survive its being linked.
+    if (!row || !args.scope.includes(row.author)) return { ok: false, reason: "comment_not_found" };
 
     const first = this.sql
       .exec<{ id: string }>(`SELECT id FROM comments WHERE thread_id = ? ORDER BY created_at, rowid LIMIT 1`, row.thread_id)
@@ -362,6 +427,8 @@ export class DocComments extends DurableObject<Env> {
         this.sql.exec(`DELETE FROM threads WHERE id = ?`, row.thread_id);
       } else {
         this.sql.exec(`DELETE FROM comments WHERE id = ?`, row.id);
+        // A removed reply is activity on the thread, which `since` must show.
+        this.sql.exec(`UPDATE threads SET updated_at = ? WHERE id = ?`, this.stamp(), row.thread_id);
       }
     });
     await this.snapshot(args.docId);
@@ -369,36 +436,42 @@ export class DocComments extends DurableObject<Env> {
   }
 
   /**
-   * Wipe everything. Delete calls this best-effort before sweeping the R2
-   * prefix (which holds `threads.json`), so a deleted document leaves neither.
-   * The schema is recreated because the instance can outlive the call.
+   * Wipe everything and refuse every call from now on. Delete calls this
+   * best-effort before sweeping the R2 prefix (which holds `threads.json`), so a
+   * deleted document leaves neither. The tombstone is the object's only content:
+   * no tables are recreated, so an emptied object holds nothing a write could
+   * resume from.
    */
   async purge(): Promise<{ ok: true }> {
+    this.gone = true;
     await this.snapshots.catch(() => {});
     this.canonical.clear();
     this.loading.clear();
     await this.ctx.storage.deleteAll();
-    this.init();
+    await this.ctx.storage.put(PURGED_KEY, true);
     return { ok: true };
   }
 
   // ------------------------------------------------------------- internals
 
   private async transition(args: TransitionArgs, to: "open" | "resolved"): Promise<TransitionResult> {
+    if (!this.usable()) return { ok: false, reason: "purged" };
     const thread = this.threadRow(args.threadId);
     if (!thread) return { ok: false, reason: "thread_not_found" };
-    if (!args.isOwner && thread.created_by !== args.principal) return { ok: false, reason: "forbidden" };
+    if (!args.isOwner && !args.scope.includes(thread.created_by)) return { ok: false, reason: "forbidden" };
     if (!isVersion(args.version)) return { ok: false, reason: "version_not_found" };
 
     // Anchor first: a missing version must not leave the mutation half done.
     const ready = await this.ensureAnchors(args.docId, args.version);
     if (!ready.ok) return ready;
+    if (this.gone) return { ok: false, reason: "purged" };
     // The thread may have been deleted while R2 was being read.
     const current = this.threadRow(args.threadId);
     if (!current) return { ok: false, reason: "thread_not_found" };
 
     const changed = current.state !== to;
     if (changed) {
+      const at = this.stamp();
       if (to === "resolved") {
         this.sql.exec(
           `UPDATE threads SET state = 'resolved', resolved_by = ?, resolved_kind = ?, resolved_on_behalf_of = ?,
@@ -406,16 +479,16 @@ export class DocComments extends DurableObject<Env> {
           args.principal,
           args.kind,
           args.onBehalfOf,
-          args.at,
+          at,
           args.version,
-          args.at,
+          at,
           args.threadId,
         );
       } else {
         this.sql.exec(
           `UPDATE threads SET state = 'open', resolved_by = NULL, resolved_kind = NULL, resolved_on_behalf_of = NULL,
              resolved_at = NULL, resolved_at_version = NULL, updated_at = ? WHERE id = ?`,
-          args.at,
+          at,
           args.threadId,
         );
       }
@@ -433,7 +506,7 @@ export class DocComments extends DurableObject<Env> {
     return this.sql.exec<ThreadRow>(`SELECT * FROM threads WHERE id = ?`, id).toArray()[0];
   }
 
-  private insertComment(commentId: string, threadId: string, who: Writer & { version: number }, body: string): void {
+  private insertComment(commentId: string, threadId: string, who: Writer & { version: number }, body: string, at: number): void {
     this.sql.exec(
       `INSERT INTO comments (id, thread_id, author, author_kind, on_behalf_of, body, created_at, at_version)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -443,7 +516,7 @@ export class DocComments extends DurableObject<Env> {
       who.kind,
       who.kind === "agent" ? who.onBehalfOf : null,
       body,
-      who.at,
+      at,
       who.version,
     );
   }
@@ -496,13 +569,16 @@ export class DocComments extends DurableObject<Env> {
    * query and no R2 read: the push path never touches comments, and a version
    * is anchored once, by whoever asks first.
    */
-  private async ensureAnchors(docId: string, version: number): Promise<{ ok: true } | VersionFailure> {
+  private async ensureAnchors(docId: string, version: number): Promise<{ ok: true } | VersionFailure | PurgedFailure> {
     if (this.lacking(version).length === 0) return { ok: true };
     const canon = await this.loadCanonical(docId, version);
+    if (this.gone) return { ok: false, reason: "purged" };
     if (canon === null) return { ok: false, reason: "version_not_found" };
     // Re-read after the await: another call may have anchored some of them.
+    let anchored = 0;
     this.ctx.storage.transactionSync(() => {
       for (const t of this.lacking(version)) {
+        anchored++;
         const anchor: Anchor = { exact: t.anchor_exact };
         if (t.anchor_prefix !== null) anchor.prefix = t.anchor_prefix;
         if (t.anchor_suffix !== null) anchor.suffix = t.anchor_suffix;
@@ -527,6 +603,9 @@ export class DocComments extends DurableObject<Env> {
         }
       }
     });
+    // Re-anchoring is a mutation (rows, and on rung 2 a rewritten quote), so the
+    // snapshot that rebuilds this object has to carry it too.
+    if (anchored > 0) await this.snapshot(docId);
     return { ok: true };
   }
 
@@ -595,6 +674,8 @@ export class DocComments extends DurableObject<Env> {
    */
   private snapshot(docId: string): Promise<void> {
     const run = async () => {
+      // A deleted document's threads.json is swept right after the purge; never rewrite it.
+      if (this.gone) return;
       try {
         const anchors = this.sql.exec<AnchorRow>(`SELECT * FROM anchors ORDER BY thread_id, version`).toArray();
         const full = this.readThreads(0).map((t) => {

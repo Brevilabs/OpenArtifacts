@@ -386,6 +386,7 @@ export async function handleDocSection(
   docId: string,
   extra: string[],
   analytics: AnalyticsSink,
+  ctx?: ExecutionContext,
 ): Promise<Response | null> {
   const [section, kind, person, ...rest] = extra;
   const method = request.method;
@@ -399,7 +400,7 @@ export async function handleDocSection(
   // Comments, for an agent: an account token or a license key writes as an
   // agent acting for its account. Null means these segments are not a comment
   // route, and the access routes below get their turn.
-  const comments = await commentRoute(request, url, env, { publisher, kind: "agent" }, docId, extra);
+  const comments = await commentRoute(request, url, env, { publisher, kind: "agent", ctx }, docId, extra);
   if (comments !== null) return comments;
 
   const access = section === "access" && rest.length === 0;

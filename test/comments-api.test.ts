@@ -285,6 +285,29 @@ describe("turning comments on", () => {
     expect(embedList.status).toBe(404);
   });
 
+  it("answers 404 before looking at the body, query or credential when there is no comments object", async () => {
+    const { owner, alice, priv } = await world();
+    const none = { COMMENTS: undefined };
+    const th = "th_0000000000000000";
+    // A malformed body, a bad query and a missing credential would each be 400 or 401 on a deployment with comments.
+    expect((await send("POST", `/api/v1/docs/${priv}/threads`, alice.token, "{not json", none)).status).toBe(404);
+    expect((await send("POST", `/api/v1/docs/${priv}/threads`, alice.token, {}, none)).status).toBe(404);
+    expect((await send("POST", `/api/v1/docs/${priv}/threads/${th}/comments`, alice.token, {}, none)).status).toBe(404);
+    expect((await send("POST", `/api/v1/docs/${priv}/threads/${th}/resolve`, alice.token, { version: "x" }, none)).status).toBe(404);
+    expect((await send("PUT", `/api/v1/docs/${priv}/settings`, owner.token, { comments: "yes" }, none)).status).toBe(404);
+    expect((await send("GET", `/api/v1/docs/${priv}/threads?state=bogus&since=x&v=0`, alice.token, undefined, none)).status).toBe(404);
+    expect((await send("DELETE", `/api/v1/docs/${priv}/comments/cm_0000000000000000`, alice.token, undefined, none)).status).toBe(404);
+    // The frame: no token, a bad body or a bad query, all 404 first.
+    expect((await send("POST", `/embed/api/docs/${priv}/threads`, null, "{not json", none)).status).toBe(404);
+    expect((await send("GET", `/embed/api/docs/${priv}/threads?state=bogus`, null, undefined, none)).status).toBe(404);
+    expect((await send("PUT", `/embed/api/docs/${priv}/settings`, SHARE_TOKEN_PREFIX + "junk", {}, none)).status).toBe(404);
+    // The display name exists only for comments.
+    expect((await send("PUT", "/api/v1/account", owner.token, { displayName: "Nope" }, none)).status).toBe(404);
+    expect((await send("PUT", "/embed/api/account", await frame(owner, priv), { displayName: "Nope" }, none)).status).toBe(404);
+    expect((await send("PUT", "/api/v1/account", owner.token, { displayName: "Nope" }, { READER_SESSION_SECRET: "" })).status).toBe(404);
+    expect(await env.DB.prepare("SELECT display_name FROM accounts WHERE id = ?").bind(owner.id).first()).toEqual({ display_name: "Logan" });
+  });
+
   it("serves the same switch to the owner's frame, and refuses it to anyone else's", async () => {
     const { owner, alice, priv } = await world();
     const mirrored = await send("PUT", `/embed/api/docs/${priv}/settings`, await frame(owner, priv), { comments: false });
@@ -509,8 +532,13 @@ describe("threads", () => {
   it("keeps reads and refuses writes once the owner's plan lapses: 402 to the owner, 404 to the rest", async () => {
     const { owner, alice, priv } = await world();
     const made = await created(await thread(priv, alice.token));
+    expect((await threadsOf(await listThreads(priv, owner.token))).threads[0]!.canResolve).toBe(true);
     await env.DB.prepare("UPDATE accounts SET plan = 'free' WHERE id = ?").bind(owner.id).run();
 
+    // Resolve answers 402 to the owner now, so the frame must not offer it.
+    const lapsedOwner = await threadsOf(await listThreads(priv, owner.token));
+    expect(lapsedOwner.viewer).toMatchObject({ canComment: false, canManage: true });
+    expect(lapsedOwner.threads[0]!.canResolve).toBe(false);
     const read = await threadsOf(await listThreads(priv, alice.token));
     expect(read.threads).toHaveLength(1);
     expect(read.viewer).toMatchObject({ canComment: false });
@@ -599,7 +627,8 @@ describe("threads", () => {
   it("caps a document at 500 threads and 2,000 comments with 402 limit_reached", async () => {
     const { alice, priv } = await world();
     const stub = env.COMMENTS!.get(env.COMMENTS!.idFromName(priv));
-    await runInDurableObject(stub, async (_i: DocComments, state) => {
+    await runInDurableObject(stub, async (instance: DocComments, state) => {
+      (instance as unknown as { usable(): boolean }).usable(); // the schema is created on first use
       const sql = state.storage.sql;
       for (let i = 0; i < MAX_THREADS; i++) {
         sql.exec(`INSERT INTO threads (id, created_version, created_by, created_at, updated_at, anchor_exact) VALUES (?, 1, 'x', ?, ?, 'fox')`, `th_${i}`, i, i);
@@ -808,10 +837,16 @@ describe("what comments change elsewhere", () => {
     expect(await env.DOCS.head(threadsObjectKey(priv))).toBeNull();
     const stub = env.COMMENTS!.get(env.COMMENTS!.idFromName(priv));
     await runInDurableObject(stub, async (_i: DocComments, state) => {
-      for (const table of ["threads", "comments", "anchors"]) {
-        expect(state.storage.sql.exec<{ n: number }>(`SELECT COUNT(*) AS n FROM ${table}`).one().n).toBe(0);
-      }
+      // Emptied, and left empty: no tables are recreated, only the tombstone remains.
+      const tables = state.storage.sql
+        .exec<{ n: number }>(`SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name IN ('threads', 'comments', 'anchors')`)
+        .one().n;
+      expect(tables).toBe(0);
+      expect(await state.storage.get("purged")).toBe(true);
     });
+    // A write that gets through to the object after the delete is refused, and writes no snapshot.
+    expect((await thread(priv, alice.token)).status).toBe(404);
+    expect(await env.DOCS.head(threadsObjectKey(priv))).toBeNull();
     // The row stays, so the serving origin can say 410 (serve.test.ts).
     expect(await env.DB.prepare("SELECT deleted_at FROM docs WHERE id = ?").bind(priv).first()).toEqual({ deleted_at: expect.any(Number) });
   });
@@ -893,8 +928,76 @@ describe("notifications", () => {
     expect(mailTo(owner.email)[0]!.text).toContain("thanks");
   });
 
-  it("sends nothing when mail is unconfigured, and survives a limiter that says no and a sender that throws", async () => {
+  it("mails nobody for an unlinked license key's comments: it has no account, so no mailbox", async () => {
+    const { owner, alice, pub } = await world();
+    const KEY = "cplus_live_a1b2c3d4e5f60718";
+    await env.DB.prepare("INSERT INTO publishers (key_hash, plan, validated_at, owner) VALUES (?, 'believer', ?, 'lic-nomail')")
+      .bind(await sha256Hex(KEY), Date.now())
+      .run();
+    const made = await created(await thread(pub, KEY, fox, "from a key with no account"));
+    expect(sent.map((m) => m.to)).toEqual([owner.email]); // the new thread still reaches the owner
+    sent.length = 0;
+
+    // Alice replies: the thread's only other writer is the key, which cannot be mailed, and nothing throws.
+    await send("POST", `/api/v1/docs/${pub}/threads/${made.threadId}/comments`, alice.token, { body: "reply" });
+    expect(sent).toEqual([]);
+    // The owner resolves: Alice, who has an account, is told; the key is skipped.
+    await send("POST", `/api/v1/docs/${pub}/threads/${made.threadId}/resolve`, owner.token);
+    expect(sent.map((m) => m.to)).toEqual([alice.email]);
+    expect(sent.every((m) => m.to.includes("@acme.com"))).toBe(true);
+  });
+
+  it("mails only people who can read the document now, however they once took part", async () => {
+    const { owner, alice, carol, priv, pub } = await world();
+    const mine = await created(await thread(priv, alice.token));
+    sent.length = 0;
+    await send("POST", `/api/v1/docs/${priv}/threads/${mine.threadId}/comments`, owner.token, { body: "before removal" });
+    expect(sent.map((m) => m.to)).toEqual([alice.email]);
+
+    // Her invite is removed: she gets 404 everywhere and must get no more of the thread.
+    await env.DB.prepare("DELETE FROM doc_invites WHERE doc_id = ? AND email = ?").bind(priv, alice.email).run();
+    expect((await listThreads(priv, alice.token)).status).toBe(404);
+    sent.length = 0;
+    await send("POST", `/api/v1/docs/${priv}/threads/${mine.threadId}/comments`, owner.token, { body: "SECRET after removal" });
+    await send("POST", `/api/v1/docs/${priv}/threads/${mine.threadId}/resolve`, owner.token);
+    expect(sent).toEqual([]);
+
+    // A public page turned invited-only drops a signed-in commenter who was never invited.
+    const open = await created(await thread(pub, carol.token));
+    sent.length = 0;
+    await send("POST", `/api/v1/docs/${pub}/threads/${open.threadId}/comments`, owner.token, { body: "still public" });
+    expect(sent.map((m) => m.to)).toEqual([carol.email]);
+    await env.DB.prepare("UPDATE docs SET link_access = 'invited' WHERE id = ?").bind(pub).run();
+    sent.length = 0;
+    await send("POST", `/api/v1/docs/${pub}/threads/${open.threadId}/comments`, owner.token, { body: "SECRET now private" });
+    expect(sent).toEqual([]);
+  });
+
+  it("sends after the response, on the request's execution context", async () => {
     const { owner, alice, priv } = await world();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const slow = { send: async (message: Mail) => { await gate; sent.push(message); } };
+    const ctx = createExecutionContext();
+    // If the route awaited the mail, this fetch would wait on the gate forever.
+    const response = await worker.fetch(
+      new Request(`${API}/api/v1/docs/${priv}/threads`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${alice.token}`, "content-type": "application/json" },
+        body: JSON.stringify({ anchor: fox, body: "slow mail" }),
+      }),
+      { ...env, ...HOSTS, EMAIL: slow } as unknown as Env,
+      ctx,
+    );
+    expect(response.status).toBe(201);
+    expect(sent).toEqual([]);
+    release();
+    await waitOnExecutionContext(ctx);
+    expect(sent.map((m) => m.to)).toEqual([owner.email]);
+  });
+
+  it("sends nothing when mail is unconfigured, and survives a limiter that says no and a sender that throws", async () => {
+    const { alice, priv } = await world();
     await created(await send("POST", `/api/v1/docs/${priv}/threads`, alice.token, { anchor: fox, body: "a" }, { EMAIL: undefined }));
     expect(sent).toEqual([]);
 
@@ -902,9 +1005,76 @@ describe("notifications", () => {
     await created(await send("POST", `/api/v1/docs/${priv}/threads`, alice.token, { anchor: fox, body: "b" }, { COMMENT_EMAIL_LIMITER: refusing }));
     expect(sent).toEqual([]);
 
-    const throwing = { send: async () => { throw new Error("mail down"); } };
+    let attempts = 0;
+    const throwing = { send: async () => { attempts++; throw new Error("mail down"); } };
     const posted = await send("POST", `/api/v1/docs/${priv}/threads`, alice.token, { anchor: fox, body: "c" }, { EMAIL: throwing } as Partial<Env>);
     expect(posted.status).toBe(201);
-    expect(owner.email).toBeTruthy();
+    expect(attempts).toBe(1); // it was tried, to the owner, and its failure changed nothing
+    expect(sent).toEqual([]);
+  });
+});
+
+
+describe("review fixes", () => {
+  const KEY = "cplus_live_a1b2c3d4e5f60718";
+  const insertKey = async (ext: string) =>
+    env.DB.prepare("INSERT INTO publishers (key_hash, plan, validated_at, owner) VALUES (?, 'believer', ?, ?)")
+      .bind(await sha256Hex(KEY), Date.now(), ext)
+      .run();
+
+  it("keeps a license key's comments its own after the key is linked to an account", async () => {
+    const { pub } = await world();
+    await insertKey("lic-writer");
+    const first = await created(await thread(pub, KEY, fox, "from the key"));
+    const second = await created(await thread(pub, KEY, { exact: "twelve percent" }, "also from the key"));
+    const mineBefore = await threadsOf(await listThreads(pub, KEY));
+    expect(mineBefore.threads.map((t) => [t.comments[0]!.mine, t.canResolve])).toEqual([[true, true], [true, true]]);
+
+    const dave = await person("dave@acme.com", "Dave");
+    expect(await linkExternalOwner(env.DB, "lic-writer", dave.id, Date.now())).toBe("linked");
+
+    // Both credentials of the one author still see them as theirs...
+    for (const credential of [KEY, dave.token]) {
+      const listed = await threadsOf(await listThreads(pub, credential));
+      expect(listed.threads.map((t) => [t.comments[0]!.mine, t.canResolve]), credential).toEqual([[true, true], [true, true]]);
+    }
+    // ...and can resolve, reopen and delete them.
+    expect((await send("POST", `/api/v1/docs/${pub}/threads/${first.threadId}/resolve`, dave.token)).status).toBe(200);
+    expect((await send("POST", `/api/v1/docs/${pub}/threads/${first.threadId}/reopen`, KEY)).status).toBe(200);
+    expect((await send("DELETE", `/api/v1/docs/${pub}/comments/${second.commentId}`, dave.token)).status).toBe(204);
+    expect((await send("DELETE", `/api/v1/docs/${pub}/comments/${first.commentId}`, KEY)).status).toBe(204);
+    expect((await threadsOf(await listThreads(pub, dave.token))).threads).toEqual([]);
+
+    // Someone else's account is still a stranger to them.
+    const eve = await person("eve@acme.com", "Eve");
+    const other = await created(await thread(pub, KEY, fox, "again"));
+    expect((await send("DELETE", `/api/v1/docs/${pub}/comments/${other.commentId}`, eve.token)).status).toBe(404);
+    expect((await send("POST", `/api/v1/docs/${pub}/threads/${other.threadId}/resolve`, eve.token)).status).toBe(404);
+  });
+
+  it("refuses a write that reaches the object after the document was purged, as a 404 with no snapshot", async () => {
+    const { alice, priv } = await world();
+    const made = await created(await thread(priv, alice.token));
+    // The delete's purge ran, but this request had already passed the Worker's check against D1.
+    await env.DOCS.delete(threadsObjectKey(priv));
+    await env.COMMENTS!.get(env.COMMENTS!.idFromName(priv)).purge();
+
+    expect((await thread(priv, alice.token)).status).toBe(404);
+    expect((await send("POST", `/api/v1/docs/${priv}/threads/${made.threadId}/comments`, alice.token, { body: "late" })).status).toBe(404);
+    expect((await send("POST", `/api/v1/docs/${priv}/threads/${made.threadId}/resolve`, alice.token)).status).toBe(404);
+    expect((await send("DELETE", `/api/v1/docs/${priv}/comments/${made.commentId}`, alice.token)).status).toBe(404);
+    expect((await listThreads(priv, alice.token)).status).toBe(404);
+    expect(await env.DOCS.head(threadsObjectKey(priv))).toBeNull();
+  });
+
+  it("returns the thread from a write, so a reply or a new thread mails with its quote and needs no second object call", async () => {
+    const { owner, alice, priv } = await world();
+    const made = await created(await thread(priv, alice.token));
+    expect(sent[0]!.text).toContain("brown fox");
+    sent.length = 0;
+    await send("POST", `/api/v1/docs/${priv}/threads/${made.threadId}/comments`, owner.token, { body: "reply" });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.text).toContain("brown fox");
+    expect(sent[0]!.text).toContain("reply");
   });
 });

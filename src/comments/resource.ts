@@ -26,6 +26,7 @@
  */
 import type { Env } from "../config.js";
 import { findCommentableDoc, type CommentableDoc } from "../db.js";
+import { readerSignInConfigured } from "../reader-config.js";
 import { servingJson } from "../serve.js";
 import { commentsStub } from "./access.js";
 import type { ThreadRecord } from "./object.js";
@@ -47,7 +48,9 @@ export async function threadsResource(
   principal: string,
   judge: (doc: CommentableDoc) => Verdict | Promise<Verdict>,
 ): Promise<Response> {
-  if (env.COMMENTS === undefined) return threadsNotFound(method);
+  // Comments need the reader secret too (`/api/v1` and `/embed/api` answer 404 without it), so a
+  // deployment that lost it does not keep serving threads that no other surface will.
+  if (env.COMMENTS === undefined || !readerSignInConfigured(env)) return threadsNotFound(method);
   if (versionParam !== null && !VERSION_PARAM.test(versionParam)) return threadsNotFound(method);
   const doc = await findCommentableDoc(env.DB, docId, principal, versionParam === null ? null : Number(versionParam));
   if (doc === null) return threadsNotFound(method);
@@ -61,13 +64,12 @@ export async function threadsResource(
   const listed = await commentsStub(env, docId).list({
     docId,
     version: doc.version,
-    latestVersion: doc.latest_version ?? undefined,
   });
   if (!listed.ok) return threadsNotFound(method);
   const body = await presentThreads(
     env,
     { docId, title: doc.title, ownerAccount: doc.owner_account },
-    { version: listed.version, latestVersion: listed.latestVersion, threads: listed.threads as ThreadRecord[] },
+    { version: listed.version, latestVersion: doc.latest_version, threads: listed.threads as ThreadRecord[] },
     null,
   );
   return servingJson(method, 200, body);

@@ -39,6 +39,7 @@ import { isDocId } from "../ids.js";
 import { sha256Hex } from "../hash.js";
 import { withinLimit } from "../limits.js";
 import { readBodyWithin } from "../quota.js";
+import { readerSignInConfigured } from "../reader-config.js";
 import {
   commentsOff,
   commentsPlanRefusal,
@@ -100,6 +101,7 @@ function versionField(value: unknown): number | undefined | null {
 
 /** `GET …/threads?state=&since=&v=`. `caller` is null for an anonymous reader of a public document. */
 export async function listThreads(env: Env, url: URL, caller: Caller | null, docId: string): Promise<Response> {
+  if (env.COMMENTS === undefined) return docNotFound(docId);
   const state = url.searchParams.get("state") ?? "all";
   if (!STATES.has(state)) return bad('state must be "open", "resolved" or "all".');
 
@@ -124,7 +126,6 @@ export async function listThreads(env: Env, url: URL, caller: Caller | null, doc
   const listed = await commentsStub(env, docId).list({
     docId,
     version: standing.doc.version,
-    latestVersion: standing.doc.latest_version ?? undefined,
     state: state as "open" | "resolved" | "all",
     since,
   });
@@ -134,7 +135,7 @@ export async function listThreads(env: Env, url: URL, caller: Caller | null, doc
   const body = await presentThreads(
     env,
     { docId, title: standing.doc.title, ownerAccount: standing.doc.owner_account },
-    { version: listed.version, latestVersion: listed.latestVersion, threads: listed.threads as ThreadRecord[] },
+    { version: listed.version, latestVersion: standing.doc.latest_version, threads: listed.threads as ThreadRecord[] },
     viewer,
   );
   return Response.json(body, { headers: NO_STORE });
@@ -142,7 +143,7 @@ export async function listThreads(env: Env, url: URL, caller: Caller | null, doc
 
 async function viewerOf(env: Env, standing: Standing, now: number): Promise<Viewer> {
   return {
-    principalId: standing.doc.principal_id,
+    scope: standing.scope,
     canManage: standing.canManage,
     canComment: await viewerCanComment(env, standing, now),
     name: standing.doc.viewer_name,
@@ -185,12 +186,11 @@ function writeVersion(requested: number | undefined, standing: Standing): number
 }
 
 /** The writer, as the object stores it. */
-function writer(standing: Standing, caller: Caller, at: number) {
+function writer(standing: Standing, caller: Caller) {
   return {
     principal: standing.doc.principal_id,
     kind: caller.kind,
     onBehalfOf: caller.kind === "agent" ? standing.doc.principal_id : null,
-    at,
   };
 }
 
@@ -225,10 +225,14 @@ function refusal(result: Failed, caller: Caller, version?: number): Response {
   }
 }
 
-/** The thread for a notification, read only when mail can be sent at all. */
-async function threadFor(env: Env, docId: string, threadId: string, version: number): Promise<ThreadRecord | null> {
-  const found = await commentsStub(env, docId).getThread({ docId, threadId, version });
-  return found.ok ? (found.thread as ThreadRecord) : null;
+/**
+ * Send the notification after the response, on the request's execution context.
+ * `notifyComment` never throws, so it is safe to leave running. Without a context
+ * (a caller that has none) it is awaited, as the access-request mail is.
+ */
+async function notifyLater(caller: Caller, notified: Promise<void>): Promise<void> {
+  if (caller.ctx === undefined) await notified;
+  else caller.ctx.waitUntil(notified);
 }
 
 /** `POST …/threads`. */
@@ -256,27 +260,25 @@ export async function createThread(
 
   const result = await commentsStub(env, docId).createThread({
     docId,
-    ...writer(standing, caller, now),
+    ...writer(standing, caller),
     anchor: fields.anchor as never,
     body: fields.body,
     version,
   });
   if (!result.ok) return refusal(result, caller, version);
 
-  if (env.EMAIL !== undefined) {
-    const thread = await threadFor(env, docId, result.threadId, version);
-    if (thread !== null) {
-      await notifyComment(env, url, {
-        event: "thread",
-        docId,
-        doc: standing.doc,
-        actor: { principal: standing.doc.principal_id, kind: caller.kind },
-        thread,
-        text: fields.body.trim(),
-        version,
-      });
-    }
-  }
+  await notifyLater(
+    caller,
+    notifyComment(env, url, {
+      event: "thread",
+      docId,
+      doc: standing.doc,
+      actor: { principal: standing.doc.principal_id, kind: caller.kind },
+      thread: result.thread as ThreadRecord,
+      text: fields.body.trim(),
+      version,
+    }),
+  );
   return Response.json(
     { threadId: result.threadId, commentId: result.commentId, anchorStatus: result.anchorStatus },
     { status: 201, headers: NO_STORE },
@@ -305,27 +307,25 @@ export async function replyToThread(
 
   const result = await commentsStub(env, docId).reply({
     docId,
-    ...writer(standing, caller, now),
+    ...writer(standing, caller),
     threadId,
     body: fields.body,
     version,
   });
   if (!result.ok) return refusal(result, caller, version);
 
-  if (env.EMAIL !== undefined) {
-    const thread = await threadFor(env, docId, threadId, version);
-    if (thread !== null) {
-      await notifyComment(env, url, {
-        event: "reply",
-        docId,
-        doc: standing.doc,
-        actor: { principal: standing.doc.principal_id, kind: caller.kind },
-        thread,
-        text: fields.body.trim(),
-        version,
-      });
-    }
-  }
+  await notifyLater(
+    caller,
+    notifyComment(env, url, {
+      event: "reply",
+      docId,
+      doc: standing.doc,
+      actor: { principal: standing.doc.principal_id, kind: caller.kind },
+      thread: result.thread as ThreadRecord,
+      text: fields.body.trim(),
+      version,
+    }),
+  );
   return Response.json({ commentId: result.commentId }, { status: 201, headers: NO_STORE });
 }
 
@@ -356,27 +356,31 @@ export async function changeThreadState(
 
   const result = await commentsStub(env, docId)[to]({
     docId,
-    ...writer(standing, caller, now),
+    ...writer(standing, caller),
     threadId,
     isOwner: standing.canManage,
+    scope: standing.scope,
     version,
   });
   if (!result.ok) return refusal(result, caller, version);
 
   const thread = result.thread as ThreadRecord;
   if (result.changed && to === "resolve") {
-    await notifyComment(env, url, {
-      event: "resolved",
-      docId,
-      doc: standing.doc,
-      actor: { principal: standing.doc.principal_id, kind: caller.kind },
-      thread,
-      text: null,
-      version,
-    });
+    await notifyLater(
+      caller,
+      notifyComment(env, url, {
+        event: "resolved",
+        docId,
+        doc: standing.doc,
+        actor: { principal: standing.doc.principal_id, kind: caller.kind },
+        thread,
+        text: null,
+        version,
+      }),
+    );
   }
   const viewer: Viewer = {
-    principalId: standing.doc.principal_id,
+    scope: standing.scope,
     canManage: standing.canManage,
     canComment: true,
     name: standing.doc.viewer_name,
@@ -392,7 +396,7 @@ export async function deleteComment(env: Env, caller: Caller, docId: string, com
   const result = await commentsStub(env, docId).deleteComment({
     docId,
     commentId,
-    principal: standing.doc.principal_id,
+    scope: standing.scope,
   });
   // Someone else's comment answers exactly like a missing one.
   if (!result.ok) return errorResponse("not_found", "No such comment.", NO_STORE);
@@ -432,6 +436,9 @@ export async function switchComments(env: Env, publisher: Publisher, docId: stri
  * has nothing to name and answers `404`.
  */
 export async function setName(request: Request, env: Env, owner: string): Promise<Response> {
+  // A display name is only ever shown on a comment, so a deployment without comments (or without
+  // the reader sign-in they need) has no such route.
+  if (env.COMMENTS === undefined || !readerSignInConfigured(env)) return errorResponse("not_found", "No route.", NO_STORE);
   const fields = await readFields(request);
   if (fields === null || !onlyKeys(fields, ["displayName"]) || typeof fields.displayName !== "string") {
     return bad('Expected {"displayName": "…"}.');

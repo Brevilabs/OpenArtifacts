@@ -195,14 +195,20 @@ async function publisherResponse(
     return servingError(method, "not_found");
   }
 
+  // A grant names this origin and a principal. Another publisher's grant carries
+  // another label and is refused here, before the database is read.
+  const readGrant = (held: Record<string, string> | null) =>
+    held !== null && held.l === publisher.label && typeof held.p === "string" && held.p !== ""
+      ? held.p
+      : null;
+
   // The comments resource: the grant cookie and nothing else. Never the `?grant=`
   // swap (which would answer JSON with a redirect), and no cookie, a public
   // document, or a document the cookie may not read is a `404`, not the sign-in
   // redirect the page gets: a script cannot follow one.
   if (threadsDoc !== null) {
-    const held = await verifyPayload(secret, "grant-cookie", readCookie(request, GRANT_COOKIE), atMs);
-    const principal = held !== null && held.l === publisher.label && typeof held.p === "string" ? held.p : "";
-    if (principal === "") return threadsNotFound(method);
+    const principal = readGrant(await verifyPayload(secret, "grant-cookie", readCookie(request, GRANT_COOKIE), atMs));
+    if (principal === null) return threadsNotFound(method);
     return await threadsResource(env, method, threadsDoc, url.searchParams.get("v"), principal, async (doc) => {
       const verdict = await judgeForPublisher(doc, publisher);
       return verdict === "ok" || verdict === "deleted" ? verdict : "missing";
@@ -212,13 +218,6 @@ async function publisherResponse(
 
   // Absolute: this host has no sign-in page, and a relative path would resolve here.
   const signIn = servingRedirect(`https://${apiHost}${docPath("/open", route)}`, 302);
-
-  // A grant names this origin and a principal. Another publisher's grant carries
-  // another label and is refused here, before the database is read.
-  const readGrant = (held: Record<string, string> | null) =>
-    held !== null && held.l === publisher.label && typeof held.p === "string" && held.p !== ""
-      ? held.p
-      : null;
 
   const urlGrant = url.searchParams.get("grant");
   if (urlGrant !== null) {

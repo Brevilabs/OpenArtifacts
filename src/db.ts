@@ -1553,8 +1553,13 @@ export interface CommentableDoc {
   principal_id: string;
   /** The owner as comments store it, by the same rule. */
   owner_account: string;
-  /** The publisher's app-sites id (or local account id), as publication events carry it. */
-  publisher_id: string;
+  /**
+   * Every id the principal's comments may be stored under: its whole owner scope,
+   * as a JSON array. A license key that comments and is linked to an account
+   * afterwards has comments under the key's id while `principal_id` is now the
+   * account's, and both are the same author.
+   */
+  scope_ids: string;
   /** The principal's display name, or null when it has none (or is no account). */
   viewer_name: string | null;
 }
@@ -1590,7 +1595,7 @@ export async function findCommentableDoc(
                        WHERE a.id = ? AND i.doc_id = d.id AND i.role = 'comment') AS invited_comment,
               (SELECT id FROM canonical) AS principal_id,
               COALESCE((SELECT account_id FROM owner_links WHERE external_owner = d.owner), d.owner) AS owner_account,
-              ${PUBLISHER_USER_ID_SQL} AS publisher_id,
+              (SELECT json_group_array(owner) FROM owner_scope) AS scope_ids,
               (SELECT display_name FROM accounts WHERE id = (SELECT id FROM canonical)) AS viewer_name
          FROM docs d
         WHERE d.id = ?`,
@@ -1675,6 +1680,34 @@ export async function displayNames(db: D1Database, ids: string[]): Promise<Map<s
     }
   }
   return names;
+}
+
+/**
+ * Which of these accounts can read `docId` right now: `CAN_READ_SQL`'s rule for
+ * each (a public document, the account owns it or a key linked to it does, or its
+ * address is on the invite list). Notifications go only to these, because access
+ * is revocable and a past commenter must not be mailed text they can no longer open.
+ */
+export async function readableAccounts(db: D1Database, docId: string, ids: string[]): Promise<Set<string>> {
+  const readable = new Set<string>();
+  const unique = [...new Set(ids.filter((id) => id !== ""))];
+  if (unique.length === 0) return readable;
+  const statements = chunks(unique, ID_CHUNK).map((part) =>
+    db
+      .prepare(
+        `SELECT a.id AS id FROM accounts a JOIN docs d ON d.id = ?
+          WHERE a.id IN (${part.map(() => "?").join(",")})
+            AND (d.link_access = 'anyone'
+              OR d.owner = a.id
+              OR d.owner IN (SELECT external_owner FROM owner_links WHERE account_id = a.id)
+              OR EXISTS (SELECT 1 FROM doc_invites i WHERE i.doc_id = d.id AND i.email = a.email))`,
+      )
+      .bind(docId, ...part),
+  );
+  for (const result of await db.batch<{ id: string }>(statements)) {
+    for (const row of result.results) readable.add(row.id);
+  }
+  return readable;
 }
 
 /** Addresses for a set of account ids. Ids with no account are absent. */

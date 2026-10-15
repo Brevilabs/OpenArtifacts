@@ -385,15 +385,15 @@ async function frameApi(
 
   const identity = await verifyFrameToken(request, env, docId, now);
   if (identity === null) return errorResponse("unauthorized", "Sign in again to manage this document.", NO_STORE);
-  const claims = { a: identity.accountId };
+  const accountId = identity.accountId;
   const email = identity.email;
 
   // The session account as a publisher, as the share page builds it: its
   // documents are everything in its owner scope, and the plan gate reads its
   // current plan. Reading needs no plan, so a GET makes no license-server call.
   const principal: Publisher = {
-    owner: claims.a,
-    plan: (await accountPlan(env, claims.a, { skipAccountRefresh: method === "GET" })).plan,
+    owner: accountId,
+    plan: (await accountPlan(env, accountId, { skipAccountRefresh: method === "GET" })).plan,
     authKind: "account",
   };
   // `changed` says whether a write changed anything. The frame needs it to tell
@@ -406,7 +406,7 @@ async function frameApi(
   if (method === "GET") {
     const managed = await getAccess(env, principal, docId);
     if (managed.ok) return owner(managed.state);
-    const readable = await findReadableDoc(env.DB, docId, null, claims.a);
+    const readable = await findReadableDoc(env.DB, docId, null, accountId);
     if (readable === null || readable.deleted_at !== null || !readable.allowed) return noStore(docNotFound(docId));
     return Response.json(
       { viewer: "reader", account: email, docId, url: publicDocUrl(env, url, docId), title: readable.title },
@@ -432,6 +432,7 @@ export async function handleEmbed(
   url: URL,
   env: Env,
   analytics: AnalyticsSink,
+  ctx?: ExecutionContext,
 ): Promise<Response> {
   const now = Date.now();
   if (url.pathname === PAGE_SCRIPT_PATH) return await pageScript(request);
@@ -441,7 +442,7 @@ export async function handleEmbed(
   if (url.pathname === EMBED_TOKEN_PATH) return await claimToken(request, url, env, now);
   if (url.pathname.startsWith(`${EMBED_API_PREFIX}/`)) {
     // The comments family first; null means the path is not one of its routes.
-    const comments = await handleCommentsEmbed(request, url, env, now);
+    const comments = await handleCommentsEmbed(request, url, env, now, ctx);
     if (comments !== null) return comments;
     return await frameApi(request, url, env, analytics, now);
   }

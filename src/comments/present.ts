@@ -18,8 +18,8 @@ import type { Actor, ThreadRecord } from "./object.js";
 
 /** Who is asking, when the surface knows. */
 export interface Viewer {
-  /** The viewer as comments store a principal; compared with authors, never sent. */
-  principalId: string;
+  /** The viewer's owner scope, to compare with authors: "mine" is an author in it. Never sent. */
+  scope: string[];
   canComment: boolean;
   canManage: boolean;
   name: string | null;
@@ -83,11 +83,11 @@ export function presentThread(thread: ThreadRecord, label: (actor: Actor) => Lab
       body: comment.body,
       createdAt: comment.createdAt,
       atVersion: comment.atVersion,
-      ...(viewer === null ? {} : { mine: comment.author.principal === viewer.principalId }),
+      ...(viewer === null ? {} : { mine: viewer.scope.includes(comment.author.principal) }),
     })),
     ...(viewer === null
       ? {}
-      : { canResolve: viewer.canManage || (viewer.canComment && thread.createdBy === viewer.principalId) }),
+      : { canResolve: viewer.canComment && (viewer.canManage || viewer.scope.includes(thread.createdBy)) }),
   };
 }
 

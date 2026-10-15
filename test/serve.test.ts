@@ -2835,6 +2835,8 @@ describe("GET /d/{docId}/threads", () => {
         expect((await status(`/d/${docId}/threads${query}`)).status, query).toBe(404);
       }
       expect((await status(`/d/${docId}/threads`, { COMMENTS: undefined })).status).toBe(404);
+      // Without reader sign-in no other surface serves threads either, so neither does the apex.
+      expect((await status(`/d/${docId}/threads`, { READER_SESSION_SECRET: "" })).status).toBe(404);
 
       const miss = await status(`/d/${UNKNOWN_DOC_ID}/threads`);
       expect(miss.headers.get("content-type")).toBe("application/json; charset=utf-8");
