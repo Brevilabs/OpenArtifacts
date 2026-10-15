@@ -28,6 +28,7 @@
  * which is why removing a person takes effect on their next request.
  */
 import type { AnalyticsSink } from "./analytics.js";
+import { threadsNotFound, threadsResource } from "./comments/resource.js";
 import type { Env } from "./config.js";
 import { findReadableDoc } from "./db.js";
 import { encodeBase32 } from "./ids.js";
@@ -35,6 +36,7 @@ import { readerSecret, readerSignInConfigured } from "./reader-config.js";
 import {
   docPath,
   parseDocPath,
+  parseThreadsPath,
   serveAndCount,
   servingError,
   servingPageResponse,
@@ -122,6 +124,28 @@ export async function grantUrl(
 }
 
 /**
+ * What a publisher's origin makes of a document it found, in the order it
+ * decides: unknown, or another publisher's, is `missing`; then `deleted`; an
+ * `anyone` document belongs to the apex (`public`); one the principal may not
+ * read is `denied`; the rest are `ok`. The label comparison comes before
+ * anything that reveals state, so a host never confirms that another
+ * publisher's document exists, is deleted, or is public.
+ *
+ * Shared by the page and the threads resource, which differ only in how they
+ * answer each outcome (a redirect or a page, against JSON): the read rule is one.
+ */
+export async function judgeForPublisher(
+  found: { owner: string; deleted_at: number | null; link_access: string; allowed: number } | null,
+  publisher: { label: string },
+): Promise<"missing" | "deleted" | "public" | "denied" | "ok"> {
+  if (found === null) return "missing";
+  if ((await originLabel(found.owner)) !== publisher.label) return "missing";
+  if (found.deleted_at !== null) return "deleted";
+  if (found.link_access === "anyone") return "public";
+  return found.allowed ? "ok" : "denied";
+}
+
+/**
  * Copy `response` into one whose headers are mutable and add the isolation
  * headers. `same-origin-allow-popups` cuts the window reference a hostile opener
  * would keep to a popup that lands here; `same-origin` keeps other origins from
@@ -163,12 +187,28 @@ async function publisherResponse(
   const method = request.method;
   if (method !== "GET" && method !== "HEAD") return servingError(method, "not_found");
 
-  const route = parseDocPath(url.pathname);
+  const threadsDoc = parseThreadsPath(url.pathname);
+  const route = threadsDoc === null ? parseDocPath(url.pathname) : null;
   const secret = readerSecret(env);
   const apiHost = env.API_HOST?.trim();
-  if (route === null || secret === null || !apiHost || !readerSignInConfigured(env)) {
+  if ((route === null && threadsDoc === null) || secret === null || !apiHost || !readerSignInConfigured(env)) {
     return servingError(method, "not_found");
   }
+
+  // The comments resource: the grant cookie and nothing else. Never the `?grant=`
+  // swap (which would answer JSON with a redirect), and no cookie, a public
+  // document, or a document the cookie may not read is a `404`, not the sign-in
+  // redirect the page gets: a script cannot follow one.
+  if (threadsDoc !== null) {
+    const held = await verifyPayload(secret, "grant-cookie", readCookie(request, GRANT_COOKIE), atMs);
+    const principal = held !== null && held.l === publisher.label && typeof held.p === "string" ? held.p : "";
+    if (principal === "") return threadsNotFound(method);
+    return await threadsResource(env, method, threadsDoc, url.searchParams.get("v"), principal, async (doc) => {
+      const verdict = await judgeForPublisher(doc, publisher);
+      return verdict === "ok" || verdict === "deleted" ? verdict : "missing";
+    });
+  }
+  if (route === null) return servingError(method, "not_found");
 
   // Absolute: this host has no sign-in page, and a relative path would resolve here.
   const signIn = servingRedirect(`https://${apiHost}${docPath("/open", route)}`, 302);
@@ -206,17 +246,17 @@ async function publisherResponse(
   // that reveals the document's state, so a host never confirms that another
   // publisher's document exists, is deleted, or is public.
   const found = await findReadableDoc(env.DB, route.docId, route.pinned, principal);
-  if (found === null) return servingError(method, "not_found");
-  if ((await originLabel(found.owner)) !== publisher.label) return servingError(method, "not_found");
-  if (found.deleted_at !== null) return servingPageResponse(method, "deleted");
-  if (found.link_access === "anyone") {
+  const verdict = await judgeForPublisher(found, publisher);
+  if (found === null || verdict === "missing") return servingError(method, "not_found");
+  if (verdict === "deleted") return servingPageResponse(method, "deleted");
+  if (verdict === "public") {
     return servingRedirect(`https://${env.SERVING_HOST?.trim()}${docPath(SERVING_PREFIX, route)}`, 302);
   }
   // Not allowed goes to the one not-available page, on the API host. This host
   // never renders it: the Request access form must post with the session cookie,
   // so there is exactly one copy. No loop is possible, because `/open` redirects
   // here only when `canRead` says allowed, the same predicate as above.
-  if (!found.allowed) return signIn;
+  if (verdict === "denied") return signIn;
   if (found.version === null) return servingError(method, "not_found");
 
   return await serveAndCount(request, env, route, found.version, analytics, atMs, true);

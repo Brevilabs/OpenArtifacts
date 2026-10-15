@@ -18,6 +18,7 @@
  * honoured as a real header.
  */
 import type { AnalyticsSink } from "./analytics.js";
+import { threadsResource } from "./comments/resource.js";
 import type { Env } from "./config.js";
 import { findServableVersion } from "./db.js";
 import { isDocId } from "./ids.js";
@@ -178,6 +179,17 @@ function servingHeaders(cacheControl: string): Headers {
   });
 }
 
+/**
+ * A JSON response with the serving origin's whole header policy and
+ * `cache-control: no-store`, for the threads resource. `HEAD` gets the headers
+ * and no body. Never sets a cookie: the apex is cookieless by contract.
+ */
+export function servingJson(method: string, status: number, payload: unknown): Response {
+  const headers = servingHeaders("no-store");
+  headers.set("content-type", "application/json; charset=utf-8");
+  return new Response(method === "HEAD" ? null : JSON.stringify(payload), { status, headers });
+}
+
 type ServingPageKind = "not_found" | "deleted" | "internal";
 
 interface ServingPageCopy {
@@ -250,6 +262,19 @@ export function servingRedirect(
 /** One neutral page for every miss, so it never confirms whether an id existed. */
 function noDocAt(method: string): Response {
   return servingError(method, "not_found");
+}
+
+/**
+ * `{prefix}/{docId}/threads`, the comments resource, or null for any other
+ * path. A separate matcher because `parseDocPath` reads the second segment as a
+ * version and returns null for this one.
+ */
+export function parseThreadsPath(pathname: string, prefix: string = SERVING_PREFIX): string | null {
+  if (!pathname.startsWith(`${prefix}/`)) return null;
+  const segments = pathname.slice(prefix.length + 1).split("/");
+  if (segments.length === 3 && segments[2] === "") segments.pop();
+  const [docId, resource, ...extra] = segments;
+  return docId !== undefined && resource === "threads" && extra.length === 0 && isDocId(docId) ? docId : null;
 }
 
 export interface DocRoute {
@@ -524,6 +549,16 @@ export async function handleServing(
   // else — a POST to a doc url is a probe, and it gets what a probe gets.
   if (request.method !== "GET" && request.method !== "HEAD") {
     return noDocAt(request.method);
+  }
+
+  // The comments resource: a public document's threads, JSON. An invited-only
+  // document is a `404` here, not the sign-in redirect the page gets, because a
+  // script cannot follow one; and it counts no view.
+  const threadsDoc = parseThreadsPath(url.pathname);
+  if (threadsDoc !== null) {
+    return await threadsResource(env, request.method, threadsDoc, url.searchParams.get("v"), "", (doc) =>
+      doc.deleted_at !== null ? "deleted" : doc.link_access === "anyone" && doc.allowed === 1 ? "ok" : "missing",
+    );
   }
 
   const route = parseDocPath(url.pathname);

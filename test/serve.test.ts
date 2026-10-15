@@ -2495,3 +2495,303 @@ describe("an invited-only document", () => {
     });
   });
 });
+
+describe("GET /d/{docId}/threads", () => {
+  const API = "https://api.openartifacts.ai";
+  const APEX = "https://openartifacts.site";
+  const HOSTS = {
+    SERVING_HOST: "openartifacts.site",
+    API_HOST: "api.openartifacts.ai",
+    READER_SESSION_SECRET: "k".repeat(32),
+    OAUTH_GITHUB_CLIENT_ID: "github-client",
+    OAUTH_GITHUB_CLIENT_SECRET: "github-secret",
+  } satisfies Partial<Env>;
+  const ISOLATION = {
+    "cross-origin-opener-policy": "same-origin-allow-popups",
+    "cross-origin-resource-policy": "same-origin",
+  };
+
+  const KEY_Q = "cplus_live_f1e2d3c4b5a60718";
+
+  /** The account with that address, made on first use, so a test can call this for the same person twice. */
+  async function account(email: string, name: string | null): Promise<string> {
+    const existing = await env.DB.prepare("SELECT id FROM accounts WHERE email = ?").bind(email).first<{ id: string }>();
+    if (existing) return existing.id;
+    const id = newAccountId();
+    await env.DB.prepare("INSERT INTO accounts (id, email, created_at, display_name) VALUES (?, ?, ?, ?)")
+      .bind(id, email, Date.now(), name)
+      .run();
+    return id;
+  }
+
+  /**
+   * A document at version 2 whose v1 says "first draft" and v2 "second draft",
+   * with comments switched on and two threads written through the real object:
+   * one by Alice, one by Alice's agent. Their addresses and ids must never come out.
+   */
+  async function commented(mode: "anyone" | "invited" = "anyone") {
+    const docId = await twoVersionDoc();
+    await env.DB.prepare("UPDATE docs SET link_access = ?, comments_enabled = 1 WHERE id = ?").bind(mode, docId).run();
+    const alice = await account("alice@acme.com", "Alice");
+    const stub = env.COMMENTS!.get(env.COMMENTS!.idFromName(docId));
+    const base = { docId, version: 1, at: 1_000 };
+    await stub.createThread({ ...base, principal: alice, kind: "human", onBehalfOf: null, anchor: { exact: "first draft" }, body: "Why first?" });
+    await stub.createThread({ ...base, principal: alice, kind: "agent", onBehalfOf: alice, anchor: { exact: "first" }, body: "Same, from my agent" });
+    const row = await env.DB.prepare("SELECT owner FROM docs WHERE id = ?").bind(docId).first<{ owner: string }>();
+    return { docId, alice, owner: row!.owner, host: `https://${await originLabel(row!.owner)}.openartifacts.site` };
+  }
+
+  interface Served {
+    docId: string;
+    title: string;
+    version: number;
+    latestVersion: number;
+    viewer?: unknown;
+    threads: Array<{
+      anchorStatus: string;
+      matchedText: string | null;
+      comments: Array<{ author: { name: string; kind: string }; body: string; mine?: boolean }>;
+      canResolve?: boolean;
+    }>;
+  }
+
+  describe("on the public origin", () => {
+    it("serves the unauthenticated threads, with the serving header policy, no cookie and no caching", async () => {
+      const { docId, alice } = await commented();
+
+      const response = await getFrom(`${APEX}/d/${docId}/threads`, {}, HOSTS);
+      const page = await getFrom(`${APEX}/d/${docId}`, {}, HOSTS);
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toBe("application/json; charset=utf-8");
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      expect(response.headers.get("set-cookie")).toBeNull();
+      expect(response.headers.get("access-control-allow-origin")).toBeNull();
+      // The whole policy the page carries, byte for byte, bar its cache lifetime.
+      for (const name of ["content-security-policy", "x-robots-tag", "x-content-type-options", "referrer-policy"]) {
+        expect(response.headers.get(name), name).toBe(page.headers.get(name));
+        expect(response.headers.get(name), name).not.toBeNull();
+      }
+
+      const text = await response.text();
+      const body = JSON.parse(text) as Served;
+      expect(body).toMatchObject({ docId, title: "A note", version: 2, latestVersion: 2 });
+      // Anchored for v2, where "first draft" is gone: both threads orphaned, still there.
+      expect(body.threads.map((t) => t.anchorStatus)).toEqual(["orphaned", "orphaned"]);
+      expect(body.threads.map((t) => t.comments[0]!.author)).toEqual([
+        { name: "Alice", kind: "human" },
+        { name: "Alice's agent", kind: "agent" },
+      ]);
+      // The reader is anonymous: no viewer, no per-comment ownership, no ids or addresses.
+      expect(body.viewer).toBeUndefined();
+      expect(body.threads[0]!.canResolve).toBeUndefined();
+      expect(body.threads[0]!.comments[0]!.mine).toBeUndefined();
+      for (const leaked of [alice, "alice@acme.com", "createdBy", "updatedAt", "principal", "onBehalfOf"]) {
+        expect(text).not.toContain(leaked);
+      }
+    });
+
+    it("answers for the version asked, and for the latest by default", async () => {
+      const { docId } = await commented();
+
+      const pinned = (await (await getFrom(`${APEX}/d/${docId}/threads?v=1`, {}, HOSTS)).json()) as Served;
+      expect(pinned).toMatchObject({ version: 1, latestVersion: 2 });
+      expect(pinned.threads.map((t) => [t.anchorStatus, t.matchedText])).toEqual([
+        ["anchored", "first draft"],
+        ["anchored", "first"],
+      ]);
+
+      // A trailing slash is the same resource.
+      const slash = (await (await getFrom(`${APEX}/d/${docId}/threads/`, {}, HOSTS)).json()) as Served;
+      expect(slash.version).toBe(2);
+    });
+
+    it("answers HEAD with the headers and no body, and counts no view on any verb", async () => {
+      const { docId } = await commented();
+
+      const head = await sendTo("HEAD", `${APEX}/d/${docId}/threads`, {}, HOSTS);
+      expect(head.status).toBe(200);
+      expect(head.headers.get("content-type")).toBe("application/json; charset=utf-8");
+      expect(head.headers.get("cache-control")).toBe("no-store");
+      expect(await head.text()).toBe("");
+
+      const events: Array<{ name: string }> = [];
+      const sink = { record: (event: { name: string }) => void events.push(event) };
+      const { handleServing } = await import("../src/serve.js");
+      for (const method of ["GET", "HEAD"]) {
+        const served = await handleServing(
+          new Request(`${APEX}/d/${docId}/threads`, { method }),
+          new URL(`${APEX}/d/${docId}/threads`),
+          { ...env, ...HOSTS } as Env,
+          sink as never,
+        );
+        expect(served.status).toBe(200);
+        await served.arrayBuffer();
+      }
+      expect(events).toEqual([]);
+    });
+
+    it("is 404 for an unknown id, comments off, comments unavailable and a version that does not exist", async () => {
+      const { docId } = await commented();
+      const status = async (path: string, overrides: Partial<Env> = {}) => {
+        const response = await getFrom(`${APEX}${path}`, {}, { ...HOSTS, ...overrides });
+        expect(response.headers.get("set-cookie")).toBeNull();
+        return response;
+      };
+
+      expect((await status(`/d/${UNKNOWN_DOC_ID}/threads`)).status).toBe(404);
+      for (const query of ["?v=9", "?v=0", "?v=01", "?v=abc", "?v="]) {
+        expect((await status(`/d/${docId}/threads${query}`)).status, query).toBe(404);
+      }
+      expect((await status(`/d/${docId}/threads`, { COMMENTS: undefined })).status).toBe(404);
+
+      const miss = await status(`/d/${UNKNOWN_DOC_ID}/threads`);
+      expect(miss.headers.get("content-type")).toBe("application/json; charset=utf-8");
+      const missBody = await miss.text();
+      expect(JSON.parse(missBody)).toMatchObject({ error: { code: "not_found" } });
+
+      await env.DB.prepare("UPDATE docs SET comments_enabled = 0 WHERE id = ?").bind(docId).run();
+      const off = await status(`/d/${docId}/threads`);
+      expect(off.status).toBe(404);
+      // The same bytes as an id that never existed.
+      expect(await off.text()).toBe(missBody);
+    });
+
+    it("is 410 for a deleted document, before it asks which version, and 404 for an invited-only one with no redirect", async () => {
+      const { docId } = await commented();
+      await softDelete(docId);
+      for (const query of ["", "?v=1", "?v=9"]) {
+        const response = await getFrom(`${APEX}/d/${docId}/threads${query}`, {}, HOSTS);
+        expect(response.status, query).toBe(410);
+        expect(response.headers.get("content-type")).toBe("application/json; charset=utf-8");
+        expect(await response.json()).toMatchObject({ error: { code: "gone" } });
+      }
+
+      const invited = await commented("invited");
+      const response = await getFrom(`${APEX}/d/${invited.docId}/threads`, {}, HOSTS);
+      expect(response.status).toBe(404);
+      expect(response.headers.get("location")).toBeNull();
+      expect(response.headers.get("content-type")).toBe("application/json; charset=utf-8");
+      expect(await response.json()).toMatchObject({ error: { code: "not_found" } });
+    });
+
+    it("takes no other method, and does not widen what the page route answers", async () => {
+      const { docId } = await commented();
+      for (const method of ["POST", "PUT", "DELETE"]) {
+        expect((await sendTo(method, `${APEX}/d/${docId}/threads`, {}, HOSTS)).status, method).toBe(404);
+      }
+      for (const path of [`/d/${docId}/threads/x`, `/d/${docId}/thread`, `/d/${docId}/v1/threads`]) {
+        const response = await getFrom(`${APEX}${path}`, {}, HOSTS);
+        expect(response.status, path).toBe(404);
+        expect(response.headers.get("content-type")).toBe("text/html; charset=utf-8");
+      }
+    });
+
+    it("is not an API route: the API host asks for a credential and serves no threads here", async () => {
+      const { docId } = await commented();
+      expect((await getFrom(`${API}/d/${docId}/threads`, {}, HOSTS)).status).toBe(401);
+    });
+  });
+
+  describe("on a publisher's origin", () => {
+    async function reader(email: string, docId: string): Promise<string> {
+      const id = await account(email, null);
+      await env.DB.prepare("INSERT INTO doc_invites (doc_id, email, created_at) VALUES (?, ?, ?)")
+        .bind(docId, email, Date.now())
+        .run();
+      return id;
+    }
+
+    const cookieFor = async (doc: { docId: string; owner: string }, principal: string) => {
+      const url = (await grantUrl({ ...env, ...HOSTS }, doc.owner, { docId: doc.docId, pinned: null }, principal, Date.now()))!.url;
+      const swapped = await getFrom(url, {}, HOSTS);
+      expect(swapped.status).toBe(303);
+      return swapped.headers.get("set-cookie")!.split(";")[0]!;
+    };
+
+    it("serves the threads behind the grant cookie, isolated and uncacheable, to the owner and to an invited reader", async () => {
+      const doc = await commented("invited");
+      const invited = await reader("bob@acme.com", doc.docId);
+
+      for (const principal of [doc.owner, invited]) {
+        const cookie = await cookieFor(doc, principal);
+        const response = await getFrom(`${doc.host}/d/${doc.docId}/threads`, { headers: { cookie } }, HOSTS);
+        expect(response.status).toBe(200);
+        expect(response.headers.get("content-type")).toBe("application/json; charset=utf-8");
+        expect(response.headers.get("cache-control")).toBe("no-store");
+        expect(response.headers.get("set-cookie")).toBeNull();
+        for (const [name, value] of Object.entries(ISOLATION)) expect(response.headers.get(name)).toBe(value);
+        const body = (await response.json()) as Served;
+        expect(body.threads).toHaveLength(2);
+        expect(body.viewer).toBeUndefined();
+
+        const pinned = (await (await getFrom(`${doc.host}/d/${doc.docId}/threads?v=1`, { headers: { cookie } }, HOSTS)).json()) as Served;
+        expect(pinned.threads[0]!.anchorStatus).toBe("anchored");
+      }
+    });
+
+    it("answers 404 JSON with no redirect to no cookie, to a reader not on the list and to another publisher's cookie", async () => {
+      const doc = await commented("invited");
+      const stranger = await account("carol@other.com", null);
+      const other = await commented("invited");
+
+      const bare = await getFrom(`${doc.host}/d/${doc.docId}/threads`, {}, HOSTS);
+      expect(bare.status).toBe(404);
+      expect(bare.headers.get("location")).toBeNull();
+      expect(bare.headers.get("set-cookie")).toBeNull();
+      expect(bare.headers.get("content-type")).toBe("application/json; charset=utf-8");
+      for (const [name, value] of Object.entries(ISOLATION)) expect(bare.headers.get(name)).toBe(value);
+
+      const notListed = await getFrom(`${doc.host}/d/${doc.docId}/threads`, { headers: { cookie: await cookieFor(doc, stranger) } }, HOSTS);
+      expect(notListed.status).toBe(404);
+      // The same bytes as a document that does not exist.
+      const missing = await getFrom(`${doc.host}/d/${UNKNOWN_DOC_ID}/threads`, { headers: { cookie: await cookieFor(doc, doc.owner) } }, HOSTS);
+      expect(await notListed.text()).toBe(await missing.text());
+
+      // A cookie names its origin: this publisher's, replayed on a document of another label, is nothing.
+      await env.DB.prepare("UPDATE docs SET owner = 'someone-else' WHERE id = ?").bind(other.docId).run();
+      const otherHost = `https://${await originLabel("someone-else")}.openartifacts.site`;
+      const replay = await getFrom(`${otherHost}/d/${other.docId}/threads`, { headers: { cookie: await cookieFor(doc, doc.owner) } }, HOSTS);
+      expect(replay.status).toBe(404);
+      // And this host does not confirm another publisher's document either.
+      const wrongHost = await getFrom(`${doc.host}/d/${other.docId}/threads`, { headers: { cookie: await cookieFor(doc, doc.owner) } }, HOSTS);
+      expect(wrongHost.status).toBe(404);
+    });
+
+    it("never takes the ?grant= swap: no 303, no cookie, a plain 404", async () => {
+      const doc = await commented("invited");
+      const grant = new URL(await (async () => (await grantUrl({ ...env, ...HOSTS }, doc.owner, { docId: doc.docId, pinned: null }, doc.owner, Date.now()))!.url)());
+      const response = await getFrom(`${doc.host}/d/${doc.docId}/threads${grant.search}`, {}, HOSTS);
+      expect(response.status).toBe(404);
+      expect(response.headers.get("set-cookie")).toBeNull();
+      expect(response.headers.get("location")).toBeNull();
+    });
+
+    it("is 404 for a public document here (the apex serves it), comments off, and 410 once deleted", async () => {
+      const doc = await commented("invited");
+      const cookie = await cookieFor(doc, doc.owner);
+      const read = (init = { headers: { cookie } }) => getFrom(`${doc.host}/d/${doc.docId}/threads`, init, HOSTS);
+
+      await env.DB.prepare("UPDATE docs SET comments_enabled = 0 WHERE id = ?").bind(doc.docId).run();
+      expect((await read()).status).toBe(404);
+      await env.DB.prepare("UPDATE docs SET comments_enabled = 1, link_access = 'anyone' WHERE id = ?").bind(doc.docId).run();
+      const toApex = await read();
+      expect(toApex.status).toBe(404);
+      expect(toApex.headers.get("location")).toBeNull();
+
+      await env.DB.prepare("UPDATE docs SET link_access = 'invited' WHERE id = ?").bind(doc.docId).run();
+      expect((await read()).status).toBe(200);
+      await softDelete(doc.docId);
+      const gone = await read();
+      expect(gone.status).toBe(410);
+      for (const [name, value] of Object.entries(ISOLATION)) expect(gone.headers.get(name)).toBe(value);
+    });
+
+    it("answers 404 where reader sign-in is not configured", async () => {
+      const doc = await commented("invited");
+      const cookie = await cookieFor(doc, doc.owner);
+      const response = await getFrom(`${doc.host}/d/${doc.docId}/threads`, { headers: { cookie } }, { ...HOSTS, READER_SESSION_SECRET: "" });
+      expect(response.status).toBe(404);
+    });
+  });
+});
