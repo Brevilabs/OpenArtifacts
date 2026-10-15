@@ -1544,12 +1544,13 @@ export async function setLinkAccess(
  * principal's owner scope, so a linked license key and its account share one
  * allowance.
  *
- * The three statements run in one D1 batch, which is one transaction on a database
+ * The four statements run in one D1 batch, which is one transaction on a database
  * that serializes writes, so the cap check and both inserts are a single unit and
  * concurrent adds cannot both pass. The send is recorded by `changes()`: it runs
  * straight after the invite insert and writes only if that insert wrote a row, so
  * a refused add, or a repeat of an address already listed, records nothing. The
- * last statement prunes the scope's rows that have left the window.
+ * third statement prunes the scope's rows that have left the window, and the last
+ * clears a pending request from the same address.
  *
  * Adding is also approving: a pending request from the same address is deleted
  * in the same batch, so the list and the requests can never show one address in
