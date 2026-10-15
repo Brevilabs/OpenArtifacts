@@ -411,7 +411,7 @@ does not repeat over the top of every printed page). The footer byline is as it
 was. The bar is added on the way out and stored nowhere, so the page stays a pure
 function of the stored version and the deployment's configuration, and every
 document already published picks up the bar, and any later change to it, on its
-next rendering (`RENDER_REVISION` is 7).
+next rendering (`RENDER_REVISION` is 9).
 
 **Why the owner does not simply see more.** The owner's session lives on the API
 host, and a script on the document origin cannot see it: the cookie is
