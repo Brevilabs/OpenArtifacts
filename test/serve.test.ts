@@ -2040,6 +2040,12 @@ describe("an invited-only document", () => {
       const declined = await embedApi(`${publicDoc.docId}/access/requests/carol@other.com`, token, { method: "DELETE" }, config);
       expect(((await declined.json()) as { requests: unknown[] }).requests).toEqual([]);
       expect(sent).toHaveLength(1);
+      // The role select's body: the person's role moves, and anything else is a 400 that changes nothing.
+      const roleOf = async (response: Response) => ((await response.json()) as { people: Array<{ role: string }> }).people[0]!.role;
+      expect(await roleOf(await embedApi(`${publicDoc.docId}/access/people/alice@acme.com`, token, { method: "PUT", ...json({ role: "view" }) }, config))).toBe("view");
+      expect(await roleOf(await embedApi(`${publicDoc.docId}/access/people/alice@acme.com`, token, { method: "PUT", ...json({ role: "comment" }) }, config))).toBe("comment");
+      expect((await embedApi(`${publicDoc.docId}/access/people/alice@acme.com`, token, { method: "PUT", ...json({ role: "admin" }) }, config)).status).toBe(400);
+      expect(sent).toHaveLength(1);
       const removed = await embedApi(`${publicDoc.docId}/access/people/alice@acme.com`, token, { method: "DELETE" }, config);
       expect(((await removed.json()) as { people: unknown[] }).people).toEqual([]);
       expect((await embedApi(`${publicDoc.docId}/access/people/not-an-address`, token, { method: "PUT" }, config)).status).toBe(400);
@@ -2404,8 +2410,68 @@ describe("an invited-only document", () => {
       expect(html).toContain("Approve");
       expect(html).toContain("Decline");
       expect(html.indexOf("Requests")).toBeLessThan(html.indexOf("Who has access"));
-      expect(html).not.toMatch(/role|Can comment|Can view/);
       expect(html).not.toContain("may have kept a copy");
+      // Comments are bound in this suite, so the switch and each person's role are drawn.
+      expect(html).toContain("<h2>Comments</h2>");
+      expect(html).toContain('name="comments" value="off" checked');
+      expect(html).toContain('<option value="comment" selected>Can comment</option>');
+    });
+
+    it("draws neither the Comments switch nor a role where comments are not bound", async () => {
+      const doc = await privateDoc();
+      const owner = await ownerAccount(doc);
+      await env.DB.prepare("INSERT INTO doc_invites (doc_id, email, created_at) VALUES (?, 'alice@acme.com', ?)")
+        .bind(doc.docId, Date.now())
+        .run();
+
+      const html = await (await open(doc.docId, owner, { ...PRIVATE, COMMENTS: undefined })).text();
+
+      expect(html).toContain("alice@acme.com");
+      expect(html).not.toMatch(/Comments|Can comment|Can view|name="role"/);
+    });
+
+    it("turns comments on and off from the page, on the plan the API's switch needs", async () => {
+      const doc = await privateDoc();
+      const owner = await ownerAccount(doc);
+      const enabled = async () =>
+        (await env.DB.prepare("SELECT comments_enabled AS c FROM docs WHERE id = ?").bind(doc.docId).first<{ c: number }>())!.c;
+
+      expect((await write(doc.docId, owner, { op: "comments", comments: "on" })).status).toBe(303);
+      expect(await enabled()).toBe(1);
+      expect(await (await open(doc.docId, owner)).text()).toContain('name="comments" value="on" checked');
+      expect((await write(doc.docId, owner, { op: "comments", comments: "off" })).status).toBe(303);
+      expect(await enabled()).toBe(0);
+      expect((await write(doc.docId, owner, { op: "comments", comments: "sideways" })).status).toBe(404);
+
+      // A free plan is refused with the upgrade link, and the page says what stayed as it was.
+      await env.DB.prepare("UPDATE accounts SET plan = 'free' WHERE id = ?").bind(owner).run();
+      const refused = await write(doc.docId, owner, { op: "comments", comments: "on" });
+      expect(refused.status).toBe(402);
+      const html = await refused.text();
+      expect(html).toContain("Comments need a paid plan. Nothing was changed.");
+      expect(html).toContain('<a href="https://openartifacts.ai/account">Upgrade</a>');
+      expect(await enabled()).toBe(0);
+
+      // Only the owner: another reader's write is the not-available page and changes nothing.
+      const bob = await reader("bob@other.com");
+      expect((await write(doc.docId, bob, { op: "comments", comments: "on" })).status).toBe(404);
+      expect(await enabled()).toBe(0);
+    });
+
+    it("changes a person's role from the page, and refuses a role that is not one", async () => {
+      const doc = await privateDoc();
+      const owner = await ownerAccount(doc);
+      await env.DB.prepare("INSERT INTO doc_invites (doc_id, email, role, created_at) VALUES (?, 'alice@acme.com', 'comment', ?)")
+        .bind(doc.docId, Date.now())
+        .run();
+      const role = async () =>
+        (await env.DB.prepare("SELECT role FROM doc_invites WHERE doc_id = ? AND email = 'alice@acme.com'").bind(doc.docId).first<{ role: string }>())!.role;
+
+      expect((await write(doc.docId, owner, { op: "role", email: "alice@acme.com", role: "view" })).status).toBe(303);
+      expect(await role()).toBe("view");
+      expect(await (await open(doc.docId, owner)).text()).toContain('<option value="view" selected>Can view</option>');
+      expect((await write(doc.docId, owner, { op: "role", email: "alice@acme.com", role: "admin" })).status).toBe(404);
+      expect(await role()).toBe("view");
     });
 
     it("hides the Requests section when nothing is pending, and says to send the link when the server sends no email", async () => {

@@ -33,6 +33,7 @@
 import { mayComment as planAllowsComments } from "../auth.js";
 import { setCommentsEnabled, setDisplayName, findManagedDoc } from "../db.js";
 import type { Env } from "../config.js";
+import type { Publisher } from "../auth.js";
 import { docNotFound, errorResponse } from "../errors.js";
 import { isDocId } from "../ids.js";
 import { sha256Hex } from "../hash.js";
@@ -408,12 +409,20 @@ export async function setComments(request: Request, env: Env, caller: Caller, do
   if (fields === null || !onlyKeys(fields, ["comments"]) || typeof fields.comments !== "boolean") {
     return bad('Expected {"comments": true | false}.');
   }
+  return await switchComments(env, caller.publisher, docId, fields.comments);
+}
+
+/**
+ * The switch itself, for a caller that has already read its request: the API
+ * routes above and the share page's form, which must refuse and answer exactly
+ * as they do.
+ */
+export async function switchComments(env: Env, publisher: Publisher, docId: string, on: boolean): Promise<Response> {
   if (!isDocId(docId) || env.COMMENTS === undefined) return docNotFound(docId);
-  const publisher = caller.publisher;
   if ((await findManagedDoc(env.DB, docId, publisher.owner)) === null) return docNotFound(docId);
-  if (fields.comments && !planAllowsComments(env, publisher)) return commentsPlanRefusal(env, publisher);
-  await setCommentsEnabled(env.DB, docId, publisher.owner, fields.comments);
-  return Response.json({ docId, comments: fields.comments }, { headers: NO_STORE });
+  if (on && !planAllowsComments(env, publisher)) return commentsPlanRefusal(env, publisher);
+  await setCommentsEnabled(env.DB, docId, publisher.owner, on);
+  return Response.json({ docId, comments: on }, { headers: NO_STORE });
 }
 
 /**

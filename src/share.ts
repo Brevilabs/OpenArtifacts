@@ -36,8 +36,11 @@
  * (`sameOriginPost`). `GET` never writes and no query parameter changes state:
  * `?notice=private` only selects a constant line of copy.
  *
- * There is no role control. Every person is added with the default role and the
- * page neither shows nor changes it.
+ * **Comments and roles.** Where comments exist (`env.COMMENTS`) the dialog has
+ * the **Comments** On/Off switch (`op=comments`, the same `switchComments` the
+ * API's `PUT …/settings` runs, so the plan gate cannot differ) and a **Can
+ * view** / **Can comment** select beside each person (`op=role`, the same
+ * `addPerson` with a role). A server without them draws neither.
  */
 import type { AnalyticsSink } from "./analytics.js";
 import {
@@ -52,6 +55,8 @@ import {
 } from "./api/access.js";
 import { readSmallForm } from "./approval/handler.js";
 import type { Publisher } from "./auth.js";
+import { commentsPlanRefusal } from "./comments/access.js";
+import { switchComments } from "./comments/service.js";
 import { MAX_INVITES_PER_DOC, MAX_NEW_INVITES_PER_OWNER_PER_DAY, type Env } from "./config.js";
 import { accountEmail, findReadableDoc } from "./db.js";
 import { COPILOT_HINT } from "./embed-scripts.js";
@@ -115,6 +120,7 @@ section{margin-top:2rem}h2{margin:0 0 .75rem;color:#f4f5f7;font-size:1rem}
 ul{margin:0;padding:0;list-style:none}li{display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:.65rem 0;border-top:1px solid #20242c}
 li span{display:flex;flex-direction:column;min-width:0}li b{overflow-wrap:anywhere}li .pair{flex-direction:row;flex-shrink:0;gap:.5rem}small{display:block;color:#8d94a0}
 form{margin:0}.choice{display:flex;gap:.75rem;align-items:flex-start;margin:0 0 .75rem;color:#e9ebee}.choice input{margin-top:.3rem;accent-color:#f6ae52}
+form.pair{display:flex;gap:.5rem;align-items:center}select{padding:.6rem .5rem;border:1px solid #2c313b;border-radius:.65rem;background:#07080b;color:#f4f5f7;font:inherit}
 button,input[type=email],input[readonly]{padding:.6rem 1rem;border:1px solid #2c313b;border-radius:.65rem;background:#07080b;color:#f4f5f7;font:inherit;cursor:pointer}
 button:hover{border-color:#f6ae52;color:#f9c47f}input[type=email],input[readonly]{flex:1;min-width:0;cursor:text}
 .row{display:flex;gap:.5rem}.hint{margin-top:1rem;font-size:.9rem}
@@ -192,7 +198,7 @@ export async function handleShare(
 
   const form = await readSmallForm(request);
   if (form === null) return READER_NOT_FOUND();
-  const result = await write(env, url, principal, docId, form, analytics);
+  const result: ShareResult | null = await write(env, url, principal, docId, form, analytics);
   if (result === null) return READER_NOT_FOUND();
   if (result.ok) {
     // Post, redirect, get: a reload shows the page and repeats nothing.
@@ -250,6 +256,9 @@ async function readerView(
   );
 }
 
+/** What a form's operation did: an access result, or the comments switch's own two outcomes. */
+type ShareResult = { ok: true; changed: boolean } | { ok: false; refusal: DialogError | "not_found" };
+
 /** Run the one operation a form names, or null when it names none. */
 async function write(
   env: Env,
@@ -258,7 +267,7 @@ async function write(
   docId: string,
   form: URLSearchParams,
   analytics: AnalyticsSink,
-): Promise<AccessResult | null> {
+): Promise<ShareResult | null> {
   const op = form.get("op");
   const address = form.get("email") ?? "";
   if (op === "link") {
@@ -266,13 +275,27 @@ async function write(
     return mode === "anyone" || mode === "invited" ? await setMode(env, principal, docId, mode, analytics) : null;
   }
   if (op === "add") return await addPerson(env, url, principal, docId, address, undefined, analytics);
+  if (op === "role") {
+    const role = form.get("role");
+    return role === "view" || role === "comment"
+      ? await addPerson(env, url, principal, docId, address, role, analytics)
+      : null;
+  }
+  if (op === "comments") {
+    const value = form.get("comments");
+    if (value !== "on" && value !== "off") return null;
+    const response = await switchComments(env, principal, docId, value === "on");
+    return response.status === 200
+      ? { ok: true, changed: true }
+      : { ok: false, refusal: response.status === 402 ? "comments_plan" : "not_found" };
+  }
   if (op === "remove") return await removePerson(env, principal, docId, address, analytics);
   if (op === "decline") return await declineRequest(env, principal, docId, address);
   return null;
 }
 
 /** Why a write did not happen, in the words the page shows. */
-type DialogError = Exclude<Extract<AccessResult, { ok: false }>["refusal"], "not_found">;
+type DialogError = Exclude<Extract<AccessResult, { ok: false }>["refusal"], "not_found"> | "comments_plan";
 
 async function dialog(
   env: Env,
@@ -291,10 +314,22 @@ async function dialog(
   const mode = (value: "anyone" | "invited", label: string, hint: string) =>
     `<label class="choice"><input type="radio" name="linkAccess" value="${value}"${state.link_access === value ? " checked" : ""}><span><b>${label}</b><small>${hint}</small></span></label>`;
 
+  // Comments, and so roles, exist only where the comments object is bound.
+  const roles = env.COMMENTS !== undefined;
+  const roleForm = (person: { email: string; role: string }) =>
+    form(
+      "role",
+      { email: person.email },
+      `<select name="role" aria-label="Access for ${escapeHtml(person.email)}"><option value="view"${person.role === "comment" ? "" : " selected"}>Can view</option><option value="comment"${person.role === "comment" ? " selected" : ""}>Can comment</option></select><button type="submit">Update</button>`,
+      "pair",
+    );
+  const commentsChoice = (value: "on" | "off", label: string, hint: string) =>
+    `<label class="choice"><input type="radio" name="comments" value="${value}"${(state.comments_enabled === 1) === (value === "on") ? " checked" : ""}><span><b>${label}</b><small>${hint}</small></span></label>`;
+
   const people = state.people
     .map(
       (person) =>
-        `<li><span><b><bdi>${escapeHtml(person.email)}</bdi></b><small>${emailSent ? "Invited · email sent" : "Invited · send them the link"}</small></span>${form("remove", { email: person.email }, `<button type="submit">Remove</button>`)}</li>`,
+        `<li><span><b><bdi>${escapeHtml(person.email)}</bdi></b><small>${emailSent ? "Invited · email sent" : "Invited · send them the link"}</small></span><span class="pair">${roles ? roleForm(person) : ""}${form("remove", { email: person.email }, `<button type="submit">Remove</button>`)}</span></li>`,
     )
     .join("");
   const requests = state.requests.length
@@ -316,6 +351,11 @@ ${shown.notice === true ? `<p>${COPY_NOTICE}</p>` : ""}
     {},
     `${mode("anyone", "Anyone with the link", "Exactly today's public page. No sign-in.")}${mode("invited", "Only those invited", "Only people you add can open it. They sign in once.")}<button type="submit">Save</button>`,
   )}</section>
+${roles ? `<section><h2>Comments</h2>${form(
+    "comments",
+    {},
+    `${commentsChoice("off", "Off", "Readers see the page and nothing else.")}${commentsChoice("on", "On", "People who can comment can leave comments on the page. Needs a paid plan.")}<button type="submit">Save</button>`,
+  )}</section>` : ""}
 <section><h2>Add people</h2>${form(
     "add",
     {},
@@ -332,7 +372,7 @@ ${copyLinkSection(url)}`;
       message: "Choose who can open it. The link never changes.",
       detail,
     },
-    shown.error === undefined ? 200 : shown.error === "plan" ? 402 : shown.error === "invite_quota" ? 429 : 400,
+    shown.error === undefined ? 200 : shown.error === "plan" || shown.error === "comments_plan" ? 402 : shown.error === "invite_quota" ? 429 : 400,
     await sharePolicy(),
   );
 }
@@ -348,6 +388,13 @@ async function errorMessage(env: Env, principal: Publisher, error: DialogError |
       return `A document can be shared with at most ${MAX_INVITES_PER_DOC} people.`;
     case "invite_quota":
       return `You have added ${MAX_NEW_INVITES_PER_OWNER_PER_DAY} new people in the last 24 hours. Try again later. Nothing was changed.`;
+    case "comments_plan": {
+      const refusal = (await commentsPlanRefusal(env, principal).json()) as { error?: { upgrade_url?: string } };
+      const upgrade = refusal.error?.upgrade_url;
+      return `Comments need a paid plan. Nothing was changed.${
+        upgrade === undefined ? "" : ` <a href="${escapeHtml(upgrade)}">Upgrade</a>`
+      }`;
+    }
     case "plan": {
       // The upgrade link the API's own `402` carries, already stripped of what
       // must not reach a checkout.

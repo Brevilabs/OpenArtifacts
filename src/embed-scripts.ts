@@ -210,13 +210,14 @@ button:hover{border-color:#999}button:disabled{cursor:default;opacity:.6}
 button.primary{background:#1f1f1f;border-color:#1f1f1f;color:#fff}
 button.link{border:0;padding:0;background:none;color:inherit;text-decoration:underline}
 header button{border:0;padding:2px 6px;font-size:18px;line-height:1;color:#666}
+select{font:inherit;padding:5px 6px;border:1px solid #d0d0d0;border-radius:6px;background:#fff;color:#1f1f1f}
 input{font:inherit;flex:1;min-width:0;padding:6px 10px;border:1px solid #d0d0d0;border-radius:6px}
 .row{display:flex;gap:8px;align-items:center}
 .seg{display:flex;border:1px solid #d0d0d0;border-radius:8px;overflow:hidden}
 .seg button{flex:1;border:0;border-radius:0}.seg button[aria-checked="true"]{background:#1f1f1f;color:#fff}
 ul{list-style:none;margin:0;padding:0}
 li{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 0;border-top:1px solid #eee}
-li span{min-width:0;overflow-wrap:anywhere}li small{display:block;color:#666}
+li{flex-wrap:wrap}li span{min-width:min(100%,11rem);overflow-wrap:anywhere}li .row{margin-left:auto}li small{display:block;color:#666}
 .foot{display:flex;justify-content:flex-end;margin-top:12px}
 `;
 
@@ -354,6 +355,8 @@ export const FRAME_SCRIPT = String.raw`(() => {
   let wake = null;
   let writing = false;
   let notice = false;
+  // The line shown after this frame turned comments on. Like notice, it lasts until the next write.
+  let commentsNote = false;
   // Whether this frame made the document private. See exposed().
   let switched = false;
   let latest = null;
@@ -465,12 +468,12 @@ export const FRAME_SCRIPT = String.raw`(() => {
     refresh();
   });
 
-  const call = (method, suffix, body) => {
+  const call = (method, path, body) => {
     const stored = readToken();
     if (stored === null) return Promise.resolve(null);
     const headers = { authorization: "Bearer " + stored.token };
     if (body) headers["content-type"] = "application/json";
-    return fetch("/embed/api/docs/" + doc + "/access" + suffix, { method: method, headers: headers, body: body ? JSON.stringify(body) : undefined, credentials: "omit", cache: "no-store" });
+    return fetch("/embed/api/docs/" + doc + path, { method: method, headers: headers, body: body ? JSON.stringify(body) : undefined, credentials: "omit", cache: "no-store" });
   };
 
   const header = (title) => {
@@ -495,9 +498,9 @@ export const FRAME_SCRIPT = String.raw`(() => {
     main.replaceChildren(header("Share"), muted([SENTENCE]), footer(), anotherAccount("Is this your page? "), muted([hint]));
   };
 
-  const fail = (target, response, body) => {
+  const fail = (target, response, body, what) => {
     if (response.status === 402) {
-      const kids = ["Private sharing needs a paid plan. Nothing was changed."];
+      const kids = [(what || "Private sharing needs a paid plan.") + " Nothing was changed."];
       const upgrade = body && body.error ? body.error.upgrade_url : undefined;
       if (typeof upgrade === "string" && upgrade.startsWith("https://")) kids.push(" ", node("a", { href: upgrade, target: "_blank", rel: "noopener noreferrer" }, ["Upgrade"]));
       target.replaceChildren(...kids);
@@ -541,7 +544,7 @@ export const FRAME_SCRIPT = String.raw`(() => {
     let response;
     let current = null;
     try {
-      response = await call("GET", "");
+      response = await call("GET", "/access");
       if (response === null) return true;
       if (response.status === 200) current = await response.json();
     } catch (error) {
@@ -563,16 +566,28 @@ export const FRAME_SCRIPT = String.raw`(() => {
     else showOwner(body);
   };
 
-  const write = async (method, suffix, body, modeAfter) => {
+  const write = async (method, path, body, modeAfter) => {
     if (writing) return;
     writing = true;
     seq += 1;
+    const settings = path === "/settings";
+    commentsNote = false;
     try {
       if (!(await stillPublic())) return;
-      const response = await call(method, suffix, body);
+      let response = await call(method, path, body);
       if (response === null) { showGuest("", false); return; }
       let parsed = null;
       try { parsed = await response.json(); } catch (error) {}
+      if (settings && response.status === 200 && parsed && typeof parsed.comments === "boolean") {
+        // The switch answers with its own two fields, not the owner view, so the
+        // view is read again, which also confirms the mode once more before it is drawn.
+        const turned = parsed.comments;
+        response = await call("GET", "/access");
+        if (response === null) { showGuest("", false); return; }
+        parsed = null;
+        try { parsed = await response.json(); } catch (error) {}
+        commentsNote = turned && response.status === 200;
+      }
       if (response.status === 200 && parsed && parsed.viewer === "owner") {
         // Only a write that changed the mode counts, so a repeat of "Only those
         // invited" on a stale view neither shows the notice nor vouches for the frame.
@@ -581,10 +596,10 @@ export const FRAME_SCRIPT = String.raw`(() => {
       } else if (response.status === 401) {
         writeToken(null);
         showGuest("", false);
-      } else if (response.status === 404) {
+      } else if (response.status === 404 && !settings) {
         showNone();
       } else {
-        fail(message, response, parsed);
+        fail(message, response, parsed, settings ? "Comments need a paid plan." : undefined);
       }
     } catch (error) {
       message.textContent = "Something went wrong. Nothing was changed.";
@@ -597,12 +612,25 @@ export const FRAME_SCRIPT = String.raw`(() => {
   const showOwner = (body) => {
     latest = body;
     if (body.linkAccess !== "invited") { notice = false; switched = false; }
+    if (!body.comments) commentsNote = false;
     message = node("p", { id: "oa-msg", class: "err", role: "alert" });
     const input = node("input", { type: "email", placeholder: "Add people by email", "aria-label": "Add people by email", autocomplete: "off" });
-    const add = () => { const address = input.value.trim(); if (address) write("PUT", "/people/" + encodeURIComponent(address)); };
+    const add = () => { const address = input.value.trim(); if (address) write("PUT", "/access/people/" + encodeURIComponent(address)); };
     input.addEventListener("keydown", (event) => { if (event.key === "Enter") add(); });
-    const choice = (value, label) => node("button", { type: "button", role: "radio", "aria-checked": String(body.linkAccess === value), onclick: () => { if (body.linkAccess !== value) write("PUT", "", { linkAccess: value }, true); } }, [label]);
+    const choice = (value, label) => node("button", { type: "button", role: "radio", "aria-checked": String(body.linkAccess === value), onclick: () => { if (body.linkAccess !== value) write("PUT", "/access", { linkAccess: value }, true); } }, [label]);
     const narrow = limited(body);
+    const roleSelect = (entry) => {
+      const select = node("select", { "aria-label": "Access for " + entry.email }, [
+        node("option", { value: "view" }, ["Can view"]),
+        node("option", { value: "comment" }, ["Can comment"]),
+      ]);
+      select.value = entry.role === "comment" ? "comment" : "view";
+      select.addEventListener("change", () => {
+        if (select.value === entry.role) return;
+        write("PUT", "/access/people/" + encodeURIComponent(entry.email), { role: select.value });
+      });
+      return select;
+    };
     const person = (address, detail, buttons) => node("li", {}, [node("span", {}, [address, node("small", {}, [detail])]), node("div", { class: "row" }, buttons)]);
     const kids = [
       header(quoted(body.title)),
@@ -612,15 +640,30 @@ export const FRAME_SCRIPT = String.raw`(() => {
       node("div", { class: "seg", role: "radiogroup", "aria-label": "Link access" }, [choice("anyone", "Anyone with the link"), choice("invited", "Only those invited")]),
     ];
     if (notice) kids.push(node("p", { class: "notice" }, ["People who opened it while it was public may have kept a copy."]));
+    // The limited view (see limited()) offers only what a switch to private needs. Neither
+    // control here is a threat to a private document alone, but a roster change or a new
+    // way in is not something to offer under a frame that may not be the owner's own page.
+    if (!narrow) {
+      const on = body.comments === true;
+      kids.push(
+        node("h2", {}, ["Comments"]),
+        node("div", { class: "seg", role: "radiogroup", "aria-label": "Comments" }, [
+          node("button", { type: "button", role: "radio", "aria-checked": String(!on), onclick: () => { if (on) write("PUT", "/settings", { comments: false }); } }, ["Off"]),
+          node("button", { type: "button", role: "radio", "aria-checked": String(on), onclick: () => { if (!on) write("PUT", "/settings", { comments: true }); } }, ["On"]),
+        ]),
+      );
+      if (commentsNote) kids.push(muted(["People who can comment can now leave comments on this page."]));
+    }
     if (body.requests.length > 0) {
       kids.push(node("h2", {}, ["Requests"]), node("ul", {}, body.requests.map((request) => person(request.email, "Asked to open it", narrow ? [] : [
-        button("Approve", () => write("PUT", "/people/" + encodeURIComponent(request.email))),
-        button("Decline", () => write("DELETE", "/requests/" + encodeURIComponent(request.email))),
+        button("Approve", () => write("PUT", "/access/people/" + encodeURIComponent(request.email))),
+        button("Decline", () => write("DELETE", "/access/requests/" + encodeURIComponent(request.email))),
       ]))));
     }
     const sent = body.email ? "Invited · email sent" : "Invited · send them the link";
     kids.push(node("h2", {}, ["Who has access"]), node("ul", {}, [person("You", "Owner", [])].concat(body.people.map((entry) => person(entry.email, sent, narrow ? [] : [
-      button("Remove", () => write("DELETE", "/people/" + encodeURIComponent(entry.email))),
+      roleSelect(entry),
+      button("Remove", () => write("DELETE", "/access/people/" + encodeURIComponent(entry.email))),
     ])))));
     // Approve, Decline and Remove are one click on a private document, and this
     // frame is on the public origin. See exposed().
@@ -635,7 +678,7 @@ export const FRAME_SCRIPT = String.raw`(() => {
     const stored = readToken();
     if (stored === null) { showGuest("", false); return; }
     let response;
-    try { response = await call("GET", ""); } catch (error) { if (mine === seq) showGuest("Couldn’t load the sharing settings. Try again.", false); return; }
+    try { response = await call("GET", "/access"); } catch (error) { if (mine === seq) showGuest("Couldn’t load the sharing settings. Try again.", false); return; }
     if (response === null) { if (mine === seq) showGuest("", false); return; }
     let body = null;
     try { body = await response.json(); } catch (error) {}

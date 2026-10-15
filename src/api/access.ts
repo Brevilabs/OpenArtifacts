@@ -334,7 +334,7 @@ export function decodeAddress(segment: string): string {
  * Not `stringField`, which treats an empty body as invalid and demands exactly
  * one key.
  */
-async function roleOf(request: Request): Promise<InviteRole | undefined | null> {
+export async function roleOf(request: Request): Promise<InviteRole | undefined | null> {
   const raw = await readBodyWithin(request, 1024);
   if (raw === null) return null;
   if (raw.byteLength === 0) return undefined;

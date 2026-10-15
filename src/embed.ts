@@ -56,6 +56,7 @@ import {
   parseLinkAccess,
   refusalResponse,
   removePerson,
+  roleOf,
   setMode,
   type AccessResult,
   type AccessState,
@@ -344,7 +345,7 @@ const noStore = (response: Response): Response => {
  * ```
  * GET    …/access                     → 200 owner | 200 reader | 404
  * PUT    …/access  {linkAccess}       → 200 owner
- * PUT    …/access/people/{email}      → 200 owner   (approving a request is an add)
+ * PUT    …/access/people/{email} {role?} → 200 owner (approving a request is an add; a role is the select's)
  * DELETE …/access/people/{email}      → 200 owner
  * DELETE …/access/requests/{email}    → 200 owner   (decline)
  * ```
@@ -412,7 +413,12 @@ async function frameApi(
       { headers: NO_STORE },
     );
   }
-  if (people && method === "PUT") return answer(await addPerson(env, url, principal, docId, decodeAddress(person), undefined, analytics));
+  if (people && method === "PUT") {
+    // The popover's role select sends {role}; Approve and the add box send no body.
+    const role = await roleOf(request);
+    if (role === null) return errorResponse("bad_request", 'Expected {"role": "view" | "comment"} or no body.', NO_STORE);
+    return answer(await addPerson(env, url, principal, docId, decodeAddress(person), role, analytics));
+  }
   if (people) return answer(await removePerson(env, principal, docId, decodeAddress(person), analytics));
   if (requests) return answer(await declineRequest(env, principal, docId, decodeAddress(person)));
 
