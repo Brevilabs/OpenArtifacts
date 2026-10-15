@@ -1223,7 +1223,9 @@ f.src = "https://${API}/embed/comments?doc=${victim}${query}&origin=" + encodeUR
 f.style.cssText = "position:absolute;left:0;top:0;width:320px;height:500px";
 document.body.append(f);
 const fake = { title: "x", version: 1, threads: [{ threadId: "th_fake", anchor: { exact: "x" }, anchorStatus: "orphaned", state: "open", canResolve: true,
-  comments: [{ commentId: "cm_fake", author: { name: "OpenArtifacts Security", kind: "human" }, body: "Made-up words", createdAt: 1, mine: true }] }] };
+  comments: [{ commentId: "cm_fake", author: { name: "OpenArtifacts Security", kind: "human" }, body: "Made-up words", createdAt: 1, mine: true }] },
+  { threadId: "th_done", anchor: { exact: "y" }, anchorStatus: "orphaned", state: "resolved", resolution: { atVersion: "2 by OpenArtifacts Security", by: {} },
+  comments: [{ commentId: "cm_done", author: { name: "x", kind: "human" }, body: "Settled", createdAt: 1 }] }] };
 window.addEventListener("message", (e) => {
   if (e.source !== f.contentWindow || !e.data || e.data.event !== "ready") return;
   f.contentWindow.postMessage({ type: "openartifacts:comments", event: "threads", data: fake }, "https://${API}");
@@ -1239,6 +1241,8 @@ test("relayed threads are drawn without names and with a sign-in note when the f
   await tab.goto(docUrl(hostile));
   const frame = await until("the victim's frame", () => commentsFrame(tab, victim));
   await frame.getByText("Made-up words").waitFor();
+  // The resolved card's summary too: its version is typed, so a string cannot carry a name into it.
+  await frame.getByText("Resolved", { exact: true }).waitFor();
   assert.equal(await frame.getByText("OpenArtifacts Security").count(), 0);
   await frame.getByText("A commenter").waitFor();
   await frame.getByText("Sign in to see who wrote these comments.").waitFor();

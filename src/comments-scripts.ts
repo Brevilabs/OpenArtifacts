@@ -1014,7 +1014,10 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     const resolved = thread.state === "resolved";
     const res = resolved && thread.resolution ? thread.resolution : null;
     const by = res ? authorOf(res.by).name : "";
-    const summary = res ? "Resolved in v" + res.atVersion + (relayedOnly() ? "" : " by " + by) : "Resolved";
+    // Typed, not concatenated: a relayed atVersion is the page's, and a string there could write its own "by" into the summary.
+    const at = res && Number.isInteger(res.atVersion) && res.atVersion > 0 ? res.atVersion : 0;
+    const resolvedIn = at ? "Resolved in v" + at : "Resolved";
+    const summary = res ? resolvedIn + (relayedOnly() ? "" : " by " + by) : "Resolved";
     const card = node("div", { class: "card" + (resolved ? " resolved" : "") + (orphan ? " muted" : "") + (focusId === id ? " focus" : ""), "data-thread": id });
     card.addEventListener("mousedown", () => focusThread(id));
     if (resolved && !expanded.has(id) && !alone) {
@@ -1037,7 +1040,7 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
         button("Keep", () => { confirming = ""; render(); }, "link"));
     } else {
       if (resolved) {
-        acts.push(node("span", { class: "badge done" }, [res ? "Resolved in v" + res.atVersion : "Resolved"]));
+        acts.push(node("span", { class: "badge done" }, [resolvedIn]));
         if (canResolve) acts.push(button("Reopen", () => act("t:" + id, () => call("POST", docPath("/threads/" + encodeURIComponent(id) + "/reopen"), { version: versionOf() || undefined }), null), "link"));
         if (!alone) acts.push(button("Hide", () => { expanded.delete(id); render(); }, "link"));
       } else if (canResolve) {
