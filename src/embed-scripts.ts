@@ -52,8 +52,8 @@ import { PAGE_COMMENTS_SCRIPT } from "./comments-scripts.js";
  * new address.
  *
  * **Comments are the second half** (`PAGE_COMMENTS_SCRIPT`, `src/comments-scripts.ts`,
- * joined here so both share `api`, `docId` and `link`). It is inert unless the
- * document's threads resource answers, adds a button to the bar and a margin frame
+ * joined here so both share `api`, `docId` and `link`). It is inert when the bar says
+ * the document has comments off, and otherwise unless its threads resource answers, adds a button to the bar and a margin frame
  * on the API host, and holds no credential either: everything above about what
  * the page script holds is true of it too. It reads the Share half's `api`,
  * `docId`, `link` and `viewport` and changes none of them, and closes its own
@@ -73,6 +73,8 @@ export const PAGE_SCRIPT = String.raw`(() => {
   link.setAttribute("aria-haspopup", "dialog");
   link.setAttribute("aria-expanded", "false");
   let host = null, frame = null, fallback = null, timer = 0, ready = false, open = false;
+  // Set by the comment half: the owner just flipped the Comments switch in the popover.
+  let commentsSwitched = null;
   // The layout viewport, which a classic scrollbar narrows (innerWidth and 100vw
   // include it). documentElement.clientWidth is the viewport only in standards
   // mode; in quirks mode (publisher HTML with no doctype) it is the <html> box
@@ -145,6 +147,7 @@ export const PAGE_SCRIPT = String.raw`(() => {
       frame.style.display = "block";
       if (open) frame.focus();
     } else if (data.event === "close") hide(true);
+    else if (data.event === "comments" && commentsSwitched) commentsSwitched();
   });
   document.addEventListener("keydown", (event) => { if (open && event.key === "Escape") hide(true); }, true);
   document.addEventListener("pointerdown", (event) => { if (open && event.target !== host && !link.contains(event.target)) hide(false); }, true);
@@ -666,6 +669,8 @@ export const FRAME_SCRIPT = String.raw`(() => {
       // The switch answers with its own two fields, not the owner view, so the
       // view is read again, which also confirms the mode once more before it is drawn.
       const turned = parsed.comments;
+      // The page script asks the threads resource again, so its margin appears or goes without a reload.
+      post("comments");
       response = await call("GET", "/access");
       if (response === null) { showGuest("", false); return; }
       parsed = null;

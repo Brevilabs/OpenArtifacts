@@ -423,11 +423,19 @@ test("2. the owner turns Comments on in the Share popover and the page gets its 
   assert.equal(await frame.getByLabel(`Access for ${PEOPLE.bob.email}`).inputValue(), "view");
   await shoot(tab, "01-owner-share-popover-comments-on");
 
-  await tab.reload();
+  // No reload: the popover tells the page, which asked nothing while the bar said off.
   const button = barButton(tab);
   await button.waitFor();
   assert.match(await button.innerText(), /💬\s*0$/);
   await shoot(tab, "02-owner-page-comments-button");
+
+  // Turning it off hides the button again.
+  await frame.getByRole("radio", { name: "Off", exact: true }).click();
+  await until("the button to go", async () => !(await button.isVisible()));
+  await frame.getByRole("radio", { name: "On", exact: true }).click();
+  await until("the button to return", async () => await button.isVisible());
+  await tab.reload();
+  await button.waitFor();
   await context.close();
 });
 

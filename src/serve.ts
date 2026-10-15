@@ -262,7 +262,7 @@ function noDocAt(method: string): Response {
  * whose failure means "not modified" makes a bodyless result unambiguous
  * instead of a guess.
  */
-function notModifiedConditions(from: Headers): Headers {
+function notModifiedConditions(from: Headers, suffix: string): Headers {
   const conditions = new Headers();
 
   // `If-None-Match` arrives naming a *rendering*; R2 only knows about objects,
@@ -277,7 +277,7 @@ function notModifiedConditions(from: Headers): Headers {
         ? "*"
         : ifNoneMatch
             .split(",")
-            .map((tag) => storedEtagOf(tag.trim()))
+            .map((tag) => storedEtagOf(tag.trim(), suffix))
             .filter((tag) => tag !== null)
             .join(", ");
     if (stored.length > 0) conditions.set("if-none-match", stored);
@@ -297,8 +297,15 @@ function notModifiedConditions(from: Headers): Headers {
   return conditions;
 }
 
-/** The revision suffix that turns an object's validator into a rendering's. */
-const RENDERING_SUFFIX = `.r${RENDER_REVISION}`;
+/**
+ * The suffix that turns an object's validator into a rendering's: the render
+ * revision, then on the shared link the comments switch (`.c0` or `.c1`), which
+ * the top bar carries. A flip changes the validator, so a revalidation after it
+ * is a `200` with the new bar rather than a `304` for the old one.
+ */
+function renderingSuffix(comments: boolean | null): string {
+  return `.r${RENDER_REVISION}${comments === null ? "" : comments ? ".c1" : ".c0"}`;
+}
 
 /**
  * The validator for what a reader actually receives: the stored object's etag
@@ -308,18 +315,18 @@ const RENDERING_SUFFIX = `.r${RENDER_REVISION}`;
  * not promise them octet-for-octet across deploys — which is all a strong
  * validator would be claiming.
  */
-function servedEtag(objectEtag: string): string {
-  return `W/"${unquoteEtag(objectEtag)}${RENDERING_SUFFIX}"`;
+function servedEtag(objectEtag: string, suffix: string): string {
+  return `W/"${unquoteEtag(objectEtag)}${suffix}"`;
 }
 
 /**
  * The reverse: the object etag a served validator was built from, or null when
  * it names a rendering this deploy does not produce.
  */
-function storedEtagOf(servedTag: string): string | null {
+function storedEtagOf(servedTag: string, suffix: string): string | null {
   const inner = unquoteEtag(servedTag);
-  if (!inner.endsWith(RENDERING_SUFFIX)) return null;
-  return `"${inner.slice(0, -RENDERING_SUFFIX.length)}"`;
+  if (!inner.endsWith(suffix)) return null;
+  return `"${inner.slice(0, -suffix.length)}"`;
 }
 
 /** `W/"x"` and `"x"` alike down to `x` — the only comparison etags allow here. */
@@ -371,12 +378,18 @@ function matchesConditions(conditions: Headers, object: R2Object): boolean {
  *
  * Public and invited-only documents get the same bar, and it is the same for
  * every viewer: it names no identity, which is what keeps public pages
- * cacheable.
+ * cacheable. On the shared link it also carries the document's comments switch,
+ * so the page script does not ask the threads resource about a document that has
+ * none; `comments` is null on a pinned url, which carries nothing.
  */
-function topBarFor(env: Env, route: DocRoute): TopBar | null {
+function topBarFor(env: Env, route: DocRoute, comments: boolean | null): TopBar | null {
   if (!readerSignInConfigured(env)) return null;
   const api = `https://${env.API_HOST!.trim()}`;
-  return { shareUrl: `${api}${SHARE_PREFIX}/${route.docId}`, scriptUrl: `${api}${PAGE_SCRIPT_PATH}` };
+  return {
+    shareUrl: `${api}${SHARE_PREFIX}/${route.docId}`,
+    scriptUrl: `${api}${PAGE_SCRIPT_PATH}`,
+    ...(comments === null ? {} : { comments }),
+  };
 }
 
 /**
@@ -397,7 +410,14 @@ async function serveObject(
   route: DocRoute,
   version: number,
   invitedOnly = false,
+  commentsEnabled = false,
 ): Promise<Response> {
+  // The comments switch enters the rendering only on the shared link. A pinned
+  // `/v{n}` is immutable for a year and may sit in a shared edge cache, so a
+  // flag baked into it would hide comments turned on later: it carries none, and
+  // the page script asks the threads resource there instead.
+  const comments = route.pinned === null ? commentsEnabled : null;
+  const suffix = renderingSuffix(comments);
   const key = versionObjectKey(route.docId, version);
   const headers = servingHeaders(
     invitedOnly
@@ -407,7 +427,7 @@ async function serveObject(
         : PINNED_CACHE_CONTROL,
   );
 
-  const conditions = notModifiedConditions(request.headers);
+  const conditions = notModifiedConditions(request.headers, suffix);
 
   // A `versions` row without an object should not exist — the row is written
   // after the object it names — but R2 is the system of record, so its answer
@@ -416,7 +436,7 @@ async function serveObject(
     const object = await env.DOCS.head(key);
     if (object === null) return noDocAt(request.method);
 
-    headers.set("etag", servedEtag(object.httpEtag));
+    headers.set("etag", servedEtag(object.httpEtag, suffix));
     // A validator has to mean the same thing whichever method asks. HEAD is
     // defined as GET without the body, so a cache revalidating with HEAD must
     // get the 304 that GET would give it, not a 200 that says the doc changed.
@@ -453,13 +473,19 @@ async function serveObject(
   // document and viewer, so it cannot mix renderings between publishers; a
   // config flip without a revision bump leaves 304s on the old rendering until
   // the next edit to the injections (see `RENDER_REVISION`).
-  headers.set("etag", servedEtag(object.httpEtag));
+  //
+  // And one input that does change per document and over time: on the shared
+  // link, the owner's comments switch, which the bar carries for the page
+  // script. It is in the validator (`renderingSuffix`), so a flip is a `200`
+  // rather than a `304` for the old bar, and it reaches readers within the
+  // route's 60 seconds.
+  headers.set("etag", servedEtag(object.httpEtag, suffix));
   if (!("body" in object)) return new Response(null, { status: 304, headers });
 
   headers.set("content-type", STORED_CONTENT_TYPE);
   // Still the stream, never the bytes: HTMLRewriter transforms as it passes, so
   // a 10MB doc is never a 10MB string in the worker.
-  return renderServedHtml(new Response(object.body, { status: 200, headers }), true, topBarFor(env, route));
+  return renderServedHtml(new Response(object.body, { status: 200, headers }), true, topBarFor(env, route, comments));
 }
 
 /**
@@ -526,7 +552,7 @@ export async function handleServing(
   }
   if (found.version === null) return noDocAt(request.method);
 
-  return await serveAndCount(request, env, route, found.version, analytics, atMs);
+  return await serveAndCount(request, env, route, found.version, analytics, atMs, false, found.comments_enabled === 1);
 }
 
 /**
@@ -546,8 +572,9 @@ export async function serveAndCount(
   analytics: AnalyticsSink,
   atMs: number,
   invitedOnly = false,
+  commentsEnabled = false,
 ): Promise<Response> {
-  const response = await serveObject(request, env, route, version, invitedOnly);
+  const response = await serveObject(request, env, route, version, invitedOnly, commentsEnabled);
 
   // One view per GET that served the document: counted after R2 answered,
   // because a missing object still turns into a 404 here. `304` counts, since

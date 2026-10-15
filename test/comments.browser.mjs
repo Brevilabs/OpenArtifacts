@@ -661,6 +661,9 @@ test("a page whose document has comments off is untouched by the script", { time
   assert.equal(await barButton(tab).count(), 0);
   assert.equal(await tab.locator(".openartifacts-comments").count(), 0);
   assert.equal(requests.some((url) => url.includes("/embed/comments")), false);
+  // The bar says comments are off, so the script does not even ask the threads resource.
+  assert.equal(await tab.locator("a[data-openartifacts-share]").getAttribute("data-comments"), "off");
+  assert.equal(requests.some((url) => url.includes("/threads")), false);
   assert.equal(await tab.evaluate(() => CSS.highlights.size), 0);
   // The Share popover still works.
   await tab.locator("a[data-openartifacts-share]").click();
@@ -770,7 +773,11 @@ window.addEventListener("message", (e) => {
   const seen = postedTo(tab);
   await tab.goto(docUrl(hostile));
   const frame = await until("the victim's frame", () => commentsFrame(tab, victim));
-  await frame.getByText("OpenArtifacts Security").waitFor();
+  // Relayed data has no names: the page can invent a comment, not a commenter.
+  await frame.getByText("Sign in again").waitFor();
+  assert.equal(await frame.getByText("OpenArtifacts Security").count(), 0);
+  await frame.getByText("A commenter").waitFor();
+  await frame.getByText("Sign in to see who wrote these comments.").waitFor();
   await tab.waitForTimeout(800);
   assert.equal(await frame.getByRole("button", { name: "Delete" }).count(), 0);
   assert.equal(await frame.getByRole("button", { name: "Resolve" }).count(), 0);
@@ -1205,5 +1212,106 @@ test("on a dark author page the orphan heading and the muted card stay legible",
   await frame.getByText("On text that changed in v2").waitFor();
   assert.equal(await frame.locator(".card.muted").evaluate((el) => getComputedStyle(el).opacity), "1");
   await shoot(tab, "margin-dark-page");
+  await context.close();
+});
+
+/** A public page that embeds `victim`'s comments frame and relays a made-up thread into it, under a real-looking name. */
+const relayingPage = (victim, query = "") => `<h1>Survey</h1>
+<script>
+const f = document.createElement("iframe");
+f.src = "https://${API}/embed/comments?doc=${victim}${query}&origin=" + encodeURIComponent(location.origin);
+f.style.cssText = "position:absolute;left:0;top:0;width:320px;height:500px";
+document.body.append(f);
+const fake = { title: "x", version: 1, threads: [{ threadId: "th_fake", anchor: { exact: "x" }, anchorStatus: "orphaned", state: "open", canResolve: true,
+  comments: [{ commentId: "cm_fake", author: { name: "OpenArtifacts Security", kind: "human" }, body: "Made-up words", createdAt: 1, mine: true }] }] };
+window.addEventListener("message", (e) => {
+  if (e.source !== f.contentWindow || !e.data || e.data.event !== "ready") return;
+  f.contentWindow.postMessage({ type: "openartifacts:comments", event: "threads", data: fake }, "https://${API}");
+});
+</script>`;
+
+test("relayed threads are drawn without names and with a sign-in note when the frame has no read of its own", { timeout: 120_000 }, async () => {
+  const victim = await publish("Victim", REPORT);
+  // A version that does not exist: the anonymous read answers 404, as a private document's would, so only the relay is left to draw.
+  const hostile = await publish("Relayer", relayingPage(victim, "&v=999999999"), { comments: false });
+  const context = await newContext(null);
+  const tab = await context.newPage();
+  await tab.goto(docUrl(hostile));
+  const frame = await until("the victim's frame", () => commentsFrame(tab, victim));
+  await frame.getByText("Made-up words").waitFor();
+  assert.equal(await frame.getByText("OpenArtifacts Security").count(), 0);
+  await frame.getByText("A commenter").waitFor();
+  await frame.getByText("Sign in to see who wrote these comments.").waitFor();
+  await context.close();
+});
+
+test("the frame's own read wins over what the page relays", { timeout: 120_000 }, async () => {
+  const victim = await publish("Public victim", REPORT);
+  await agentThread(victim, { exact: "Staffing is unchanged" }, "A real remark.");
+  // Orphaned by the next version, so the thread is drawn even though no page script places it.
+  await update(victim, REPORT.replace("Staffing is unchanged", "Staff are unchanged"));
+  const hostile = await publish("Relayer", relayingPage(victim), { comments: false });
+  const context = await newContext(null);
+  const tab = await context.newPage();
+  await tab.goto(docUrl(hostile));
+  const frame = await until("the victim's frame", () => commentsFrame(tab, victim));
+  await frame.getByText("A real remark.").waitFor();
+  await tab.waitForTimeout(800);
+  assert.equal(await frame.getByText("Made-up words").count(), 0);
+  assert.equal(await frame.getByText("Sign in to see who wrote these comments.").count(), 0);
+  await context.close();
+});
+
+test("a pinned page carries no comments flag and still asks; the shared link says on", { timeout: 120_000 }, async () => {
+  const docId = await publish("Pinned", REPORT);
+  await agentThread(docId, { exact: "Staffing is unchanged" }, "Pinned remark.");
+  const context = await newContext(ALICE);
+  const tab = await context.newPage();
+  const asked = [];
+  tab.on("request", (request) => { if (request.url().includes("/threads")) asked.push(request.url()); });
+  await tab.goto(docUrl(docId));
+  assert.equal(await tab.locator("a[data-openartifacts-share]").getAttribute("data-comments"), "on");
+  await barButton(tab).waitFor();
+  assert.ok(asked.some((url) => url.includes(`/d/${docId}/threads`)));
+  const old = await context.newPage();
+  await old.goto(docUrl(docId, 1));
+  assert.equal(await old.locator("a[data-openartifacts-share]").getAttribute("data-comments"), null);
+  await barButton(old).waitFor();
+  await context.close();
+});
+
+test("the bar counts what the bottom sheet can show: orphaned threads are not counted there", { timeout: 120_000 }, async () => {
+  const docId = await publish("Sheet count", REPORT);
+  const gone = "The budget is on the next page";
+  await agentThread(docId, { exact: gone }, "Which page?");
+  await agentThread(docId, { exact: "Staffing is unchanged" }, "Say who is staffed.");
+  await update(docId, REPORT.replace(gone, "Appendix B has the budget"));
+  for (const [viewport, expected] of [[{ width: 390, height: 844 }, /1$/], [{ width: 1280, height: 800 }, /2$/]]) {
+    const context = await newContext(ALICE, { viewport, signedInTo: docId });
+    const tab = await context.newPage();
+    await tab.goto(docUrl(docId));
+    await until("the count", async () => expected.test(await barButton(tab).innerText().catch(() => "")));
+    await context.close();
+  }
+});
+
+test("a signed-in Can-view reader is never offered Comment, not even before the frame answers", { timeout: 120_000 }, async () => {
+  const docId = await publish("Can view", REPORT, { route: "private-docs" });
+  const response = await api(`/api/v1/docs/${docId}/access/people/bob%40example.com`, { method: "PUT", body: JSON.stringify({ role: "view" }) });
+  assert.equal(response.status, 200, await response.clone().text());
+  const context = await newContext(BOB, { signedInTo: docId });
+  const tab = await context.newPage();
+  await tab.addInitScript(() => {
+    window.addEventListener("selectionchange", () => {
+      if (document.querySelector(".openartifacts-comment-tip") && getComputedStyle(document.querySelector(".openartifacts-comment-tip")).display === "block") window.__tipShown = true;
+    });
+  });
+  await tab.goto(`https://${API}/open/${docId}`);
+  await tab.waitForURL(new RegExp(`/d/${docId}`));
+  const frame = await until("the comments frame", () => commentsFrame(tab, docId));
+  await frame.getByText("You can view this page.").waitFor().catch(() => {});
+  await select(tab, "Staffing is unchanged");
+  await tab.waitForTimeout(800);
+  assert.equal(await tab.evaluate(() => window.__tipShown === true), false);
   await context.close();
 });

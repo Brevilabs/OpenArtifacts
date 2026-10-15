@@ -161,9 +161,14 @@ function of the stored version. So comments are a **separate resource**:
   cookie for an invited-only one. Same JSON for every reader, `no-store`, no view
   counted, no cookie on the apex.
 - The page script (`/embed/page.js`, already on every page for **Share**) fetches it
-  same-origin and adds the comments button, the highlights, and the frame. Nothing is
-  composed per read: the served HTML is unchanged, so there is no `RENDER_REVISION`
-  bump and a page with comments off or unavailable is byte-for-byte what it was.
+  same-origin and adds the comments button, the highlights, and the frame. It does
+  not ask when the bar says the document has comments off: on the shared link the
+  Share link carries `data-comments="on|off"`, read from the `docs` row the serving
+  path already loads and folded into that rendering's etag (`.c0` / `.c1` after the
+  render revision), so a page with comments off costs no second request and a flip
+  reaches readers within the route's 60 seconds. A pinned `/v{n}` is immutable and
+  carries no attribute; there the script asks. The owner flipping the switch in the
+  Share popover makes the open page ask again, so no reload is needed.
 - Agents fetch the same resource, or `GET /api/v1/docs/{docId}/threads` with their
   credential for the viewer fields, instead of parsing threads out of a page. That
   settled the question [positioning.md](positioning.md) ended on.

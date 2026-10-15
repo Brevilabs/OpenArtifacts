@@ -20,10 +20,16 @@
  * comments on. Everything here is skipped by the Share half's own guards (no
  * Share link, no script) and wrapped so that a throw cannot touch Share.
  *
- * **Inert unless the threads resource answers.** The first thing it does is
- * `GET /d/{docId}/threads` on the page's own origin (`404` for every document
- * with comments off, or on a server without them), and on anything but `200` it
- * adds no button, no frame and no listener.
+ * **Inert unless the threads resource answers, and it does not ask when the bar
+ * says there is nothing to ask.** On the shared link the bar's Share link carries
+ * `data-comments="on|off"`, the document's switch when the page was served: `off`
+ * and the script makes no request at all. On `on`, or on a pinned `/v{n}` where
+ * the attribute is absent (the page is immutable and must not freeze the switch),
+ * its first act is `GET /d/{docId}/threads` on the page's own origin (`404` for
+ * every document with comments off, or on a server without them), and on
+ * anything but `200` it adds no button, no frame and no listener. The Share
+ * popover tells it when its owner flips the switch (`comments` event), which
+ * makes it ask again, so the margin appears or goes without a reload.
  *
  * **It paints, it never writes.** Highlights are `CSS.highlights` over Ranges,
  * styled by an adopted stylesheet, so a chart, a React island or a Pyodide cell
@@ -65,11 +71,12 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
     const pin = /^[/]d[/][0-9a-z]{16}[/]v([1-9][0-9]{0,8})[/]?$/.exec(location.pathname);
     const painting = typeof Highlight === "function" && window.CSS && CSS.highlights;
     let version = pin ? Number(pin[1]) : 0;
-    let data = null, active = false, shown = true, canComment = true, mode = "margin";
+    let data = null, active = false, shown = true, canComment = false, mode = "margin";
     let mhost = null, mframe = null, ready = false, sheet = false, button = null, tipHost = null, tip = null;
     let canon = null, dirty = true, ranges = new Map(), lost = [], draft = null, draftRange = null, focusId = "", timer = 0;
     let need = 0, sheetH = 0;
     const out = {};
+    const flag = link.getAttribute("data-comments");
 
     // ---- canonical text ---------------------------------------------------
     const SKIP = ["head", "script", "style", "template", "noscript"];
@@ -290,7 +297,7 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       mhost.style.display = "none";
       const vw = viewport().clientWidth, right = contentRight();
       const next = vw - right >= 256 && !innerScrolled() ? "margin" : "overlay";
-      if (next !== mode) { mode = next; need = 0; sheetH = 0; send({ event: "mode", mode: mode }); }
+      if (next !== mode) { mode = next; need = 0; sheetH = 0; send({ event: "mode", mode: mode }); if (button) label(); }
       // The host is a child of <html>, so an html{zoom} would multiply every length written below; cancel it.
       const z = document.documentElement.currentCSSZoom || 1;
       const flat = base + (z !== 1 ? "zoom:" + 1 / z + ";" : "");
@@ -314,7 +321,7 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
     const measure = () => {
       timer = 0;
       if (!active) return;
-      if (dirty || !canon) locateAll();
+      if (dirty || !canon) { locateAll(); if (button) label(); }
       layout();
       if (mode === "margin" && shown) {
         const top = mhost.getBoundingClientRect().top + window.pageYOffset, tops = {}, none = lost.slice();
@@ -357,7 +364,8 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
 
     // ---- the bar's button ---------------------------------------------------
     const label = () => {
-      const n = data ? data.threads.filter((t) => t.state === "open").length : 0;
+      // What this mode can show: the bottom sheet opens only from a highlight, so a thread whose text is gone is not counted there.
+      const n = data ? data.threads.filter((t) => t.state === "open" && (mode !== "overlay" || ranges.has(t.threadId))).length : 0;
       button.textContent = String.fromCodePoint(0x1F4AC) + " " + n;
       button.setAttribute("aria-label", "Comments, " + n + " open");
       button.setAttribute("aria-pressed", String(shown));
@@ -582,7 +590,8 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
         } catch (error) {}
       }
     };
-    refresh();
+    commentsSwitched = () => { refresh(); };
+    if (flag !== "off") refresh();
   })();
   } catch (error) {}
 `;
@@ -658,15 +667,20 @@ button.b.primary{background:#18191d;border-color:#18191d;color:#fff}
  *
  * **Where it gets cards.** From `/embed/api/docs/{doc}/threads` with its token,
  * which also tells it who is looking (`viewer`, `canResolve`, `mine`). With no
- * token it draws the anonymous `threads` JSON the page relays from the serving
- * origin, read-only, which is also how a private document's cards show to a
- * reader who has not signed in to the API host. The page is the author's, so
- * relayed data is only ever drawn as text; the title shown above a new comment
+ * token it reads the same resource anonymously (a public document answers), and
+ * that read is also its own. Only when it has neither (a private document, for a
+ * reader who has not signed in to the API host) does it draw the `threads` JSON
+ * the page relays from the serving origin, read-only, and then without any
+ * author's name or agent badge and with a line saying to sign in for them: the
+ * page is the author's, so what it relays could be invented, and must not appear
+ * under real names beside our Sign in button. An own read always replaces it.
+ * Relayed data is only ever drawn as text; the title shown above a new comment
  * is the server's whenever the frame has a token, and nothing a page sends can
  * post: every write goes to `/embed/api` for this one document.
  *
  * **What it tells the page.** `ready`, once, before it touches storage; `viewer`
- * with `{canComment}` once an authenticated read says; `changed` after its own
+ * with `{canComment}` after every read (true when signed out, so Comment is
+ * offered and asks to sign in); `changed` after its own
  * write; `focus` when a card is pressed; `close` from a user action. Nothing
  * else about the viewer.
  *
@@ -726,14 +740,16 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
   const bytesToBase64Url = (bytes) => btoa(String.fromCharCode(...bytes)).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
   const bytesToHex = (bytes) => Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 
-  let mode = "margin", shown = true, relayed = null, own = null, tops = null, lostIds = [], height = 0;
+  let mode = "margin", shown = true, relayed = null, own = null, anon = null, loaded = false, tops = null, lostIds = [], height = 0;
   let draft = null, draftTop = 0, focusId = "", loadSeq = 0, lastViewer = null, positionsKey = "";
   let signState = "", prepared = null, opened = null, generation = 0, wake = null;
   let confirming = "", needName = "", nameText = "", pending = null;
   let modelKey = "", inFlight = false, lastLoad = 0, composing = false, owed = false, stacked = [], sentNeed = -1;
   const expanded = new Set(), texts = {}, errors = {}, busy = {};
 
-  const model = () => own || relayed;
+  // Its own read (a token's, else the anonymous one a public document answers) wins; the page's relay is drawn only when neither answered, and then without names.
+  const model = () => own || anon || (loaded ? relayed : null);
+  const relayedOnly = () => own === null && anon === null;
   const viewer = () => (own && own.viewer) || null;
   const titleOf = () => { const m = model(); return m && typeof m.title === "string" ? m.title : ""; };
   const versionOf = () => { const m = model(); return m && typeof m.version === "number" ? m.version : 0; };
@@ -837,32 +853,47 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     if (error && error.code === "anchor_not_found") return "That text isn’t in the document itself, perhaps because the page draws it with a script. Select text from the page’s own content. Nothing was posted.";
     return error && typeof error.message === "string" ? error.message : "Something went wrong. Nothing was posted.";
   };
+  // Always tells the page: signed out it offers Comment (pressing it asks to sign in), signed in it follows the server's word.
   const reportViewer = () => {
     const v = viewer();
-    const can = v ? v.canComment : null;
+    const can = v ? v.canComment === true : readToken() === null;
     if (can !== lastViewer) {
       lastViewer = can;
-      if (can !== null) post({ event: "viewer", canComment: can });
+      post({ event: "viewer", canComment: can });
     }
   };
   // Draws only when the data changed: a poll that finds nothing new must not rebuild the box someone is typing in.
-  const settle = (next) => {
-    const key = JSON.stringify(next);
-    if (key === modelKey) return false;
+  const refreshView = () => {
+    const key = (own ? "own" : anon ? "anon" : "relay") + JSON.stringify(model());
+    if (key === modelKey) return;
     modelKey = key;
-    return true;
+    render();
+  };
+  const threadsQuery = pinned ? "?v=" + pinned : "";
+  const readAnonymous = async () => {
+    try {
+      const response = await fetch(docPath("/threads" + threadsQuery), { credentials: "omit", cache: "no-store" });
+      const body = response.status === 200 ? await response.json() : null;
+      return body && Array.isArray(body.threads) ? body : null;
+    } catch (error) {
+      return null;
+    }
   };
   const load = async () => {
     const mine = ++loadSeq;
-    if (readToken() === null) { own = null; modelKey = ""; reportViewer(); render(); return; }
     inFlight = true;
     lastLoad = Date.now();
-    const result = await call("GET", docPath("/threads" + (pinned ? "?v=" + pinned : "")));
+    const result = readToken() === null ? null : await call("GET", docPath("/threads" + threadsQuery));
+    const nextOwn = result && result.status === 200 && result.body && Array.isArray(result.body.threads) ? result.body : null;
+    // No own read (no token, or one that was refused): the anonymous read a public document answers.
+    const nextAnon = nextOwn === null ? await readAnonymous() : null;
     if (mine !== loadSeq) return;
     inFlight = false;
-    own = result.status === 200 && result.body && Array.isArray(result.body.threads) ? result.body : null;
+    own = nextOwn;
+    anon = nextAnon;
+    loaded = true;
     reportViewer();
-    if (settle(own)) render();
+    refreshView();
   };
 
   // Runs one write, then reloads the cards and tells the page. A human who has no display name yet is asked for it once and the write is retried.
@@ -910,7 +941,8 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
   };
   const muted = (value) => node("p", { class: "muted-text" }, [value]);
   const errorLine = (key) => node("p", { class: "err", role: "alert" }, errors[key] ? [errors[key]] : []);
-  const authorOf = (a) => ({ name: text(a && a.name) || "Someone", agent: !!a && a.kind === "agent" });
+  // Relayed data is the page's word, so under it nobody has a name or a badge: a page can make up a comment, not a commenter.
+  const authorOf = (a) => (relayedOnly() ? { name: "A commenter", agent: false } : { name: text(a && a.name) || "Someone", agent: !!a && a.kind === "agent" });
   const who = (author, at) => {
     const a = authorOf(author);
     const kids = [node("span", { class: a.agent ? "av agent" : "av" }, [(a.name.trim()[0] || "?").toUpperCase()]), a.name];
@@ -982,7 +1014,7 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     const resolved = thread.state === "resolved";
     const res = resolved && thread.resolution ? thread.resolution : null;
     const by = res ? authorOf(res.by).name : "";
-    const summary = res ? "Resolved in v" + res.atVersion + " by " + by : "Resolved";
+    const summary = res ? "Resolved in v" + res.atVersion + (relayedOnly() ? "" : " by " + by) : "Resolved";
     const card = node("div", { class: "card" + (resolved ? " resolved" : "") + (orphan ? " muted" : "") + (focusId === id ? " focus" : ""), "data-thread": id });
     card.addEventListener("mousedown", () => focusThread(id));
     if (resolved && !expanded.has(id) && !alone) {
@@ -1013,6 +1045,7 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
       }
       if (canDelete) acts.push(button("Delete", () => { confirming = firstId; render(); }, "link"));
     }
+    if (relayedOnly()) card.append(muted("Sign in to see who wrote these comments."));
     if (acts.length) card.append(node("div", { class: "acts" }, acts));
     if (errors["t:" + id]) card.append(errorLine("t:" + id));
     if (firstId && errors["c:" + firstId]) card.append(errorLine("c:" + firstId));
@@ -1159,10 +1192,8 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     } else if (msg.event === "threads") {
       relayed = msg.data && typeof msg.data === "object" && Array.isArray(msg.data.threads) ? msg.data : null;
       // The page is not trusted to trigger reads: a flood of these is one read at most every few seconds, and none while one is under way.
-      if (readToken() !== null) {
-        if (!inFlight && Date.now() - lastLoad > 5000) load();
-        else if (own === null) render();
-      } else if (settle(relayed)) render();
+      if (!inFlight && Date.now() - lastLoad > 5000) load();
+      else if (loaded) refreshView();
     } else if (msg.event === "positions") {
       const next = msg.tops && typeof msg.tops === "object" ? msg.tops : {};
       const nextHeight = typeof msg.height === "number" ? msg.height : 0;
@@ -1216,6 +1247,6 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
   });
 
   try { prepare().catch(() => {}); } catch (error) {}
-  if (readToken() !== null) load();
+  load();
 })();
 `;

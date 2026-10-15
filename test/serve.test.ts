@@ -693,7 +693,8 @@ describe("HEAD and conditional requests", () => {
     expect(v1).not.toBe(v2);
     // The shared link's etag has to move with the version, or a 60s-stale
     // reader would revalidate into the old page forever.
-    expect(latest).toBe(v2);
+    // (It also carries the comments switch, which a pinned url does not.)
+    expect(latest).toBe(v2!.replace(/"$/, '.c0"'));
   });
 
   // The bytes a reader gets are the object plus a rendering, and only one of
@@ -703,7 +704,7 @@ describe("HEAD and conditional requests", () => {
 
     const etag = (await get(`/d/${docId}`)).headers.get("etag");
 
-    expect(etag).toMatch(/^W\/".+\.r\d+"$/);
+    expect(etag).toMatch(/^W\/".+\.r\d+\.c[01]"$/);
     // Not R2's own validator, which a byline edit cannot move: it identifies
     // the stored object, and a byline edit leaves that alone.
     const object = await env.DOCS.head(versionObjectKey(docId, 2));
@@ -718,7 +719,7 @@ describe("HEAD and conditional requests", () => {
   it("re-serves in full when the client holds an older rendering", async () => {
     const docId = await twoVersionDoc();
     const current = (await get(`/d/${docId}`)).headers.get("etag")!;
-    const older = current.replace(/\.r(\d+)"$/, (_, n) => `.r${Number(n) - 1}"`);
+    const older = current.replace(/\.r(\d+)(\.c[01])?"$/, (_, n, c) => `.r${Number(n) - 1}${c ?? ""}"`);
 
     expect(older).not.toBe(current);
 
@@ -747,7 +748,7 @@ describe("HEAD and conditional requests", () => {
   it("ignores If-Modified-Since when the client's etag names an older rendering", async () => {
     const docId = await twoVersionDoc();
     const current = (await get(`/d/${docId}`)).headers.get("etag")!;
-    const older = current.replace(/\.r(\d+)"$/, (_, n) => `.r${Number(n) - 1}"`);
+    const older = current.replace(/\.r(\d+)(\.c[01])?"$/, (_, n, c) => `.r${Number(n) - 1}${c ?? ""}"`);
 
     for (const method of ["GET", "HEAD"]) {
       const response = await send(method, `/d/${docId}`, {
@@ -1541,6 +1542,47 @@ describe("an invited-only document", () => {
         expect(html).not.toContain("openartifacts-manage");
       }
       expect(await (await getFrom(`${doc.host}/d/${doc.docId}`, { headers: { cookie } }, PRIVATE)).text()).toContain("for invited eyes");
+    });
+
+    // The page script asks the threads resource only when the bar does not say the
+    // document has comments off, so the switch rides on the shared link.
+    it("S2: the shared link carries the comments switch, a pinned page carries none, and a flip is a 200 on revalidation", async () => {
+      const publicDoc = await privateDoc("a public page", KEY, "anyone");
+      const url = `https://openartifacts.site/d/${publicDoc.docId}`;
+      const flag = async (response: Response) => /data-comments="(on|off)"/.exec(await response.text())?.[1] ?? null;
+
+      const off = await getFrom(url, {}, PRIVATE);
+      expect(await flag(off)).toBe("off");
+      expect(off.headers.get("etag")).toMatch(/\.r\d+\.c0"$/);
+      expect(await flag(await getFrom(`${url}/v1`, {}, PRIVATE))).toBeNull();
+      const pinnedTag = (await getFrom(`${url}/v1`, {}, PRIVATE)).headers.get("etag")!;
+      expect(pinnedTag).not.toMatch(/\.c[01]"$/);
+
+      // Unchanged, the same tag is a 304 on GET and HEAD.
+      for (const method of ["GET", "HEAD"]) {
+        const same = await getFrom(url, { method, headers: { "if-none-match": off.headers.get("etag")! } }, PRIVATE);
+        expect(same.status).toBe(304);
+      }
+
+      await env.DB.prepare("UPDATE docs SET comments_enabled = 1 WHERE id = ?").bind(publicDoc.docId).run();
+
+      for (const method of ["GET", "HEAD"]) {
+        const flipped = await getFrom(url, { method, headers: { "if-none-match": off.headers.get("etag")! } }, PRIVATE);
+        expect(flipped.status).toBe(200);
+        expect(flipped.headers.get("etag")).toMatch(/\.r\d+\.c1"$/);
+        if (method === "GET") expect(await flag(flipped)).toBe("on");
+      }
+      // The pinned page is untouched by the flip, and still answers 304.
+      expect((await getFrom(`${url}/v1`, { headers: { "if-none-match": pinnedTag } }, PRIVATE)).status).toBe(304);
+    });
+
+    it("S3: an invited-only page carries the switch on its latest rendering and none on a pinned one", async () => {
+      const doc = await privateDoc("for invited eyes");
+      const cookie = await cookieFor(doc, doc.owner);
+      const latest = await getFrom(`${doc.host}/d/${doc.docId}`, { headers: { cookie } }, PRIVATE);
+      expect(await latest.text()).toContain('data-comments="off"');
+      const pinned = await getFrom(`${doc.host}/d/${doc.docId}/v1`, { headers: { cookie } }, PRIVATE);
+      expect(await pinned.text()).not.toContain("data-comments");
     });
 
     it("S1: replaces the header byline with the bar, keeping the byline text smoke.sh looks for", async () => {

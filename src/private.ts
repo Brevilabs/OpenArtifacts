@@ -249,5 +249,5 @@ async function publisherResponse(
   if (verdict === "denied") return signIn;
   if (found.version === null) return servingError(method, "not_found");
 
-  return await serveAndCount(request, env, route, found.version, analytics, atMs, true);
+  return await serveAndCount(request, env, route, found.version, analytics, atMs, true, found.comments_enabled === 1);
 }

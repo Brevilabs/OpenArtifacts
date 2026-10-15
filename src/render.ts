@@ -51,6 +51,9 @@
  * changing the API host, changes the rendering without moving this number, and a
  * reader holding a validator from before the flip keeps getting `304` for the
  * old rendering.
+ * (The comments switch the bar carries on the shared link is per document and
+ * changes over time, so it is not accepted drift: `serve.ts` puts it in the
+ * validator.)
  * Accepted: it never mixes one publisher's or one document's rendering with
  * another's, and the next edit to the injections, or the next push, refreshes it.
  */
@@ -442,6 +445,12 @@ export interface TopBar {
   shareUrl: string;
   /** `https://{API_HOST}/embed/page.js`: the script that turns the link into a popover. */
   scriptUrl: string;
+  /**
+   * The document's comments switch, set only on the shared link (`/d/{docId}`)
+   * and left out of a pinned `/v{n}`, which is immutable and must not freeze it.
+   * Rendered as `data-comments="on|off"` on the Share link; absent means "ask".
+   */
+  comments?: boolean;
 }
 
 /**
@@ -477,6 +486,7 @@ function topBar(bar: TopBar, byline: boolean): string {
       : "") +
     "</span>" +
     `<a class="openartifacts-share" data-openartifacts-share href="${escapeAttribute(bar.shareUrl)}" ` +
+    (bar.comments === undefined ? "" : `data-comments="${bar.comments ? "on" : "off"}" `) +
     `target="_blank" rel="noopener noreferrer" style="${SHARE_STYLE}">${SHARE_ICON}Share</a>` +
     "</div>" +
     `<script defer src="${escapeAttribute(bar.scriptUrl)}"></script>`

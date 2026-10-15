@@ -1036,8 +1036,14 @@ is present but wrong is `401`, never quietly anonymous. There is no CORS and no
 cookie.
 
 **The page script's comment half.** `/embed/page.js` also does the following,
-inertly where it cannot: it fetches `/d/{docId}/threads[?v=n]` same-origin, and on
-a `404` does nothing more. Otherwise it adds `💬 N` (open threads) beside **Share**,
+inertly where it cannot. On the shared link `/d/{docId}` the top bar's **Share**
+link carries `data-comments="on"` or `"off"` (the owner's switch when the page was
+served; it is part of that page's validator and reaches readers within its 60
+seconds), and on `"off"` the script makes no request. A pinned `/d/{docId}/v{n}`
+page carries no such attribute, since it is immutable. Otherwise it fetches
+`/d/{docId}/threads[?v=n]` same-origin, and on a `404` does nothing more. The Share
+popover tells the page when its owner flips the switch, and the page then asks
+again. Otherwise it adds `💬 N` (open threads) beside **Share**,
 paints highlights with `CSS.highlights` (it never changes the author's DOM), shows a
 **Comment** button over a selection, and embeds the comments frame: in the page's
 margin when at least 256 px are free beside the content, else as a bottom sheet
@@ -1059,7 +1065,7 @@ also checks the origin.
 | page → frame | `draft` | `{anchor \| null, top}`: a selection awaiting its comment |
 | page → frame | `focus` | `{threadId}` (empty clears) |
 | frame → page | `ready` | none |
-| frame → page | `viewer` | `{canComment}`, only after an authenticated read |
+| frame → page | `viewer` | `{canComment}`, after every read of the frame's own: `true` when signed out (Comment is offered and asks to sign in), the server's answer when signed in |
 | frame → page | `changed` | none: refetch now |
 | frame → page | `focus` | `{threadId}` |
 | frame → page | `close` | none: hide the sheet or cancel the draft |
@@ -1067,7 +1073,12 @@ also checks the origin.
 | frame → page | `height` | `{px}`: the height of the overlay sheet's content (overlay mode) |
 | frame → page | `reveal` | `{top, height}`: where the focused card sits in the margin, so the page can scroll it into view |
 
-A hostile page on the document's own serving origin can embed the frame and so
+The frame prefers its own read (its token's, else the anonymous one a public
+document answers) to the `threads` the page relays, and an own read always replaces
+relayed data. It draws relayed data only when it has neither (a private document
+for a reader who has not signed in), and then without author names or agent badges
+and with a line saying to sign in to see them, because the page is the author's and
+could invent a commenter. A hostile page on the document's own serving origin can embed the frame and so
 learn, from `viewer`, whether this visitor holds a token for the document and may
 comment. The layout messages (`size`, `height`, `reveal`) carry only heights, but
 those depend on what the frame draws for this visitor, so the page can also infer
