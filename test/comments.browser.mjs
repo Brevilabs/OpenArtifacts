@@ -1301,21 +1301,37 @@ test("the bar counts what the bottom sheet can show: orphaned threads are not co
 
 test("a signed-in Can-view reader is never offered Comment, not even before the frame answers", { timeout: 120_000 }, async () => {
   const docId = await publish("Can view", REPORT, { route: "private-docs" });
+  // A card, so the frame has a reply box to replace with "You can view this page." once it knows.
+  await agentThread(docId, { exact: "Closing remarks follow in the appendix" }, "A remark.");
   const response = await api(`/api/v1/docs/${docId}/access/people/bob%40example.com`, { method: "PUT", body: JSON.stringify({ role: "view" }) });
   assert.equal(response.status, 200, await response.clone().text());
   const context = await newContext(BOB, { signedInTo: docId });
   const tab = await context.newPage();
-  await tab.addInitScript(() => {
-    window.addEventListener("selectionchange", () => {
-      if (document.querySelector(".openartifacts-comment-tip") && getComputedStyle(document.querySelector(".openartifacts-comment-tip")).display === "block") window.__tipShown = true;
-    });
-  });
+  // The frame's thread reads wait for the test's word, so the page has no viewer message yet when the reader selects. Held inside the frame rather than by `context.route`, which this harness does not use.
+  await tab.addInitScript((api) => {
+    if (location.host !== api || location.pathname !== "/embed/comments") return;
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    window.__release = () => release();
+    const original = window.fetch;
+    window.fetch = (input, init) => {
+      const held = String(input).includes("/threads") && (!init || !init.method || init.method === "GET");
+      return held ? gate.then(() => original(input, init)) : original(input, init);
+    };
+  }, API);
   await tab.goto(`https://${API}/open/${docId}`);
   await tab.waitForURL(new RegExp(`/d/${docId}`));
-  const frame = await until("the comments frame", () => commentsFrame(tab, docId));
-  await frame.getByText("You can view this page.").waitFor().catch(() => {});
+  await barButton(tab).waitFor();
+  const tip = tab.locator(".openartifacts-comment-tip");
   await select(tab, "Staffing is unchanged");
-  await tab.waitForTimeout(800);
-  assert.equal(await tab.evaluate(() => window.__tipShown === true), false);
+  // Past the page's 150 ms settle, so the tip would be up by now if it were going to be.
+  await tab.waitForTimeout(400);
+  assert.equal(await tip.isVisible(), false, "no Comment before the frame answers");
+  const frame = await until("the comments frame", () => commentsFrame(tab, docId));
+  await frame.evaluate(() => window.__release());
+  await frame.getByText("You can view this page.").waitFor();
+  await select(tab, "The budget is on the next page");
+  await tab.waitForTimeout(400);
+  assert.equal(await tip.isVisible(), false, "no Comment once the frame says view");
   await context.close();
 });
