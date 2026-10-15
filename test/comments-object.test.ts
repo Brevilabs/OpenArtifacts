@@ -45,7 +45,7 @@ describe("DocComments", () => {
     const made = mustCreate(
       await stub.createThread({ docId, ...alice, version: 1, anchor: { exact: "brown fox" }, body: "  why brown?  " }),
     );
-    expect(made.matchedText).toBe("brown fox");
+    expect(made.thread.matchedText).toBe("brown fox");
     const reply = await stub.reply({ docId, ...bob, version: 1, threadId: made.threadId, body: "because" });
     expect(reply.ok).toBe(true);
 

@@ -22,7 +22,7 @@
  * accepting new ones. It is read from what is stored (`ownerPlans`), so a write
  * costs one more D1 read and no license-server call.
  */
-import { isPublishingPlan, type Publisher } from "../auth.js";
+import { mayPublish, type Publisher } from "../auth.js";
 import type { Env } from "../config.js";
 import { findCommentableDoc, ownerPlans, type CommentableDoc } from "../db.js";
 import { docNotFound, errorResponse } from "../errors.js";
@@ -37,11 +37,10 @@ export interface Caller {
   /** `owner` is the principal; `plan` is what the credential's own account holds. */
   publisher: Publisher;
   /**
-   * The request's execution context, when the entry point has one: mail is sent
-   * on `ctx.waitUntil` so a write is answered without waiting for it. Absent, it
-   * is awaited, as the access-request mail is.
+   * The request's execution context: mail is sent on `ctx.waitUntil` so a write
+   * is answered without waiting for it.
    */
-  ctx?: ExecutionContext;
+  ctx: ExecutionContext;
   /** `human` for the frame's token; `agent` for an account token or a license key. */
   kind: AuthorKind;
 }
@@ -62,8 +61,7 @@ export interface Standing {
 
 /**
  * The standing of `caller` (null for an anonymous reader) on `docId`, or null
- * when the answer is `404`: an unusable id, comments unavailable on this
- * deployment, no such document, a deleted one, or one the caller cannot read.
+ * when the answer is `404`: an unusable id, no such document, a deleted one, or one the caller cannot read.
  * `pinned` names the version the reads are for.
  */
 export async function standingOn(
@@ -72,7 +70,7 @@ export async function standingOn(
   caller: Caller | null,
   pinned: number | null = null,
 ): Promise<Standing | null> {
-  if (!isDocId(docId) || env.COMMENTS === undefined) return null;
+  if (!isDocId(docId)) return null;
   const principal = caller?.publisher.owner ?? "";
   const doc = await findCommentableDoc(env.DB, docId, principal, pinned);
   if (doc === null || doc.deleted_at !== null || doc.allowed !== 1) return null;
@@ -90,7 +88,7 @@ export async function standingOn(
  */
 export async function ownerHasComments(env: Env, owner: string, now: number): Promise<boolean> {
   const plans = await ownerPlans(env.DB, owner);
-  if (plans.licenses.some(isPublishingPlan)) return true;
+  if (plans.licenses.some(mayPublish)) return true;
   const known = configuredPlans(env);
   return plans.accounts.some((held) => {
     const plan = effectivePlan(env, held.plan, held.expiresAt, now);

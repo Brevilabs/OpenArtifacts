@@ -466,7 +466,6 @@ export function prepareComments(action, extra) {
     // is read whole rather than by the flag parser.
     if (extra.length !== 1) throw new Error(HELP);
     const name = (extra[0] ?? "").trim();
-    if (!name) throw new Error("The display name cannot be empty.");
     return { action, name: text("The display name", name, COMMENT_LIMITS.name, true, named) ?? "" };
   }
   throw new Error(HELP);

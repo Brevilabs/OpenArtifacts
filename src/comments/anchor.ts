@@ -280,12 +280,6 @@ function runAt(runs: readonly Run[], offset: number): Run | undefined {
   return undefined;
 }
 
-/** The id of the innermost element with one around `offset`, as a section hint. */
-export function sectionAt(canon: CanonicalText, offset: number): string | undefined {
-  const run = runAt(canon.runs, offset);
-  return run && run.ids.length > 0 ? run.ids[run.ids.length - 1] : undefined;
-}
-
 export type Located =
   | { status: "anchored"; start: number; end: number; matchedText: string; rung: 1 | 2 }
   | { status: "orphaned" };

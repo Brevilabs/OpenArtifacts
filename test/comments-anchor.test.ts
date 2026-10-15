@@ -2,11 +2,13 @@ import { describe, expect, it } from "vitest";
 import {
   canonicalText,
   locateAnchor,
-  sectionAt,
   validateAnchor,
   type CanonicalText,
 } from "../src/comments/anchor.js";
 import { decodeEntities, NAMED_ENTITY_COUNT } from "../src/comments/entities.js";
+
+const sectionAt = (c: CanonicalText, offset: number): string | undefined =>
+  c.runs.find((r) => offset >= r.start && offset < r.end)?.ids.at(-1);
 
 const doc = (body: string, head = "<title>T</title>") =>
   `<!doctype html><html><head>${head}</head><body>${body}</body></html>`;

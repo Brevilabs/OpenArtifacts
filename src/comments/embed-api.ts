@@ -44,7 +44,7 @@ export async function handleCommentsEmbed(
   url: URL,
   env: Env,
   now: number,
-  ctx?: ExecutionContext,
+  ctx: ExecutionContext,
 ): Promise<Response | null> {
   const [first, docId, ...extra] = url.pathname.slice(EMBED_API_PREFIX.length + 1).split("/");
   const account = first === "account" && docId === undefined;

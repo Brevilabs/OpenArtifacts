@@ -386,7 +386,7 @@ export async function handleDocSection(
   docId: string,
   extra: string[],
   analytics: AnalyticsSink,
-  ctx?: ExecutionContext,
+  ctx: ExecutionContext,
 ): Promise<Response | null> {
   const [section, kind, person, ...rest] = extra;
   const method = request.method;

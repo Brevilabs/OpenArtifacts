@@ -102,11 +102,6 @@ export function mayComment(env: Env, publisher: Publisher): boolean {
     : PUBLISHING_PLANS.has(publisher.plan);
 }
 
-/** Whether a license-key plan name is one that may publish (and so comment). */
-export function isPublishingPlan(plan: string): boolean {
-  return PUBLISHING_PLANS.has(plan);
-}
-
 /**
  * Entitlement is per *operation*, not per identity, so this is deliberately not
  * consulted here. A valid key identifies a publisher and that is all

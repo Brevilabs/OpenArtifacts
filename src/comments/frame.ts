@@ -37,7 +37,7 @@ export async function commentsFrame(request: Request, url: URL, env: Env): Promi
   if (request.method !== "GET" || env.COMMENTS === undefined) return READER_NOT_FOUND();
   const context = await frameContext(url, env);
   if (context === null) return READER_NOT_FOUND();
-  const { doc, origin, ancestors } = context;
+  const { doc, origin } = context;
 
   const body = `<!doctype html>
 <html lang="en">
@@ -54,5 +54,5 @@ export async function commentsFrame(request: Request, url: URL, env: Env): Promi
 </body>
 </html>`;
 
-  return new Response(body, { status: 200, headers: frameHeaders(await commentsScriptHash(), ancestors) });
+  return new Response(body, { status: 200, headers: frameHeaders(await commentsScriptHash(), origin) });
 }

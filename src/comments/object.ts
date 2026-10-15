@@ -38,7 +38,7 @@
  *     last activity (epoch ms). Re-anchors every thread for `version` the first
  *     time that version is asked for, then answers from the memo.
  *   createThread({docId, principal, kind, onBehalfOf, anchor, body, version})
- *     -> {ok, threadId, commentId, anchorStatus: "anchored", matchedText, thread}
+ *     -> {ok, threadId, commentId, anchorStatus: "anchored", thread}
  *   reply({docId, threadId, principal, kind, onBehalfOf, body, version})
  *     -> {ok, commentId, thread}
  *   resolve / reopen({docId, threadId, principal, kind, onBehalfOf, isOwner, scope, version})
@@ -146,7 +146,6 @@ export type CreateThreadResult =
       threadId: string;
       commentId: string;
       anchorStatus: "anchored";
-      matchedText: string;
       thread: ThreadRecord;
     }
   | Failure<"invalid_anchor" | "invalid_body" | "anchor_not_found" | "limit_threads" | "limit_comments">
@@ -253,10 +252,6 @@ function newId(prefix: "th_" | "cm_"): string {
   return prefix + encodeBase32(bytes);
 }
 
-function isVersion(n: unknown): n is number {
-  return typeof n === "number" && Number.isInteger(n) && n >= 1;
-}
-
 /** A comment body: a non-empty string of at most MAX_BODY characters once trimmed. */
 function cleanBody(body: unknown): string | null {
   if (typeof body !== "string") return null;
@@ -314,7 +309,6 @@ export class DocComments extends DurableObject<Env> {
 
   async list(args: ListArgs): Promise<ListResult> {
     if (!this.usable()) return { ok: false, reason: "purged" };
-    if (!isVersion(args.version)) return { ok: false, reason: "version_not_found" };
     const ready = await this.ensureAnchors(args.docId, args.version);
     if (!ready.ok) return ready;
     const state = args.state ?? "all";
@@ -332,7 +326,6 @@ export class DocComments extends DurableObject<Env> {
     if (anchor === null) return { ok: false, reason: "invalid_anchor" };
     const body = cleanBody(args.body);
     if (body === null) return { ok: false, reason: "invalid_body" };
-    if (!isVersion(args.version)) return { ok: false, reason: "version_not_found" };
 
     if (!this.usable()) return { ok: false, reason: "purged" };
 
@@ -377,7 +370,7 @@ export class DocComments extends DurableObject<Env> {
     });
     await this.snapshot(args.docId);
     const thread = this.readThreads(args.version, threadId)[0] as ThreadRecord;
-    return { ok: true, threadId, commentId, anchorStatus: "anchored", matchedText: located.matchedText, thread };
+    return { ok: true, threadId, commentId, anchorStatus: "anchored", thread };
   }
 
   async reply(args: ReplyArgs): Promise<ReplyResult> {
@@ -459,7 +452,6 @@ export class DocComments extends DurableObject<Env> {
     const thread = this.threadRow(args.threadId);
     if (!thread) return { ok: false, reason: "thread_not_found" };
     if (!args.isOwner && !args.scope.includes(thread.created_by)) return { ok: false, reason: "forbidden" };
-    if (!isVersion(args.version)) return { ok: false, reason: "version_not_found" };
 
     // Anchor first: a missing version must not leave the mutation half done.
     const ready = await this.ensureAnchors(args.docId, args.version);
@@ -609,10 +601,6 @@ export class DocComments extends DurableObject<Env> {
     return { ok: true };
   }
 
-  private actor(principal: string, kind: AuthorKind, onBehalfOf: string | null): Actor {
-    return { principal, kind, onBehalfOf };
-  }
-
   /** Threads with their comments and the memoised anchor for `version`. */
   private readThreads(version: number, only?: string): ThreadRecord[] {
     const rows = only
@@ -626,7 +614,7 @@ export class DocComments extends DurableObject<Env> {
       const list = comments.get(c.thread_id) ?? [];
       list.push({
         commentId: c.id,
-        author: this.actor(c.author, c.author_kind, c.on_behalf_of),
+        author: { principal: c.author, kind: c.author_kind, onBehalfOf: c.on_behalf_of },
         body: c.body,
         createdAt: c.created_at,
         atVersion: c.at_version,
@@ -656,7 +644,7 @@ export class DocComments extends DurableObject<Env> {
         resolution:
           t.state === "resolved" && t.resolved_by !== null
             ? {
-                by: this.actor(t.resolved_by, t.resolved_kind ?? "human", t.resolved_on_behalf_of),
+                by: { principal: t.resolved_by, kind: t.resolved_kind ?? "human", onBehalfOf: t.resolved_on_behalf_of },
                 atVersion: t.resolved_at_version as number,
                 at: t.resolved_at as number,
               }

@@ -101,7 +101,6 @@ function versionField(value: unknown): number | undefined | null {
 
 /** `GET …/threads?state=&since=&v=`. `caller` is null for an anonymous reader of a public document. */
 export async function listThreads(env: Env, url: URL, caller: Caller | null, docId: string): Promise<Response> {
-  if (env.COMMENTS === undefined) return docNotFound(docId);
   const state = url.searchParams.get("state") ?? "all";
   if (!STATES.has(state)) return bad('state must be "open", "resolved" or "all".');
 
@@ -226,16 +225,6 @@ function refusal(result: Failed, caller: Caller, version?: number): Response {
   }
 }
 
-/**
- * Send the notification after the response, on the request's execution context.
- * `notifyComment` never throws, so it is safe to leave running. Without a context
- * (a caller that has none) it is awaited, as the access-request mail is.
- */
-async function notifyLater(caller: Caller, notified: Promise<void>): Promise<void> {
-  if (caller.ctx === undefined) await notified;
-  else caller.ctx.waitUntil(notified);
-}
-
 /** `POST …/threads`. */
 export async function createThread(
   request: Request,
@@ -268,8 +257,7 @@ export async function createThread(
   });
   if (!result.ok) return refusal(result, caller, version);
 
-  await notifyLater(
-    caller,
+  caller.ctx.waitUntil(
     notifyComment(env, url, {
       event: "thread",
       docId,
@@ -315,8 +303,7 @@ export async function replyToThread(
   });
   if (!result.ok) return refusal(result, caller, version);
 
-  await notifyLater(
-    caller,
+  caller.ctx.waitUntil(
     notifyComment(env, url, {
       event: "reply",
       docId,
@@ -367,8 +354,7 @@ export async function changeThreadState(
 
   const thread = result.thread as ThreadRecord;
   if (result.changed && to === "resolve") {
-    await notifyLater(
-      caller,
+    caller.ctx.waitUntil(
       notifyComment(env, url, {
         event: "resolved",
         docId,

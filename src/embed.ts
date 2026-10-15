@@ -188,7 +188,7 @@ function frameScriptHash(): Promise<string> {
 async function shareFrame(request: Request, url: URL, env: Env): Promise<Response> {
   const context = request.method === "GET" ? await frameContext(url, env) : null;
   if (context === null) return READER_NOT_FOUND();
-  const { doc, origin, ancestors } = context;
+  const { doc, origin } = context;
 
   const body = `<!doctype html>
 <html lang="en">
@@ -211,7 +211,7 @@ async function shareFrame(request: Request, url: URL, env: Env): Promise<Respons
 </body>
 </html>`;
 
-  return new Response(body, { status: 200, headers: frameHeaders(await frameScriptHash(), ancestors) });
+  return new Response(body, { status: 200, headers: frameHeaders(await frameScriptHash(), origin) });
 }
 
 /**
@@ -432,7 +432,7 @@ export async function handleEmbed(
   url: URL,
   env: Env,
   analytics: AnalyticsSink,
-  ctx?: ExecutionContext,
+  ctx: ExecutionContext,
 ): Promise<Response> {
   const now = Date.now();
   if (url.pathname === PAGE_SCRIPT_PATH) return await pageScript(request);

@@ -31,8 +31,6 @@ export interface FrameContext {
   doc: string;
   /** The embedder's origin when it is the document's own serving origin, else null. */
   origin: string | null;
-  /** The `frame-ancestors` value: that origin, or `'none'`. */
-  ancestors: string;
 }
 
 /** The document and the embedder the request names, or null for a malformed id. */
@@ -51,11 +49,11 @@ export async function frameContext(url: URL, env: Env): Promise<FrameContext | n
       : ((await publisherOrigin(env, row.owner))?.origin ?? null);
   const servingOrigin = serving?.toLowerCase() ?? null;
   const matched = servingOrigin !== null && (url.searchParams.get("origin") ?? "").toLowerCase() === servingOrigin;
-  return { doc, origin: matched ? servingOrigin : null, ancestors: matched ? servingOrigin : "'none'" };
+  return { doc, origin: matched ? servingOrigin : null };
 }
 
 /** The headers every frame shell carries; `scriptSource` is its one inline script's hash source. */
-export function frameHeaders(scriptSource: string, ancestors: string): Record<string, string> {
+export function frameHeaders(scriptSource: string, origin: string | null): Record<string, string> {
   return {
     "content-type": "text/html; charset=utf-8",
     "cache-control": "no-store",
@@ -67,6 +65,6 @@ export function frameHeaders(scriptSource: string, ancestors: string): Record<st
     "referrer-policy": "same-origin",
     "content-security-policy":
       `default-src 'none'; script-src ${scriptSource}; style-src 'unsafe-inline'; img-src data:; ` +
-      `connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors ${ancestors}`,
+      `connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors ${origin ?? "'none'"}`,
   };
 }

@@ -58,7 +58,6 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
   // Comments. See src/comments-scripts.ts.
   try {
   (() => {
-    if (!window.fetch) return;
     const NS = "openartifacts:comments";
     const WS = new RegExp(String.fromCharCode(92) + "s");
     const CRLF = String.fromCharCode(13, 10), LF = String.fromCharCode(10);
@@ -66,7 +65,7 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
     const pin = /^[/]d[/][0-9a-z]{16}[/]v([1-9][0-9]{0,8})[/]?$/.exec(location.pathname);
     const painting = typeof Highlight === "function" && window.CSS && CSS.highlights;
     let version = pin ? Number(pin[1]) : 0;
-    let data = null, active = false, shown = true, canComment = true, mode = "margin", polling = false;
+    let data = null, active = false, shown = true, canComment = true, mode = "margin";
     let mhost = null, mframe = null, ready = false, sheet = false, button = null, tipHost = null, tip = null;
     let canon = null, dirty = true, ranges = new Map(), lost = [], draft = null, draftRange = null, focusId = "", timer = 0;
     let need = 0, sheetH = 0;
@@ -264,9 +263,9 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
         if (r.width > 0 || r.height > 0) right = Math.max(right, r.right);
       }
       // A fixed or sticky box nested in the author's column wrapper (a contents list, a sidebar) is content too.
-      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT, (n) => (skipped(n) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT));
       for (let el = walker.nextNode(); el; el = walker.nextNode()) {
-        if (el.parentElement === document.body || skipped(el) || OURS.some((name) => el.closest("." + name))) continue;
+        if (el.parentElement === document.body) continue;
         const cs = getComputedStyle(el);
         if ((cs.position !== "fixed" && cs.position !== "sticky") || cs.display === "none") continue;
         const r = el.getBoundingClientRect();
@@ -296,7 +295,6 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       const z = document.documentElement.currentCSSZoom || 1;
       const flat = base + (z !== 1 ? "zoom:" + 1 / z + ";" : "");
       if (!active || !shown) {
-        mhost.style.display = "none";
         if (visible !== false) { visible = false; send({ event: "visible", shown: false }); }
         return;
       }
@@ -477,10 +475,9 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
     };
     const activate = () => {
       active = true;
-      if (!button) makeButton();
-      if (!mhost) buildHost();
-      if (polling) return;
-      polling = true;
+      if (button) return;
+      makeButton();
+      buildHost();
       window.setInterval(() => { if (document.visibilityState === "visible") refresh(); }, 30000);
       document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") refresh(); });
       window.addEventListener("resize", schedule);
@@ -833,8 +830,6 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     return { status: response.status, body: parsed };
   };
   const docPath = (suffix) => "/embed/api/docs/" + doc + suffix;
-  // Ids come from data; one that is not the server's shape never reaches a path.
-  const idOk = (value) => typeof value === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(value);
   const failure = (result) => {
     const error = result.body && result.body.error;
     if (result.status === 401) return "Sign in again to comment.";
@@ -974,7 +969,7 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     const id = text(comment.commentId);
     const kids = [w];
     // Only the authenticated read may enable a write control: relayed data is the page's, and the page is not trusted.
-    if (own !== null && comment.mine && index > 0 && idOk(id)) {
+    if (own !== null && comment.mine && index > 0) {
       w.append(button("Delete", () => act("c:" + id, () => call("DELETE", docPath("/comments/" + encodeURIComponent(id))), null), "link"));
     }
     kids.push(node("div", { class: "txt" }, [text(comment.body)]));
@@ -1001,8 +996,8 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     comments.forEach((comment, index) => card.append(...commentRow(thread, comment, index)));
     const first = comments[0];
     const firstId = first ? text(first.commentId) : "";
-    const canDelete = own !== null && !!first && first.mine === true && idOk(firstId);
-    const canResolve = own !== null && thread.canResolve === true && idOk(id);
+    const canDelete = own !== null && !!first && first.mine === true;
+    const canResolve = own !== null && thread.canResolve === true;
     const acts = [];
     if (canDelete && confirming === firstId) {
       acts.push("Delete this thread?",
@@ -1021,7 +1016,7 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     if (acts.length) card.append(node("div", { class: "acts" }, acts));
     if (errors["t:" + id]) card.append(errorLine("t:" + id));
     if (firstId && errors["c:" + firstId]) card.append(errorLine("c:" + firstId));
-    if (!resolved && idOk(id)) {
+    if (!resolved) {
       const reply = () => {
         const body = (texts["r:" + id] || "").trim();
         if (body) act("r:" + id, () => call("POST", docPath("/threads/" + encodeURIComponent(id) + "/comments"), { body: body, version: versionOf() || undefined }), () => { texts["r:" + id] = ""; });
@@ -1064,7 +1059,7 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
 
   const threadsOf = () => {
     const m = model();
-    return m && Array.isArray(m.threads) ? m.threads.filter((t) => t && typeof t === "object" && typeof t.threadId === "string" && (own === null || idOk(t.threadId))) : [];
+    return m && Array.isArray(m.threads) ? m.threads.filter((t) => t && typeof t === "object" && typeof t.threadId === "string") : [];
   };
 
   const renderMargin = () => {
@@ -1088,7 +1083,7 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     cards.replaceChildren(...all.map((item) => item.el));
     stacked = all;
     restack();
-    if (sizes) for (const item of all) sizes.observe(item.el);
+    for (const item of all) sizes.observe(item.el);
   };
 
   // Lay the cards out by their wants, each pushed below the one before it, and tell the page how tall that needs the column to be (it can then extend the document, so the last card is reached by scrolling the page, never the frame). Run again whenever a card's height changes: a reply box dragged taller, the Post row appearing on the first keystroke.
@@ -1103,10 +1098,10 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     const need = Math.ceil(floor);
     if (need !== sentNeed) { sentNeed = need; post({ event: "size", height: need }); }
   };
-  const sizes = window.ResizeObserver ? new ResizeObserver(() => {
+  const sizes = new ResizeObserver(() => {
     if (mode === "margin" && stacked.length) restack();
     else if (mode === "overlay") reportSheet();
-  }) : null;
+  });
   // The sheet is as tall as its card, up to the page's cap, so it reports the content's height.
   const reportSheet = () => post({ event: "height", px: Math.ceil(main.scrollHeight) });
 
@@ -1129,7 +1124,7 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     const from = key !== undefined && typeof active.selectionStart === "number" ? [active.selectionStart, active.selectionEnd] : null;
     if (composing) { owed = true; return; }
     main.className = mode;
-    if (sizes) sizes.disconnect();
+    sizes.disconnect();
     stacked = [];
     try {
       if (!shown || (mode === "overlay" && !draft && !focusId)) cards.replaceChildren();
@@ -1143,7 +1138,7 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
       if (again) { again.focus({ preventScroll: true }); if (from) again.setSelectionRange(from[0], from[1]); }
     }
     if (mode === "overlay" && cards.firstChild) {
-      if (sizes) sizes.observe(main);
+      sizes.observe(main);
       reportSheet();
     }
   };

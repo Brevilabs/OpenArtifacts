@@ -16,6 +16,7 @@
  */
 import type { AnalyticsSink } from "../analytics.js";
 import type { Publisher } from "../auth.js";
+import { commentsStub } from "../comments/access.js";
 import type { Env } from "../config.js";
 import { listPublisherDocs, softDeleteDoc, type DocListCursor, type DocListRow } from "../db.js";
 import { docNotFound, errorResponse } from "../errors.js";
@@ -116,7 +117,7 @@ export async function deleteDoc(
   // sweep: once the row says deleted nothing can reach the threads, so a failure
   // here costs storage and not exposure, and the log makes it findable.
   try {
-    if (env.COMMENTS !== undefined) await env.COMMENTS.get(env.COMMENTS.idFromName(docId)).purge();
+    if (env.COMMENTS !== undefined) await commentsStub(env, docId).purge();
   } catch (error) {
     console.error("delete left comments behind", { docId, error });
   }

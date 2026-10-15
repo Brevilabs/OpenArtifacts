@@ -1605,8 +1605,7 @@ export async function findCommentableDoc(
 }
 
 /**
- * Set a live document's comments switch. True only when this call changed it,
- * so naming the state it already has is a repeat. The principal must manage the
+ * Set a live document's comments switch. The principal must manage the
  * document; the plan check is the caller's.
  */
 export async function setCommentsEnabled(
@@ -1614,17 +1613,15 @@ export async function setCommentsEnabled(
   docId: string,
   owner: string,
   enabled: boolean,
-): Promise<boolean> {
-  const updated = await db
+): Promise<void> {
+  await db
     .prepare(
       `${OWNER_SCOPE_SQL}
        UPDATE docs AS d SET comments_enabled = ?
-        WHERE d.id = ? AND ${CAN_MANAGE_SQL} AND d.deleted_at IS NULL AND d.comments_enabled <> ?
-        RETURNING id`,
+        WHERE d.id = ? AND ${CAN_MANAGE_SQL} AND d.deleted_at IS NULL`,
     )
-    .bind(owner, owner, enabled ? 1 : 0, docId, enabled ? 1 : 0)
-    .first();
-  return updated !== null;
+    .bind(owner, owner, enabled ? 1 : 0, docId)
+    .run();
 }
 
 /**
