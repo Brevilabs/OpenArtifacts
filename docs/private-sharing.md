@@ -496,7 +496,11 @@ same-origin`, enforced; `accounts.google.com/o/oauth2/v2/auth` and
 `/v3/signin/identifier` send it as `Cross-Origin-Opener-Policy-Report-Only`; and
 `github.com/login` sends none. Our own reader pages send `same-origin`. A navigation
 to such a page from a popup whose opener is cross-origin switches browsing-context
-group and nulls `window.opener` for good. So the frame makes a random nonce that
+group and nulls `window.opener` for good. The browser test shows it needs no provider
+at all: the page embedding the frame sends no opener policy and the popup sends
+`same-origin`, so Chrome opens the popup in a new group with no opener from the
+start. Embedded in a document the frame is therefore always served by the poll, and
+the posted token reaches only a frame loaded as a top-level page. So the frame makes a random nonce that
 only it knows and passes its hash, `h`, in the popup's URL. The popup stores the
 account under that hash on the server, **for one minute and one use**, and **also
 posts the token if the opener survives**. The frame collects it with the nonce

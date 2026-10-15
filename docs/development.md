@@ -114,5 +114,24 @@ host (the route's host, wrangler's `getInferredHost`), so the host router never 
 the apex, a label host and the API host as different hosts, and the path-prefix
 fallback is the only routing it ever does. The workerd tests set the hosts per test
 and cover the bar's markup and the frame's HTTP contract; they cannot load a page,
-a frame or a popup, so the popover's behaviour in a browser is checked by hand
-against a deployment.
+a frame or a popup. The browser test does:
+
+```bash
+npm run test:browser   # Node 22 and Google Chrome
+OA_HEADED=1 npm run test:browser             # watch it
+OA_SCREENSHOTS=/some/dir npm run test:browser # bar.png, popover-signed-out.png, popover-owner.png, popover-private.png
+```
+
+`test/share-popover.browser.mjs` bundles the Worker (`wrangler deploy --dry-run`)
+and runs it under Miniflare over HTTPS with real D1 and R2 and no `upstream`, so
+the router sees each request's own `Host` and its allowlist runs as in
+production. Chrome (the machine's own, through `playwright-core`; no browsers are
+downloaded) reaches `openartifacts.site`, a publisher's label host and
+`api.openartifacts.ai` through `--host-resolver-rules`, which is the one local
+way to see the bar and the popover on their real hosts. It signs a reader session
+in Node, opens a page, presses **Share**, signs in through the real popup, and
+switches a document to private; it also checks that a hostile page embedding the
+frame learns nothing and that the frame says the same about every id a viewer
+cannot read. The browser's own policy decides every request (Fetch Metadata,
+cookies, CSP, `frame-ancestors`, the opener policy), so the test never uses
+`context.route`, which would bypass it. It needs no license server and no network.

@@ -148,11 +148,13 @@ export const COPILOT_HINT =
  *
  * The target origin is this page's own, never `*`: the only frame that may act
  * on the message is the Share frame, which is on the API host, and it checks
- * the sender's window as well. Most of the time there is no opener to post to,
- * because every API-host page sends a cross-origin opener policy (and so,
- * probably, does Google's), which cuts the popup off from the frame. The frame
+ * the sender's window as well. Embedded in a document page there is no opener
+ * to post to: the page around the frame sends no opener policy and this one
+ * sends `same-origin`, so Chrome opens the popup in a new browsing context group
+ * (and Google's sign-in pages, probably, cut the link the same way). The frame
  * collects its token from the server in that case, and this script costs
- * nothing.
+ * nothing. The message lands only when the frame is a top-level page, which
+ * `test/share-popover.browser.mjs` checks alongside the poll.
  */
 export const POPUP_DONE_SCRIPT = String.raw`(function () {
   var done = document.getElementById("oa-done");
