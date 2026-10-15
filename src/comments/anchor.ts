@@ -29,6 +29,13 @@
  *     anchors and reports the text as it now reads, so the caller can rewrite
  *     the stored quote.
  *
+ * **What the page's `exact` must be.** The page builds `exact` (and `prefix` and
+ * `suffix`) by slicing ITS canonical text, built with the same skip rules, at the
+ * selection's mapped offsets. It must not use `range.toString()`: that joins every
+ * Text node the range crosses, including a `<script>`, `<style>` or `<noscript>`
+ * body between two paragraphs, text the canonical text leaves out, so a quote
+ * that spans one would match neither rung and be refused as `anchor_not_found`.
+ *
  * Nothing here edits a quote that merely changed: no edit-distance, no
  * guessing. Text that comes back in a later version anchors again by itself,
  * because every version is judged on its own.
@@ -68,7 +75,34 @@ const VOID = new Set([
   "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr",
 ]);
 
+/** Start tags that close an open `<p>` (the HTML "has a p in button scope" list). */
+const CLOSES_P = new Set([
+  "address", "article", "aside", "blockquote", "details", "div", "dl", "fieldset", "figcaption", "figure",
+  "footer", "form", "h1", "h2", "h3", "h4", "h5", "h6", "header", "hgroup", "hr", "main", "menu", "nav", "ol",
+  "p", "pre", "section", "table", "ul",
+  // These close it too, as part of closing a list item.
+  "li", "dd", "dt",
+]);
+
+/** An open element whose scope an implied close does not reach across. */
+const SCOPE_BOUNDARY = new Set(["table", "td", "th", "caption", "template", "object", "button", "marquee", "applet"]);
+
+/** What can sit in a `<head>`: any other start tag ends it. */
+const HEAD_CONTENT = new Set(["meta", "link", "title", "style", "script", "base", "noscript", "template"]);
+
+const P = new Set(["p"]);
+const LI = new Set(["li"]);
+const LISTS = new Set(["ul", "ol", "menu"]);
+const DT_DD = new Set(["dt", "dd"]);
+const DL = new Set(["dl"]);
+const NONE: ReadonlySet<string> = new Set();
+
+/** Elements whose first LF is not content. */
+const LEADING_LF = new Set(["pre", "listing", "textarea"]);
+
 interface Frame {
+  name: string;
+  foreign: boolean;
   skip: boolean;
   body: boolean;
   head: boolean;
@@ -91,6 +125,14 @@ interface RawRun {
  * frames are popped by identity, taking anything opened inside them along, and
  * `<body>` closes a `<head>` that was left open, which HTML permits and
  * Obsidian-adjacent generators do.
+ *
+ * It is also not a tree builder, so the few parser fix-ups that change the text
+ * or the section a run belongs to are applied here, and only these (a browser
+ * does more, none of it changes what is selectable): an unclosed `<head>` ends at
+ * the first start tag that is not head content; the one LF directly after
+ * `<pre>`, `<listing>` or `<textarea>` is dropped; a block-level start tag closes
+ * an open `<p>`, a second `<li>` closes the first, and `<dt>`/`<dd>` close each
+ * other, so an id on an implicitly closed element stops enclosing what follows.
  */
 export async function canonicalText(source: string | ReadableStream<Uint8Array>): Promise<CanonicalText> {
   const stack: Frame[] = [];
@@ -98,6 +140,7 @@ export async function canonicalText(source: string | ReadableStream<Uint8Array>)
   let bodyDepth = 0;
   let sawBody = false;
   let idsCache: string[] | null = [];
+  let dropLeadingLf = false;
   const raw: RawRun[] = [];
   let pending = "";
 
@@ -112,20 +155,45 @@ export async function canonicalText(source: string | ReadableStream<Uint8Array>)
     }
   };
 
+  /**
+   * Close the nearest open element named in `names` (and what is inside it),
+   * looking outwards from the current one and giving up at a `stop` name or a
+   * scope boundary: the implied end tag a tree builder would have inserted.
+   */
+  const closeNearest = (names: ReadonlySet<string>, stops: ReadonlySet<string>): void => {
+    for (let i = stack.length - 1; i >= 0; i--) {
+      const f = stack[i] as Frame;
+      if (f.foreign) continue;
+      if (names.has(f.name)) return pop(f);
+      if (stops.has(f.name) || SCOPE_BOUNDARY.has(f.name)) return;
+    }
+  };
+
   const rewriter = new HTMLRewriter()
     .on("*", {
       element(el) {
         const name = el.tagName.toLowerCase();
-        if (name === "body") {
-          // An unclosed <head> ends where <body> begins.
-          const open = stack.find((f) => f.head);
-          if (open) pop(open);
-        }
         const foreign = el.namespaceURI !== "http://www.w3.org/1999/xhtml";
+        dropLeadingLf = !foreign && LEADING_LF.has(name);
+        if (!foreign) {
+          // An unclosed <head> ends at <body>, or at any start tag that is not head
+          // content (not one nested in a head child: a <noscript> or <template> keeps its own).
+          const top = stack[stack.length - 1];
+          if (top?.head && !HEAD_CONTENT.has(name)) pop(top);
+          if (name === "body") {
+            const open = stack.find((f) => f.head);
+            if (open) pop(open);
+          }
+          if (CLOSES_P.has(name)) closeNearest(P, NONE);
+          if (name === "li") closeNearest(LI, LISTS);
+          if (name === "dt" || name === "dd") closeNearest(DT_DD, DL);
+        }
         const selfClosing = (el as unknown as { selfClosing?: boolean }).selfClosing === true;
         if ((!foreign && VOID.has(name)) || (foreign && selfClosing)) return;
         const id = el.getAttribute("id");
         const frame: Frame = {
+          name,
+          foreign,
           // `title` outside the body is the document's, and a DOM would have
           // put it in the head it implies.
           skip: SKIPPED.has(name) || (name === "title" && !foreign && bodyDepth === 0),
@@ -152,8 +220,12 @@ export async function canonicalText(source: string | ReadableStream<Uint8Array>)
       text(chunk) {
         pending += chunk.text;
         if (!chunk.lastInTextNode) return;
-        const piece = pending;
+        let piece = pending;
         pending = "";
+        if (dropLeadingLf) {
+          dropLeadingLf = false;
+          piece = piece.startsWith("\r\n") ? piece.slice(2) : piece.startsWith("\n") ? piece.slice(1) : piece;
+        }
         if (skipDepth > 0 || piece === "") return;
         if (idsCache === null) idsCache = stack.flatMap((f) => (f.id === null ? [] : [f.id]));
         raw.push({ text: decodeEntities(piece).normalize("NFC"), ids: idsCache, inBody: bodyDepth > 0 });

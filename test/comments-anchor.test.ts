@@ -58,6 +58,55 @@ describe("canonical text", () => {
     expect(c.text).toBe("a\nb café");
   });
 
+  it("ends an unclosed <head> at the first start tag that is not head content", async () => {
+    // Both </head> and <body> may be left out; a DOM puts the paragraph in the implied body.
+    expect((await canon("<html><head><title>x</title><p>Hello world")).text).toBe("Hello world");
+    expect((await canon("<html><head><meta charset=utf-8><p>Hello world")).text).toBe("Hello world");
+    expect((await canon("<head><title>x</title><style>p{}</style><script>s</script><div>Body</div>")).text).toBe("Body");
+    // Head content keeps the head open: a title, style or script after a meta is still not prose.
+    expect((await canon("<head><meta charset=utf-8><title>x</title><link rel=a><p>Hi")).text).toBe("Hi");
+  });
+
+  it("drops the one LF after <pre>, <listing> and <textarea>, as a browser does", async () => {
+    expect((await canon("<p>para</p><pre>\ncode line</pre>")).text).toBe("paracode line");
+    expect((await canon("<textarea>\nbox</textarea><listing>\n\nTwo</listing>")).text).toBe("box\nTwo");
+    // Only the first, only directly after the start tag, and only in those elements.
+    expect((await canon("<pre><b>\nx</b></pre>")).text).toBe("\nx");
+    expect((await canon("<div>\nplain</div>")).text).toBe("\nplain");
+  });
+
+  it("closes an open <p> at a block-level start tag, so its id stops enclosing what follows", async () => {
+    const c = await canon(doc(`<p id="a">one<p>two`));
+    expect(c.text).toBe("onetwo");
+    expect(sectionAt(c, c.text.indexOf("one"))).toBe("a");
+    expect(sectionAt(c, c.text.indexOf("two"))).toBeUndefined();
+    for (const tag of ["address", "article", "aside", "blockquote", "details", "div", "dl", "fieldset", "figcaption",
+      "figure", "footer", "form", "h1", "h6", "header", "hgroup", "hr", "main", "menu", "nav", "ol", "pre",
+      "section", "table", "ul"]) {
+      const d = await canon(doc(`<p id="a">one<${tag}>two`));
+      expect(sectionAt(d, d.text.indexOf("two")), tag).toBeUndefined();
+    }
+    // Inline content does not close it, and a scope boundary keeps an outer p open.
+    const inline = await canon(doc(`<p id="a">one<b>two</b>three`));
+    expect(sectionAt(inline, inline.text.indexOf("three"))).toBe("a");
+    const scoped = await canon(doc(`<p id="a">one<button><div>two</div></button>`));
+    expect(sectionAt(scoped, scoped.text.indexOf("two"))).toBe("a");
+  });
+
+  it("closes an open <li> at the next <li> of the same list, and <dt>/<dd> at each other", async () => {
+    const list = await canon(doc(`<ul><li id="a">one<li>two</ul>`));
+    expect(sectionAt(list, list.text.indexOf("one"))).toBe("a");
+    expect(sectionAt(list, list.text.indexOf("two"))).toBeUndefined();
+    // A nested list's li does not close the outer one.
+    const nested = await canon(doc(`<ul><li id="a">one<ul><li>inner</li></ul>after</ul>`));
+    expect(sectionAt(nested, nested.text.indexOf("inner"))).toBe("a");
+    expect(sectionAt(nested, nested.text.indexOf("after"))).toBe("a");
+    const dl = await canon(doc(`<dl><dt id="t">term<dd id="d">def<dt>next</dl>`));
+    expect(sectionAt(dl, dl.text.indexOf("term"))).toBe("t");
+    expect(sectionAt(dl, dl.text.indexOf("def"))).toBe("d");
+    expect(sectionAt(dl, dl.text.indexOf("next"))).toBeUndefined();
+  });
+
   it("records the nearest enclosing id of each text run", async () => {
     const c = await canon(
       doc(`<div id="outer">one <section id="inner">two</section> three</div><p>four</p>`),
