@@ -25,6 +25,10 @@ import { READER_NOT_FOUND, readerIsolate } from "./reader-pages.js";
 import { handleShare } from "./share.js";
 import { handleServing, servingError, servingRedirect } from "./serve.js";
 
+// The comments Durable Object class must be exported from the Worker's entry
+// module for the `durable_objects` binding in wrangler.jsonc to resolve.
+export { DocComments } from "./comments/object.js";
+
 /**
  * The surfaces. Public documents and the API are separate because user HTML has
  * to be served from a sacrificial host that never carries the API — a doc that
