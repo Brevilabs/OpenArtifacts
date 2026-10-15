@@ -68,7 +68,9 @@ export const PAGE_SCRIPT = String.raw`(() => {
     const box = link.getBoundingClientRect();
     const top = Math.round(box.bottom + 8);
     host.style.top = top + "px";
-    host.style.right = Math.max(8, Math.round(window.innerWidth - box.right)) + "px";
+    // clientWidth, not innerWidth: the right offset of a fixed element is measured
+    // from the layout viewport, which a classic scrollbar narrows and innerWidth includes.
+    host.style.right = Math.max(8, Math.round(document.documentElement.clientWidth - box.right)) + "px";
     host.style.height = Math.max(120, Math.min(480, window.innerHeight - top - 8)) + "px";
   };
   const build = () => {
@@ -241,6 +243,10 @@ export const FRAME_SCRIPT = String.raw`(() => {
   const doc = main.dataset.doc;
   const link = main.dataset.link;
   const parentOrigin = main.dataset.origin;
+  // Where a public document is served. A frame embedded there while the document
+  // is public is one any page on that origin could have embedded.
+  let publicOrigin = "";
+  try { publicOrigin = new URL(link).origin; } catch (error) {}
   const hint = main.dataset.hint;
   const KEY = "openartifacts:share-token:" + doc;
   const SIGNIN_WINDOW_MS = 10 * 60 * 1000;
@@ -325,6 +331,8 @@ export const FRAME_SCRIPT = String.raw`(() => {
   let wake = null;
   let writing = false;
   let notice = false;
+  // Whether this frame made the document private. See exposed().
+  let switched = false;
   let latest = null;
   let message = null;
 
@@ -470,18 +478,52 @@ export const FRAME_SCRIPT = String.raw`(() => {
     }
   };
 
+  // The document's frame-ancestors is checked once, when this frame loads, so a
+  // page that embedded the frame while the document was public keeps it alive
+  // after the document goes private, and the owner's token in this origin's
+  // storage would draw controls under that page. A frame on the public serving
+  // origin therefore shows the owner controls of an invited-only document only
+  // when it switched the document itself: its own embedder is then the owner's
+  // page, which stays on that origin until it reloads. Any other frame there
+  // draws a constant line, never a reload, which the embedding page could see.
+  const exposed = () => parentOrigin !== "" && parentOrigin === publicOrigin && !switched;
+  const showMoved = () => {
+    latest = null;
+    main.replaceChildren(header("Share"), muted(["Open Share from the document’s own page to manage who can open it."]), footer());
+  };
+  // A view drawn while the document was public may be stale, and a click on it
+  // is a write. Ask first. The window left between this read and the write is
+  // the round trip, and a click lands in it only by luck.
+  const stillPublic = async () => {
+    if (!exposed()) return true;
+    try {
+      const response = await call("GET", "");
+      if (response === null || response.status !== 200) return true;
+      const current = await response.json();
+      return !(current && current.viewer === "owner" && current.linkAccess === "invited");
+    } catch (error) {
+      return true;
+    }
+  };
+  const present = (body) => {
+    if (body.linkAccess === "invited" && exposed()) showMoved();
+    else showOwner(body);
+  };
+
   const write = async (method, suffix, body, modeAfter) => {
     if (writing) return;
     writing = true;
     try {
-      const before = latest ? latest.linkAccess : null;
+      if (!(await stillPublic())) { showMoved(); return; }
       const response = await call(method, suffix, body);
       if (response === null) { showGuest("", false); return; }
       let parsed = null;
       try { parsed = await response.json(); } catch (error) {}
       if (response.status === 200 && parsed && parsed.viewer === "owner") {
-        if (modeAfter) notice = before === "anyone" && parsed.linkAccess === "invited" ? true : (parsed.linkAccess === "anyone" ? false : notice);
-        showOwner(parsed);
+        // Only a write that changed the mode counts, so a repeat of "Only those
+        // invited" on a stale view neither shows the notice nor vouches for the frame.
+        if (modeAfter && parsed.changed && parsed.linkAccess === "invited") { notice = true; switched = true; }
+        present(parsed);
       } else if (response.status === 401) {
         writeToken(null);
         showGuest("", false);
@@ -499,6 +541,7 @@ export const FRAME_SCRIPT = String.raw`(() => {
 
   const showOwner = (body) => {
     latest = body;
+    if (body.linkAccess !== "invited") { notice = false; switched = false; }
     message = node("p", { id: "oa-msg", class: "err", role: "alert" });
     const input = node("input", { type: "email", placeholder: "Add people by email", "aria-label": "Add people by email", autocomplete: "off" });
     const add = () => { const address = input.value.trim(); if (address) write("PUT", "/people/" + encodeURIComponent(address)); };
@@ -534,7 +577,7 @@ export const FRAME_SCRIPT = String.raw`(() => {
     if (response === null) { showGuest("", false); return; }
     let body = null;
     try { body = await response.json(); } catch (error) {}
-    if (response.status === 200 && body && body.viewer === "owner") showOwner(body);
+    if (response.status === 200 && body && body.viewer === "owner") present(body);
     else if (response.status === 200 && body && body.viewer === "reader") showReader(body);
     else if (response.status === 401) { writeToken(null); showGuest("", false); }
     else if (response.status === 404) showNone();

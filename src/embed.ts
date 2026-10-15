@@ -437,10 +437,12 @@ async function frameApi(
     plan: (await accountPlan(env, claims.a, { skipAccountRefresh: method === "GET" })).plan,
     authKind: "account",
   };
-  const owner = (state: AccessState) =>
-    Response.json({ viewer: "owner", account: email, title: state.title, ...accessBody(env, url, docId, state) }, { headers: NO_STORE });
+  // `changed` says whether a write changed anything. The frame needs it to tell
+  // its own switch to private from a repeat on a stale view.
+  const owner = (state: AccessState, changed = false) =>
+    Response.json({ viewer: "owner", account: email, title: state.title, changed, ...accessBody(env, url, docId, state) }, { headers: NO_STORE });
   const answer = (result: AccessResult) =>
-    result.ok ? owner(result.state) : noStore(refusalResponse(env, principal, docId, result.refusal));
+    result.ok ? owner(result.state, result.changed) : noStore(refusalResponse(env, principal, docId, result.refusal));
 
   if (method === "GET") {
     const managed = await getAccess(env, principal, docId);

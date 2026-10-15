@@ -542,6 +542,17 @@ in the invisible frame and then completing the popup it opens, which puts the to
 there. The worst outcome is making a public page private or adding a name to its list, both visible
 in the list the owner sees.
 
+`frame-ancestors` is checked once, when the frame loads, and the frame is never
+reloaded, so a hostile public page could keep a frame it embedded while the
+document was public after the owner makes the document private. The frame closes
+that itself. Embedded by the public serving origin, it draws the owner controls of
+an invited-only document only when it made the switch itself (its embedder is then
+the owner's own page); otherwise it shows one constant line, without reloading,
+which the embedding page could see. Before every write it also reads the mode
+again, so a click on a view drawn while the document was public does nothing once
+the document is private. The race left is the round trip between that read and the
+write.
+
 ## The share page
 
 `https://{API_HOST}/share/{docId}` is the top-level form of the same controls: the

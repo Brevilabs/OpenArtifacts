@@ -331,6 +331,81 @@ window.setInterval(() => { if (document.activeElement !== document.body) window.
   await context.close();
 });
 
+test("a frame a hostile page embedded while the document was public shows no controls once it is private", { timeout: 180_000 }, async () => {
+  // frame-ancestors is checked when a frame loads, and the frame is never
+  // reloaded. A page that embedded it while the document was public keeps it, and
+  // the owner's token in the storage they share would draw the owner's controls
+  // under that page after the document goes private.
+  const X = await publish("Went private", "<p>Mine.</p>");
+  const embed = `<iframe id="f" src="https://${API}/embed/share?doc=${X}&origin=${encodeURIComponent(`https://${SERVING}`)}" style="width:380px;height:480px"></iframe>`;
+  const Y1 = await publish("Hostile one", embed);
+  const Y2 = await publish("Hostile two", embed);
+
+  const context = await newContext(OWNER_ACCOUNT);
+  const page = await context.newPage();
+  await page.goto(docUrl(X));
+  await page.locator("a[data-openartifacts-share]").click();
+  const frame = await until("the Share frame", () => frameOf(page, X));
+  const [popup] = await Promise.all([context.waitForEvent("page"), frame.getByRole("button", { name: "Sign in to manage" }).click()]);
+  await popup.waitForEvent("close").catch(() => {});
+  const invitedOnly = frame.getByRole("radio", { name: "Only those invited" });
+  await invitedOnly.waitFor();
+
+  // Both hostile pages hold a frame with the owner view, drawn while X is public.
+  const hostile = [];
+  for (const id of [Y1, Y2]) {
+    const tab = await context.newPage();
+    await tab.goto(docUrl(id));
+    await until("the hostile frame's owner view", () => frameOf(tab, X).getByRole("radio", { name: "Only those invited" }).isVisible());
+    hostile.push(tab);
+  }
+
+  // The owner makes X private from X's own page, whose frame made the switch.
+  await invitedOnly.click();
+  await frame.getByText("People who opened it while it was public may have kept a copy.").waitFor();
+  assert.equal((await (await api(`/api/v1/docs/${X}/access`)).json()).linkAccess, "invited");
+
+  // A click on the first hostile page's stale view is checked against the
+  // document first and draws no controls, and does not turn X public again.
+  const stale = frameOf(hostile[0], X);
+  await stale.getByRole("radio", { name: "Only those invited" }).click();
+  await stale.getByText("Open Share from the document’s own page").waitFor();
+  assert.equal(await stale.getByRole("radio", { name: "Anyone with the link" }).count(), 0);
+  assert.equal((await (await api(`/api/v1/docs/${X}/access`)).json()).linkAccess, "invited");
+
+  // The second page's frame refreshes when a token is written in the shared
+  // storage, and draws the same line instead of the owner view.
+  const key = `openartifacts:share-token:${X}`;
+  await frame.evaluate((name) => {
+    const value = window.localStorage.getItem(name);
+    window.localStorage.removeItem(name);
+    window.localStorage.setItem(name, value);
+  }, key);
+  const refreshed = frameOf(hostile[1], X);
+  await refreshed.getByText("Open Share from the document’s own page").waitFor();
+  assert.equal(await refreshed.getByRole("radio", { name: "Anyone with the link" }).count(), 0);
+  assert.equal(await refreshed.getByRole("button", { name: "Approve" }).count(), 0);
+
+  // The owner's own frame keeps working after its switch.
+  assert.equal(await invitedOnly.getAttribute("aria-checked"), "true");
+
+  // Then X is made public again from elsewhere. The frame's notice is about a
+  // switch to private and must not outlive it: the next refresh (a token written
+  // by another page's frame) draws the public document without it.
+  const reopened = await api(`/api/v1/docs/${X}/access`, { method: "PUT", body: JSON.stringify({ linkAccess: "anyone" }) });
+  assert.equal(reopened.status, 200);
+  await refreshed.evaluate((name) => {
+    const value = window.localStorage.getItem(name);
+    window.localStorage.removeItem(name);
+    window.localStorage.setItem(name, value);
+  }, key);
+  await until("the owner's frame to show the public document", async () =>
+    (await frame.getByRole("radio", { name: "Anyone with the link" }).getAttribute("aria-checked")) === "true",
+  );
+  assert.equal(await frame.getByText("People who opened it while it was public may have kept a copy.").count(), 0);
+  await context.close();
+});
+
 test("a popup that keeps its opener posts the token to the frame that opened it", { timeout: 120_000 }, async () => {
   // Embedded in a document page the popup loses its opener (the first test).
   // Loaded as a top-level page, as the share page's own sign-in could be, the
