@@ -18,6 +18,7 @@ The surfaces:
 | Private serving | `/d/*` on `{label}.openartifacts.site` | grant cookie | One publisher's invited-only documents per origin. Sets one read-only grant cookie. See [Private documents](#private-documents). |
 | Reader | `/open/*` (`GET`, and `POST /open/{docId}/request`), `/signin/*`, `/share/*`, `/embed/sign-in` | session | Human-facing HTML pages on the API host: sign in, the door a private document opens through, requesting access, the share page, and the Share popover's sign-in popup. Not a client surface. |
 | Embed | `/embed/page.js`, `/embed/share`, `/embed/sign-in`, `/embed/token`, `/embed/api/*` | none, the session (sign-in only) or the popover token | The top bar's page script, the Share popover frame, its sign-in popup and the routes the frame calls, on the API host. Not a client surface. See [The top bar, the Share popover and the share page](#the-top-bar-the-share-popover-and-the-share-page). |
+| Comments | `/api/v1/docs/{docId}/threads…`, `/d/{docId}/threads`, `/embed/api/docs/{docId}/threads…` | token, none, or the popover token | Inline comments: the agent routes, the unauthenticated threads resource on the serving origin, and the JSON a browser frame would call. See [Comments](#comments). |
 | Approval | `/approve/*` | none | Human-facing. HTML pages on the API host. Not a client surface. |
 | Device | `/device/*` | none | How a client with no credential gets one. JSON, on the API host. |
 
@@ -179,12 +180,19 @@ DELETE /api/v1/docs/{docId}/access/people/{email}       → 200 Access
 DELETE /api/v1/docs/{docId}/access/requests/{email}     → 200 Access
 GET    /api/v1/docs/{docId}/html                        → 200 the latest stored HTML
 POST   /api/v1/docs/{docId}/open                        → 200 {url, expiresAt}
+GET    /api/v1/docs/{docId}/threads?state&since&v       → 200 Threads
+POST   /api/v1/docs/{docId}/threads  {anchor, body}     → 201 {threadId, commentId, anchorStatus}
+POST   /api/v1/docs/{docId}/threads/{threadId}/comments | resolve | reopen
+DELETE /api/v1/docs/{docId}/comments/{commentId}        → 204
+PUT    /api/v1/docs/{docId}/settings  {comments}        → 200 {docId, comments}
+PUT    /api/v1/account  {displayName}                   → 200 {displayName}
 GET    /api/v1/tokens                         → 200 {tokens[]}
 DELETE /api/v1/tokens/{tokenId}               → 200 {tokenId, remaining}
 POST   /device/code           {label?}        → 200 {device_code, user_code, …}
 POST   /device/token          {device_code}   → 200 {access_token, …}
 GET    /d/{docId}                             → 200 latest HTML
 GET    /d/{docId}/v{n}                        → 200 immutable HTML
+GET    /d/{docId}/threads[?v=n]               → 200 Threads (no credential)
 ```
 
 Any other method or path under `/api/v1` is `404 not_found`. The two `/device`
@@ -512,8 +520,9 @@ GET    /api/v1/docs/{docId}/html                            → 200 the latest s
 POST   /api/v1/docs/{docId}/open                            → 200 {url, expiresAt}
 ```
 
-All owner-only, and a document that is not yours, never existed, or was deleted is
-`404 not_found`. A client changes **one address at a time**: it never sends the
+All owner-only except `GET …/html`, which anyone who can read the document may call
+(see [Comments](#comments)). A document you may not use this way, never existed, or
+was deleted is `404 not_found`. A client changes **one address at a time**: it never sends the
 whole list, so a retry cannot remove everyone, and a repeated `PUT` or `DELETE`
 answers `200` with the same list. An `Access` response is `no-store`.
 
@@ -529,8 +538,8 @@ answers `200` with the same list. An `Access` response is `no-store`.
 `url` is always the canonical link, never a grant. `email` says whether this
 server can send invite and request emails, not that one was delivered (a
 rate limit or the mail service can drop one): when it is `false` the owner
-shares the link themselves. `role` is `"view"` or `"comment"`; clients may ignore it until
-comments ship. `requests` are the addresses that asked to open the document and
+shares the link themselves. `role` is `"view"` or `"comment"`; only `comment` may post threads
+(see [Comments](#comments)). `requests` are the addresses that asked to open the document and
 have not been answered.
 
 - `PUT …/access` takes `{"linkAccess": "anyone" | "invited"}`. Switching to
@@ -557,8 +566,10 @@ have not been answered.
   silently.
 - `GET …/html` returns the latest stored HTML (`text/html`, `private, no-store`,
   sandboxed), so `openartifacts get` keeps working once a page's public url stops
-  answering. It is owner-only and is not part of the family that a server without
-  reader sign-in answers `404`.
+  answering. Anyone who can read the document may call it, not only the owner, so an
+  invited reviewer's agent can quote the page; a document the caller cannot read is
+  `404`. It is not part of the family that a server without reader sign-in answers
+  `404`.
 - `POST …/open` returns `{"url", "expiresAt"}`, with `expiresAt` 60 seconds out.
   For an invited-only document `url` is the publisher's own origin with a
   60-second grant, which opens it in a browser with no sign-in; for a public one
@@ -566,7 +577,7 @@ have not been answered.
   store it, or put it in a publish receipt: agent wrappers print receipts into
   transcripts. No plan is needed.
 
-Errors reuse the existing codes: `404 not_found` for a document that is not yours,
+Errors reuse the existing codes: `404 not_found` for a document that is not yours (for `…/html`, one you cannot read),
 `400 bad_request` for an invalid address, role or mode, or a 101st person, and
 `402 limit_reached` with `"limit": "privateSharing"` when the plan does not include
 it, and `429 quota_exceeded` past the daily invite cap. On a server without reader sign-in configured, every route in this section
@@ -633,7 +644,7 @@ and the full serving header policy. Unknown ids are still `404` and deleted ones
 | | Lifetime | Holds |
 | --- | --- | --- |
 | Reader session `__Host-oa_session`, on the API host | 30 days | An account id. Read only by `/open/*`, `/share/*`, `/signin/*` and `/embed/sign-in`; `/api/v1` ignores it. |
-| Popover token, in the Share frame's own storage | 24 hours | An account id and one document id; prefixed `oas_`, which `/api/v1` refuses. Accepted only by `/embed/api/docs/{docId}/…` for that document. |
+| Popover token, in the Share frame's own storage | 24 hours | An account id and one document id; prefixed `oas_`, which `/api/v1` refuses. Accepted only by `/embed/api/docs/{docId}/…` for that document, and by `PUT /embed/api/account` (the display name) with a token for any document. |
 | URL grant `?grant=` | 60 seconds | An origin label and a principal. Never stays in the address bar. |
 | Origin cookie `__Host-oa_grant`, on the publisher's origin | 1 hour | An origin label and a principal. Every document is checked again on every request. |
 
@@ -722,9 +733,10 @@ the frame makes a random nonce only it knows and passes the nonce's hash as `h`.
 **The token.** `oas_…`, signed with the reader secret under its own purpose,
 valid for 24 hours, naming one account and one document, and kept in the frame's
 own storage. It is a bearer credential accepted only by
-`/embed/api/docs/{docId}/access…` for that document. `/api/v1` refuses its
-prefix, and the share page, `/open` and `/signin` read only the session cookie.
-It cannot publish, list, delete or touch another document.
+`/embed/api/docs/{docId}/…` (the access routes and the comment routes) for that document, and by
+`PUT /embed/api/account`, which sets the account's display name and takes a token for any document.
+`/api/v1` refuses its prefix, and the share page, `/open` and `/signin` read only the session cookie.
+It cannot publish, list, delete or touch another document; the display name is the one account-wide thing it changes.
 
 **The frame's JSON.** `GET`, `PUT` and `DELETE /embed/api/docs/{docId}/access…`
 are the five access operations of [The access routes](#the-access-routes) under
@@ -761,6 +773,268 @@ Copilot 4.0.14 and CLI 0.2.x keep publishing, updating, listing and unsharing an
 ignore `linkAccess`; their documents stay public. For a document another client
 made private, an old Copilot's "Open" goes through sign-in like any reader, and an
 old CLI's `get` prints the sign-in page.
+
+## Comments
+
+Readers and agents can comment on a quoted passage of a page, reply, and resolve
+the thread once a later version addresses it. Everything here is additive: no
+existing route, status or field changed meaning, and an older client that never
+calls these routes sees no difference. [comments.md](comments.md) is the design
+and the reasons.
+
+**On a server without reader sign-in configured, or without the `COMMENTS`
+Durable Object binding, none of it exists.** Every route under a document in this
+section answers `404 not_found` (the document routes are part of the
+private-sharing family, so they need reader sign-in as well), so does
+`PUT /api/v1/account`, and the threads resource answers `404`. A client
+shows "Not found, or this server does not support comments."
+
+### The routes
+
+```http
+GET    /api/v1/docs/{docId}/threads?state=&since=&v=      → 200 Threads
+POST   /api/v1/docs/{docId}/threads  {anchor, body, version?}                → 201 {threadId, commentId, anchorStatus}
+POST   /api/v1/docs/{docId}/threads/{threadId}/comments  {body, version?}    → 201 {commentId}
+POST   /api/v1/docs/{docId}/threads/{threadId}/resolve  {version?}           → 200 Thread
+POST   /api/v1/docs/{docId}/threads/{threadId}/reopen   {version?}           → 200 Thread
+DELETE /api/v1/docs/{docId}/comments/{commentId}                             → 204
+PUT    /api/v1/docs/{docId}/settings  {comments}                             → 200 {docId, comments}
+PUT    /api/v1/account  {displayName}                                        → 200 {displayName}
+```
+
+Every response is `no-store`, JSON apart from the `204`. The credential is an
+account token (`oat_…`) or a license key. `/api/v1` still refuses the Share
+popover's `oas_` token. A comment written through `/api/v1` is an **agent
+comment**: it is labelled as the agent of the account it acts for (below). Any
+other method or path under a document is `404 not_found`, as before.
+
+| Route | Who may call it |
+| --- | --- |
+| `GET …/threads` | Anyone who can read the document. |
+| `POST …/threads`, `POST …/comments` | Anyone who can comment (below). |
+| `POST …/resolve`, `POST …/reopen` | The document's owner, or the thread's author while they can still comment. |
+| `DELETE …/comments/{commentId}` | The comment's author, on any document they can still read. |
+| `PUT …/settings` | The document's owner. |
+| `PUT /api/v1/account` | An account token, or a license key whose owner is linked to an account (it names that account). An unlinked key has no account to name: `404 not_found`. Like every route in this section, it answers `404 not_found` on a server without reader sign-in or the `COMMENTS` binding. |
+
+**Who can comment.** The caller can read the document, the owner has turned
+comments on, the owner's plan includes comments, and the caller is the owner, an
+invited account whose `role` is `comment`, or, on a document whose `linkAccess`
+is `anyone`, any signed-in account or key. A reader invited with `role: "view"`
+can read the threads and nothing more. Readers and commenters never pay: only the
+document owner's plan is checked, so a free reader can comment on a Pro owner's
+page, and an owner whose plan lapses keeps their threads readable and stops
+accepting new writes. License keys whose plan may publish (`PLUS`, `BELIEVER`) and
+accounts on a plan with `comments` (`pro`, `pro_lifetime`) qualify; the free plan
+does not. Which plans qualify is configuration, not part of this contract. An
+author's identity survives linking a license key to an account: a comment written
+by the key stays the account's.
+
+**Turning comments on.** `PUT …/settings` takes `{"comments": true | false}` and
+nothing else (`400 bad_request` for any other body). Turning it on needs the
+owner's plan (`402 limit_reached`, `limit: "comments"`, with an `upgrade_url` for
+an account); turning it off never does, and deletes nothing. Naming the state the
+document is already in is a repeat and answers `200`. Comments are off for every
+document until the owner turns them on. `GET …/access` and `PUT …/access…` carry
+the switch as `"comments": true | false` in the `Access` response (an added
+field).
+
+**`GET …/html` is now readable by anyone who can read the document**, not only
+the owner, so a reviewer's agent can quote the page it was invited to. The
+owner's behaviour is unchanged, and a document the caller cannot read is still
+`404`.
+
+### Threads
+
+```json
+{"docId": "9f2k4mvq7t0xbz3n",
+ "title": "Q3 report",
+ "version": 2,
+ "latestVersion": 2,
+ "threads": [
+   {"threadId": "th_b7q3k9x2m4",
+    "anchor": {"exact": "Revenue grew twelve percent.", "prefix": "dog. ", "suffix": "", "section": "intro"},
+    "anchorStatus": "anchored",
+    "matchedText": "Revenue grew twelve percent.",
+    "createdAtVersion": 1,
+    "createdAt": 1785000000000,
+    "state": "resolved",
+    "resolution": {"by": {"name": "Alice's agent", "kind": "agent"}, "atVersion": 2, "at": 1785000900000},
+    "comments": [
+      {"commentId": "cm_c5r8n1t6w0", "author": {"name": "Bob", "kind": "human"},
+       "body": "Twelve percent of what?", "createdAt": 1785000000000, "atVersion": 1},
+      {"commentId": "cm_d2h7j4v9s3", "author": {"name": "Alice's agent", "kind": "agent"},
+       "body": "Clarified in v2.", "createdAt": 1785000800000, "atVersion": 2}
+    ]}
+ ]}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `version` | The version the anchors were computed for: the newest, or the `v` asked for. |
+| `latestVersion` | The newest version. |
+| `anchor` | What the thread was created on: `exact` (1 to 1,000 characters) with optional `prefix` and `suffix` (up to 32 characters each) and `section` (the nearest element id, up to 128). `exact` is rewritten to the matched text when only a whitespace-insensitive match was found. |
+| `anchorStatus` | `anchored` when the quote is found in `version`, `orphaned` when it is not. Independent of `state`: a resolved thread whose text is gone is still resolved, and an open orphan stays open. Text that returns in a later version re-anchors. |
+| `matchedText` | The text of `version` the quote matched, or `null` when orphaned. |
+| `createdAtVersion` | The version the author was reading. |
+| `state` | `open` or `resolved`. |
+| `resolution` | `null` while open; else who resolved it, in which version, and when. |
+| `comments[]` | In order. `atVersion` is the version the author was reading. |
+| `author`, `by` | `{name, kind}`: the only identity ever sent. `kind` is `human` or `agent`. |
+
+Times are epoch milliseconds, as in `Access`. Threads are ordered by `createdAt`.
+**No account id and no email address ever appears.** A person is shown by their
+display name (`Someone` if they have none). An agent is named after the account it
+acts for, `"<display name>'s agent"`; with no name on file the document owner's
+agent is `"Owner's agent"` and any other is `"An agent"`.
+
+`GET …/threads` takes `state` (`open`, `resolved` or `all`, default `all`),
+`since` (an ISO 8601 date or timestamp: only threads with activity after it,
+where a reopen counts) and `v` (a version number, `/^[1-9][0-9]{0,8}$/`, to
+compute the anchors for that version, `404` if it does not exist). A bad `state`,
+`since` or `v` is `400 bad_request`. Anchors are computed once per thread and
+version and then remembered, so an old version costs one pass.
+
+The authenticated variants (this API, and the embed API with a token) add
+`"viewer": {"canComment", "canManage", "name"}` at the top, `"canResolve"` on each
+thread and `"mine"` on each comment. The unauthenticated variant on the serving
+origin carries none of them.
+
+**Creating a thread.** `POST …/threads` takes `{"anchor": {...}, "body": "…",
+"version"?: n}`, and nothing else (`400 bad_request`). `body` is plain text,
+1 to 4,000 characters; `version` defaults to the newest and is the version the
+quote was copied from. The quote must occur exactly once in that version's text
+(or, if several times, be disambiguated by its `prefix`, `suffix` and `section`),
+else `400 anchor_not_found`. The text is the page's visible text: the
+concatenated text of `<body>` without `script`, `style`, `template` and `noscript`,
+with entities decoded and normalised to NFC; OpenArtifacts' own bar and bylines
+are not part of it. A `version` that does not exist is `404`.
+
+Replying (`…/comments`, `{"body": "…", "version"?}`) works on a thread in either
+state. Resolving takes an optional `version`: the version that addressed the
+comment, recorded on the resolution and shown as "Resolved in v{n}". Resolving a
+resolved thread, or reopening an open one, is a repeat: `200` with the thread, the
+original resolver kept. Reopening clears the resolution. Deleting a comment that
+is a thread's first deletes the thread and its replies; any other deletes just
+that comment.
+
+### Limits and the order of refusals
+
+A document holds at most **500 threads** and **2,000 comments**; past that a
+write is `402 limit_reached` with `limit: "threads"` or `limit: "comments"` and no
+`upgrade_url`. A principal may write **30 comments a minute** (create, reply,
+resolve and reopen share the allowance; delete and the settings switch do not),
+else `429 quota_exceeded` with `Retry-After: 60`. A write is checked in this
+order. A write refused at steps 1 to 5 never spends the rate limit:
+
+1. The caller can read the document, and comments are available on this server:
+   else `404`. A deleted document is `404`, and its comment object refuses writes
+   forever.
+2. Comments are on: else `409 comments_off` to someone who manages the document
+   and `404` to everyone else.
+3. The caller's role allows writing (owner, invited `comment`, or signed in on an
+   `anyone` document): else `404`. A `view` invitee gets `404`, never `403`.
+4. The owner's plan has comments: else `402 limit_reached` (`limit: "comments"`) to
+   the owner and `404` to everyone else.
+5. A person has a display name: else `409 name_required`. Agents are exempt, being
+   named after their account. `PUT /api/v1/account` (or `PUT /embed/api/account`)
+   sets it: trimmed, 1 to 64 characters, no control characters, else `400`.
+6. The rate limit.
+
+A write that passes the rate limit and is then refused for its content (a malformed
+or over-long body or quote, `anchor_not_found`, a `version` that does not exist, the
+500 and 2,000 caps, or an unknown or forbidden `threadId`) has spent one unit of the
+allowance.
+
+Anything else the caller may not see or do (another publisher's document, a
+`threadId` or `commentId` that is not theirs to touch, a resolve by someone who is
+neither the owner nor the thread's author) is `404 not_found`, indistinguishable
+from an id that never existed. Malformed JSON, an unknown field, a body over 4,000
+characters or a quote over 1,000 is `400 bad_request`. Reading and deleting ask
+only for read access and authorship, so a switch turned off or a lapsed plan never
+costs anyone their own words; reading with comments off is `409 comments_off` to
+the owner and `404` to everyone else.
+
+### Email
+
+When the server has Email Service configured, a new thread emails the document's
+owner (unless they wrote it) and a reply or a resolve emails everyone who has
+written in the thread, an agent's comments to the account it acts for, minus
+whoever just acted. Reopening mails nobody. Only accounts that can still read the
+document are mailed, so a removed invitee hears nothing. The message names people
+by display name, never address, and carries the title, the quote, the comment and
+the page's link. It is sent after the response, bounded by 20 emails a minute per
+document, and never changes the response: a failed or skipped send costs the
+recipient an email and nothing else.
+
+### The threads resource on the serving origin
+
+```http
+GET|HEAD https://openartifacts.site/d/{docId}/threads[?v={n}]            a public document
+GET|HEAD https://{label}.openartifacts.site/d/{docId}/threads[?v={n}]    an invited-only one
+```
+
+The same `Threads` JSON, unauthenticated: no `viewer`, `canResolve` or `mine`, and
+the same bytes for every reader. It is what an agent can fetch without a credential for a public
+document. It counts no view, is `Cache-Control: no-store`, `Content-Type:
+application/json`, carries the full serving header policy, and never sets a cookie
+on the apex.
+
+- On the apex only a public document answers. An invited-only one is `404` JSON,
+  never the redirect to `/open` a page request gets, since a script cannot follow a
+  sign-in. Without reader sign-in on the server, the apex answers `404` too.
+- On a publisher's origin the grant cookie is required, and the label, deleted,
+  public and `canRead` chain is the page's own. `?grant=` is never swapped here. No
+  cookie or an unreadable document is `404` JSON.
+- An unknown id, comments off, comments unavailable, a malformed `v` and a version
+  that does not exist are `404`; a deleted document is `410`, decided before the
+  version so `?v=` cannot tell a deleted document from one that never had it.
+
+### The embed API (not part of the client contract)
+
+The remainder is for a browser frame, documented because it is on the wire. No
+page draws such a frame yet; see [What is not built](comments.md#what-is-not-built).
+
+**The embed JSON.** The same operations under the Share popover's token:
+
+```http
+GET    /embed/api/docs/{docId}/threads?state=&since=&v=      the token is optional
+POST   /embed/api/docs/{docId}/threads
+POST   /embed/api/docs/{docId}/threads/{threadId}/comments | resolve | reopen
+DELETE /embed/api/docs/{docId}/comments/{commentId}
+PUT    /embed/api/docs/{docId}/settings                      the comments switch
+PUT    /embed/api/account                                    the display name
+```
+
+They run the same functions as `/api/v1`, so every status, the plan gate, the caps,
+the rate limit and the emails are identical; the difference is that the author is
+**a person** (`kind: "human"`, named by their display name, subject to
+`name_required`), where `/api/v1` writes agents. The token (`oas_…`) must name the
+route's document: one minted for another document is `401 unauthorized`, as is a
+missing, expired or malformed one on a route that needs it. `PUT /embed/api/account`
+takes a token for any document, since the name is about the person. A `GET …/threads`
+with no `Authorization` header is the anonymous reader: the same answer as the
+serving origin, `404` for a document only an invited person can read. A token that
+is present but wrong is `401`, never quietly anonymous. There is no CORS and no
+cookie.
+
+The Share popover's `PUT …/access/people/{email}` also takes `{"role": "view" |
+"comment"}` (as `PUT /api/v1/docs/{docId}/access/people/{email}` does), and its
+owner view carries `"comments": true | false`, left out where `COMMENTS` is unbound.
+
+### Old clients
+
+Copilot and CLI releases that predate comments never call these routes and are
+unaffected. A client that does, against a server that predates them, gets
+`404 not_found` on `…/threads` and `…/settings`, which it should read as "this
+server does not support comments". `PUT /api/v1/account` on such a server answers
+`404 not_found` to an account token but `401 unauthorized` to a license key,
+because that server's account routes take account tokens only. A license-key
+client should therefore decide whether comments are supported from the
+`…/threads` or `…/settings` `404`, never from that one status, and should not
+treat the `401` as a revoked key. (On a current server an unlinked license key
+also gets `404` there, so that status alone does not prove the server lacks
+comments.)
 
 ## Signing in from a terminal
 
@@ -917,6 +1191,9 @@ exposes this API payload to a reader.
 | `too_large` | 413 | `html` over 10MB. |
 | `quota_exceeded` | 429 | License-key publishing ceiling, device-flow rate limit, or the daily invite cap reached. |
 | `limit_reached` | 402 | Account-token publish would exceed a plan limit. Carries the exceeded limit's identifier (`limit`), current plan name (`plan`), and optional `upgrade_url` inside `error`. Also returned, for license keys as well as account tokens, for a private-sharing operation the plan does not include (`limit: "privateSharing"`). |
+| `anchor_not_found` | 400 | A new comment's quote is not in the version it names. See [Comments](#comments). |
+| `comments_off` | 409 | A caller who manages the document used a comment route while comments are off. Everyone else gets `404`. |
+| `name_required` | 409 | A person (not an agent) with no display name tried to write a comment. |
 | `internal` | 500 | Our fault, including the license server being unreachable for a key we have never seen. |
 | `authorization_pending` | 400 | `POST /device/token`: nobody has approved the code yet. |
 | `slow_down` | 400 | `POST /device/token`: polled faster than the `interval`. Also `POST /embed/token`, over its per-address limit. |

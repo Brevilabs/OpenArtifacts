@@ -400,7 +400,8 @@ and closing it needs a billing plan that allows required reviewers.
 ## Rolling back
 
 Every deploy creates an immutable version and Cloudflare keeps them all. There are
-two hard floors, and the effective floor is **the newer of the two**.
+three hard floors, and the effective floor is **the newest of the three**. Once
+the comments deploy ships, that is the comments floor.
 
 - **The domain cutover.** Never activate a version older than the
   `Current Version ID` recorded in `Brevilabs/OpenArtifacts#47` while any of the
@@ -410,14 +411,18 @@ two hard floors, and the effective floor is **the newer of the two**.
 - **Private sharing.** Never activate a version older than the first version that
   contains private sharing once any document is invited-only: older versions serve
   it publicly at its canonical url. See [Rollback floor](#rollback-floor).
+- **Comments.** The first version that carries the `DocComments` Durable Object
+  migration. Cloudflare refuses a rollback across a Durable Object class lifecycle
+  change, so nothing can be activated below it. See
+  [Comments rollback floor](#comments-rollback-floor).
 
 ```bash
 npx wrangler versions list          # ids, timestamps, and the commit in Message
-npx wrangler rollback <version-id>  # the newer of the two floors, or later
+npx wrangler rollback <version-id>  # the newest of the floors, or later
 ```
 
 Or the dashboard: **Compute (Workers) → symposium → Deployments**, then
-**⋯ → Rollback** on a version at or above the newer recorded floor. Do not use
+**⋯ → Rollback** on a version at or above the newest recorded floor. Do not use
 the default immediate-predecessor rollback for the initial cutover because that
 predecessor is unsafe.
 
@@ -441,6 +446,10 @@ host, but every API will be offline until a corrected four-host version is
 deployed. This is the only pre-cutover rollback that keeps the retired API retired
 and prevents cross-surface access. Never run `wrangler deploy` from an old
 checkout: its config would reattach the old API.
+
+Once the comments deploy is live, this pre-cutover procedure can no longer be
+carried out: Cloudflare refuses any rollback below the comments floor, detached
+domains or not.
 
 **There is no equivalent emergency procedure below the private-sharing floor.**
 Detaching domains does not help: any version below the private-sharing floor
@@ -593,6 +602,71 @@ license server stays optional. `scripts/smoke.sh` is unchanged; the private flow
 needs a browser and is verified by hand: publish with `--private`, open the link
 signed out, sign in, read, request access as another account, approve, remove, and
 switch to `anyone`.
+
+## Inline comments
+
+Comments add a SQLite Durable Object, one D1 migration and two rate limiters. None
+of it needs a new secret or service, and a SQLite-backed Durable Object is available
+on the free Workers plan.
+
+**Order for Brevilabs (and any deployment that applies migrations by hand):**
+
+1. Apply the D1 migration **before** the deploy:
+   `npx wrangler d1 migrations apply symposium --remote`. `0015_comments.sql` adds
+   `docs.comments_enabled` (default `0`, so nothing turns on) and
+   `accounts.display_name`. It is additive and backward compatible: the Worker
+   that is live while it applies ignores both columns. The deploy workflow
+   refuses to ship over an unapplied migration.
+2. Deploy. `wrangler deploy` applies the Durable Object itself: the `COMMENTS`
+   binding in `durable_objects.bindings` and the
+   `migrations: [{"tag": "v1", "new_sqlite_classes": ["DocComments"]}]` block in
+   `wrangler.jsonc` create the class as part of the upload, and the class must
+   exist for a Worker that binds it to upload at all. It is not a separate command,
+   and it is not part of the D1 migrations. A self-hoster adds both blocks to their
+   config and nothing else. Keep the `tag` (and add later migrations with new tags);
+   never edit a tag that has been applied.
+3. The comment limiters are in the same deploy; see below.
+
+**The comment limiters.** Two more optional `ratelimits` bindings, on the same
+rule as the others (absent means no limit). `namespace_id` is unique across the
+whole account:
+
+| Binding | Namespace | Allowance | Keyed by |
+| --- | --- | --- | --- |
+| `COMMENT_WRITE_LIMITER` | `1011` | 30 per 60 s | the writing principal (hashed). Create, reply, resolve and reopen share it. |
+| `COMMENT_EMAIL_LIMITER` | `1012` | 20 per 60 s | the document (hashed), over comment notification emails. |
+
+**Plans.** Comments are a plan feature: add `"comments": true` to the plans that
+should have them in your `PLAN_LIMITS` (Brevilabs: `pro` and `pro_lifetime`, not
+`free`). License keys whose plan may publish (`PLUS`, `BELIEVER`) have them
+without a flag. Nothing turns on by itself: each owner switches a document on.
+
+**Self-hosting.** The feature is on when the Worker has the `COMMENTS` binding and
+reader sign-in is configured ([Self-hosting](#self-hosting)). A deployment whose
+config predates the binding is not broken: every comment route and the threads
+resource answer `404`, and pages are served as before. Email is
+optional; without it comments work and nobody is notified.
+
+### Comments rollback floor
+
+The first deploy that carries migration `v1` (`new_sqlite_classes: ["DocComments"]`)
+is a hard rollback floor that Cloudflare enforces. `wrangler rollback`,
+`wrangler versions deploy` and the dashboard Rollback all refuse a version older
+than it, because a rollback cannot cross a Durable Object class lifecycle change.
+After it ships, record its `Current Version ID`, the deployed commit SHA and the
+workflow-run link in the tracking issue's record, as for the other two floors. It
+supersedes them: the effective floor is now the newest of the three, which is this
+one.
+
+Comments cannot be backed out by rolling back. To turn them off in an incident,
+roll forward: switch the affected documents off, remove `comments` from
+`PLAN_LIMITS`, or deploy a build that answers `404` on the comment routes. Keep
+the `COMMENTS` binding and the `migrations` entry in `wrangler.jsonc` in every
+later version. Removing the class would be a further lifecycle change and deletes
+the class's storage.
+
+The Durable Object's storage and the D1 columns persist across any later deploy,
+so rolling forward always finds every thread as it was.
 
 ## Standalone account launch order
 
