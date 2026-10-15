@@ -32,7 +32,7 @@
  * Needs Node 22 and a Google Chrome. `OA_HEADED=1` shows the browser, and
  * `OA_SCREENSHOTS={dir}` saves `bar.png`, `popover-signed-out.png`,
  * `popover-owner.png`, `popover-private.png` and the `popover-pasted*.png` pair, which is how the screenshots in
- * a pull request are made.
+ * a pull request are made. `popover-comments.png` is saved the same way.
  */
 import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
@@ -155,6 +155,8 @@ before(async () => {
     compatibilityDate: "2026-03-01",
     d1Databases: ["DB"],
     r2Buckets: ["DOCS"],
+    // The Comments switch is only useful where the comments object is bound.
+    durableObjects: { COMMENTS: { className: "DocComments", useSQLite: true } },
     https: true,
     port: 0,
     bindings: {
@@ -354,6 +356,7 @@ test("a frame a hostile page embedded while the document was public shows no con
   const Y1 = await publish("Hostile one", embed);
   const Y2 = await publish("Hostile two", embed);
   const Y3 = await publish("Hostile three", embed);
+  const Y4 = await publish("Hostile four", embed);
 
   const context = await newContext(OWNER_ACCOUNT);
   const page = await context.newPage();
@@ -374,7 +377,7 @@ test("a frame a hostile page embedded while the document was public shows no con
 
   // The hostile pages hold a frame with the owner view, drawn while X is public.
   const hostile = [];
-  for (const id of [Y1, Y2, Y3]) {
+  for (const id of [Y1, Y2, Y3, Y4]) {
     const tab = await context.newPage();
     await tab.goto(docUrl(id));
     await until("the hostile frame's owner view", () => frameOf(tab, X).getByRole("radio", { name: "Only those invited" }).isVisible());
@@ -400,6 +403,13 @@ test("a frame a hostile page embedded while the document was public shows no con
   await stale2.getByRole("button", { name: "Remove" }).click();
   await stale2.getByText("Open Share from the document’s own page").waitFor();
   assert.deepEqual(await people(), [invitee], "a stale Remove changed nothing");
+
+  // The comments switch and a role are writes like Remove: a stale view that offers
+  // them checks the document first, and turns nothing on.
+  const stale3 = frameOf(hostile[3], X);
+  await stale3.getByRole("radio", { name: "On", exact: true }).click();
+  await stale3.getByText("Open Share from the document’s own page").waitFor();
+  assert.equal((await (await api(`/api/v1/docs/${X}/access`)).json()).comments, false, "a stale switch changed nothing");
 
   // The second page's frame refreshes when a token is written in the shared
   // storage, and draws the same line instead of the owner view.
@@ -429,6 +439,9 @@ test("a frame a hostile page embedded while the document was public shows no con
   assert.equal(await invitedOnly.getAttribute("aria-checked"), "true");
   await frame.getByText("People who opened it while it was public may have kept a copy.").waitFor();
   assert.equal(await frame.getByRole("button", { name: "Remove" }).count(), 0);
+  // Nor the Comments switch or a role, which the limited view leaves to the share page.
+  assert.equal(await frame.getByRole("radio", { name: "On", exact: true }).count(), 0);
+  assert.equal(await frame.getByLabel(`Access for ${invitee}`).count(), 0);
   assert.equal(await frame.getByText(invitee).count(), 1, "the list is still shown");
   assert.equal(await frame.getByPlaceholder("Emails, separated by commas").count(), 1);
 
@@ -440,6 +453,7 @@ test("a frame a hostile page embedded while the document was public shows no con
   assert.equal(await frame.getByText("People who opened it while it was public may have kept a copy.").count(), 0);
   assert.equal((await (await api(`/api/v1/docs/${X}/access`)).json()).linkAccess, "anyone");
   assert.equal(await frame.getByRole("button", { name: "Remove" }).count(), 1, "the full view is back while the document is public");
+  assert.equal(await frame.getByRole("radio", { name: "On", exact: true }).count(), 1);
   await invitedOnly.click();
   await frame.getByText("People who opened it while it was public may have kept a copy.").waitFor();
 
@@ -896,5 +910,70 @@ test("a pasted batch stops when the document goes private part way through", { t
 
   assert.deepEqual(puts, ["ann@example.com"]);
   assert.deepEqual((await (await api(`/api/v1/docs/${X}/access`)).json()).people.map((entry) => entry.email), ["ann@example.com"]);
+  await context.close();
+});
+
+test("the owner turns comments on and off and sets a role from the popover", { timeout: 180_000 }, async () => {
+  const X = await publish("Review me", "<p>Mine.</p>");
+  const invitee = "reviewer@example.com";
+  assert.equal((await api(`/api/v1/docs/${X}/access/people/${encodeURIComponent(invitee)}`, { method: "PUT", body: "{}" })).status, 200);
+  const state = async () => (await api(`/api/v1/docs/${X}/access`)).json();
+  const roleOf = async () => (await state()).people.find((entry) => entry.email === invitee).role;
+
+  const context = await newContext(OWNER_ACCOUNT);
+  const { page, frame } = await ownerFrame(context, X);
+  const on = frame.getByRole("radio", { name: "On", exact: true });
+  const off = frame.getByRole("radio", { name: "Off", exact: true });
+  await on.waitFor();
+  assert.equal(await off.getAttribute("aria-checked"), "true");
+  assert.equal((await state()).comments, false);
+
+  // On: the switch lands, the line says who can now comment, and the view is the same owner view.
+  await on.click();
+  await frame.getByText("People who can comment can now leave comments on this page.").waitFor();
+  assert.equal(await on.getAttribute("aria-checked"), "true");
+  assert.equal((await state()).comments, true);
+  await frame.getByRole("radio", { name: "Only those invited" }).waitFor();
+  await shoot(page, "popover-comments");
+
+  // Comments is one row (label left, switch right), the role sits on the person's row, and with comments on the popover still reaches Copy link without scrolling.
+  const label = await frame.getByText("Comments", { exact: true }).boundingBox();
+  const onBox = await on.boundingBox();
+  assert.ok(Math.abs(label.y + label.height / 2 - (onBox.y + onBox.height / 2)) < 12, "the label and the switch share a row");
+  const email = await frame.getByText(invitee).boundingBox();
+  const roleBox = await frame.getByLabel(`Access for ${invitee}`).boundingBox();
+  assert.ok(Math.abs(email.y - roleBox.y) < 30, "the role sits beside the address");
+  assert.equal(await frame.locator("main").evaluate((el) => el.scrollHeight <= el.clientHeight + 1), true, "nothing to scroll to");
+  await frame.getByRole("button", { name: "Copy link" }).waitFor();
+
+  // The person's role: Can comment is what an invite has, and it moves both ways.
+  const select = frame.getByLabel(`Access for ${invitee}`);
+  assert.equal(await select.inputValue(), "comment");
+  await select.selectOption("view");
+  await until("the role to land", async () => (await roleOf()) === "view");
+  assert.equal(await frame.getByLabel(`Access for ${invitee}`).inputValue(), "view");
+  await frame.getByLabel(`Access for ${invitee}`).selectOption("comment");
+  await until("the role to return", async () => (await roleOf()) === "comment");
+
+  // Off needs no plan and the line goes with it.
+  await off.click();
+  await until("comments off", async () => (await state()).comments === false);
+  assert.equal(await frame.getByText("People who can comment can now leave comments on this page.").count(), 0);
+
+  // On a plan without comments the switch says so, with the upgrade link, and nothing changes.
+  await db.prepare("UPDATE accounts SET plan = 'free' WHERE id = ?").bind(OWNER_ACCOUNT).run();
+  try {
+    await on.click();
+    await frame.getByText("Comments need a paid plan. Nothing was changed.").waitFor();
+    // The refusal is drawn right under the switch that was pressed, not up by the email box.
+    const refusal = await frame.getByText("Comments need a paid plan. Nothing was changed.").boundingBox();
+    const switchBox = await on.boundingBox();
+    assert.ok(refusal.y >= switchBox.y && refusal.y - (switchBox.y + switchBox.height) < 24, "under the switch");
+    // The Upgrade link needs an upgrade url, which this harness does not configure; serve.test.ts covers it.
+    assert.equal((await state()).comments, false);
+    await shoot(page, "popover-comments-paid");
+  } finally {
+    await db.prepare("UPDATE accounts SET plan = 'pro' WHERE id = ?").bind(OWNER_ACCOUNT).run();
+  }
   await context.close();
 });
