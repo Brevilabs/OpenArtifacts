@@ -1075,6 +1075,14 @@ test("html{zoom}, an inner scroller and a fixed contents list do not break the m
   const h = await until("the host", () => hostBox(tab));
   assert.ok(h.x + h.width <= 1920, `the host (${h.x + h.width}) is inside the viewport`);
   assert.equal(await tab.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true, "no sideways scroll");
+  // The floating Comment button is zoomed with the page too: it must still sit by the selection, inside the viewport.
+  await select(tab, "Staffing is unchanged");
+  const zoomTip = tab.locator(".openartifacts-comment-tip");
+  await until("the Comment button", async () => await zoomTip.isVisible());
+  const zoomTipBox = await zoomTip.boundingBox();
+  const selected = await tab.evaluate(() => { const r = window.getSelection().getRangeAt(0).getClientRects(); const last = r[r.length - 1]; return { right: last.right, top: last.top }; });
+  assert.ok(zoomTipBox.y >= 0 && zoomTipBox.y + zoomTipBox.height <= 900, `the button (${zoomTipBox.y}) is inside the viewport`);
+  assert.ok(Math.abs(zoomTipBox.y - (selected.top - 40)) < 12 && Math.abs(zoomTipBox.x - (selected.right - 40)) < 12, "the button is beside the selection");
   await context.close();
 
   // 2. A page that scrolls in a 100vh container, not in the window, gets the sheet, not a margin that cannot follow.
@@ -1100,6 +1108,54 @@ test("html{zoom}, an inner scroller and a fixed contents list do not break the m
   await tab.waitForTimeout(500);
   const link = await tab.locator("#toclink").boundingBox();
   assert.equal(await tab.evaluate(([x, y]) => document.elementFromPoint(x, y).id, [link.x + 4, link.y + 4]), "toclink");
+  await context.close();
+
+  // 4. The same list nested in the author's column wrapper, at the right edge where the margin would go.
+  const nested = await publish("Nested", REPORT + `<aside id="aside" style="position:fixed;right:24px;top:96px;width:200px"><a id="asidelink" href="#risk">Risks</a></aside>`);
+  await agentThread(nested, { exact: quote, section: "risk" }, "Nested?");
+  context = await newContext(ALICE, { signedInTo: nested });
+  tab = await context.newPage();
+  await tab.goto(docUrl(nested));
+  await until("the highlight", async () => (await painted(tab, "openartifacts-open")).length === 1);
+  await tab.waitForTimeout(500);
+  const asideLink = await tab.locator("#asidelink").boundingBox();
+  assert.equal(await tab.evaluate(([x, y]) => document.elementFromPoint(x, y).id, [asideLink.x + 4, asideLink.y + 4]), "asidelink");
+  await context.close();
+});
+
+test("an inner scroller that starts with its passage in view switches to the sheet once it scrolls away, even with tall cards", { timeout: 120_000 }, async () => {
+  const inner = `<div id="sc" style="width:600px;height:100vh;overflow:auto;margin:0 auto"><div id="content"><p id="t">The passage that is in view at load.</p>${"<p>Filler paragraph after the passage, with some words.</p>".repeat(40)}</div></div>`;
+  const docId = await publish("InnerTall", inner, { html: `<!doctype html><html><head><meta charset="utf-8"><title>Inner</title><style>html,body{height:100%;overflow:hidden;margin:0}</style></head><body>${inner}</body></html>` });
+  // One comment taller than the viewport: the margin column then needs more than a screen.
+  await agentThread(docId, { exact: "The passage that is in view at load" }, "A long remark that fills the card. ".repeat(70));
+  const context = await newContext(ALICE, { signedInTo: docId });
+  const tab = await context.newPage();
+  await tab.goto(docUrl(docId));
+  await until("the highlight", async () => (await painted(tab, "openartifacts-open")).length === 1);
+  await until("the margin column", async () => (await hostBox(tab)) !== null);
+  assert.ok((await hostBox(tab)).height > 800, "the cards need more than a screen");
+  await tab.evaluate(() => { document.getElementById("sc").scrollTop = 1500; });
+  await until("the margin to give way to the sheet", async () => (await hostBox(tab)) === null);
+  await context.close();
+});
+
+test("a positions message that only changes the host height does not rebuild the reply box being dragged", { timeout: 120_000 }, async () => {
+  const docId = await publish("LastLine", `<p>First line.</p><p id="last">The very last line of text.</p>`);
+  await agentThread(docId, { exact: "The very last line of text", section: "last" }, "Last?");
+  const context = await newContext(ALICE, { viewport: { width: 1280, height: 700 }, signedInTo: docId });
+  const tab = await context.newPage();
+  await tab.goto(docUrl(docId));
+  const frame = await until("the comments frame", () => commentsFrame(tab, docId));
+  const card = frame.locator("[data-thread]");
+  await card.waitFor();
+  const box = card.getByRole("textbox");
+  await box.fill("a reply");
+  await box.evaluate((el) => { el.style.height = "600px"; });
+  const handle = await box.elementHandle();
+  await tab.waitForTimeout(1500);
+  assert.equal(await handle.evaluate((el) => el.isConnected), true, "the same textarea is still in the frame");
+  assert.ok((await box.boundingBox()).height >= 590, "it keeps the height it was dragged to");
+  assert.ok((await hostBox(tab)).height > 700, "the host grew past the document to hold the card");
   await context.close();
 });
 

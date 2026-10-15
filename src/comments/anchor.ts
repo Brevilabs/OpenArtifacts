@@ -139,6 +139,7 @@ export async function canonicalText(source: string | ReadableStream<Uint8Array>)
   let skipDepth = 0;
   let bodyDepth = 0;
   let sawBody = false;
+  let impliedBody = false;
   let idsCache: string[] | null = [];
   let dropLeadingLf = false;
   const raw: RawRun[] = [];
@@ -179,7 +180,10 @@ export async function canonicalText(source: string | ReadableStream<Uint8Array>)
           // An unclosed <head> ends at <body>, or at any start tag that is not head
           // content (not one nested in a head child: a <noscript> or <template> keeps its own).
           const top = stack[stack.length - 1];
-          if (top?.head && !HEAD_CONTENT.has(name)) pop(top);
+          if (top?.head && !HEAD_CONTENT.has(name)) {
+            pop(top);
+            if (name !== "body") impliedBody = true;
+          }
           if (name === "body") {
             const open = stack.find((f) => f.head);
             if (open) pop(open);
@@ -209,7 +213,11 @@ export async function canonicalText(source: string | ReadableStream<Uint8Array>)
         }
         if (frame.id !== null) idsCache = null;
         try {
-          el.onEndTag(() => pop(frame));
+          el.onEndTag(() => {
+            // The leading-LF drop applies only to the token right after the start tag.
+            dropLeadingLf = false;
+            pop(frame);
+          });
         } catch {
           // Not every element can take an end-tag handler; it is popped by its
           // parent's close instead.
@@ -217,6 +225,9 @@ export async function canonicalText(source: string | ReadableStream<Uint8Array>)
       },
     })
     .onDocument({
+      comments() {
+        dropLeadingLf = false;
+      },
       text(chunk) {
         pending += chunk.text;
         if (!chunk.lastInTextNode) return;
@@ -226,9 +237,19 @@ export async function canonicalText(source: string | ReadableStream<Uint8Array>)
           dropLeadingLf = false;
           piece = piece.startsWith("\r\n") ? piece.slice(2) : piece.startsWith("\n") ? piece.slice(1) : piece;
         }
+        // Non-whitespace text ends an unclosed <head> and goes into the body the browser implies; the whitespace before it stays in the head.
+        const top = stack[stack.length - 1];
+        if (top?.head) {
+          const at = piece.search(/[^\t\n\f\r ]/);
+          if (at !== -1) {
+            pop(top);
+            impliedBody = true;
+            piece = piece.slice(at);
+          }
+        }
         if (skipDepth > 0 || piece === "") return;
         if (idsCache === null) idsCache = stack.flatMap((f) => (f.id === null ? [] : [f.id]));
-        raw.push({ text: decodeEntities(piece).normalize("NFC"), ids: idsCache, inBody: bodyDepth > 0 });
+        raw.push({ text: decodeEntities(piece).normalize("NFC"), ids: idsCache, inBody: bodyDepth > 0 || impliedBody });
       },
     });
 

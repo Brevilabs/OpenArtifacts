@@ -75,6 +75,21 @@ describe("canonical text", () => {
     expect((await canon("<div>\nplain</div>")).text).toBe("\nplain");
   });
 
+  it("keeps the leading-LF drop from leaking past an empty <pre>, a comment or an end tag", async () => {
+    expect((await canon("<p>a</p><pre></pre>\nfoo")).text).toBe("a\nfoo");
+    expect((await canon("<pre><!-- x -->\nfoo</pre>")).text).toBe("\nfoo");
+    expect((await canon("<textarea></textarea>\nbar")).text).toBe("\nbar");
+    expect((await canon("<pre>\nfoo</pre>")).text).toBe("foo");
+  });
+
+  it("moves text in an unclosed <head> into the body the browser implies", async () => {
+    expect((await canon("<html><head><meta charset=utf-8><title>T</title>Hello <b>world</b></html>")).text).toBe("Hello world");
+    expect((await canon("<html><head><title>T</title>Hello world</html>")).text).toBe("Hello world");
+    expect((await canon("<html><head><title>T</title><b>x</b><body>y</body></html>")).text).toBe("xy");
+    expect((await canon("<head><title>T</title>Intro text<p>Para</p><body>more</body>")).text).toBe("Intro textParamore");
+    expect((await canon("<head>\n<title>T</title>\n</head><body>a</body>")).text).toBe("a");
+  });
+
   it("closes an open <p> at a block-level start tag, so its id stops enclosing what follows", async () => {
     const c = await canon(doc(`<p id="a">one<p>two`));
     expect(c.text).toBe("onetwo");

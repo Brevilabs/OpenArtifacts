@@ -263,6 +263,16 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
         if (cs.position === "fixed" && r.left <= 1 && r.right >= vw - 1) continue;
         if (r.width > 0 || r.height > 0) right = Math.max(right, r.right);
       }
+      // A fixed or sticky box nested in the author's column wrapper (a contents list, a sidebar) is content too.
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
+      for (let el = walker.nextNode(); el; el = walker.nextNode()) {
+        if (el.parentElement === document.body || skipped(el) || OURS.some((name) => el.closest("." + name))) continue;
+        const cs = getComputedStyle(el);
+        if ((cs.position !== "fixed" && cs.position !== "sticky") || cs.display === "none") continue;
+        const r = el.getBoundingClientRect();
+        if (r.left <= 1 && r.right >= vw - 1) continue;
+        if (r.width > 0 && r.height > 0) right = Math.max(right, r.right);
+      }
       return right;
     };
     // When the window is not what scrolls the content (an inner overflow container), a passage can be out of the viewport while the window has nothing to scroll: document coordinates mean nothing there.
@@ -277,6 +287,8 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
     };
     let visible = null;
     const layout = () => {
+      // Measure the page without our own margin column: its height counts toward scrollHeight and would hide an inner scroller.
+      mhost.style.display = "none";
       const vw = viewport().clientWidth, right = contentRight();
       const next = vw - right >= 256 && !innerScrolled() ? "margin" : "overlay";
       if (next !== mode) { mode = next; need = 0; sheetH = 0; send({ event: "mode", mode: mode }); }
@@ -291,7 +303,6 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       const now = mode === "margin" || sheet;
       if (now !== visible) { visible = now; send({ event: "visible", shown: now }); }
       if (mode === "margin") {
-        mhost.style.display = "none";
         // The cards may need more than the document is tall; the host then extends the page, so they can be reached by scrolling it.
         const height = Math.round(Math.max(document.documentElement.scrollHeight, document.body.scrollHeight) * z);
         mhost.setAttribute("style", flat + "display:block;position:absolute;top:0;left:" + Math.round(right + 16 + window.pageXOffset) + "px;width:" + Math.round(Math.min(320, vw - right - 24)) + "px;height:" + Math.max(height, need) + "px");
@@ -392,8 +403,10 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       }
       const r = cap.rect;
       const above = r.top - 40 >= 48;
-      tipHost.style.left = Math.round(Math.max(8, Math.min(r.right - 40, viewport().clientWidth - 100))) + "px";
-      tipHost.style.top = Math.round(above ? r.top - 40 : r.bottom + 8) + "px";
+      // The tip is a child of <html>: under html{zoom} its lengths are multiplied, so convert viewport px to zoomed px.
+      const z = document.documentElement.currentCSSZoom || 1;
+      tipHost.style.left = Math.round(Math.max(8, Math.min(r.right - 40, viewport().clientWidth * z - 100)) / z) + "px";
+      tipHost.style.top = Math.round((above ? r.top - 40 : r.bottom + 8) / z) + "px";
       tipHost.style.display = "block";
     };
     const startDraft = () => {
@@ -1157,12 +1170,21 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
       } else if (settle(relayed)) render();
     } else if (msg.event === "positions") {
       const next = msg.tops && typeof msg.tops === "object" ? msg.tops : {};
-      const key = JSON.stringify([next, msg.lost, msg.height]);
-      if (key === positionsKey) return;
+      const nextHeight = typeof msg.height === "number" ? msg.height : 0;
+      const key = JSON.stringify([next, msg.lost]);
+      if (key === positionsKey) {
+        // Only the host's height moved (often in answer to our own size message): re-lay the cards, never rebuild them, or a reply box being dragged is replaced under the pointer.
+        if (nextHeight !== height) {
+          height = nextHeight;
+          if (mode === "margin" && stacked.length) restack();
+          else if (mode === "margin") cards.style.height = height + "px";
+        }
+        return;
+      }
       positionsKey = key;
       tops = next;
       lostIds = listed(msg.lost) ? msg.lost : [];
-      height = typeof msg.height === "number" ? msg.height : 0;
+      height = nextHeight;
       render();
     } else if (msg.event === "draft") {
       const a = msg.anchor;
