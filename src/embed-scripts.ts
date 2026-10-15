@@ -217,7 +217,9 @@ input{font:inherit;flex:1;min-width:0;padding:6px 10px;border:1px solid #d0d0d0;
 .seg button{flex:1;border:0;border-radius:0}.seg button[aria-checked="true"]{background:#1f1f1f;color:#fff}
 ul{list-style:none;margin:0;padding:0}
 li{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 0;border-top:1px solid #eee}
-li{flex-wrap:wrap}li span{min-width:min(100%,11rem);overflow-wrap:anywhere}li .row{margin-left:auto}li small{display:block;color:#666}
+li span{flex:1;min-width:0;overflow-wrap:anywhere}li .row{margin-left:auto;flex:none}li small{display:block;color:#666}
+li select{padding:3px 4px}li button.link{font-size:12px;color:#666}
+.sw{justify-content:space-between;margin-top:16px}.sw .seg button{flex:none;padding:4px 14px}
 .foot{display:flex;justify-content:flex-end;margin-top:12px}
 `;
 
@@ -361,6 +363,8 @@ export const FRAME_SCRIPT = String.raw`(() => {
   let switched = false;
   let latest = null;
   let message = null;
+  // The line under the Comments switch: its confirmation, or why it refused.
+  let commentsMsg = null;
   // Orders reads against writes. Each refresh takes a number and is applied only
   // if no later refresh or write has started, so an older GET resolving after a
   // write cannot redraw the document as it was. A refresh asked for while a write
@@ -596,10 +600,10 @@ export const FRAME_SCRIPT = String.raw`(() => {
       } else if (response.status === 401) {
         writeToken(null);
         showGuest("", false);
-      } else if (response.status === 404 && !settings) {
+      } else if (response.status === 404) {
         showNone();
       } else {
-        fail(message, response, parsed, settings ? "Comments need a paid plan." : undefined);
+        fail(settings && commentsMsg ? commentsMsg : message, response, parsed, settings ? "Comments need a paid plan." : undefined);
       }
     } catch (error) {
       message.textContent = "Something went wrong. Nothing was changed.";
@@ -614,6 +618,9 @@ export const FRAME_SCRIPT = String.raw`(() => {
     if (body.linkAccess !== "invited") { notice = false; switched = false; }
     if (!body.comments) commentsNote = false;
     message = node("p", { id: "oa-msg", class: "err", role: "alert" });
+    commentsMsg = node("p", { class: "err", role: "alert" });
+    // The server leaves the field out where the comments object is not bound, and then there is nothing to switch or to grant.
+    const commentable = typeof body.comments === "boolean";
     const input = node("input", { type: "email", placeholder: "Add people by email", "aria-label": "Add people by email", autocomplete: "off" });
     const add = () => { const address = input.value.trim(); if (address) write("PUT", "/access/people/" + encodeURIComponent(address)); };
     input.addEventListener("keydown", (event) => { if (event.key === "Enter") add(); });
@@ -643,14 +650,17 @@ export const FRAME_SCRIPT = String.raw`(() => {
     // The limited view (see limited()) offers only what a switch to private needs. Neither
     // control here is a threat to a private document alone, but a roster change or a new
     // way in is not something to offer under a frame that may not be the owner's own page.
-    if (!narrow) {
+    if (!narrow && commentable) {
       const on = body.comments === true;
       kids.push(
-        node("h2", {}, ["Comments"]),
-        node("div", { class: "seg", role: "radiogroup", "aria-label": "Comments" }, [
-          node("button", { type: "button", role: "radio", "aria-checked": String(!on), onclick: () => { if (on) write("PUT", "/settings", { comments: false }); } }, ["Off"]),
-          node("button", { type: "button", role: "radio", "aria-checked": String(on), onclick: () => { if (!on) write("PUT", "/settings", { comments: true }); } }, ["On"]),
+        node("div", { class: "row sw" }, [
+          node("span", {}, ["Comments"]),
+          node("div", { class: "seg", role: "radiogroup", "aria-label": "Comments" }, [
+            node("button", { type: "button", role: "radio", "aria-checked": String(!on), onclick: () => { if (on) write("PUT", "/settings", { comments: false }); } }, ["Off"]),
+            node("button", { type: "button", role: "radio", "aria-checked": String(on), onclick: () => { if (!on) write("PUT", "/settings", { comments: true }); } }, ["On"]),
+          ]),
         ]),
+        commentsMsg,
       );
       if (commentsNote) kids.push(muted(["People who can comment can now leave comments on this page."]));
     }
@@ -662,9 +672,9 @@ export const FRAME_SCRIPT = String.raw`(() => {
     }
     const sent = body.email ? "Invited · email sent" : "Invited · send them the link";
     kids.push(node("h2", {}, ["Who has access"]), node("ul", {}, [person("You", "Owner", [])].concat(body.people.map((entry) => person(entry.email, sent, narrow ? [] : [
-      roleSelect(entry),
-      button("Remove", () => write("DELETE", "/access/people/" + encodeURIComponent(entry.email))),
-    ])))));
+      commentable ? roleSelect(entry) : null,
+      button("Remove", () => write("DELETE", "/access/people/" + encodeURIComponent(entry.email)), "link"),
+    ].filter((kid) => kid !== null))))));
     // Approve, Decline and Remove are one click on a private document, and this
     // frame is on the public origin. See exposed().
     if (narrow) kids.push(muted(["To remove people or answer requests, ", node("a", { href: location.origin + "/share/" + doc, target: "_blank", rel: "noopener noreferrer" }, ["open the share page"]), "."]));

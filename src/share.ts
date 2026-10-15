@@ -198,7 +198,7 @@ export async function handleShare(
 
   const form = await readSmallForm(request);
   if (form === null) return READER_NOT_FOUND();
-  const result: ShareResult | null = await write(env, url, principal, docId, form, analytics);
+  const result = await write(env, url, principal, docId, form, analytics);
   if (result === null) return READER_NOT_FOUND();
   if (result.ok) {
     // Post, redirect, get: a reload shows the page and repeats nothing.
@@ -377,6 +377,15 @@ ${copyLinkSection(url)}`;
   );
 }
 
+/**
+ * A plan refusal as a sentence with its upgrade link: the one the API's own
+ * `402` carries, already stripped of what must not reach a checkout.
+ */
+async function upgradeSentence(lead: string, refusal: Response): Promise<string> {
+  const upgrade = ((await refusal.json()) as { error?: { upgrade_url?: string } }).error?.upgrade_url;
+  return `${lead} Nothing was changed.${upgrade === undefined ? "" : ` <a href="${escapeHtml(upgrade)}">Upgrade</a>`}`;
+}
+
 /** The sentence for a refused write, with the upgrade link when the plan is why. */
 async function errorMessage(env: Env, principal: Publisher, error: DialogError | undefined): Promise<string | null> {
   switch (error) {
@@ -388,21 +397,9 @@ async function errorMessage(env: Env, principal: Publisher, error: DialogError |
       return `A document can be shared with at most ${MAX_INVITES_PER_DOC} people.`;
     case "invite_quota":
       return `You have added ${MAX_NEW_INVITES_PER_OWNER_PER_DAY} new people in the last 24 hours. Try again later. Nothing was changed.`;
-    case "comments_plan": {
-      const refusal = (await commentsPlanRefusal(env, principal).json()) as { error?: { upgrade_url?: string } };
-      const upgrade = refusal.error?.upgrade_url;
-      return `Comments need a paid plan. Nothing was changed.${
-        upgrade === undefined ? "" : ` <a href="${escapeHtml(upgrade)}">Upgrade</a>`
-      }`;
-    }
-    case "plan": {
-      // The upgrade link the API's own `402` carries, already stripped of what
-      // must not reach a checkout.
-      const refusal = (await planRefusal(env, principal).json()) as { error?: { upgrade_url?: string } };
-      const upgrade = refusal.error?.upgrade_url;
-      return `Private sharing needs a paid plan. Nothing was changed.${
-        upgrade === undefined ? "" : ` <a href="${escapeHtml(upgrade)}">Upgrade</a>`
-      }`;
-    }
+    case "comments_plan":
+      return upgradeSentence("Comments need a paid plan.", commentsPlanRefusal(env, principal));
+    case "plan":
+      return upgradeSentence("Private sharing needs a paid plan.", planRefusal(env, principal));
   }
 }

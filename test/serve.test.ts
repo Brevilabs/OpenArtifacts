@@ -1919,6 +1919,18 @@ describe("an invited-only document", () => {
       expect((await claim({ doc: doc.docId, nonce: n })).status).toBe(404);
     });
 
+    it("leaves `comments` out of the popover's owner view where the comments object is not bound, so it draws no switch", async () => {
+      const doc = await privateDoc("for invited eyes");
+      const owner = await ownerAccount(doc);
+      const token = await tokenFor(owner, doc.docId);
+
+      const bound = (await (await embedApi(`${doc.docId}/access`, token)).json()) as Record<string, unknown>;
+      expect(typeof bound.comments).toBe("boolean");
+      const unbound = (await (await embedApi(`${doc.docId}/access`, token, {}, { ...OPEN, COMMENTS: undefined })).json()) as Record<string, unknown>;
+      expect("comments" in unbound).toBe(false);
+      expect(unbound.viewer).toBe("owner");
+    });
+
     it("S6: refuses the popover token everywhere but its own document's frame routes", async () => {
       const a = await privateDoc("for invited eyes");
       const b = await privateDoc("a second page");

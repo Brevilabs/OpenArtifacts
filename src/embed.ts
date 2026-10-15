@@ -399,7 +399,7 @@ async function frameApi(
   // `changed` says whether a write changed anything. The frame needs it to tell
   // its own switch to private from a repeat on a stale view.
   const owner = (state: AccessState, changed = false) =>
-    Response.json({ viewer: "owner", account: email, title: state.title, changed, ...accessBody(env, url, docId, state) }, { headers: NO_STORE });
+    Response.json({ viewer: "owner", account: email, title: state.title, changed, ...accessBody(env, url, docId, state), ...(env.COMMENTS === undefined ? { comments: undefined } : {}) }, { headers: NO_STORE });
   const answer = (result: AccessResult) =>
     result.ok ? owner(result.state, result.changed) : noStore(refusalResponse(env, principal, docId, result.refusal));
 

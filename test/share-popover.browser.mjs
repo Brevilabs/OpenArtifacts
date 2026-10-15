@@ -864,6 +864,16 @@ test("the owner turns comments on and off and sets a role from the popover", { t
   await frame.getByRole("radio", { name: "Only those invited" }).waitFor();
   await shoot(page, "popover-comments");
 
+  // Comments is one row (label left, switch right), the role sits on the person's row, and with comments on the popover still reaches Copy link without scrolling.
+  const label = await frame.getByText("Comments", { exact: true }).boundingBox();
+  const onBox = await on.boundingBox();
+  assert.ok(Math.abs(label.y + label.height / 2 - (onBox.y + onBox.height / 2)) < 12, "the label and the switch share a row");
+  const email = await frame.getByText(invitee).boundingBox();
+  const roleBox = await frame.getByLabel(`Access for ${invitee}`).boundingBox();
+  assert.ok(Math.abs(email.y - roleBox.y) < 30, "the role sits beside the address");
+  assert.equal(await frame.locator("main").evaluate((el) => el.scrollHeight <= el.clientHeight + 1), true, "nothing to scroll to");
+  await frame.getByRole("button", { name: "Copy link" }).waitFor();
+
   // The person's role: Can comment is what an invite has, and it moves both ways.
   const select = frame.getByLabel(`Access for ${invitee}`);
   assert.equal(await select.inputValue(), "comment");
@@ -883,6 +893,10 @@ test("the owner turns comments on and off and sets a role from the popover", { t
   try {
     await on.click();
     await frame.getByText("Comments need a paid plan. Nothing was changed.").waitFor();
+    // The refusal is drawn right under the switch that was pressed, not up by the email box.
+    const refusal = await frame.getByText("Comments need a paid plan. Nothing was changed.").boundingBox();
+    const switchBox = await on.boundingBox();
+    assert.ok(refusal.y >= switchBox.y && refusal.y - (switchBox.y + switchBox.height) < 24, "under the switch");
     // The Upgrade link needs an upgrade url, which this harness does not configure; serve.test.ts covers it.
     assert.equal((await state()).comments, false);
     await shoot(page, "popover-comments-paid");
