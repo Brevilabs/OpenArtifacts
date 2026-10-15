@@ -417,7 +417,7 @@ strip fixed to the top of the viewport, and a `<script defer
 src="https://{API host}/embed/page.js">` tag. The strip carries the byline's text
 (`Shared from Copilot for Obsidian`) on the left, only for Copilot-rendered HTML,
 and **Share** on the right, a plain link to `https://{API host}/share/{docId}`.
-It is the same bytes for every viewer and every document, public or private, and
+It is the same bytes for every viewer of a document, public or private, and
 names no identity, so public pages stay cacheable. The footer byline is as
 before. On a server without reader sign-in no page carries the top bar or the
 page script, and the header byline is as it was (see [The top bar, the Share
@@ -730,7 +730,8 @@ are the five access operations of [The access routes](#the-access-routes) under
 that token, with no CORS. They run the same operations as the access routes and
 the share page, so the plan check and its `402`, both invite caps, the invite email
 and the analytics event are unchanged. `GET` answers `{"viewer": "owner", …}` with
-the `Access` fields and the title for the owner, `{"viewer": "reader", "account",
+the `Access` fields, the title and `changed` (whether the write changed anything;
+`false` for a `GET`) for the owner, `{"viewer": "reader", "account",
 "docId", "url", "title"}` for a signed-in account that may read the document but
 does not manage it, and `404` for everyone else. A missing, expired or foreign
 token is `401`.

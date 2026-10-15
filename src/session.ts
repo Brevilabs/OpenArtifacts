@@ -164,9 +164,12 @@ export async function readSession(request: Request, secret: string, now: number)
   return typeof session?.a === "string" ? session.a : null;
 }
 
+/** The one query a return path may carry: the share page's request for its sign-in page. */
+const SHARE_SIGNIN_QUERY = "?signin";
+
 /**
  * A return path the sign-in pages may redirect to: `/open/{docId}[/v{n}]`,
- * `/share/{docId}` or the Share popover's popup, `/embed/sign-in?doc=…&h=…`, and
+ * `/share/{docId}[?signin]` or the Share popover's popup, `/embed/sign-in?doc=…&h=…`, and
  * nothing else. Rebuilt from the parsed parts rather than echoed, so what a
  * form field or a cookie carried can never become a different location: no
  * absolute url, no `//host`, no fragment, no other query parameter (the popup's
@@ -178,8 +181,12 @@ export function returnPath(candidate: string | null): string | null {
   if (candidate.startsWith(`${EMBED_SIGNIN_PATH}?`)) return popupPath(candidate);
   const open = parseDocPath(candidate, "/open");
   if (open !== null) return docPath("/open", open);
-  const share = parseDocPath(candidate, SHARE_PREFIX);
-  return share !== null && share.pinned === null ? docPath(SHARE_PREFIX, share) : null;
+  // A bare `?signin` is kept on a share path, and only there: it picks the
+  // sign-in page over the visitor view of a public document, which is what "Use
+  // another account" must land on. It names no location, so it adds no redirect.
+  const picked = candidate.endsWith(SHARE_SIGNIN_QUERY);
+  const share = parseDocPath(picked ? candidate.slice(0, -SHARE_SIGNIN_QUERY.length) : candidate, SHARE_PREFIX);
+  return share !== null && share.pinned === null ? `${docPath(SHARE_PREFIX, share)}${picked ? SHARE_SIGNIN_QUERY : ""}` : null;
 }
 
 /** The popup's own address, `/embed/sign-in?doc={docId}&h={hash}`, or null if either parameter is not well formed. */

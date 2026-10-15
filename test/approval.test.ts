@@ -1618,6 +1618,8 @@ describe("reader sign-in", () => {
       expect(response.headers.get("location")).toBe(next.replace(/\/$/, ""));
       expect(response.headers.get("set-cookie")).toMatch(/^__Host-oa_session=; .*Max-Age=0$/);
     }
+    // A share path may carry a bare ?signin, which picks the sign-in page; nothing else rides along.
+    expect((await out(`/share/${DOC_ID}?signin`)).headers.get("location")).toBe(`/share/${DOC_ID}?signin`);
     // The Share popover's popup returns to itself, with its nonce hash and nothing else.
     const H = "ab".repeat(32);
     const popup = `/embed/sign-in?doc=${DOC_ID}&h=${H}`;
@@ -1646,6 +1648,11 @@ describe("reader sign-in", () => {
       `/share/${DOC_ID}/v1`,
       `/share/${DOC_ID}/extra`,
       `/share/${DOC_ID}?x=1`,
+      `/share/${DOC_ID}?signin&x=1`,
+      `/share/${DOC_ID}?signin=1`,
+      `/share/${DOC_ID}/v1?signin`,
+      `/open/${DOC_ID}?signin`,
+      `/share/${DOC_ID}?signin#frag`,
       `/share/${DOC_ID}#frag`,
       "/share",
       "//evil.example/share/" + DOC_ID,

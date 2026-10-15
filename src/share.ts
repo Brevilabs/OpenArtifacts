@@ -234,7 +234,9 @@ async function readerView(
   const actions =
     email === null
       ? `<div class="actions"><a href="${next}?signin">Is this your page? Sign in to manage</a></div>`
-      : `<div class="actions">${useAnotherAccount(next)}</div>\n<p class="hint">${escapeHtml(COPILOT_HINT)}</p>`;
+      // Back to the sign-in page, not the visitor view a public document
+      // would otherwise show a reader who has just signed out.
+      : `<div class="actions">${useAnotherAccount(`${next}?signin`)}</div>\n<p class="hint">${escapeHtml(COPILOT_HINT)}</p>`;
   return readerPage(
     {
       title: "Share document",

@@ -2194,11 +2194,21 @@ describe("an invited-only document", () => {
         expect(page).toContain("Only the owner can change who can open this.");
         expect(page).toContain(`value="https://openartifacts.site/d/${id}"`);
         expect(page).toContain("Use another account");
-        expect(page).toContain(`name="next" value="/share/${id}"`);
+        expect(page).toContain(`name="next" value="/share/${id}?signin"`);
         expect(page).toContain(hint);
-        for (const absent of ["Add people", "Who has access", "Link access", "Is this your page", "?signin"]) {
+        for (const absent of ["Add people", "Who has access", "Link access", "Is this your page"]) {
           expect(page, absent).not.toContain(absent);
         }
+      }
+
+      // Use another account signs out and lands on the sign-in page, on a public
+      // document as on an invited-only one, not on the visitor view.
+      for (const id of [pub.docId, doc.docId]) {
+        const out = await sendTo("POST", `${API}/signin/out`, { headers: SAME_ORIGIN, body: new URLSearchParams({ next: `/share/${id}?signin` }) }, PRIVATE);
+        expect(out.status).toBe(303);
+        expect(out.headers.get("location")).toBe(`/share/${id}?signin`);
+        const landed = await (await open(id, null, PRIVATE, "?signin")).text();
+        expect(landed, id).toContain("Sign in to manage this document");
       }
     });
 
