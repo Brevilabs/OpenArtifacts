@@ -152,6 +152,16 @@
     }
   ],
 
+  // Inline comments: one SQLite Durable Object per document, addressed with
+  // `COMMENTS.idFromName(docId)`. The class holds a document's threads and
+  // comments; D1 only carries the owner's on/off switch. SQLite-backed Durable
+  // Objects are available on the free Workers plan. The migration is a deploy
+  // step: the class must exist before a Worker that binds it can be uploaded.
+  "durable_objects": {
+    "bindings": [{ "name": "COMMENTS", "class_name": "DocComments" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["DocComments"] }],
+
   // No workers.dev route, ever. `resolveSurface` falls back to path prefixes
   // only when every host var is empty, so an unconfigured workers.dev hostname
   // would serve /d/* — user HTML on a domain we cannot sacrifice, and one whose Public

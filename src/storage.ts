@@ -33,6 +33,15 @@ export function versionObjectKey(docId: string, n: number): string {
 }
 
 /**
+ * The snapshot of a document's comment threads — `docs/{docId}/threads.json`.
+ * Written by the comments Durable Object after every mutation and swept with
+ * the rest of the prefix on delete.
+ */
+export function threadsObjectKey(docId: string): string {
+  return `${docObjectPrefix(docId)}threads.json`;
+}
+
+/**
  * Content type of every stored object, and of every served page. Injection
  * happens on the way out, so the two are not the same bytes — but the transform
  * only adds HTML to HTML, so it is the same type either way.
