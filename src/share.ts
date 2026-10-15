@@ -286,14 +286,14 @@ async function dialog(
     `<form method="post" action="${action}"${cls ? ` class="${cls}"` : ""}>${hidden("op", op)}${Object.entries(fields)
       .map(([name, value]) => hidden(name, value))
       .join("")}${body}</form>`;
-  const emailSent = emailConfigured(env);
+  const emailEnabled = emailConfigured(env);
   const mode = (value: "anyone" | "invited", label: string, hint: string) =>
     `<label class="choice"><input type="radio" name="linkAccess" value="${value}"${state.link_access === value ? " checked" : ""}><span><b>${label}</b><small>${hint}</small></span></label>`;
 
   const people = state.people
     .map(
       (person) =>
-        `<li><span><b><bdi>${escapeHtml(person.email)}</bdi></b><small>${emailSent ? "Invited · email sent" : "Invited · send them the link"}</small></span>${form("remove", { email: person.email }, `<button type="submit">Remove</button>`)}</li>`,
+        `<li><span><b><bdi>${escapeHtml(person.email)}</bdi></b><small>${emailEnabled ? "Invited" : "Invited · send them the link"}</small></span>${form("remove", { email: person.email }, `<button type="submit">Remove</button>`)}</li>`,
     )
     .join("");
   const requests = state.requests.length
@@ -321,7 +321,7 @@ ${shown.notice === true ? `<p>${COPY_NOTICE}</p>` : ""}
     `<div class="row"><input type="email" name="email" placeholder="Email address" aria-label="Email address" autocomplete="off" required><button type="submit">Add</button></div>`,
   )}</section>
 ${requests}
-<section><h2>Who has access</h2><ul><li><span><b>You</b><small>Owner</small></span></li>${people}</ul></section>
+<section><h2>Who has access</h2><ul><li><span><b>You</b><small>Owner</small></span></li>${people}</ul>${emailEnabled ? "<p>OpenArtifacts emails each invitation. If someone doesn’t get it, send them the link.</p>" : ""}</section>
 ${copyLinkSection(url)}`;
 
   return readerPage(

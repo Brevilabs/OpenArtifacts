@@ -2274,7 +2274,9 @@ describe("an invited-only document", () => {
       expect(html).toContain(`value="https://openartifacts.site/d/${doc.docId}"`);
       expect(html).toContain("<b>You</b><small>Owner</small>");
       expect(html).toContain("alice@acme.com");
-      expect(html).toContain("Invited · email sent");
+      expect(html).toContain("<small>Invited</small>");
+      expect(html).toContain("OpenArtifacts emails each invitation. If someone doesn’t get it, send them the link.");
+      expect(html).not.toContain("Invited · email sent");
       expect(html).toContain("bob@other.com");
       expect(html).toContain("Asked to open it");
       expect(html).toContain("Approve");

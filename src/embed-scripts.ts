@@ -608,10 +608,11 @@ export const FRAME_SCRIPT = String.raw`(() => {
         button("Decline", () => write("DELETE", "/requests/" + encodeURIComponent(request.email))),
       ]))));
     }
-    const sent = body.email ? "Invited · email sent" : "Invited · send them the link";
-    kids.push(node("h2", {}, ["Who has access"]), node("ul", {}, [person("You", "Owner", [])].concat(body.people.map((entry) => person(entry.email, sent, narrow ? [] : [
+    const invitationLabel = body.email ? "Invited" : "Invited · send them the link";
+    kids.push(node("h2", {}, ["Who has access"]), node("ul", {}, [person("You", "Owner", [])].concat(body.people.map((entry) => person(entry.email, invitationLabel, narrow ? [] : [
       button("Remove", () => write("DELETE", "/people/" + encodeURIComponent(entry.email))),
     ])))));
+    if (body.email) kids.push(muted(["OpenArtifacts emails each invitation. If someone doesn’t get it, send them the link."]));
     // Approve, Decline and Remove are one click on a private document, and this
     // frame is on the public origin. See exposed().
     if (narrow) kids.push(muted(["To remove people or answer requests, ", node("a", { href: location.origin + "/share/" + doc, target: "_blank", rel: "noopener noreferrer" }, ["open the share page"]), "."]));

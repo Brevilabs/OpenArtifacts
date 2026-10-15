@@ -519,10 +519,15 @@ Every paid plan includes private sharing, and the pull request sets it:
 
 1. Merge the privacy policy and Terms change in `Brevilabs/app-sites`; it deploys
    on merge, so the legal copy is live first.
-2. Merge the OpenArtifacts pull request. CI deploys the Worker; approve the npm
-   release prompt. Its title is the CLI's next patch version, so the one merge
-   also starts the CLI release.
-3. Publish the Obsidian Copilot release, and announce.
+2. Merge the OpenArtifacts feature pull request. CI deploys the Worker. This
+   merge does not publish the CLI.
+3. Verify production private sharing, then publish the Obsidian Copilot release
+   and announce.
+
+After the feature merge, open a separate CLI release PR titled exactly `v0.2.5`,
+with the matching package and lockfile versions. Follow the npm release rules in
+`AGENTS.md`. Merging that release PR starts npm publication; the feature PR keeps
+its descriptive title and does not bump the CLI version.
 
 If the deploy in step 2 fails, fix it before step 3. Until then, the legal pages
 are the only visible change.
