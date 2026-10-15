@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Env } from "../src/config.js";
-import worker, { resolveSurface } from "../src/index.js";
+import worker, { resolvePublisherHost, resolveSurface } from "../src/index.js";
 
 /** Routing tests never touch storage, so those bindings stay unset. */
 const env = (vars: Partial<Env> = {}): Env =>
@@ -109,6 +109,45 @@ describe("resolveSurface — canonical and legacy domains", () => {
     expect(
       resolveSurface(WORKERS_DEV, "/api/v1/docs", { servingHost: "openartifacts.site" }),
     ).toBe("unknown");
+  });
+});
+
+describe("resolveSurface — a publisher's own origin", () => {
+  const LABEL = "0123456789abcdefghjkmnpqrs";
+
+  it("resolves {26-character label}.{servingHost} to that publisher, and nothing else", () => {
+    expect(LABEL).toHaveLength(26);
+    expect(resolveSurface(`${LABEL}.openartifacts.site`, "/d/abc", HOSTS)).toBe("publisher-serving");
+    // Host names are case-insensitive and may carry a root dot, as for every other host.
+    expect(resolveSurface(`${LABEL.toUpperCase()}.OPENARTIFACTS.SITE.`, "/d/abc", HOSTS)).toBe("publisher-serving");
+    expect(resolveSurface(`${LABEL}.openartifacts.site.`, "/api/v1/docs", HOSTS)).toBe("publisher-serving");
+    expect(resolvePublisherHost(`${LABEL}.openartifacts.site`, HOSTS.servingHost)).toEqual({ label: LABEL });
+  });
+
+  it("fails closed on every other subdomain, and never on an API or document host", () => {
+    for (const host of [
+      `${LABEL.slice(1)}.openartifacts.site`, // too short
+      `${LABEL}x.openartifacts.site`, // too long
+      `${LABEL.slice(0, 25)}i.openartifacts.site`, // not in the alphabet
+      `${LABEL.slice(0, 25)}l.openartifacts.site`, // "l" is not in the alphabet
+      `a.${LABEL}.openartifacts.site`, // more than one label
+      `${LABEL}.openartifacts.site.evil.com`,
+      `${LABEL}.api.openartifacts.ai`,
+      "www.openartifacts.site",
+    ]) {
+      expect(resolvePublisherHost(host, HOSTS.servingHost)).toBeNull();
+      expect(resolveSurface(host, "/d/abc", HOSTS)).toBe("unknown");
+    }
+    expect(resolvePublisherHost(`${LABEL}.openartifacts.site`, "")).toBeNull();
+    expect(resolveSurface("openartifacts.site", "/d/abc", HOSTS)).toBe("serving");
+  });
+
+  it("answers no health check, and serves nothing outside /d", async () => {
+    const host = `https://${LABEL}.openartifacts.site`;
+    expect((await get(`${host}/health`, PRODUCTION_ENV)).status).toBe(404);
+    const api = await get(`${host}/api/v1/docs`, PRODUCTION_ENV);
+    expect(api.status).toBe(404);
+    expect(api.headers.get("cross-origin-opener-policy")).toBe("same-origin-allow-popups");
   });
 });
 
@@ -225,6 +264,12 @@ describe("worker dispatch", () => {
     const serving = await get(`https://${WORKERS_DEV}/d/abc`);
     expect(serving.status).toBe(404);
     expect(serving.headers.get("x-robots-tag")).toBe("noindex, nofollow");
+
+    // The page script is the API surface's, and with no hosts configured there
+    // is no reader sign-in to serve it, so local development answers 404.
+    expect(resolveSurface(WORKERS_DEV, "/embed/page.js", {})).toBe("api");
+    expect(resolveSurface("openartifacts.site", "/embed/page.js", HOSTS)).toBe("serving");
+    expect((await get(`https://${WORKERS_DEV}/embed/page.js`)).status).toBe(404);
   });
 
   it("never sets a cookie on the canonical document surface", async () => {

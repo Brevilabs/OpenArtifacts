@@ -222,11 +222,16 @@ Commands:
   install            Install or upgrade the CLI and detected agent skills
   login              Approve this machine and store its token
   account [--open]   Refresh plan, limits, and usage; open account management with --open
-  publish <file.html> [--title <title>] [--doc-id <docId>]
-                     Publish an HTML file; pass --doc-id to update an existing document
-  list               List published documents
+  publish <file.html> [--title <title>] [--doc-id <docId>] [--private]
+                     Publish an HTML file; pass --doc-id to update an existing document,
+                     or --private to create it for invited people only (on a server
+                     that supports private documents; otherwise nothing is created)
+  share <docId> [--add <email>] [--remove <email>] [--decline <email>] [--link anyone|invited]
+                     Show who can open a document, pending requests and its share page,
+                     or change it; --add also approves a request
+  list               List published documents and their link access
   get <docId>        Print a document's current HTML
-  unshare <docId>    Withdraw a public document
+  unshare <docId>    Withdraw a document
   tokens             List this account's machine tokens
   revoke <tokenId>   Revoke a machine token`;
 
@@ -235,25 +240,70 @@ Commands:
  * defaults the title to the file name; an update omits it so the server keeps the
  * current title unless --title was given.
  * @param {string} file @param {string[]} options
- * @returns {Promise<{docId?: string, body: {title?: string, html: string}}>}
+ * @returns {Promise<{docId?: string, private: boolean, body: {title?: string, html: string}}>}
  */
 export async function preparePublish(file, options) {
   if (![".html", ".htm"].includes(extname(file).toLowerCase())) {
     throw new Error("Publish an HTML file (.html, .htm). Render other formats to HTML first.");
   }
-  /** @type {{title?: string, docId?: string}} */
+  /** @type {{title?: string, docId?: string, private?: boolean}} */
   const flags = {};
-  for (let index = 0; index < options.length; index += 2) {
-    const [flag, value] = [options[index], options[index + 1]];
+  for (let index = 0; index < options.length; index += 1) {
+    const flag = options[index];
+    if (flag === "--private" && !flags.private) {
+      flags.private = true;
+      continue;
+    }
+    const value = options[++index];
     if (!value || value.startsWith("--")) throw new Error(HELP);
     if (flag === "--title" && flags.title === undefined) flags.title = value;
     else if (flag === "--doc-id" && flags.docId === undefined) flags.docId = value;
     else throw new Error(HELP);
   }
+  if (flags.private && flags.docId) {
+    throw new Error("--private applies to a new document. Change an existing one with `openartifacts share <docId> --link invited`.");
+  }
   const path = resolve(file);
   const html = await readFile(path, "utf8");
   const title = flags.title ?? (flags.docId ? undefined : basename(path, extname(path)));
-  return { docId: flags.docId, body: title === undefined ? { html } : { title, html } };
+  return {
+    docId: flags.docId,
+    private: flags.private === true,
+    body: { ...(title === undefined ? {} : { title }), html },
+  };
+}
+
+/**
+ * The share page of a document, on the API host the CLI is talking to. It is
+ * not derived from the document's url, which is on the serving domain.
+ * @param {string} host @param {string} docId
+ */
+function manageUrl(host, docId) {
+  return `${host}/share/${encodeURIComponent(docId)}`;
+}
+
+/**
+ * The access changes `share` was asked for, in order, read before any
+ * authentication. Each flag changes one thing: one address added (which also
+ * approves its request), one removed, one request declined, or the link
+ * setting. There is no way to send a whole list, so a retry or a mistake cannot
+ * remove everyone.
+ * @param {string[]} options
+ * @returns {Array<["link" | "add" | "remove" | "decline", string]>}
+ */
+export function prepareShare(options) {
+  /** @type {Array<["link" | "add" | "remove" | "decline", string]>} */
+  const changes = [];
+  for (let index = 0; index < options.length; index += 2) {
+    const [flag, value] = [options[index], options[index + 1]];
+    if (!value || value.startsWith("--")) throw new Error(HELP);
+    if (flag === "--add") changes.push(["add", value]);
+    else if (flag === "--remove") changes.push(["remove", value]);
+    else if (flag === "--decline") changes.push(["decline", value]);
+    else if (flag === "--link" && (value === "anyone" || value === "invited")) changes.push(["link", value]);
+    else throw new Error(HELP);
+  }
+  return changes;
 }
 
 /** CLI entry point. */
@@ -264,16 +314,17 @@ export async function main(args) {
     console.log(HELP);
     return;
   }
-  if (!["install", "login", "account", "publish", "list", "get", "unshare", "tokens", "revoke"].includes(command)) {
+  if (!["install", "login", "account", "publish", "share", "list", "get", "unshare", "tokens", "revoke"].includes(command)) {
     throw new Error(HELP);
   }
-  const needsArgument = ["publish", "get", "unshare", "revoke"].includes(command);
-  if ((extra.length && command !== "publish") || (needsArgument && !argument) || (!needsArgument && argument && !(command === "account" && argument === "--open"))) {
+  const needsArgument = ["publish", "share", "get", "unshare", "revoke"].includes(command);
+  if ((extra.length && command !== "publish" && command !== "share") || (needsArgument && !argument) || (!needsArgument && argument && !(command === "account" && argument === "--open"))) {
     throw new Error(HELP);
   }
   const value = argument ?? "";
   if (command === "install") return install();
   const prepared = command === "publish" ? await preparePublish(value, extra) : undefined;
+  const changes = command === "share" ? prepareShare(extra) : [];
 
   const host = (process.env.OPENARTIFACTS_API_HOST ?? DEFAULT_HOST).replace(/\/$/, "");
   const directory = configDir();
@@ -316,20 +367,56 @@ export async function main(args) {
     try {
       const published = prepared.docId
         ? await client.updateDoc(prepared.docId, prepared.body)
-        : await client.createDoc(prepared.body);
-      console.log(JSON.stringify(published));
+        : prepared.private
+          ? await client.createPrivateDoc(prepared.body)
+          : await client.createDoc(prepared.body);
+      // A 201 from the private route proves the server has the share page, and the
+      // skill ends its report with this url even when the user named nobody.
+      console.log(JSON.stringify(prepared.private
+        ? { ...published, manageUrl: manageUrl(host, published.docId) }
+        : published));
     } catch (error) {
       if (prepared.docId && error instanceof APIError && error.status === 404) {
         error.message += ` No document ${prepared.docId} is in this account. Publish without --doc-id to create a new document.`;
+      }
+      // A Worker that predates private sharing, and one without reader sign-in,
+      // both answer 404 and create nothing. There is no fallback to a public page.
+      if (prepared.private && error instanceof APIError && error.status === 404) {
+        throw new Error("This server does not support private documents. Nothing was published.");
+      }
+      throw error;
+    }
+  } else if (command === "share") {
+    try {
+      let access;
+      for (const [change, target] of changes) {
+        access = change === "link"
+          ? await client.setLinkAccess(value, /** @type {"anyone" | "invited"} */ (target))
+          : change === "add" ? await client.addPerson(value, target)
+            : change === "remove" ? await client.removePerson(value, target)
+              : await client.declineRequest(value, target);
+      }
+      access ??= await client.getAccess(value);
+      console.log(JSON.stringify({ ...access, manageUrl: manageUrl(host, value) }, null, 2));
+    } catch (error) {
+      // Not yours, deleted, an older Worker and a server without reader sign-in all
+      // answer 404, and the CLI cannot tell them apart.
+      if (error instanceof APIError && error.status === 404) {
+        error.message = "Not found, or this server does not support private documents.";
       }
       throw error;
     }
   } else if (command === "list") {
     console.log(JSON.stringify(await client.listDocs(), null, 2));
   } else if (command === "get") {
-    const doc = (await client.listDocs()).find((item) => item.docId === value);
-    if (!doc) throw new Error(`No document with id ${value} is in this account.`);
-    process.stdout.write(await client.readDocument(doc.url));
+    try {
+      process.stdout.write(await client.getHtml(value));
+    } catch (error) {
+      if (error instanceof APIError && error.status === 404) {
+        error.message = `No document ${value} is in this account.`;
+      }
+      throw error;
+    }
   } else if (command === "unshare") {
     await client.unshare(value);
     console.log(`Unshared ${value}.`);

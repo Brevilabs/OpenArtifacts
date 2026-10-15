@@ -2,10 +2,19 @@ import { createExecutionContext, env, waitOnExecutionContext } from "cloudflare:
 import { beforeEach, describe, expect, it } from "vitest";
 import { NO_ANALYTICS } from "../src/analytics.js";
 import { deleteDoc } from "../src/api/manage.js";
+import { addPerson } from "../src/api/access.js";
 import { resolvePublisher, type Publisher } from "../src/auth.js";
 import type { Env } from "../src/config.js";
-import type { DocRow } from "../src/db.js";
-import { DOC_ID_LENGTH } from "../src/ids.js";
+import {
+  deleteAccessRequest,
+  findOrCreateAccount,
+  insertAccessRequest,
+  insertInvite,
+  readAccess,
+  type DocRow,
+} from "../src/db.js";
+import { DOC_ID_LENGTH, newAccountId } from "../src/ids.js";
+import { linkExternalOwner } from "../src/owners.js";
 import { docObjectPrefix, versionObjectKey } from "../src/storage.js";
 import worker from "../src/index.js";
 
@@ -18,6 +27,7 @@ const API_ORIGIN = "https://openartifacts.workers.dev";
 
 const KEY_A = "cplus_live_a1b2c3d4e5f60718";
 const KEY_B = "cplus_live_9988776655443322";
+const KEY_FREE = "cplus_live_0102030405060708";
 
 /** A doc id of the right shape that no push ever minted. */
 /**
@@ -73,8 +83,9 @@ async function send(
   key: string | null,
   body?: unknown,
   overrides: Partial<Env> = {},
+  extraHeaders: HeadersInit = {},
 ): Promise<Response> {
-  const headers = new Headers();
+  const headers = new Headers(extraHeaders);
   if (key !== null) headers.set("authorization", `Bearer ${key}`);
 
   const init: RequestInit = { method, headers };
@@ -85,7 +96,7 @@ async function send(
 
   const ctx = createExecutionContext();
   const response = await worker.fetch(
-    new Request(`${API_ORIGIN}${path}`, init),
+    new Request(path.startsWith("https://") ? path : `${API_ORIGIN}${path}`, init),
     {
       ...env,
       SERVING_HOST: "",
@@ -434,6 +445,7 @@ describe("GET /api/v1/docs", () => {
         url: created.url,
         version: updated.version,
         updatedAt: row?.updated_at,
+        linkAccess: "anyone",
       },
     ]);
   });
@@ -763,4 +775,551 @@ it("marks a rejected credential without losing its documents or another key's ac
   expect(await response.text()).toContain(doc.docId);
   expect(await resolvePublisher(KEY_A, { ...env, LICENSE_API_URL: "" }))
     .toMatchObject({ ok: false, reason: "license_unavailable" });
+});
+
+describe("private sharing through the owner's credential", () => {
+  const KEY_PLUS = "cplus_live_5544332211009988";
+  const API = "https://api.openartifacts.ai";
+  const sent: Array<{ to: string; subject: string; text: string }> = [];
+  const hosts = {
+    SERVING_HOST: "openartifacts.site",
+    API_HOST: "api.openartifacts.ai",
+    READER_SESSION_SECRET: "k".repeat(32),
+    EMAIL: { send: async (message: { to: string; subject: string; text: string }) => void sent.push(message) },
+    EMAIL_FROM: "share@mail.openartifacts.ai",
+  } as Partial<Env>;
+
+  async function privateDoc(): Promise<PushResponse & { linkAccess: string }> {
+    await seedPublisher(KEY_PLUS, undefined, "plus");
+    const created = await send("POST", `${API}/api/v1/private-docs`, KEY_PLUS, {
+      title: "Q3 client report",
+      html: page("<p>owner only</p>"),
+    }, hosts);
+    expect(created.status).toBe(201);
+    return (await created.json()) as PushResponse & { linkAccess: string };
+  }
+
+  it("creates a private page through its own route, private from the first insert, and says so in the receipt", async () => {
+    const created = await privateDoc();
+    expect(created).toEqual({ docId: created.docId, url: `https://openartifacts.site/d/${created.docId}`, version: 1, linkAccess: "invited" });
+    expect(await env.DB.prepare("SELECT link_access FROM docs WHERE id = ?").bind(created.docId).first()).toEqual({ link_access: "invited" });
+
+    // The listing reports the stored mode, and the apex never serves the bytes.
+    const listed = (await (await send("GET", `${API}/api/v1/docs`, KEY_PLUS, undefined, hosts)).json()) as { docs: Array<{ docId: string; linkAccess: string }> };
+    expect(listed.docs.find((doc) => doc.docId === created.docId)?.linkAccess).toBe("invited");
+
+    // The route takes POST and nothing else; every other method is an unclaimed path.
+    expect((await send("GET", `${API}/api/v1/private-docs`, KEY_PLUS, undefined, hosts)).status).toBe(404);
+    expect((await send("PUT", `${API}/api/v1/private-docs/${created.docId}`, KEY_PLUS, { html: page("x") }, hosts)).status).toBe(404);
+  });
+
+  it("keeps POST /docs public: the receipt says anyone, a linkAccess field is ignored, and a PUT never changes access", async () => {
+    await seedPublisher(KEY_PLUS, undefined, "plus");
+    const created = await send("POST", `${API}/api/v1/docs`, KEY_PLUS, { html: page("<p>public</p>"), linkAccess: "invited" }, hosts);
+    expect(created.status).toBe(201);
+    const receipt = (await created.json()) as { docId: string; linkAccess: string };
+    expect(receipt.linkAccess).toBe("anyone");
+    expect(await env.DB.prepare("SELECT link_access FROM docs WHERE id = ?").bind(receipt.docId).first()).toEqual({ link_access: "anyone" });
+
+    // Not even a nonsense value is refused: it is an unknown field, as before. The update receipt is the one it always was.
+    const updated = await send("PUT", `${API}/api/v1/docs/${receipt.docId}`, KEY_PLUS, { html: page("<p>v2</p>"), linkAccess: "nonsense" }, hosts);
+    expect(updated.status).toBe(200);
+    expect(await updated.json()).toEqual({ docId: receipt.docId, url: `https://openartifacts.site/d/${receipt.docId}`, version: 2 });
+    expect(await env.DB.prepare("SELECT link_access FROM docs WHERE id = ?").bind(receipt.docId).first()).toEqual({ link_access: "anyone" });
+  });
+
+  it("opens the owner's private page with no sign-in, and nobody else's", async () => {
+    const created = await privateDoc();
+    expect(created.linkAccess).toBe("invited");
+
+    const opened = await send("POST", `${API}/api/v1/docs/${created.docId}/open`, KEY_PLUS, undefined, hosts);
+    expect(opened.status).toBe(200);
+    expect(opened.headers.get("cache-control")).toBe("no-store");
+    const { url, expiresAt } = (await opened.json()) as { url: string; expiresAt: number };
+    // The grant lives sixty seconds, no more.
+    expect(expiresAt).toBeGreaterThan(Date.now());
+    expect(expiresAt).toBeLessThanOrEqual(Date.now() + 60_000);
+
+    // Follow it as a browser would: the grant becomes a cookie, and the cookie reads the page.
+    const swapped = await send("GET", url, null, undefined, hosts);
+    expect(swapped.status).toBe(303);
+    const cookie = swapped.headers.get("set-cookie")!.split(";")[0]!;
+    const page = await send("GET", new URL(url).origin + new URL(url).pathname, null, undefined, hosts, { cookie });
+    expect(page.status).toBe(200);
+    expect(await page.text()).toContain("owner only");
+
+    // A publisher who does not own it is told it does not exist, as everywhere else.
+    expect((await send("POST", `${API}/api/v1/docs/${created.docId}/open`, KEY_B, undefined, hosts)).status).toBe(404);
+  });
+
+  it("adds a person once, emails them the link and no credential, and removes them again", async () => {
+    const created = await privateDoc();
+    const person = `${API}/api/v1/docs/${created.docId}/access/people/Alice%40Acme.com`;
+    const listOf = async (response: Response) =>
+      ((await response.json()) as { people: Array<{ email: string }> }).people.map((p) => p.email);
+
+    sent.length = 0;
+    const first = await send("PUT", person, KEY_PLUS, undefined, hosts);
+    const again = await send("PUT", person, KEY_PLUS, undefined, hosts);
+    expect([first.status, again.status]).toEqual([200, 200]);
+    expect(await listOf(first)).toEqual(["alice@acme.com"]);
+    expect(await listOf(again)).toEqual(["alice@acme.com"]);
+
+    // Exactly one invite, whoever retried: the title alone in the subject, the
+    // canonical link, the address to sign in with, and no credential.
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.to).toBe("alice@acme.com");
+    expect(sent[0]!.subject).toBe("\u201cQ3 client report\u201d was shared with you");
+    expect(sent[0]!.text).toContain(`https://openartifacts.site/d/${created.docId}`);
+    expect(sent[0]!.text).toContain("Q3 client report");
+    expect(sent[0]!.text).toContain("Sign in with this address, alice@acme.com, to open it.");
+    expect(sent[0]!.text).not.toContain("grant=");
+
+    expect(await listOf(await send("DELETE", person, KEY_PLUS, undefined, hosts))).toEqual([]);
+  });
+
+  it("answers a repeat add on a lapsed license plan with 200 and sends no email", async () => {
+    const created = await privateDoc();
+    const person = `${API}/api/v1/docs/${created.docId}/access/people/alice%40acme.com`;
+    expect((await send("PUT", person, KEY_PLUS, undefined, hosts)).status).toBe(200);
+    await env.DB.prepare("UPDATE publishers SET plan = 'free' WHERE key_hash = ?").bind(await sha256Hex(KEY_PLUS)).run();
+    sent.length = 0;
+
+    for (let i = 0; i < 2; i += 1) {
+      const repeat = await send("PUT", person, KEY_PLUS, undefined, hosts);
+      expect(repeat.status).toBe(200);
+      expect(await repeat.json()).toMatchObject({ people: [{ email: "alice@acme.com" }] });
+    }
+    expect(sent).toEqual([]);
+  });
+
+  it("caps new invites at 100 per owner in a rolling 24 hours, across documents, and refuses nothing else", async () => {
+    const first = await privateDoc();
+    const second = await privateDoc();
+    const owner = await seedPublisher(KEY_PLUS, undefined, "plus");
+    const other = await push(KEY_B, { title: "Not mine", html: page("<p>b</p>") });
+    const now = Date.now();
+    const seed = async (docId: string, email: string, createdAt: number) => {
+      await env.DB.prepare("INSERT INTO doc_invites (doc_id, email, created_at) VALUES (?, ?, ?)").bind(docId, email, createdAt).run();
+      const row = await env.DB.prepare("SELECT owner FROM docs WHERE id = ?").bind(docId).first<{ owner: string }>();
+      await env.DB.prepare("INSERT INTO invite_sends (owner, created_at) VALUES (?, ?)").bind(row!.owner, createdAt).run();
+    };
+    for (let i = 0; i < 99; i += 1) await seed(i % 2 === 0 ? first.docId : second.docId, `recent${i}@acme.com`, now - 1000);
+    // Outside the window, and another publisher's: neither counts.
+    for (let i = 0; i < 5; i += 1) await seed(first.docId, `old${i}@acme.com`, now - 86_400_001);
+    for (let i = 0; i < 100; i += 1) await seed(other.docId, `theirs${i}@acme.com`, now - 1000);
+    const bob = (await findOrCreateAccount(env.DB, newAccountId(), "late@acme.com", now)).id;
+    expect(await insertAccessRequest(env.DB, second.docId, bob, now, 100)).not.toBeNull();
+    sent.length = 0;
+    const put = (docId: string, email: string, body?: unknown) =>
+      send("PUT", `${API}/api/v1/docs/${docId}/access/people/${email}`, KEY_PLUS, body, hosts);
+
+    // The 100th new invite in the window is the last one.
+    expect((await put(first.docId, "hundredth%40acme.com")).status).toBe(200);
+    expect(sent.map((message) => message.to)).toEqual(["hundredth@acme.com"]);
+
+    const refused = await put(second.docId, "late%40acme.com");
+    expect(refused.status).toBe(429);
+    expect(await refused.json()).toEqual({ error: { code: "quota_exceeded", message: expect.stringContaining("100") } });
+    expect(
+      (await env.DB.prepare("SELECT COUNT(*) AS n FROM doc_invites WHERE doc_id = ?").bind(second.docId).first<{ n: number }>())!.n,
+    ).toBe(49);
+    expect(sent).toHaveLength(1);
+    expect((await readAccess(env.DB, second.docId))!.requests.map((request) => request.email)).toEqual(["late@acme.com"]);
+
+    // A linked account draws on the same allowance.
+    const mine = (await findOrCreateAccount(env.DB, newAccountId(), "me@acme.com", now)).id;
+    expect(await linkExternalOwner(env.DB, owner, mine, 1000)).toBe("linked");
+    const asAccount: Publisher = { owner: mine, plan: "pro", authKind: "account" };
+    const viaAccount = await addPerson({ ...env, ...hosts } as Env, new URL(`${API}/api/v1/docs`), asAccount, second.docId, "zed@acme.com", undefined, NO_ANALYTICS);
+    expect(viaAccount).toEqual({ ok: false, refusal: "invite_quota" });
+
+    // Repeats, role changes and removals are not new invites.
+    expect((await put(first.docId, "recent0%40acme.com")).status).toBe(200);
+    expect((await put(first.docId, "recent0%40acme.com", { role: "view" })).status).toBe(200);
+    const removed = await send("DELETE", `${API}/api/v1/docs/${first.docId}/access/people/recent0%40acme.com`, KEY_PLUS, undefined, hosts);
+    expect(removed.status).toBe(200);
+  });
+
+  it("counts sends, not listed rows: removing an invite or unsharing a document frees nothing", async () => {
+    const first = await privateDoc();
+    const second = await privateDoc();
+    const sends = async () => (await env.DB.prepare("SELECT COUNT(*) AS n FROM invite_sends").first<{ n: number }>())!.n;
+    // No Email binding: a hundred real adds must not spend the invite email limiter other tests share.
+    const quiet = { ...hosts, EMAIL: undefined, OAUTH_GOOGLE_CLIENT_ID: "id", OAUTH_GOOGLE_CLIENT_SECRET: "secret" } as Partial<Env>;
+    const put = (docId: string, email: string) => send("PUT", `${API}/api/v1/docs/${docId}/access/people/${email}`, KEY_PLUS, undefined, quiet);
+    // 99 recent sends through the API, then the 100th: the cap is reached by real adds.
+    for (let i = 0; i < 99; i += 1) {
+      expect((await put(i % 2 === 0 ? first.docId : second.docId, `a${i}%40acme.com`)).status).toBe(200);
+    }
+    expect((await put(first.docId, "hundredth%40acme.com")).status).toBe(200);
+    expect(await sends()).toBe(100);
+    expect((await put(first.docId, "over%40acme.com")).status).toBe(429);
+    // A refused add records nothing.
+    expect(await sends()).toBe(100);
+
+    // Removing an invite hands nothing back.
+    expect((await send("DELETE", `${API}/api/v1/docs/${first.docId}/access/people/a0%40acme.com`, KEY_PLUS, undefined, quiet)).status).toBe(200);
+    expect((await put(first.docId, "over%40acme.com")).status).toBe(429);
+    // Re-adding the removed address is a new send, so it is refused too.
+    expect((await put(first.docId, "a0%40acme.com")).status).toBe(429);
+
+    // Neither does unsharing a document.
+    expect((await send("DELETE", `${API}/api/v1/docs/${second.docId}`, KEY_PLUS, undefined, quiet)).status).toBe(204);
+    expect((await put(first.docId, "again%40acme.com")).status).toBe(429);
+    expect(await sends()).toBe(100);
+  });
+
+  it("records one send per new invite, none for repeats, and prunes the owner's expired rows on the next add", async () => {
+    const doc = await privateDoc();
+    const owner = (await env.DB.prepare("SELECT owner FROM docs WHERE id = ?").bind(doc.docId).first<{ owner: string }>())!.owner;
+    const put = (email: string, body?: unknown) =>
+      send("PUT", `${API}/api/v1/docs/${doc.docId}/access/people/${email}`, KEY_PLUS, body, hosts);
+    const rows = async () =>
+      (await env.DB.prepare("SELECT owner, created_at FROM invite_sends ORDER BY created_at").all<{ owner: string; created_at: number }>()).results;
+    await env.DB.prepare("INSERT INTO invite_sends (owner, created_at) VALUES (?, ?), ('someone-else', ?)")
+      .bind(owner, Date.now() - 86_400_001, Date.now() - 86_400_001)
+      .run();
+
+    expect((await put("a%40acme.com")).status).toBe(200);
+    expect((await put("a%40acme.com")).status).toBe(200);
+    expect((await put("a%40acme.com", { role: "view" })).status).toBe(200);
+
+    const after = await rows();
+    // The owner's expired row is gone, another owner's is untouched, and the owner has exactly one send.
+    expect(after.filter((row) => row.owner === owner)).toHaveLength(1);
+    expect(after.filter((row) => row.owner === "someone-else")).toHaveLength(1);
+  });
+});
+
+describe("access requests", () => {
+  const KEY_PLUS = "cplus_live_5544332211009988";
+  const API = "https://api.openartifacts.ai";
+  const sent: Array<{ to: string; subject: string; text: string }> = [];
+  const hosts = {
+    SERVING_HOST: "openartifacts.site",
+    API_HOST: "api.openartifacts.ai",
+    READER_SESSION_SECRET: "k".repeat(32),
+    EMAIL: { send: async (message: { to: string; subject: string; text: string }) => void sent.push(message) },
+    EMAIL_FROM: "share@mail.openartifacts.ai",
+  } as Partial<Env>;
+  let ownerPlus = "";
+
+  /** A private page owned by the Plus key, and the id of its owner. */
+  async function privateDoc(): Promise<string> {
+    ownerPlus = await seedPublisher(KEY_PLUS, undefined, "plus");
+    const created = await send("POST", `${API}/api/v1/docs`, KEY_PLUS, { title: "Q3 client report", html: page("<p>owner only</p>") }, hosts);
+    expect(created.status).toBe(201);
+    const { docId } = (await created.json()) as PushResponse;
+    await env.DB.prepare("UPDATE docs SET link_access = 'invited' WHERE id = ?").bind(docId).run();
+    return docId;
+  }
+
+  const account = async (email: string) => (await findOrCreateAccount(env.DB, newAccountId(), email, Date.now())).id;
+  const count = async (table: string, docId: string) =>
+    (await env.DB.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE doc_id = ?`).bind(docId).first<{ n: number }>())!.n;
+
+  it("stores one request per account, only for a live invited-only document the account cannot already read", async () => {
+    const docId = await privateDoc();
+    const bob = await account("bob@other.com");
+
+    const first = await insertAccessRequest(env.DB, docId, bob, 1000, 100);
+    expect(first).toEqual({ email: "bob@other.com", title: "Q3 client report", owner: ownerPlus });
+    // A repeat reports nothing and keeps the original time.
+    expect(await insertAccessRequest(env.DB, docId, bob, 2000, 100)).toBeNull();
+    expect(await env.DB.prepare("SELECT created_at FROM doc_access_requests WHERE doc_id = ?").bind(docId).first()).toEqual({ created_at: 1000 });
+    expect((await readAccess(env.DB, docId))!.requests).toEqual([{ email: "bob@other.com", created_at: 1000 }]);
+
+    // Already on the list, or the owner's own linked account: nothing to ask for.
+    const alice = await account("alice@acme.com");
+    await insertInvite(env.DB, docId, ownerPlus, "alice@acme.com", 1000, 100);
+    const mine = await account("me@acme.com");
+    expect(await linkExternalOwner(env.DB, ownerPlus, mine, 1000)).toBe("linked");
+    expect(await insertAccessRequest(env.DB, docId, alice, 1000, 100)).toBeNull();
+    expect(await insertAccessRequest(env.DB, docId, mine, 1000, 100)).toBeNull();
+
+    // Unknown id, public page, withdrawn page: nothing stored, and no way to tell which.
+    const carol = await account("carol@other.com");
+    expect(await insertAccessRequest(env.DB, UNKNOWN_DOC_ID, carol, 1000, 100)).toBeNull();
+    await env.DB.prepare("UPDATE docs SET link_access = 'anyone' WHERE id = ?").bind(docId).run();
+    expect(await insertAccessRequest(env.DB, docId, carol, 1000, 100)).toBeNull();
+    await env.DB.prepare("UPDATE docs SET link_access = 'invited', deleted_at = 1 WHERE id = ?").bind(docId).run();
+    expect(await insertAccessRequest(env.DB, docId, carol, 1000, 100)).toBeNull();
+    expect(await count("doc_access_requests", docId)).toBe(1);
+  });
+
+  it("stops at the cap without saying so", async () => {
+    const docId = await privateDoc();
+    expect(await insertAccessRequest(env.DB, docId, await account("a@other.com"), 1000, 2)).not.toBeNull();
+    expect(await insertAccessRequest(env.DB, docId, await account("b@other.com"), 1000, 2)).not.toBeNull();
+    expect(await insertAccessRequest(env.DB, docId, await account("c@other.com"), 1000, 2)).toBeNull();
+    expect(await count("doc_access_requests", docId)).toBe(2);
+  });
+
+  it("clears a request when the address is added, and only the owner can decline one", async () => {
+    const docId = await privateDoc();
+    for (const email of ["bob@other.com", "carol@other.com"]) {
+      expect(await insertAccessRequest(env.DB, docId, await account(email), 1000, 100)).not.toBeNull();
+    }
+    const before = sent.length;
+
+    // Approving is adding: one call lists the person and clears the request.
+    const added = await send("PUT", `${API}/api/v1/docs/${docId}/access/people/bob%40other.com`, KEY_PLUS, undefined, hosts);
+    expect(added.status).toBe(200);
+    expect(sent.slice(before).map((message) => message.to)).toEqual(["bob@other.com"]);
+    const access = (await readAccess(env.DB, docId))!;
+    expect(access.people.map((person) => [person.email, person.role])).toEqual([["bob@other.com", "comment"]]);
+    expect(access.requests.map((request) => request.email)).toEqual(["carol@other.com"]);
+
+    // A publisher who does not own the page declines nothing; the owner declines, and may repeat.
+    await deleteAccessRequest(env.DB, docId, ownerB, "carol@other.com");
+    expect(await count("doc_access_requests", docId)).toBe(1);
+    await deleteAccessRequest(env.DB, docId, ownerPlus, "carol@other.com");
+    await deleteAccessRequest(env.DB, docId, ownerPlus, "carol@other.com");
+    expect(await count("doc_access_requests", docId)).toBe(0);
+  });
+
+  it("keeps a request on a full list rather than dropping it", async () => {
+    const docId = await privateDoc();
+    expect(await insertAccessRequest(env.DB, docId, await account("bob@other.com"), 1000, 100)).not.toBeNull();
+    expect(await insertInvite(env.DB, docId, ownerPlus, "alice@acme.com", 1000, 1)).toBe(true);
+    expect(await insertInvite(env.DB, docId, ownerPlus, "bob@other.com", 1000, 1)).toBe(false);
+    expect((await readAccess(env.DB, docId))!.requests.map((request) => request.email)).toEqual(["bob@other.com"]);
+  });
+
+  it("deletes the invites and the pending requests with the bytes, and keeps the row for the 410", async () => {
+    const docId = await privateDoc();
+    await insertInvite(env.DB, docId, ownerPlus, "alice@acme.com", 1000, 100);
+    expect(await insertAccessRequest(env.DB, docId, await account("bob@other.com"), 1000, 100)).not.toBeNull();
+
+    const deleted = await send("DELETE", `${API}/api/v1/docs/${docId}`, KEY_PLUS, undefined, hosts);
+    expect(deleted.status).toBe(204);
+
+    expect(await count("doc_invites", docId)).toBe(0);
+    expect(await count("doc_access_requests", docId)).toBe(0);
+    expect(await env.DB.prepare("SELECT deleted_at FROM docs WHERE id = ?").bind(docId).first("deleted_at")).not.toBeNull();
+  });
+
+  it("switches the mode in both directions, keeps the list and the requests, and refuses a mode it does not know", async () => {
+    await seedPublisher(KEY_PLUS, undefined, "plus");
+    const created = await send("POST", `${API}/api/v1/docs`, KEY_PLUS, { html: page("<p>was public</p>") }, hosts);
+    const { docId } = (await created.json()) as PushResponse;
+    const access = `${API}/api/v1/docs/${docId}/access`;
+    const mode = async (body: unknown) => send("PUT", access, KEY_PLUS, body, hosts);
+
+    const invited = await mode({ linkAccess: "invited" });
+    expect(invited.status).toBe(200);
+    expect(await invited.json()).toMatchObject({ linkAccess: "invited", people: [], requests: [] });
+    expect(await env.DB.prepare("SELECT link_access FROM docs WHERE id = ?").bind(docId).first()).toEqual({ link_access: "invited" });
+
+    expect((await send("PUT", `${access}/people/alice%40acme.com`, KEY_PLUS, undefined, hosts)).status).toBe(200);
+    expect(await insertAccessRequest(env.DB, docId, await account("bob@other.com"), 1000, 100)).not.toBeNull();
+
+    // Back to public: the list and the request stay for the next time it goes private.
+    const anyone = await mode({ linkAccess: "anyone" });
+    expect(await anyone.json()).toMatchObject({
+      linkAccess: "anyone",
+      people: [{ email: "alice@acme.com" }],
+      requests: [{ email: "bob@other.com" }],
+    });
+    expect(await mode({ linkAccess: "invited" })).toMatchObject({ status: 200 });
+    expect((await readAccess(env.DB, docId))!.people).toHaveLength(1);
+
+    for (const bad of [{ linkAccess: "everyone" }, { linkAccess: 1 }, {}, { linkAccess: "anyone", extra: 1 }]) {
+      expect((await mode(bad)).status).toBe(400);
+    }
+    expect((await send("PUT", `${API}/api/v1/docs/${UNKNOWN_DOC_ID}/access`, KEY_PLUS, { linkAccess: "invited" }, hosts)).status).toBe(404);
+    expect((await send("PUT", access, KEY_B, { linkAccess: "anyone" }, hosts)).status).toBe(404);
+  });
+
+  it("reports the whole Access: the canonical url, whether this server mails, the people with their roles and the pending requests", async () => {
+    const docId = await privateDoc();
+    const alice = await send("PUT", `${API}/api/v1/docs/${docId}/access/people/alice%40acme.com`, KEY_PLUS, undefined, hosts);
+    expect(alice.status).toBe(200);
+    expect(await insertAccessRequest(env.DB, docId, await account("bob@other.com"), 2000, 100)).not.toBeNull();
+
+    const read = await send("GET", `${API}/api/v1/docs/${docId}/access`, KEY_PLUS, undefined, hosts);
+    expect(read.status).toBe(200);
+    expect(read.headers.get("cache-control")).toBe("no-store");
+    const people = (await env.DB.prepare("SELECT created_at FROM doc_invites WHERE doc_id = ?").bind(docId).first<{ created_at: number }>())!;
+    expect(await read.json()).toEqual({
+      docId,
+      url: `https://openartifacts.site/d/${docId}`,
+      linkAccess: "invited",
+      email: true,
+      people: [{ email: "alice@acme.com", role: "comment", addedAt: people.created_at }],
+      requests: [{ email: "bob@other.com", requestedAt: 2000 }],
+    });
+
+    // A deployment with Google and no Email Service binding still does private sharing, and says it sends nothing.
+    const google = { OAUTH_GOOGLE_CLIENT_ID: "id", OAUTH_GOOGLE_CLIENT_SECRET: "secret" };
+    const quiet = await send("GET", `${API}/api/v1/docs/${docId}/access`, KEY_PLUS, undefined, { ...hosts, ...google, EMAIL: undefined });
+    expect(((await quiet.json()) as { email: boolean }).email).toBe(false);
+  });
+
+  it("approves a request with the add: lists the person, clears the request and sends exactly one invite", async () => {
+    const docId = await privateDoc();
+    expect(await insertAccessRequest(env.DB, docId, await account("bob@other.com"), 2000, 100)).not.toBeNull();
+    sent.length = 0;
+
+    const approved = await send("PUT", `${API}/api/v1/docs/${docId}/access/people/bob%40other.com`, KEY_PLUS, undefined, hosts);
+    expect(approved.status).toBe(200);
+    expect(await approved.json()).toMatchObject({
+      people: [{ email: "bob@other.com", role: "comment" }],
+      requests: [],
+    });
+    expect(sent.map((message) => message.to)).toEqual(["bob@other.com"]);
+
+    // Approving again changes nothing and mails nobody.
+    expect((await send("PUT", `${API}/api/v1/docs/${docId}/access/people/bob%40other.com`, KEY_PLUS, undefined, hosts)).status).toBe(200);
+    expect(sent).toHaveLength(1);
+  });
+
+  it("declines a request silently: clears it, sends nothing, and may be repeated", async () => {
+    const docId = await privateDoc();
+    expect(await insertAccessRequest(env.DB, docId, await account("bob@other.com"), 2000, 100)).not.toBeNull();
+    sent.length = 0;
+    const path = `${API}/api/v1/docs/${docId}/access/requests/Bob%40Other.com`;
+
+    // Not the owner: a 404, and the request is still there.
+    expect((await send("DELETE", path, KEY_B, undefined, hosts)).status).toBe(404);
+    expect(await count("doc_access_requests", docId)).toBe(1);
+
+    const declined = await send("DELETE", path, KEY_PLUS, undefined, hosts);
+    expect(declined.status).toBe(200);
+    expect(await declined.json()).toMatchObject({ people: [], requests: [] });
+    const repeated = await send("DELETE", path, KEY_PLUS, undefined, hosts);
+    expect(repeated.status).toBe(200);
+    expect(sent).toEqual([]);
+    expect(await count("doc_invites", docId)).toBe(0);
+
+    const malformed = await send("DELETE", `${API}/api/v1/docs/${docId}/access/requests/not-an-address`, KEY_PLUS, undefined, hosts);
+    expect(malformed.status).toBe(400);
+  });
+
+  it("takes an optional role: comment by default, view or comment when named, and a repeat changes it without mailing again", async () => {
+    const docId = await privateDoc();
+    const put = (email: string, body?: unknown) =>
+      send("PUT", `${API}/api/v1/docs/${docId}/access/people/${email}`, KEY_PLUS, body, hosts);
+    const roles = async () =>
+      Object.fromEntries((await readAccess(env.DB, docId))!.people.map((person) => [person.email, person.role]));
+    sent.length = 0;
+
+    expect((await put("a%40acme.com")).status).toBe(200);
+    expect((await put("b%40acme.com", {})).status).toBe(200);
+    expect((await put("c%40acme.com", { role: "view" })).status).toBe(200);
+    expect((await put("d%40acme.com", { role: "comment" })).status).toBe(200);
+    expect(await roles()).toEqual({ "a@acme.com": "comment", "b@acme.com": "comment", "c@acme.com": "view", "d@acme.com": "comment" });
+    expect(sent).toHaveLength(4);
+
+    // Naming no role leaves an existing person alone; naming one updates it. Neither mails.
+    expect((await put("c%40acme.com")).status).toBe(200);
+    expect((await roles())["c@acme.com"]).toBe("view");
+    const updated = await put("c%40acme.com", { role: "comment" });
+    expect(((await updated.json()) as { people: Array<{ email: string; role: string }> }).people.find((person) => person.email === "c@acme.com")?.role).toBe("comment");
+    expect(sent).toHaveLength(4);
+
+    for (const bad of [{ role: "edit" }, { role: 1 }, { role: "view", extra: true }, { other: "view" }, [], "view"]) {
+      expect((await put("e%40acme.com", bad)).status).toBe(400);
+    }
+    // No body at all is fine: the role is optional.
+    expect((await put("e%40acme.com")).status).toBe(200);
+    expect(await count("doc_invites", docId)).toBe(5);
+  });
+
+  it("names the sharer only when the Worker knows them, and limits invites under one publisher whichever credential adds", async () => {
+    const docId = await privateDoc();
+    const keys: string[] = [];
+    const limiter = { limit: async ({ key }: { key: string }) => (keys.push(key), { success: true }) };
+    const withLimiter = { ...hosts, INVITE_EMAIL_LIMITER: limiter } as Partial<Env>;
+    sent.length = 0;
+
+    // A license key nobody has linked: the invite cannot name the sender, and does not pretend to.
+    expect((await send("PUT", `${API}/api/v1/docs/${docId}/access/people/a%40acme.com`, KEY_PLUS, undefined, withLimiter)).status).toBe(200);
+    expect(sent[0]!.text).not.toContain("Shared by");
+    expect(sent[0]!.text).not.toContain("Someone");
+
+    // Once linked, the same publisher adds from the account and the sender is named. Both draw on one allowance.
+    const mine = await account("me@acme.com");
+    expect(await linkExternalOwner(env.DB, ownerPlus, mine, 1000)).toBe("linked");
+    const asAccount: Publisher = { owner: mine, plan: "pro", authKind: "account" };
+    const result = await addPerson({ ...env, ...withLimiter } as Env, new URL(`${API}/api/v1/docs`), asAccount, docId, "b@acme.com", undefined, NO_ANALYTICS);
+    expect(result.ok).toBe(true);
+    expect(sent.map((message) => message.to)).toEqual(["a@acme.com", "b@acme.com"]);
+    expect(sent[1]!.text).toContain("Shared by me@acme.com");
+    expect(keys).toHaveLength(2);
+    expect(new Set(keys).size).toBe(1);
+  });
+
+  it("lists the person and answers 200 when the invite email's limiter throws", async () => {
+    const docId = await privateDoc();
+    const broken = { limit: async () => { throw new Error("limiter down"); } };
+    sent.length = 0;
+
+    const response = await send("PUT", `${API}/api/v1/docs/${docId}/access/people/a%40acme.com`, KEY_PLUS, undefined, { ...hosts, INVITE_EMAIL_LIMITER: broken } as Partial<Env>);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ people: [{ email: "a@acme.com" }] });
+    expect(sent).toEqual([]);
+  });
+
+  it("refuses an address that is not one, and the 101st person", async () => {
+    const docId = await privateDoc();
+    const put = (email: string) => send("PUT", `${API}/api/v1/docs/${docId}/access/people/${email}`, KEY_PLUS, undefined, hosts);
+
+    for (const bad of ["no-at-sign", "a%40", "%40b.com", "a%01%40b.com", "a%7F%40b.com", "a%00%40b.com", `${"x".repeat(250)}%40b.com`, "%E0%A4%A"]) {
+      const response = await put(bad);
+      expect(response.status, bad).toBe(400);
+      expect(await response.json()).toMatchObject({ error: { code: "bad_request" } });
+    }
+    expect(await count("doc_invites", docId)).toBe(0);
+
+    for (let i = 0; i < 100; i += 1) {
+      await env.DB.prepare("INSERT INTO doc_invites (doc_id, email, created_at) VALUES (?, ?, ?)").bind(docId, `p${i}@acme.com`, i).run();
+    }
+    sent.length = 0;
+    expect(await insertAccessRequest(env.DB, docId, await account("bob@other.com"), 1000, 100)).not.toBeNull();
+    const full = await put("one-more%40acme.com");
+    expect(full.status).toBe(400);
+    expect(await full.json()).toMatchObject({ error: { code: "bad_request", message: expect.stringContaining("100") } });
+    // Refused means nothing was added, nobody was mailed, and a pending request was not dropped.
+    expect(await count("doc_invites", docId)).toBe(100);
+    expect(sent).toEqual([]);
+    expect(await put("p3%40acme.com")).toMatchObject({ status: 200 });
+    expect((await readAccess(env.DB, docId))!.requests).toHaveLength(1);
+  });
+
+  it("answers 404 to the private family on a server with no reader sign-in, after authentication and before any plan check", async () => {
+    const plusDoc = await privateDoc();
+    const believerDoc = (await push(KEY_A, { title: "Mine", html: page("<p>mine</p>") })).docId;
+    const off = { ...hosts, READER_SESSION_SECRET: undefined } as Partial<Env>;
+    const routes = (docId: string): Array<[string, string, unknown?]> => [
+      ["GET", `${API}/api/v1/docs/${docId}/access`],
+      ["PUT", `${API}/api/v1/docs/${docId}/access`, { linkAccess: "invited" }],
+      ["PUT", `${API}/api/v1/docs/${docId}/access/people/alice%40acme.com`],
+      ["DELETE", `${API}/api/v1/docs/${docId}/access/people/alice%40acme.com`],
+      ["DELETE", `${API}/api/v1/docs/${docId}/access/requests/alice%40acme.com`],
+      ["POST", `${API}/api/v1/docs/${docId}/open`],
+      ["POST", `${API}/api/v1/private-docs`, { html: page("<p>x</p>") }],
+    ];
+
+    for (const [key, docId] of [[KEY_PLUS, plusDoc], [KEY_A, believerDoc]] as const) {
+      for (const [method, path, body] of routes(docId)) {
+        // Authentication first: a caller with no credential is 401 as ever.
+        expect((await send(method, path, null, body, off)).status).toBe(401);
+        // The caller's own document, whatever their plan: an old Worker has no such route.
+        const response = await send(method, path, key, body, off);
+        expect(response.status).toBe(404);
+        expect(await response.json()).toMatchObject({ error: { code: "not_found" } });
+      }
+    }
+    // A key whose plan may not publish at all is told the route does not exist, as an old Worker would: not that it may not publish.
+    await seedPublisher(KEY_FREE, undefined, "free");
+    const ineligible = await send("POST", `${API}/api/v1/private-docs`, KEY_FREE, { html: page("<p>x</p>") }, off);
+    expect(ineligible.status).toBe(404);
+    expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM docs WHERE owner = ?").bind(`account-${(await sha256Hex(KEY_FREE)).slice(0, 8)}`).first()).toEqual({ n: 0 });
+    // On a configured server the same write by the same Supporter key goes through, so the 404 above was the gate.
+    expect((await send("PUT", `${API}/api/v1/docs/${believerDoc}/access`, KEY_A, { linkAccess: "invited" }, hosts)).status).toBe(200);
+    // The owner's own bytes stay reachable: `get` depends on them, and they reveal nothing new.
+    expect((await send("GET", `${API}/api/v1/docs/${plusDoc}/html`, KEY_PLUS, undefined, off)).status).toBe(200);
+  });
 });

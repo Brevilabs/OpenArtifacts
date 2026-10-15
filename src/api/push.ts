@@ -24,19 +24,21 @@
  * check, so a linked license key and account token count as one publisher.
  */
 import type { AnalyticsSink } from "../analytics.js";
-import type { Publisher } from "../auth.js";
+import { maySharePrivately, type Publisher } from "../auth.js";
 import { MAX_DOCS_PER_PUBLISHER, MAX_DOC_BYTES, MAX_PUSHES_PER_DAY } from "../config.js";
 import { limitReached, planLimits, type PlanLimits } from "../plans.js";
 import type { Env } from "../config.js";
+import { planRefusal } from "./access.js";
 import {
   rollbackCreate,
   deleteVersionRow,
+  canManage,
   commitVersionMetadata,
   docIsDeleted,
   FIRST_VERSION,
   insertDocWithinQuota,
   insertVersion,
-  ownsLiveDoc,
+  type LinkAccess,
   reserveNextVersion,
 } from "../db.js";
 import { docNotFound, errorResponse } from "../errors.js";
@@ -222,19 +224,43 @@ function storageFull(env: Env, publisher: Publisher, limits: PlanLimits): Respon
     `Your ${limits.storageBytes} byte storage allowance is full, including retained versions and pending uploads. Unshare documents to free space. Existing pages remain available.`);
 }
 
-function pushed(env: Env, requestUrl: URL, docId: string, version: number, status: number) {
+function pushed(
+  env: Env,
+  requestUrl: URL,
+  docId: string,
+  version: number,
+  status: number,
+  linkAccess?: LinkAccess,
+) {
   return Response.json(
-    { docId, url: publicDocUrl(env, requestUrl, docId), version },
+    {
+      docId,
+      url: publicDocUrl(env, requestUrl, docId),
+      version,
+      // Only a create reports it: `anyone` from `POST /docs`, `invited` from
+      // `POST /private-docs`. An update never changes who can read a document,
+      // so its receipt is the one it always was.
+      ...(linkAccess === undefined ? {} : { linkAccess }),
+    },
     { status },
   );
 }
 
+/**
+ * `POST /api/v1/docs` and `POST /api/v1/private-docs` are this one function.
+ * `linkAccess` comes from the route, never from the body: a private create is a
+ * route an old Worker does not have, so a server that predates private sharing
+ * can never create a public page by ignoring a field. The mode is part of the
+ * same insert that reserves the doc slot, so a private page is never public,
+ * not even for a moment.
+ */
 export async function createDoc(
   request: Request,
   requestUrl: URL,
   env: Env,
   publisher: Publisher,
   analytics: AnalyticsSink,
+  linkAccess: LinkAccess,
 ): Promise<Response> {
   const limits = publisher.authKind === "account" ? planLimits(env, publisher.plan) : null;
   const parsed = await parsePushBody(request);
@@ -242,6 +268,10 @@ export async function createDoc(
   if (limits && parsed.body.htmlBytes > limits.htmlBytes) {
     return planHtmlExceeded(env, publisher, limits);
   }
+
+  // Before anything is created, so a plan that cannot share privately never
+  // leaves a document behind.
+  if (linkAccess === "invited" && !maySharePrivately(env, publisher)) return planRefusal(env, publisher);
 
   const maxDocs = limits?.documents ?? MAX_DOCS_PER_PUBLISHER;
   const now = Date.now();
@@ -263,6 +293,7 @@ export async function createDoc(
       title,
       created_at: now,
       updated_at: now,
+      link_access: linkAccess,
     },
     maxDocs,
   );
@@ -301,7 +332,17 @@ export async function createDoc(
   }
 
   analytics.record({ name: "document_published", docId, atMs: now, ownerId: owner });
-  return pushed(env, requestUrl, docId, FIRST_VERSION, 201);
+  if (linkAccess === "invited") {
+    analytics.record({
+      name: "document_access_changed",
+      docId,
+      atMs: now,
+      ownerId: owner,
+      linkAccess,
+      people: 0,
+    });
+  }
+  return pushed(env, requestUrl, docId, FIRST_VERSION, 201, linkAccess);
 }
 
 export async function updateDoc(
@@ -323,7 +364,7 @@ export async function updateDoc(
   // so it must not spend one of today's. `reserveNextVersion` re-checks both
   // atomically, which is what actually guarantees it — this read only fixes
   // which error a rejected push gets.
-  if (!(await ownsLiveDoc(env.DB, docId, publisher.owner))) {
+  if (!(await canManage(env.DB, docId, publisher.owner))) {
     return docNotFound(docId);
   }
   if (limits && parsed.body.htmlBytes > limits.htmlBytes) {

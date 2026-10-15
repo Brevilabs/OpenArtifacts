@@ -1,6 +1,6 @@
 # Product analytics
 
-**The rule: OpenArtifacts counts documents, never readers.** Four server-side
+**The rule: OpenArtifacts counts documents, never readers.** Five server-side
 events tell us how much is being published and how much of it is being read.
 Nothing about who read it leaves the Worker, and nothing at all runs in a
 reader's browser.
@@ -9,14 +9,16 @@ reader's browser.
 
 ## What is instrumented today
 
-All four events. `createDoc`, `updateDoc` and `deleteDoc` each record one on
-their success path, and `handleServing` records one per qualifying read; no
+All five events. `createDoc`, `updateDoc` and `deleteDoc` each record one on
+their success path, the access routes record one after each write, and
+`handleServing` and `handlePublisherServing` record one per qualifying read; no
 other code in the Worker calls `record`.
 
 | Events | Where |
 | --- | --- |
 | `document_published`, `document_updated`, `document_unshared` | `createDoc`, `updateDoc`, `deleteDoc`, on their success paths only |
-| `document_viewed` | `handleServing`, once the served response is decided |
+| `document_access_changed` | the access routes after each write that changed something, the share page's and the Share popover's writes (the same operations, in `src/api/access.ts`), and `createDoc` for a `POST /api/v1/private-docs` create, which records both `document_published` and `document_access_changed` |
+| `document_viewed` | `handleServing` and `handlePublisherServing`, once the served response is decided |
 
 Both streams start at the deployment that landed them, and neither can be
 backfilled. A query that returns nothing for an earlier date is reporting the
@@ -24,7 +26,7 @@ absence of instrumentation, not the absence of usage.
 
 ## The events
 
-There are four, and the list is closed. `DocumentEvent` in `src/analytics.ts` is
+There are five, and the list is closed. `DocumentEvent` in `src/analytics.ts` is
 a union of exactly these shapes, so a new event is a change to that type rather
 than a new string somebody passed in.
 
@@ -33,7 +35,8 @@ than a new string somebody passed in.
 | `document_published` | A document was created: its first version was stored and its url started answering. |
 | `document_updated` | A new version was pushed to an existing document. |
 | `document_unshared` | A document was withdrawn by its owner. |
-| `document_viewed` | A reader successfully fetched a public document page. |
+| `document_access_changed` | A document's link setting or invite list was written. It carries the state left behind (`link_access` and `people`, a count), never an address. It is the adoption measure for private sharing. |
+| `document_viewed` | A reader successfully fetched a document page, public or private. Counted per document, never per reader. |
 
 Every event is a POST to `{POSTHOG_HOST}/i/v0/e/` carrying exactly this:
 
@@ -55,21 +58,22 @@ Every event is a POST to `{POSTHOG_HOST}/i/v0/e/` carrying exactly this:
 ```
 
 A `document_viewed` also carries `$raw_user_agent` when the reader sent a
-`User-Agent` header, capped at 512 characters.
+`User-Agent` header, capped at 512 characters. A `document_access_changed` also
+carries `link_access` (`anyone` or `invited`) and `people`.
 
 ### The property allowlist
 
-Those five properties, plus `$raw_user_agent` on a view, are the whole
-allowlist, and it is enforced by
-construction rather than by a check. The sender builds `properties` itself from
+Those five properties, plus `$raw_user_agent` on a view and `link_access` and
+`people` on `document_access_changed`, are the whole allowlist, and it is enforced
+by construction rather than by a check. The sender builds `properties` itself from
 the typed event; there is no property bag, no `Record<string, unknown>`, and no
 `Request` anywhere in the module's interface. A call site that wanted to attach
 a title has nowhere to put one. `test/analytics.test.ts` asserts the complete
-set of keys in the body of all four events, so a field added anywhere in the
+set of keys in the body of the events, so a field added anywhere in the
 payload builder fails a test rather than reaching PostHog.
 
 `$process_person_profile` is `false` for `document_viewed` and `true` for the
-three publication events. A reader must never become a PostHog person; the
+publication and access events. A reader must never become a PostHog person; the
 publisher already is an account this service resolved from a credential it
 validated, and "how many distinct publishers" is worth being able to ask.
 
@@ -121,6 +125,25 @@ the row it describes can never be counted in different reporting intervals.
 | `document_published` | `createDoc`, on the 201 path | `docs.created_at` and `versions.created_at` for version 1 |
 | `document_updated` | `updateDoc`, on the 200 path, after `commitVersionMetadata` | `versions.created_at` for the version this push wrote |
 | `document_unshared` | `deleteDoc`, on the 204 path, as soon as `softDeleteDoc` marks the row | `docs.deleted_at` |
+| `document_access_changed` | An access write that changed state, and a create that was private from its first insert | The request's own clock read; the access tables keep `doc_invites.created_at` and `invite_sends.created_at` only |
+
+**What counts as a change.** A switch of `link_access` that actually changed it, an
+address added (which includes approving a request), a role changed, and an address
+removed. `people` is the count after the write. **An idempotent repeat records
+nothing:** a `PUT` of an address already listed with the role it has, a `DELETE`
+of one that is absent, and naming the mode a document already has are not
+outcomes, for the reason a repeated delete is not. **Requests are not recorded in
+v1.** Asking to open a document records nothing, and declining records nothing,
+because neither changes the mode or the list; an approval shows up as the access
+change it is, because it is an add. A private create is `document_published`
+followed by `document_access_changed` with `people` 0.
+
+For a write through the share page or the Share popover, `ownerId` (and so
+`distinct_id`) is the publisher's `User.id` resolved from the document's owner
+scope, the same value a bearer write to that document carries, not a separate id
+for the session account or the popover's token. The credentials count one
+publisher once. Loading the top bar's script or the popover's frame records
+nothing.
 
 **The event follows the request, not the `versions` table.** A create that
 dies after inserting its `docs` row and before storing version 1 leaves a row
@@ -136,7 +159,7 @@ older of two pushes that store out of order leaves it alone — deliberately,
 since `updated_at` describes what the public url is serving. Dating the event
 that way would have it name a value no column holds.
 
-`ownerId` is the publisher's app-sites `User.id` on all three: always
+`ownerId` is the publisher's app-sites `User.id` on every event that carries one: always
 derived from the validated credential, never accepted as input.
 [Identity](identity.md) is why that is a security property rather than a
 convention — an endpoint that took an owner id as a parameter would turn every
@@ -190,7 +213,7 @@ logs; they are a storage problem, not an unrecorded withdrawal.
 
 ## Which reads record
 
-One `document_viewed` per read of a public document page, recorded once the
+One `document_viewed` per read of a document page, public or private, recorded once the
 served response is a fact rather than an intention — below R2, because the two
 ways this surface still answers 404 after D1 said yes are only visible once the
 bucket has answered.
@@ -204,6 +227,9 @@ bucket has answered.
 | Any other method on a document url | No |
 | `404`, `410`, `500` | No |
 | The legacy host's `307` redirect | No |
+| The apex's `302` for an invited-only document | No |
+| A publisher origin's `303` grant swap, and its `302` bounces to `/open` or to the public url | No |
+| A publisher origin's `GET` answering `200` or `304` | Yes |
 | Anything on the API surface | No |
 
 **`304` counts, and it is the half worth arguing.** It is not a failed read: it
@@ -218,6 +244,11 @@ is a cache revalidating or a link checker, not somebody reading.
 **The legacy host's redirect does not.** The reader's follow-up `GET` on the
 canonical host is the view; counting the `307` as well would count one read
 twice.
+
+**A private read is counted once, on the publisher's origin.** The apex redirect,
+the sign-in page, `/open` and the grant swap are hops on the way to it, not reads.
+The event is still per document, never per reader: it carries no account, address
+or grant, so a private page's views are as anonymous as a public page's.
 
 **Nothing about the reader decides any of this.** The call reads a method and a
 status, and nothing else. Not the address, not the user agent, not the referrer,
@@ -396,7 +427,9 @@ America/Los_Angeles, where that offset is wrong for half the year.
 None of the following is sent, and none of it can be, because no event shape has
 a field for it:
 
-- reader identities of any kind, including invented or derived ones;
+- reader identities of any kind, including invented or derived ones, and the
+  addresses of people invited to a document or asking to open it (`people` is a
+  count);
 - IP addresses, `Referer`, cookies, and any other request-derived metadata
   other than a view's user agent;
 - public document ids, document urls, and document titles;
@@ -443,8 +476,10 @@ npx wrangler dev --var POSTHOG_HOST:http://127.0.0.1:8999 \
 ## Cost: view events need a ceiling
 
 PostHog product analytics is priced per event. The three publication events are
-bounded by the per-day push quota that already exists, so their volume is a
-function of how many people publish and cannot run away. `document_viewed` is
+bounded by the per-day push quota that already exists, and
+`document_access_changed` follows only an authenticated owner's write that changed
+state, so their volume is a function of how many people publish and cannot run
+away. `document_viewed` is
 different in kind: `/d/{docId}` is unauthenticated and is read by a population
 two or three orders of magnitude larger than the publisher count. One event per
 read, unbounded, makes the analytics bill a function of audience size — and of
@@ -573,7 +608,7 @@ Two consequences follow, and both belong on anything built from these numbers:
 
 Project 119931 accepted this body on September 22, 2026. A local run of the
 Worker, labelled `environment: verification` so business queries exclude it,
-sent all four events through the real sender, and all four were ingested with
+sent all four events that existed then through the real sender, and all four were ingested with
 their properties intact. PostHog also stored the sender's address as `$ip` —
 the Worker's egress in production, never a reader's.
 

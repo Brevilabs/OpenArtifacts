@@ -22,7 +22,12 @@ hand — it needs a real license key, so it is deliberately not in CI.
 Tests run inside workerd against real R2 and D1 (Miniflare), never against test
 doubles for them. A binding double asserts our idea of Cloudflare rather than
 Cloudflare, so the only ones in the suite are deliberately broken bindings used
-to test failure paths.
+to test failure paths. The one other exception is the `EMAIL` (Email Service)
+binding: its only observable is the outgoing message, which Miniflare offers no
+way to read from inside workerd, so tests hand the Worker a recording `send`.
+`npm run test:browser` drives the Share popover in Chrome against the same
+Worker bundle on Miniflare's real D1 and R2; it is the one test that needs a
+browser (see `docs/development.md`).
 
 ## The HTTP contract is frozen
 
@@ -35,7 +40,8 @@ Two conventions in it are security properties rather than style, and both are
 easy to undo by accident:
 
 - **404, never 403.** A doc belonging to another publisher must be
-  indistinguishable from one that never existed, on every endpoint.
+  indistinguishable from one that never existed, on every endpoint. That covers
+  `/open`, `/share`, the request route and the label hosts as well as `/api/v1`.
 - **404 vs 410.** A deleted doc keeps its D1 row forever so its url answers 410.
   Delete destroys the R2 objects; it must never delete the row.
 
@@ -55,8 +61,11 @@ These are day-one decisions, not retrofits:
   `openartifacts.ai`. `docs/serving-domain.md` is why, and why a subdomain does not
   substitute. There is no migration path once links are in the wild.
 - Shared docs are **`noindex` + `nofollow` by default**.
-- **Publisher-gated, reader-open**: publishing requires a key; reading requires
-  nothing.
+- **Publisher-gated, reader-open**: publishing requires a key; reading a public
+  document requires nothing. An invited-only document is the exception, and it
+  is never served from `openartifacts.site`: **no origin that runs more than one
+  publisher's scripts may ever hold a credential**, and a label host serves one
+  publisher only (`docs/private-sharing.md`).
 - **Documents belong to an account, not to the credential that published them.**
   `docs.owner` is an app-sites `User.id`, and it is always *derived* — from a
   validated license key, later from a signed session — and **never accepted as
@@ -68,9 +77,11 @@ These are day-one decisions, not retrofits:
   **This does not hold yet — see below. Do not rely on it.**
 - Every push mints an **immutable version** served with `cache-control: immutable`.
   R2 stores the publisher's own bytes; OpenArtifacts' additions (the robots meta,
-  the favicon, the social card and the two bylines) are injected on the way out by
-  `renderServedHtml`, so a byline change — or a plan that removes one — reaches
-  documents already published.
+  the favicon, the social card, the top bar with its page-script tag, and the
+  bylines) are injected on the way out by `renderServedHtml`, so a byline change —
+  or a plan that removes one — reaches documents already published. An
+  invited-only version is the exception to `immutable`: it is served
+  `private, no-store`, never cached.
   Nothing else is composed per read: the additions are a pure function of the
   stored version, so the page stays cacheable.
 - **No per-MAU or per-seat priced dependency** anywhere in the serving path.
@@ -85,7 +96,10 @@ rebuildability the constraint above claims is not true today:
 - publisher, title and timestamps exist only in D1;
 - a deleted doc leaves an empty R2 prefix, so a rebuild could not tell a
   withdrawn url from one that never existed, and it would answer 404 where it
-  promised 410.
+  promised 410;
+- `link_access`, the invite list and the pending access requests exist only in D1.
+  A rebuild from R2 alone would turn every private document public, so they belong
+  in the manifest snapshot too.
 
 The fix is the per-doc `manifest.json` from `docs/cost-at-scale.md` §6: written
 after each push as a snapshot of the doc's D1 state, and left behind as a
@@ -116,24 +130,37 @@ domain, and both are easy to miss because nothing fails loudly without them:
   not the `Cache-Control` the worker sends, and `/d/{docId}` has no extension.
   Without an explicit Cache Rule on the serving zone (or the Cache API inside the
   worker), attaching a domain changes nothing and every read still hits D1 and R2.
+  The rule matches `hostname eq openartifacts.site` only: label hosts
+  (`{label}.openartifacts.site`) serve private bytes and are never cache-rule
+  targets.
 - **Then delete must purge that cache.** Pinned `/v{n}` urls are served
   `immutable` for a year, so the moment there is an edge cache, an unshared doc
   would keep being served from it. Wire a purge into `deleteDoc` in the same
   change that turns caching on — the two belong together, and shipping the first
   without the second is how a withdrawn doc stays readable. The private-cache
   copies readers already hold are unrecallable by any design, and the README says
-  so.
+  so. Making a document invited-only must purge the cache exactly as delete does,
+  in the same change: otherwise a document made private stays readable from the
+  edge.
+
 All four canonical, legacy, and retired host vars are set in `wrangler.jsonc`,
-which makes the router resolve by an explicit host allowlist and fail closed on
+which makes the router resolve by an explicit host allowlist (those four hosts
+plus `{26-char label}.{SERVING_HOST}`, the publisher origins) and fail closed on
 everything else. Leave them set together. Path-prefix fallback exists only for
 local development when every host var is empty.
 
 The first four-domain cutover is one production deployment. Record that Worker
 version id as the hard rollback floor. Never roll back below it while either new
 domain or `api.symposium.md` remains attached: older versions route unknown
-hosts by path and make the retired API live again. A pre-floor emergency
-rollback first detaches those three domains and accepts an API outage; see
-`docs/deploying.md`.
+hosts by path and make the retired API live again. Only while no document is
+invited-only, a pre-floor emergency rollback first detaches those three domains
+and accepts an API outage; see `docs/deploying.md`.
+
+Private sharing adds a second hard floor: the first Worker version that contains
+it. Once any document is invited-only, an older version serves that document
+publicly at its canonical url, and detaching domains does not help, so there is no
+safe pre-floor emergency rollback: roll forward. Record the version id beside the
+cutover's, and treat the newer of the two as the floor (`docs/deploying.md`).
 
 ## Git hygiene
 

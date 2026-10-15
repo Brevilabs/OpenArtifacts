@@ -6,8 +6,11 @@ import {
   renderServedHtml,
   SOCIAL_CARD_META,
   socialTitleMeta,
+  OPENARTIFACTS_BAR_SPACER,
+  OPENARTIFACTS_BAR_STYLE,
   OPENARTIFACTS_FOOTER,
   OPENARTIFACTS_HEADER,
+  RENDER_REVISION,
 } from "../src/render.js";
 
 const bake = async (html: string, branding = true): Promise<string> =>
@@ -479,4 +482,101 @@ it("omits the top header for unmarked agent HTML while retaining the footer", as
   expect(html).not.toContain(OPENARTIFACTS_HEADER);
   expect(html).not.toContain("Shared from");
   expect(html).toContain(OPENARTIFACTS_FOOTER);
+});
+
+describe("renderServedHtml — the top bar", () => {
+  const BAR = { shareUrl: "https://api.test/share/x", scriptUrl: "https://api.test/embed/page.js" };
+  const SHARE_HREF = `data-openartifacts-share href="${BAR.shareUrl}"`;
+  const SCRIPT_TAG = `<script defer src="${BAR.scriptUrl}"></script>`;
+  const marked = (html: string) =>
+    html.replace(/^(<!doctype[^>]*>)?/i, '$&<style id="openartifacts-obsidian-publish-baseline"></style>');
+  const withBar = async (html: string, branding = true, bar: typeof BAR | null = BAR) =>
+    await renderServedHtml(new Response(html), branding, bar).text();
+
+  /** Every piece of the bar, exactly once. */
+  const expectBarOnce = (html: string) => {
+    for (const piece of [
+      OPENARTIFACTS_BAR_SPACER,
+      OPENARTIFACTS_BAR_STYLE,
+      'class="openartifacts-bar"',
+      SHARE_HREF,
+      SCRIPT_TAG,
+    ]) {
+      expect(occurrences(html, piece)).toBe(1);
+    }
+  };
+
+  // The bar and its tag are how the rendering changed, so the revision moved
+  // with them: a reader holding a validator for the rendering without them must
+  // be sent the one with them.
+  it("is a new rendering revision", () => {
+    expect(RENDER_REVISION).toBe(7);
+  });
+
+  it("R1: starts the body with the spacer and carries the bar, the Share link and the script once, in place of the header byline", async () => {
+    const html = await withBar(marked(page("<p>hello</p>")));
+
+    expectBarOnce(html);
+    expect(html).toContain(`<body>${OPENARTIFACTS_BAR_SPACER}`);
+    expect(html).toContain("<style>:where(html){scroll-padding-top:40px}@media print{");
+    expect(OPENARTIFACTS_BAR_STYLE).not.toContain("media=");
+    expect(html).not.toContain(OPENARTIFACTS_HEADER);
+    expect(html).not.toContain("openartifacts-header");
+    expect(occurrences(html, "Copilot for Obsidian</span>")).toBe(1);
+    expect(occurrences(html, OPENARTIFACTS_FOOTER)).toBe(1);
+    // The bar is a strip fixed to the viewport, and Share opens in a new tab with no script.
+    expect(html).toContain("position:fixed;top:0;left:0;right:0");
+    expect(html).toContain('target="_blank" rel="noopener noreferrer"');
+    expect(headOf(html)).toContain(NOINDEX_META);
+  });
+
+  it("R2: carries Share and the script on an unmarked page and when branding is off, with no byline text", async () => {
+    const unmarked = await withBar(page("<p>hello</p>"));
+    expectBarOnce(unmarked);
+    expect(unmarked).not.toContain("Shared from");
+    expect(unmarked).toContain(OPENARTIFACTS_FOOTER);
+
+    const unbranded = await withBar(marked(page("<p>hello</p>")), false);
+    expectBarOnce(unbranded);
+    expect(unbranded).not.toContain("Shared from");
+    expect(unbranded).not.toContain(OPENARTIFACTS_FOOTER);
+    expect(unbranded).not.toContain(FAVICON_LINK);
+    expect(headOf(unbranded)).toContain(NOINDEX_META);
+  });
+
+  it("R3: lands once however the document is shaped", async () => {
+    const twoBodies = await withBar("<html><head></head><body>a<body>b</body>c</body></html>");
+    const noBodyEnd = await withBar("<!doctype html><html><body><p>unclosed");
+    const noBody = await withBar("<!doctype html><html><head></head><p>just a fragment</p></html>");
+
+    for (const html of [twoBodies, noBodyEnd, noBody]) expectBarOnce(html);
+    // The first body wins, ahead of its first character.
+    expect(twoBodies).toContain(`<body>${OPENARTIFACTS_BAR_SPACER}`);
+    expect(twoBodies.indexOf(OPENARTIFACTS_BAR_SPACER)).toBeLessThan(twoBodies.indexOf("a<body>"));
+    // No body start tag: the document end, wrong place but still present.
+    expect(noBody.indexOf(OPENARTIFACTS_BAR_SPACER)).toBeGreaterThan(noBody.indexOf("just a fragment"));
+  });
+
+  it("R4: with no bar, renders exactly what a server that predates it does", async () => {
+    for (const html of [marked(page("<p>hello</p>")), page("<p>hello</p>")]) {
+      const without = await renderServedHtml(new Response(html), true, null).text();
+      expect(without).toBe(await renderServedHtml(new Response(html)).text());
+      expect(without).not.toContain("embed/page.js");
+      expect(without).not.toContain("openartifacts-bar");
+      expect(without).not.toContain("scroll-padding");
+    }
+    const withHeader = await renderServedHtml(new Response(marked(page("<p>hello</p>"))), true, null).text();
+    expect(withHeader).toContain(OPENARTIFACTS_HEADER);
+  });
+
+  it("R5: escapes its addresses, so nothing in them can close the attribute", async () => {
+    const html = await withBar(page("<p>hello</p>"), true, {
+      shareUrl: 'https://api.test/share/x"><script>alert(1)</script>',
+      scriptUrl: 'https://api.test/embed/page.js"><script>alert(2)</script>',
+    });
+
+    expect(html).not.toContain("<script>alert");
+    expect(html).toContain("&quot;&gt;&lt;script&gt;alert(1)");
+    expect(html).toContain("&quot;&gt;&lt;script&gt;alert(2)");
+  });
 });

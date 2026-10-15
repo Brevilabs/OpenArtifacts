@@ -42,3 +42,6 @@ jobs:
 
       - name: Test
         run: npm test
+
+      - name: Browser test
+        run: npm run test:browser

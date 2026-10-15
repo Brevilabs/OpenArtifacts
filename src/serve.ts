@@ -2,7 +2,7 @@
  * The public serving surface: `GET /d/{docId}` and `GET /d/{docId}/v{n}`.
  *
  * R2 holds the publisher's own bytes; OpenArtifacts' additions — the robots meta,
- * the favicon, the social card and the two bylines — are injected here, on the
+ * the favicon, the social card, the top bar and the bylines — are injected here, on the
  * way out, by `renderServedHtml`. That is what lets a byline change, or a plan that removes
  * one, reach documents already published, and it is why the stored object and
  * the served page are no longer byte-identical. `immutable` on `/v{n}` stays
@@ -20,23 +20,11 @@
 import type { AnalyticsSink } from "./analytics.js";
 import type { Env } from "./config.js";
 import { findServableVersion } from "./db.js";
-import { isDocId } from "./ids.js";
 import { ABOUT_LINK, brandPageHtml } from "./page.js";
-import { RENDER_REVISION, renderServedHtml } from "./render.js";
+import { PAGE_SCRIPT_PATH, SHARE_PREFIX, docPath, parseDocPath, type DocRoute } from "./paths.js";
+import { readerSignInConfigured } from "./reader-config.js";
+import { RENDER_REVISION, renderServedHtml, type TopBar } from "./render.js";
 import { STORED_CONTENT_TYPE, versionObjectKey } from "./storage.js";
-
-/** Path prefix of the serving surface, used by the router's path fallback. */
-export const SERVING_PREFIX = "/d";
-
-/** Everything this surface serves lives under `/d/`. `/d` alone is not a doc. */
-const DOC_PATH_PREFIX = `${SERVING_PREFIX}/`;
-
-/**
- * `v` then a decimal with no leading zeros, so one version has exactly one url.
- * Bounded at nine digits: the number only ever reaches R2 as part of a key, and
- * a bound here means no unbounded digit string ever becomes a `Number`.
- */
-const VERSION_SEGMENT = /^v([1-9][0-9]{0,8})$/;
 
 /**
  * The Content Security Policy. This is the security boundary of OpenArtifacts, so every
@@ -50,10 +38,13 @@ const VERSION_SEGMENT = /^v([1-9][0-9]{0,8})$/;
  * using our origin to harm *readers*, and to keep one doc's blast radius off
  * the rest of the internet.
  *
- * Three things make that a defensible trade, none of them in this string: the
- * origin is cookieless and holds nothing but already-public docs, so there is
- * no session or private data on it to steal; docs are served from a sacrificial
- * host, never the brand domain; and publishing is gated on a paid license key.
+ * Three things make that a defensible trade, none of them in this string: no
+ * origin that runs more than one publisher's scripts ever holds a credential, so
+ * the shared origin is cookieless and holds nothing but already-public docs and
+ * there is no session or private data on it to steal (an invited-only doc is
+ * served from its own publisher's origin instead, `src/private.ts`); docs are
+ * served from a sacrificial host, never the brand domain; and publishing is
+ * gated on a paid license key.
  *
  * Directive by directive:
  *
@@ -95,7 +86,7 @@ const VERSION_SEGMENT = /^v([1-9][0-9]{0,8})$/;
  *   directive invites the wrong conclusion — it is not a phishing defence.
  *   `connect-src` hands the same page a `fetch()`, and `frame-src https:` lets
  *   it embed somebody else's login form governed by somebody else's policy.
- *   No CSP closes phishing on an origin that runs the author's scripts (D6);
+ *   No CSP closes phishing on an origin that runs the publisher's scripts (D6);
  *   what bounds it is the sacrificial host, the paid-key gate, and an origin
  *   holding nothing but public docs.
  * - `frame-ancestors 'none'`: no page may frame a doc. That blocks clickjacking
@@ -142,14 +133,24 @@ const LATEST_CACHE_CONTROL = "public, max-age=60";
 const PINNED_CACHE_CONTROL = "public, max-age=31536000, immutable";
 
 /**
+ * Invited-only documents, pinned versions included. Nothing about who may read
+ * one can be left to a shared cache, and a browser keeps no copy either.
+ */
+const PRIVATE_CACHE_CONTROL = "private, no-store";
+
+/**
  * Every response this surface produces, including its errors, carries the whole
  * policy. Built fresh per response because `Headers` is mutable and one shared
  * instance would let a handler leak a header into the next request's reply.
  *
- * No `Set-Cookie` is ever added here or anywhere downstream. The origin being
- * cookieless is not an accident of having nothing to store — it is the property
- * that makes running strangers' scripts on a shared origin acceptable, so it
- * belongs in this file's contract next to the CSP.
+ * No `Set-Cookie` is ever added here or on `openartifacts.site`. The origin
+ * being cookieless is not an accident of having nothing to store — it is the
+ * property that makes running strangers' scripts on a shared origin acceptable,
+ * so it belongs in this file's contract next to the CSP: no origin that runs
+ * more than one publisher's scripts ever holds a credential. The one cookie
+ * this surface ever sets is a publisher origin's read-only grant cookie, on
+ * `{label}.openartifacts.site`, where only that publisher's scripts run
+ * (`src/private.ts`).
  */
 function servingHeaders(cacheControl: string): Headers {
   return new Headers({
@@ -204,7 +205,7 @@ const SERVING_PAGES: Record<ServingPageKind, ServingPageCopy> = {
  * temporary. Keeping one response path makes the serving security policy and
  * HEAD behavior properties of the surface rather than per-error conventions.
  */
-function servingPageResponse(method: string, kind: ServingPageKind): Response {
+export function servingPageResponse(method: string, kind: ServingPageKind): Response {
   const copy = SERVING_PAGES[kind];
   const headers = servingHeaders("no-store");
   headers.set("content-type", STORED_CONTENT_TYPE);
@@ -219,49 +220,25 @@ export function servingError(method: string, code: "not_found" | "internal"): Re
   return servingPageResponse(method, code);
 }
 
-/** Temporary legacy-host redirect with the serving origin's full safety policy. */
-export function servingRedirect(location: string): Response {
+/**
+ * A redirect with the serving origin's full safety policy. `307` for the legacy
+ * host; private documents use `302` to sign in and `303` to swap a grant for a
+ * cookie, which is the only `Set-Cookie` this surface produces.
+ */
+export function servingRedirect(
+  location: string,
+  status: 302 | 303 | 307 = 307,
+  setCookie?: string,
+): Response {
   const headers = servingHeaders("no-store");
   headers.set("location", location);
-  return new Response(null, { status: 307, headers });
+  if (setCookie !== undefined) headers.set("set-cookie", setCookie);
+  return new Response(null, { status, headers });
 }
 
 /** One neutral page for every miss, so it never confirms whether an id existed. */
 function noDocAt(method: string): Response {
   return servingError(method, "not_found");
-}
-
-interface DocRoute {
-  docId: string;
-  /** The version from `/v{n}`, or null for the latest-version url. */
-  pinned: number | null;
-}
-
-/**
- * Parse `/d/{docId}` and `/d/{docId}/v{n}`, or null for anything else.
- *
- * The prefix is matched rather than sliced off blind: on the serving host every
- * path lands here, so `/dx{docId}` reaches this function too and must not be
- * mistaken for a doc url.
- *
- * `isDocId` runs before anything else touches the database (phase 1), so junk
- * and crawler noise cost a regex rather than a D1 read.
- */
-function parseDocPath(pathname: string): DocRoute | null {
-  if (!pathname.startsWith(DOC_PATH_PREFIX)) return null;
-
-  const segments = pathname.slice(DOC_PATH_PREFIX.length).split("/");
-  // `/d/{docId}/` is the same page as `/d/{docId}`; a trailing slash is a
-  // browser and copy-paste artifact, not a different resource.
-  if (segments.length > 1 && segments.at(-1) === "") segments.pop();
-
-  const [docId, versionSegment, ...extra] = segments;
-  if (docId === undefined || extra.length > 0) return null;
-  if (!isDocId(docId)) return null;
-  if (versionSegment === undefined) return { docId, pinned: null };
-
-  const digits = VERSION_SEGMENT.exec(versionSegment)?.[1];
-  return digits === undefined ? null : { docId, pinned: Number(digits) };
 }
 
 /**
@@ -374,6 +351,23 @@ function matchesConditions(conditions: Headers, object: R2Object): boolean {
 }
 
 /**
+ * The top bar every served page carries: the share page's address for its
+ * **Share** link and the address of the script that turns that link into a
+ * popover. Null on a server with no reader sign-in, which renders exactly what a
+ * server that predates the bar does. The path-prefix development fallback has
+ * every host empty, so it is unconfigured and keeps the header byline.
+ *
+ * Public and invited-only documents get the same bar, and it is the same for
+ * every viewer: it names no identity, which is what keeps public pages
+ * cacheable.
+ */
+function topBarFor(env: Env, route: DocRoute): TopBar | null {
+  if (!readerSignInConfigured(env)) return null;
+  const api = `https://${env.API_HOST!.trim()}`;
+  return { shareUrl: `${api}${SHARE_PREFIX}/${route.docId}`, scriptUrl: `${api}${PAGE_SCRIPT_PATH}` };
+}
+
+/**
  * Stream one version's stored bytes back, unmodified.
  *
  * `version` is the one that resolved to bytes; `route.pinned` is only whether
@@ -390,10 +384,15 @@ async function serveObject(
   env: Env,
   route: DocRoute,
   version: number,
+  invitedOnly = false,
 ): Promise<Response> {
   const key = versionObjectKey(route.docId, version);
   const headers = servingHeaders(
-    route.pinned === null ? LATEST_CACHE_CONTROL : PINNED_CACHE_CONTROL,
+    invitedOnly
+      ? PRIVATE_CACHE_CONTROL
+      : route.pinned === null
+        ? LATEST_CACHE_CONTROL
+        : PINNED_CACHE_CONTROL,
   );
 
   const conditions = notModifiedConditions(request.headers);
@@ -436,13 +435,19 @@ async function serveObject(
   // object at the same instant, which a revision alone cannot separate: the
   // variant has to enter this validator too, or a shared cache will hand one
   // publisher's branding to another's reader.
+  //
+  // The top bar adds one more input: the API host and whether reader
+  // sign-in is configured. That is deployment configuration, the same for every
+  // document and viewer, so it cannot mix renderings between publishers; a
+  // config flip without a revision bump leaves 304s on the old rendering until
+  // the next edit to the injections (see `RENDER_REVISION`).
   headers.set("etag", servedEtag(object.httpEtag));
   if (!("body" in object)) return new Response(null, { status: 304, headers });
 
   headers.set("content-type", STORED_CONTENT_TYPE);
   // Still the stream, never the bytes: HTMLRewriter transforms as it passes, so
   // a 10MB doc is never a 10MB string in the worker.
-  return renderServedHtml(new Response(object.body, { status: 200, headers }));
+  return renderServedHtml(new Response(object.body, { status: 200, headers }), true, topBarFor(env, route));
 }
 
 /**
@@ -479,20 +484,55 @@ export async function handleServing(
   if (found.deleted_at !== null) {
     return servingPageResponse(request.method, "deleted");
   }
+  // An invited-only document never answers here: the link every reader holds is
+  // this one, so it sends them to sign in. Before the version check, so a
+  // pinned `/v{n}` that does not exist reads the same as one that does. No body,
+  // no cookie and no view: this origin learns nothing about who asked.
+  //
+  // This does not ask whether reader sign-in is configured, and must not fall
+  // through to `serveAndCount` when it is not. A row that is already invited
+  // stays invited on a server whose secret was removed or never set: `/open`
+  // answers `404` there, which takes the document offline. "Every document stays
+  // public on an unconfigured server" is true of documents that were never made
+  // invited, never of one that was. With no API host to send anyone to, the
+  // plain `404`.
+  if (found.link_access === "invited") {
+    const apiHost = env.API_HOST?.trim();
+    return apiHost
+      ? servingRedirect(`https://${apiHost}${docPath("/open", route)}`, 302)
+      : noDocAt(request.method);
+  }
   if (found.version === null) return noDocAt(request.method);
 
-  // Awaited into a local rather than handed back, and not only so the status
-  // can be read below: an async function that returns somebody else's promise
-  // unawaited drops itself out of the rejection's stack and, in workerd, gets
-  // the rejection reported as unhandled even though the router catches it. The
-  // same reason index.ts gives at every dispatch it makes.
-  const response = await serveObject(request, env, route, found.version);
+  return await serveAndCount(request, env, route, found.version, analytics, atMs);
+}
+
+/**
+ * Serve one version and count the view.
+ *
+ * Awaited into a local rather than handed back, and not only so the status
+ * can be read below: an async function that returns somebody else's promise
+ * unawaited drops itself out of the rejection's stack and, in workerd, gets
+ * the rejection reported as unhandled even though the router catches it. The
+ * same reason index.ts gives at every dispatch it makes.
+ */
+export async function serveAndCount(
+  request: Request,
+  env: Env,
+  route: DocRoute,
+  version: number,
+  analytics: AnalyticsSink,
+  atMs: number,
+  invitedOnly = false,
+): Promise<Response> {
+  const response = await serveObject(request, env, route, version, invitedOnly);
 
   // One view per GET that served the document: counted after R2 answered,
   // because a missing object still turns into a 404 here. `304` counts, since
   // that reader asked for this document and was told to use their copy. `HEAD`
   // never records, so it cannot spend a document's view allowance either. The
-  // sink applies that allowance; docs/analytics.md has the whole rule.
+  // sink applies that allowance; docs/analytics.md has the whole rule. A private
+  // document is counted the same way, per document and never per reader.
   if (request.method === "GET" && (response.status === 200 || response.status === 304)) {
     analytics.record({
       name: "document_viewed",

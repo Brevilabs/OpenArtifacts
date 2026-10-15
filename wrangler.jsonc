@@ -20,7 +20,16 @@
     { "pattern": "openartifacts.site", "custom_domain": true },
     { "pattern": "symposium.site", "custom_domain": true },
     { "pattern": "api.openartifacts.ai", "custom_domain": true },
-    { "pattern": "api.symposium.md", "custom_domain": true }
+    { "pattern": "api.symposium.md", "custom_domain": true },
+    // One origin per publisher: `{label}.openartifacts.site`, the label being the
+    // first 16 bytes of SHA-256("openartifacts-origin-v1:" + docs.owner) in
+    // lowercase Crockford base32, 26 characters. A publisher's invited-only
+    // documents are served only there; a custom hostname takes the same seat
+    // later. A custom domain cannot be a wildcard, so this is a route, and it
+    // needs the proxied DNS record `*.openartifacts.site AAAA 100::` that
+    // docs/deploying.md has an operator add once. `resolveSurface` serves only a
+    // 26-character label here and fails closed on every other subdomain.
+    { "pattern": "*.openartifacts.site/*", "zone_name": "openartifacts.site" }
   ],
 
   // The limiter on POST /device/code, which is unauthenticated by necessity —
@@ -75,8 +84,57 @@
       "name": "VIEW_EVENT_LIMITER",
       "namespace_id": "1005",
       "simple": { "limit": 60, "period": 60 }
+    },
+    // Emailed sign-in codes, counted per address: three a minute is a person
+    // retrying, and well under what mailbombing an address needs. Absent means
+    // no limit, as for the limiters above.
+    {
+      "name": "SIGNIN_EMAIL_LIMITER",
+      "namespace_id": "1006",
+      "simple": { "limit": 3, "period": 60 }
+    },
+    // The same codes counted per client address, so one caller cannot use the
+    // sign-in form to mail a code to many addresses. Absent means no limit.
+    {
+      "name": "SIGNIN_EMAIL_CLIENT_LIMITER",
+      "namespace_id": "1009",
+      "simple": { "limit": 10, "period": 60 }
+    },
+    // Invite emails, counted per owner. An owner who exceeds it still adds the
+    // person; only the email is skipped.
+    {
+      "name": "INVITE_EMAIL_LIMITER",
+      "namespace_id": "1007",
+      "simple": { "limit": 20, "period": 60 }
+    },
+    // Requests to open a document, counted per requesting account. It bounds
+    // both the request rows one account can write and the emails those rows send
+    // owners. An over-limit request stores nothing and still sees "Request sent".
+    {
+      "name": "REQUEST_ACCESS_LIMITER",
+      "namespace_id": "1008",
+      "simple": { "limit": 10, "period": 60 }
+    },
+    // The Share popover's token claim, counted per client address. A waiting
+    // frame polls every two seconds, so twenty per ten seconds leaves room for
+    // several frames behind one address while bounding a flood of misses against
+    // the D1 read budget. Absent means no limit.
+    {
+      "name": "EMBED_TOKEN_LIMITER",
+      "namespace_id": "1010",
+      "simple": { "limit": 20, "period": 10 }
     }
   ],
+
+  // Invite emails, request emails to owners, and sign-in codes, sent through
+  // Cloudflare Email Service from a dedicated subdomain (`EMAIL_FROM` below) so
+  // abuse cannot hurt the brand domain's mail reputation. The binding needs
+  // Workers Paid and an onboarded sending domain. `allowed_sender_addresses`
+  // pins what this Worker may send from; a self-hoster changes it together with
+  // `EMAIL_FROM`, and on the free plan deletes this block and `EMAIL_FROM`
+  // altogether. Optional: a deployment without it sends no email and offers no
+  // code sign-in, and Google and GitHub still work.
+  "send_email": [{ "name": "EMAIL", "allowed_sender_addresses": ["share@mail.openartifacts.ai"] }],
 
   // R2 is the system of record: every served byte lives here.
   "r2_buckets": [{ "binding": "DOCS", "bucket_name": "symposium-docs" }],
@@ -123,7 +181,12 @@
     "DEFAULT_PLAN": "free",
     "ACCOUNT_ACTION_URL": "https://openartifacts.ai/account",
     "UPGRADE_URL": "https://openartifacts.ai/account",
-    "PLAN_LIMITS": "{\"free\":{\"documents\":3,\"pushesPerDay\":6,\"htmlBytes\":1048576},\"pro\":{\"documents\":500,\"pushesPerDay\":100,\"htmlBytes\":10485760},\"pro_lifetime\":{\"documents\":500,\"pushesPerDay\":100,\"htmlBytes\":10485760,\"storageBytes\":5368709120}}",
+    "EMAIL_FROM": "share@mail.openartifacts.ai",
+    // Every paid plan includes private sharing, so `privateSharing` is on both
+    // `pro` and `pro_lifetime` and absent from `free`. The license-key side has
+    // no flag: any plan that may publish with a key (PUBLISHING_PLANS in
+    // src/auth.ts) may share privately.
+    "PLAN_LIMITS": "{\"free\":{\"documents\":3,\"pushesPerDay\":6,\"htmlBytes\":1048576},\"pro\":{\"documents\":500,\"pushesPerDay\":100,\"htmlBytes\":10485760,\"privateSharing\":true},\"pro_lifetime\":{\"documents\":500,\"pushesPerDay\":100,\"htmlBytes\":10485760,\"storageBytes\":5368709120,\"privateSharing\":true}}",
 
     // Product analytics labels every event with this; business queries filter
     // on it. A local run that turns delivery on must override it with

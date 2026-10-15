@@ -179,6 +179,7 @@ describe("POST /api/v1/docs", () => {
       docId: body.docId,
       url: `${API_ORIGIN}/d/${body.docId}`,
       version: 1,
+      linkAccess: "anyone",
     });
 
     // R2 holds the publisher's bytes and nothing else: OpenArtifacts' additions go
@@ -889,7 +890,7 @@ describe("races the review found", () => {
     const created = await pushedOk(await post(KEY_A, { title: "t", html: page("<p>v1</p>") }), 201);
     const spentAfterCreate = (await quotaRows())[0]?.pushes;
 
-    // The delete lands after ownsLiveDoc has already passed, so the push is paid
+    // The delete lands after canManage has already passed, so the push is paid
     // for by the time reserveNextVersion refuses it.
     await env.DB.prepare("UPDATE docs SET deleted_at = ? WHERE id = ?")
       .bind(Date.now(), created.docId)

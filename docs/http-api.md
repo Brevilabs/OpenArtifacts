@@ -9,12 +9,15 @@ repo's source.
 
 ## Surfaces
 
-Two surfaces on two domains:
+The surfaces:
 
 | Surface | Paths | Auth | Notes |
 | --- | --- | --- | --- |
 | API | `/api/v1/*` | required | Publisher-facing. JSON in, JSON out. |
-| Serving | `/d/*` | none | Reader-facing. Public HTML. Never sets a cookie. |
+| Serving | `/d/*` | none | Reader-facing. Public HTML on `openartifacts.site`, which never sets a cookie. |
+| Private serving | `/d/*` on `{label}.openartifacts.site` | grant cookie | One publisher's invited-only documents per origin. Sets one read-only grant cookie. See [Private documents](#private-documents). |
+| Reader | `/open/*` (`GET`, and `POST /open/{docId}/request`), `/signin/*`, `/share/*`, `/embed/sign-in` | session | Human-facing HTML pages on the API host: sign in, the door a private document opens through, requesting access, the share page, and the Share popover's sign-in popup. Not a client surface. |
+| Embed | `/embed/page.js`, `/embed/share`, `/embed/sign-in`, `/embed/token`, `/embed/api/*` | none, the session (sign-in only) or the popover token | The top bar's page script, the Share popover frame, its sign-in popup and the routes the frame calls, on the API host. Not a client surface. See [The top bar, the Share popover and the share page](#the-top-bar-the-share-popover-and-the-share-page). |
 | Approval | `/approve/*` | none | Human-facing. HTML pages on the API host. Not a client surface. |
 | Device | `/device/*` | none | How a client with no credential gets one. JSON, on the API host. |
 
@@ -61,8 +64,8 @@ subject to their hosted-access period. An unknown or otherwise ineligible plan i
 unauthorized` like every other auth failure, so only the human-readable
 `message` distinguishes it.
 
-The entitlement is **per operation, not per key**, and only `POST /api/v1/docs`
-and `PUT /api/v1/docs/{docId}` are gated on it. A publisher whose plan no longer
+The entitlement is **per operation, not per key**, and only `POST /api/v1/docs`,
+`POST /api/v1/private-docs` and `PUT /api/v1/docs/{docId}` are gated on it. A publisher whose plan no longer
 qualifies keeps `GET /api/v1/docs` and `DELETE /api/v1/docs/{docId}`, so they can
 always see what they have published and take it down. Losing the ability to
 publish must never mean losing the ability to unshare.
@@ -115,7 +118,11 @@ rather than a server behaviour, and it carries whatever goes in the header — a
 token or a license key alike, since nothing downstream of the header cares which
 it was.
 
-Reading a doc requires nothing. Serving responses never set a cookie.
+Reading a public doc requires nothing. `openartifacts.site` never sets a cookie; a
+private document's own origin sets one grant cookie
+([Private documents](#private-documents)). That origin belongs to the document's
+publisher and is shared by all of that publisher's invited-only documents, so it
+is one cookie per publisher, not one per document.
 
 ## The approval page
 
@@ -140,9 +147,13 @@ Three consequences worth stating, because all three are promises made elsewhere:
 - **Nothing under `/api/v1` changes.** The approval paths are additive and sit
   outside that prefix, so every response a license-key caller receives is exactly
   what it was.
-- **This Worker sets no cookie, anywhere.** The OAuth handshake is kept on the
-  device code's own row rather than in the browser, so the serving origin's
-  cookieless guarantee is a property of the whole Worker rather than of one host.
+- **Device approval and browser sign-in set no cookie.** The OAuth handshake is
+  kept on the device code's own row rather than in the browser, because the
+  browser is not the thing being authorized. The one exception is the shared
+  callback `/approve/callback/{provider}` when it ends a *reader's* sign-in
+  (see [Private documents](#private-documents)): it reads the `__Host-oa_login`
+  cookie that bound the handshake to its browser, clears it, and sets the reader
+  session, on the API host only. `openartifacts.site` never sets a cookie.
 - **Proving an identity and approving a device are two steps.** The provider's
   redirect back is a `GET`, and it only ever renders a confirmation; the approval
   is a `POST` a person presses. RFC 8628 §5.4 is why: a `GET` that completed an
@@ -156,10 +167,18 @@ publishing keeps working.
 ## Endpoints
 
 ```http
-POST   /api/v1/docs           {title?, html}  → 201 {docId, url, version}
+POST   /api/v1/docs           {title?, html}  → 201 {docId, url, version, linkAccess: "anyone"}
+POST   /api/v1/private-docs   {title?, html}  → 201 {docId, url, version, linkAccess: "invited"}
 PUT    /api/v1/docs/{docId}   {title?, html}  → 200 {docId, url, version}
 DELETE /api/v1/docs/{docId}                   → 204
 GET    /api/v1/docs?limit&cursor              → 200 {docs[], cursor?}
+GET    /api/v1/docs/{docId}/access                      → 200 Access
+PUT    /api/v1/docs/{docId}/access  {linkAccess}        → 200 Access
+PUT    /api/v1/docs/{docId}/access/people/{email}  {role?}  → 200 Access
+DELETE /api/v1/docs/{docId}/access/people/{email}       → 200 Access
+DELETE /api/v1/docs/{docId}/access/requests/{email}     → 200 Access
+GET    /api/v1/docs/{docId}/html                        → 200 the latest stored HTML
+POST   /api/v1/docs/{docId}/open                        → 200 {url, expiresAt}
 GET    /api/v1/tokens                         → 200 {tokens[]}
 DELETE /api/v1/tokens/{tokenId}               → 200 {tokenId, remaining}
 POST   /device/code           {label?}        → 200 {device_code, user_code, …}
@@ -188,13 +207,23 @@ credential — see [Signing in from a terminal](#signing-in-from-a-terminal).
 ```json
 {"docId": "9f2k4mvq7t0xbz3n",
  "url": "https://openartifacts.site/d/9f2k4mvq7t0xbz3n",
- "version": 1}
+ "version": 1,
+ "linkAccess": "anyone"}
 ```
+
+A document made here is public, and the receipt says so with `"linkAccess":
+"anyone"`. An unknown field is ignored, as it always was, so no field can make a
+document private; to create one that is, use `POST /api/v1/private-docs`
+([Private documents](#private-documents)). A `PUT` never changes who can read a
+document.
 
 A `docId` is 16 characters of lowercase Crockford base32 (`0-9`, `a-z` without
 `i`, `l`, `o`, `u`) — 80 bits of randomness. It is the only access control a doc
 has: whoever holds the url holds the doc, so treat the id as a secret and do not
-log it anywhere a reader would not already be allowed.
+log it anywhere a reader would not already be allowed. For a document whose
+`linkAccess` is `"invited"`, the url alone opens nothing: a reader must sign in
+with an invited address (see [Private documents](#private-documents)). Treat the
+id as a secret either way.
 
 The alphabet is case-insensitive to read but not to send: ids are lowercase, and
 an uppercase one is rejected rather than folded.
@@ -259,7 +288,8 @@ whichever of its keys published them.
     "title": "Q3 architecture review",
     "url": "https://openartifacts.site/d/9f2k4mvq7t0xbz3n",
     "version": 2,
-    "updatedAt": 1785000000000}
+    "updatedAt": 1785000000000,
+    "linkAccess": "anyone"}
  ],
  "cursor": "MTc4NTAwMDAwMDAwMC45ZjJrNG12cTd0MHhiejNu"}
 ```
@@ -347,7 +377,8 @@ Unauthenticated. `GET` and `HEAD` only; anything else is `404`.
 | `Cache-Control` | `public, max-age=60` | `public, max-age=31536000, immutable` |
 
 `{n}` is a decimal with no leading zeros and starts at 1. `ETag` and
-`If-None-Match` are supported (`304`).
+`If-None-Match` are supported (`304`). These are a public document's lifetimes; an
+invited-only document is never cached ([Private documents](#private-documents)).
 
 Every response on this surface — including its errors — carries:
 
@@ -361,7 +392,8 @@ X-Content-Type-Options: nosniff
 Uploaded scripts **do** run — interactive figures and embedded simulations are
 why the client uploads HTML at all. What the policy forbids is a doc using the
 origin against its readers: no form submission, no framing, no `<base>`
-retargeting. The origin is cookieless and holds nothing but already-public docs.
+retargeting. The origin is cookieless and holds nothing but already-public docs;
+an invited-only document is redirected to sign-in and never served from it.
 
 The following are injected as the document is served: a
 `<meta name="robots" content="noindex,nofollow">` in the head, a
@@ -378,6 +410,18 @@ icon keeps that markup — both links are then in the head, and which one the ta
 shows is the browser's choice. Nothing else is touched — the
 markup is never sanitized, rewritten or reformatted, and what R2 stores is the
 publisher's document exactly as it was pushed.
+
+On a server with reader sign-in configured, a **top bar** replaces the header
+byline: a spacer as the first child of `<body>`, one small `<style>` element, a
+strip fixed to the top of the viewport, and a `<script defer
+src="https://{API host}/embed/page.js">` tag. The strip carries the byline's text
+(`Shared from Copilot for Obsidian`) on the left, only for Copilot-rendered HTML,
+and **Share** on the right, a plain link to `https://{API host}/share/{docId}`.
+It is the same bytes for every viewer of a document, public or private, and
+names no identity, so public pages stay cacheable. The footer byline is as
+before. On a server without reader sign-in no page carries the top bar or the
+page script, and the header byline is as it was (see [The top bar, the Share
+popover and the share page](#the-top-bar-the-share-popover-and-the-share-page)).
 
 Serving therefore adds to the stored bytes rather than reproducing them. That is
 what lets a byline change reach documents already published. Two consequences
@@ -399,13 +443,324 @@ self-contained HTML page:
 
 | Status | Reader sees |
 | --- | --- |
+| `302 Found` | An invited-only document: no body, `no-store`, to the sign-in door on the API host ([Private documents](#private-documents)). |
 | `404 Not Found` | A neutral unavailable page for an unknown or malformed link, a missing version, or missing stored bytes. |
 | `410 Gone` | An explicit deleted page when the retained doc row proves the author withdrew it. |
 | `500 Internal Server Error` | A temporary-unavailable page when a serving dependency fails. |
 
-All three are `no-store` and retain the serving header policy above. `HEAD`
+All of these are `no-store` and retain the serving header policy above. `HEAD`
 returns the same status and headers as `GET` without a body. Healthy `200` and
 conditional `304` responses are unchanged.
+
+## Private documents
+
+A document is public (`linkAccess: "anyone"`, the default, exactly what this API
+always did) or invited-only (`"invited"`). The url is the same either way:
+`https://openartifacts.site/d/{docId}` is what a client prints and copies, and the
+only url it should ever build is the one the API returned. Everything below is
+additive; [private-sharing.md](private-sharing.md) is the design and the reasons.
+
+**On a server with no reader sign-in configured, none of it exists.** A secret
+missing or shorter than 32 characters, a missing serving or API host, or no way to
+sign in (no Google, GitHub or email) makes the whole family below, and `/embed/*`,
+answer `404`,
+exactly as a server that predates private sharing does, and no served page carries
+the top bar or the page script; the header byline is as before. Documents that were never made invited-only stay public. A
+document that is already invited-only goes offline instead: its url still
+redirects to `/open`, which answers `404`, and `GET /api/v1/docs` reports its
+stored `linkAccess`. It is never made public. A client shows the message it
+already has for an old server.
+
+### `POST /api/v1/private-docs` — publish a new invited-only doc
+
+The same body, limits, quotas and errors as `POST /api/v1/docs`, and the same
+create (one code path), with the document inserted as invited-only in that same
+insert: it is never public, not even for a moment.
+
+```json
+{"docId": "9f2k4mvq7t0xbz3n",
+ "url": "https://openartifacts.site/d/9f2k4mvq7t0xbz3n",
+ "version": 1,
+ "linkAccess": "invited"}
+```
+
+`url` is the canonical link, never a grant. Publishing a private document needs a
+plan with private sharing: `402 limit_reached` with `"limit": "privateSharing"`
+otherwise, checked after the usual publishing checks and before anything is
+created. A license key gets the message "Your Copilot plan does not include
+private sharing." with no `upgrade_url`; an account token gets "Private sharing
+needs a paid plan." and the usual `plan` and `upgrade_url`.
+
+It is a route and not a field so that a server which predates private sharing, or
+one that has no reader sign-in configured, answers **`404 not_found` and creates
+nothing**, after authentication and before any plan check. `POST /api/v1/docs`
+accepts no `linkAccess` field and ignores one, as it ignores every unknown field.
+**The client rule:** on `404`, report "this server does not support private
+documents" and stop. Nothing was created, so there is nothing to withdraw; never
+fall back to `POST /api/v1/docs`, which would publish the page to anyone. There is
+no receipt to check.
+
+### The access routes
+
+```http
+GET    /api/v1/docs/{docId}/access                          → 200 Access
+PUT    /api/v1/docs/{docId}/access  {linkAccess}            → 200 Access
+PUT    /api/v1/docs/{docId}/access/people/{email}  {role?}  → 200 Access
+DELETE /api/v1/docs/{docId}/access/people/{email}           → 200 Access
+DELETE /api/v1/docs/{docId}/access/requests/{email}         → 200 Access
+GET    /api/v1/docs/{docId}/html                            → 200 the latest stored HTML
+POST   /api/v1/docs/{docId}/open                            → 200 {url, expiresAt}
+```
+
+All owner-only, and a document that is not yours, never existed, or was deleted is
+`404 not_found`. A client changes **one address at a time**: it never sends the
+whole list, so a retry cannot remove everyone, and a repeated `PUT` or `DELETE`
+answers `200` with the same list. An `Access` response is `no-store`.
+
+```json
+{"docId": "9f2k4mvq7t0xbz3n",
+ "url": "https://openartifacts.site/d/9f2k4mvq7t0xbz3n",
+ "linkAccess": "invited",
+ "email": true,
+ "people": [{"email": "alice@acme.com", "role": "comment", "addedAt": 1785000000000}],
+ "requests": [{"email": "bob@other.com", "requestedAt": 1785000100000}]}
+```
+
+`url` is always the canonical link, never a grant. `email` says whether this
+server can send invite and request emails, not that one was delivered (a
+rate limit or the mail service can drop one): when it is `false` the owner
+shares the link themselves. `role` is `"view"` or `"comment"`; clients may ignore it until
+comments ship. `requests` are the addresses that asked to open the document and
+have not been answered.
+
+- `PUT …/access` takes `{"linkAccess": "anyone" | "invited"}`. Switching to
+  `anyone` keeps the list and the requests, and switching back restores them.
+- `PUT …/access/people/{email}` adds one address (URL-encode the `@`; it is
+  lowercased and trimmed). The body is optional: `{"role": "view" | "comment"}`,
+  default `comment`; any other body, including an unknown role, is `400
+  bad_request`. The call that adds an address sends it an invite email where the
+  server has email; a repeat does not, and a repeat that names a different role
+  updates the role. At most 100 people per document; the 101st is `400`.
+  An owner may add at most 100 new invites in a rolling 24 hours, across all
+  their documents: past that, an add that would list a new address, approvals
+  included, is `429 quota_exceeded`, nothing is stored or sent, and a pending
+  request stays. Repeats and role changes never count; removals and unshares do
+  not free allowance.
+  `DELETE` removes one. Neither needs the address to belong to an account.
+- **Approving a request is adding the address.** There is no approve route:
+  `PUT …/access/people/{email}` for an address with a pending request lists the
+  person and clears the request in one step, and sends the ordinary invite, which
+  is how the requester learns the answer. Like any add it needs the plan.
+- `DELETE …/access/requests/{email}` declines a request. It is idempotent, sends
+  nothing, tells the requester nothing, and never needs the plan. At most 100
+  requests are pending per document; past that, new requests are dropped
+  silently.
+- `GET …/html` returns the latest stored HTML (`text/html`, `private, no-store`,
+  sandboxed), so `openartifacts get` keeps working once a page's public url stops
+  answering. It is owner-only and is not part of the family that a server without
+  reader sign-in answers `404`.
+- `POST …/open` returns `{"url", "expiresAt"}`, with `expiresAt` 60 seconds out.
+  For an invited-only document `url` is the publisher's own origin with a
+  60-second grant, which opens it in a browser with no sign-in; for a public one
+  it is the canonical url. **A client opens it and discards it.** Never print it,
+  store it, or put it in a publish receipt: agent wrappers print receipts into
+  transcripts. No plan is needed.
+
+Errors reuse the existing codes: `404 not_found` for a document that is not yours,
+`400 bad_request` for an invalid address, role or mode, or a 101st person, and
+`402 limit_reached` with `"limit": "privateSharing"` when the plan does not include
+it, and `429 quota_exceeded` past the daily invite cap. On a server without reader sign-in configured, every route in this section
+except `…/html` answers `404 not_found`, like a server that predates it.
+
+### The plan check
+
+On write, and only on the operations that spend it: `POST /api/v1/private-docs`,
+making a document invited-only that is public now (`PUT …/access` from `anyone`
+to `invited`), and adding a person, which includes approving a request. Naming
+the mode a document already has is a repeat and never checks. So is adding an
+address that is already on the list with no role or the role it already has: it
+answers `200` with the current `Access` on any plan, and sends no email. Removing people,
+**declining a request**, switching to `anyone`, reading, and opening never check
+a plan, so invitees never pay and a lapsed plan keeps what exists. A lapse never
+makes a private document public. Every paid plan qualifies: a license key whose
+plan may publish (`PLUS`, and `BELIEVER`, sold as Supporter), and an account plan
+with `privateSharing` (`pro` and `pro_lifetime`). Which plans qualify is
+configuration, not part of this contract.
+
+### Reading one
+
+The pages in this section are for people in a browser, not for clients, and none
+of them is under `/api/v1`.
+
+Every response from `/open/*`, `/signin/*`, `/share/*` and `/embed/*` on the API
+host, pages and redirects alike, carries `Cross-Origin-Opener-Policy:
+same-origin`.
+
+`GET /d/{docId}[/v{n}]` on `openartifacts.site` for an invited-only document
+answers `302`, `Cache-Control: no-store`, to
+`https://{API host}/open/{docId}[/v{n}]`, with no body, no cookie, no view event
+and the full serving header policy. Unknown ids are still `404` and deleted ones
+`410`. From there:
+
+1. **`GET /open/{docId}[/v{n}]`** on the API host. With no session it shows a
+   sign-in page, **Sign in or create an account to open this document**, that names
+   no address and offers only the methods this server has (Google, GitHub, an
+   emailed code), and returns to this path afterwards. With a session: a document
+   that is public now redirects to the canonical url; a reader who may read an
+   invited-only one (the owner's account, or an account whose address is on the
+   list) is redirected to
+   `https://{label}.{serving host}/d/{docId}[/v{n}]?grant=…`; anyone else, and every
+   unknown or deleted id, gets `404` with **This document isn't available to
+   {email}**, **Request access** and **Use another account**, and no title or
+   content. The same page serves not invited, removed, deleted and never existed.
+2. **`POST /open/{docId}/request`**, the **Request access** form. It needs the
+   session and `Sec-Fetch-Site: same-origin`; the address comes from the session,
+   never from the form. It always answers the same **Request sent** page, with the
+   same status and words, whether it stored a request, found one already pending,
+   or the id is unknown, deleted, public or already allowed. At most one row is
+   stored per document and address, and the owner is emailed once per new row
+   when the server has their address. It is rate limited per account.
+3. **`GET /d/{docId}[/v{n}]` on `{label}.{serving host}`.** The label is a one-way
+   hash of the *document owner's* id, so a label host belongs to one publisher
+   and answers `404` for any document whose owner does not hash to its label.
+   A valid `?grant=` is swapped for a cookie with a bodiless `303` to the clean
+   path. A missing, expired or foreign grant or cookie is `302` to
+   `https://{API host}/open/{docId}[/v{n}]`. With a valid cookie: deleted is
+   `410`, a document that is public now is `302` to the public url, a reader who
+   is not allowed is `302` to `/open` (a label host never renders the unavailable
+   page), and an allowed one is served.
+
+| | Lifetime | Holds |
+| --- | --- | --- |
+| Reader session `__Host-oa_session`, on the API host | 30 days | An account id. Read only by `/open/*`, `/share/*`, `/signin/*` and `/embed/sign-in`; `/api/v1` ignores it. |
+| Popover token, in the Share frame's own storage | 24 hours | An account id and one document id; prefixed `oas_`, which `/api/v1` refuses. Accepted only by `/embed/api/docs/{docId}/…` for that document. |
+| URL grant `?grant=` | 60 seconds | An origin label and a principal. Never stays in the address bar. |
+| Origin cookie `__Host-oa_grant`, on the publisher's origin | 1 hour | An origin label and a principal. Every document is checked again on every request. |
+
+Each cookie is `HttpOnly; Secure; SameSite=Lax; Path=/` with no `Domain`. The
+grant names an origin, not a document, so one cookie opens every invited-only
+document of that publisher the reader may read, and the invite list is read again
+on every request. Removing a person takes effect on their next request; copies a
+reader already fetched cannot be recalled.
+
+Responses from a label host that serve a document are `Cache-Control: private,
+no-store`, pinned versions included, with `Cross-Origin-Opener-Policy:
+same-origin-allow-popups` and `Cross-Origin-Resource-Policy: same-origin`
+(present on every response from that host, errors and redirects too), and carry
+the same CSP and robots headers as every served document.
+
+### The top bar, the Share popover and the share page
+
+Everything here is for people in a browser. None of it is under `/api/v1`, and
+none of it is part of the client contract; it is documented because it is on the
+wire. [private-sharing.md](private-sharing.md) has the reasons.
+
+**The page script.** `GET` or `HEAD https://{API host}/embed/page.js` is the
+script every served page loads, from the tag in the top bar. It is a constant:
+`Content-Type: text/javascript`, `Cache-Control: public, max-age=3600,
+stale-while-revalidate=86400`, an `ETag` (`If-None-Match` answers `304`),
+`Cross-Origin-Resource-Policy: cross-origin`, and no cookie in either direction.
+**Its address is permanent**: pinned `/v{n}` pages are served `immutable` for a
+year and carry the tag, so the path never moves or changes meaning, and a fix to
+the script reaches pages through that cache lifetime. It turns **Share** into a
+popover and does nothing else. It holds no credential and reads no cookie or
+storage. Where a page's own policy blocks it, or scripts do not run, **Share** is
+still the plain link to the share page.
+
+**The popover frame.** `GET https://{API host}/embed/share?doc={docId}&origin=…`
+is what the popover draws, in an `iframe` on the API host: the credential that
+changes who can read a document must never be on a page whose scripts the author
+writes. `origin` is the page's own origin, which the script fills in.
+
+- *Per-document `frame-ancestors`.* A public document may be framed by
+  `https://{serving host}`; an invited-only one by its publisher's own origin
+  `https://{label}.{serving host}` only; an unknown or deleted one by nobody
+  (`'none'`). The policy names that origin only when the caller's `origin`
+  parameter equals it, so the header echoes what the caller already named and
+  never publishes an invited-only document's label. The browser checks it against
+  the real ancestor, so a forged `origin` frames nothing.
+- *The frame reveals nothing to non-readers.* Anyone can load it with any id.
+  Until a token shows the viewer can read the document, the body is the same for
+  a public, an invited-only, an unknown and a deleted id once the id is replaced:
+  **Share**, "Only the owner can change who can open this.", **Copy link** for the
+  canonical address (built from the id, with no lookup) and "Is this your page?
+  **Sign in to manage**". No title, no mode, no list. The one thing that varies is
+  `data-origin`, which echoes the caller's own `origin` when it matches the
+  document's serving origin. With a token, a non-reader gets what an unknown id
+  gets, never `403`.
+- *It tells the page around it nothing about its viewer.* The frame has one fixed
+  size, and posts only `ready`, before it reads its storage, and `close`, after a
+  click inside it. On a public document any page on `openartifacts.site` can embed
+  the frame, and they share its storage.
+- It sets no cookie, no `Access-Control-Allow-*` header and no
+  `X-Frame-Options`; it is `no-store`.
+
+**Signing in to the popover.** The frame cannot see the reader session, because
+browsers block or partition cross-site cookies in frames. **Sign in to manage**
+opens a top-level popup at `/embed/sign-in?doc={docId}&h={sha256 hex}`. Before it,
+the frame makes a random nonce only it knows and passes the nonce's hash as `h`.
+
+- The popup is refused unless it was opened from the frame (`Sec-Fetch-Site:
+  same-origin`) or is the return leg of a sign-in that was (a per-handshake
+  cookie, `__Host-oa_embed_…`, set for ten minutes), so a page that opens the
+  address with a hash of its own collects nothing. Browsers with no Fetch Metadata
+  get the share page instead.
+- With no session the popup shows the ordinary sign-in, then returns to itself.
+  With a session it stores the account under `h` **for one minute and one use**,
+  and also posts the token to its opener if the opener survives.
+- `POST /embed/token {doc, nonce}` is how the frame collects it: the row is found
+  by the hash of the nonce, so only the frame that made the nonce can take it, once.
+  Pending, unknown, used and expired all answer `404`. A claim over the
+  per-address limit answers `400 slow_down`, which the frame treats like any other
+  non-`200` and keeps polling. Every API-host page sends a
+  cross-origin opener policy and Google's sign-in pages probably do too, which can
+  sever the popup's link to the frame, so the frame polls (every two seconds, for
+  at most ten minutes, and again when its tab becomes visible) rather than waiting
+  for a message. Seeing the popup's address yields only the hash, which collects
+  nothing.
+
+**The token.** `oas_…`, signed with the reader secret under its own purpose,
+valid for 24 hours, naming one account and one document, and kept in the frame's
+own storage. It is a bearer credential accepted only by
+`/embed/api/docs/{docId}/access…` for that document. `/api/v1` refuses its
+prefix, and the share page, `/open` and `/signin` read only the session cookie.
+It cannot publish, list, delete or touch another document.
+
+**The frame's JSON.** `GET`, `PUT` and `DELETE /embed/api/docs/{docId}/access…`
+are the five access operations of [The access routes](#the-access-routes) under
+that token, with no CORS. They run the same operations as the access routes and
+the share page, so the plan check and its `402`, both invite caps, the invite email
+and the analytics event are unchanged. `GET` answers `{"viewer": "owner", …}` with
+the `Access` fields, the title and `changed` (whether the write changed the link
+access or the invite list; a decline, a `GET` and a repeat answer `false`) for the owner, `{"viewer": "reader", "account",
+"docId", "url", "title"}` for a signed-in account that may read the document but
+does not manage it, and `404` for everyone else. A missing, expired or foreign
+token is `401`.
+
+**The share page.** `GET https://{API host}/share/{docId}` is the same controls as
+a page, with the session cookie. It is where **Share** leads with no script, the
+request email's **Review request** and the url `share` prints.
+
+| Who | What the page shows |
+| --- | --- |
+| No session, a live public document | The title, "Only the owner can change who can open this.", **Copy link**, and "Is this your page? **Sign in to manage**" (`?signin` selects the sign-in page) |
+| No session, anything else, or `?signin` | The sign-in page, the same bytes for an invited-only, an unknown and a deleted id, returning to `/share/{docId}` |
+| A signed-in account that owns the document | **Link access**, **Add people**, **Requests** with **Approve** and **Decline**, **Who has access** with **Remove**, **Copy link**, and, after a switch from public to private, the line "People who opened it while it was public may have kept a copy." |
+| A signed-in account that may read it | The title, the same sentence, **Copy link**, **Use another account** and a line telling a Copilot owner to manage access in Copilot |
+| A signed-in account that may not, unknown, deleted | The unavailable page as `/open`, `404`, never `403` |
+
+Its writes are `POST /share/{docId}` forms (`op` of `link`, `add`, `remove` or
+`decline`), same-origin only, and they run the same operations as the access
+routes with the signed-in account as the principal, so the plan check and its `402`
+are unchanged: a refused write re-renders the dialog with the reason and the
+upgrade link.
+
+### Old clients
+
+Copilot 4.0.14 and CLI 0.2.x keep publishing, updating, listing and unsharing and
+ignore `linkAccess`; their documents stay public. For a document another client
+made private, an old Copilot's "Open" goes through sign-in like any reader, and an
+old CLI's `get` prints the sign-in page.
 
 ## Signing in from a terminal
 
@@ -555,21 +910,23 @@ exposes this API payload to a reader.
 
 | `code` | HTTP | When |
 | --- | --- | --- |
-| `bad_request` | 400 | Malformed JSON, `html` missing, empty or not a string, non-string `title`, junk `limit` or `cursor`. |
+| `bad_request` | 400 | Malformed JSON, `html` missing, empty or not a string, non-string `title`, junk `limit` or `cursor`. On the access routes also an invalid email, mode or role, or a 101st person. |
 | `unauthorized` | 401 | No `Authorization: Bearer` header, the license server rejected the key, or — on `POST` and `PUT` only — the key's plan is not entitled to publish. Carries `WWW-Authenticate: Bearer`. |
 | `not_found` | 404 | No such doc, not yours, already deleted, or no route. |
 | `gone` | 410 | Every request to the retired `api.symposium.md` host. The canonical API does not emit this code. |
 | `too_large` | 413 | `html` over 10MB. |
-| `quota_exceeded` | 429 | License-key publishing ceiling or device-flow rate limit reached. |
-| `limit_reached` | 402 | Account-token publish would exceed a plan limit. Carries the exceeded limit's identifier (`limit`), current plan name (`plan`), and optional `upgrade_url` inside `error`. |
+| `quota_exceeded` | 429 | License-key publishing ceiling, device-flow rate limit, or the daily invite cap reached. |
+| `limit_reached` | 402 | Account-token publish would exceed a plan limit. Carries the exceeded limit's identifier (`limit`), current plan name (`plan`), and optional `upgrade_url` inside `error`. Also returned, for license keys as well as account tokens, for a private-sharing operation the plan does not include (`limit: "privateSharing"`). |
 | `internal` | 500 | Our fault, including the license server being unreachable for a key we have never seen. |
 | `authorization_pending` | 400 | `POST /device/token`: nobody has approved the code yet. |
-| `slow_down` | 400 | `POST /device/token`: polled faster than the `interval`. |
+| `slow_down` | 400 | `POST /device/token`: polled faster than the `interval`. Also `POST /embed/token`, over its per-address limit. |
 | `expired_token` | 400 | `POST /device/token`: the code expired, was collected, or was never issued. |
 | `access_denied` | 400 | `POST /device/token`: someone pressed Deny on the approval page. |
 
-The last four appear on `POST /device/token` and nowhere else. They are RFC 8628
-§3.5's names, carried in this envelope so a client parses one error shape.
+The last four appear on `POST /device/token`, and `slow_down` also on
+`POST /embed/token` (the Share popover's claim, not a client surface) when the
+per-address limit is hit; they appear nowhere else. They are RFC 8628 §3.5's
+names, carried in this envelope so a client parses one error shape.
 
 Three of these are worth handling deliberately in a client:
 
@@ -585,11 +942,17 @@ Three of these are worth handling deliberately in a client:
 - <a id="not-found-never-forbidden"></a>**Not found, never forbidden.** There is
   no `403`. A doc belonging to another account answers exactly like a doc that
   never existed, because a distinguishable reply would confirm the id is real.
+  That holds on every route that names a document, not only `/api/v1`: `/open`,
+  `/share`, `/embed/api` and a publisher's own origin all answer an unavailable `404` (or a
+  redirect to the page that does) for a document the caller may not see, and the
+  request route answers the same **Request sent** page for every id, so all of
+  them are indistinguishable from a document that never existed.
 
 ## Account plans
 
 Worker var `PLAN_LIMITS` is a JSON string mapping plan names to positive integer
-ceilings. HTML is measured in UTF-8 bytes and cannot exceed the 10 MiB safety bound:
+ceilings, plus the optional boolean `privateSharing` (the plan may make documents
+invited-only and add people to them; absent means it may not). HTML is measured in UTF-8 bytes and cannot exceed the 10 MiB safety bound:
 
 ```json
 {"free":{"documents":3,"pushesPerDay":6,"htmlBytes":1048576},"pro":{"documents":500,"pushesPerDay":100,"htmlBytes":10485760}}
@@ -678,7 +1041,8 @@ them, and a self-hosted deployment can remove the corresponding bindings.
 This is the whole client-side protocol, and getting it right is what makes
 re-sharing a note update the page instead of minting a second link.
 
-1. First share of a note: `POST /api/v1/docs`. The server mints the `docId`.
+1. First share of a note: `POST /api/v1/docs`, or `POST /api/v1/private-docs` to
+   make it invited-only from its first moment. The server mints the `docId`.
 2. **The client writes that `docId` into the note's own frontmatter** and keeps
    it there.
 3. Every later share of the same note: `PUT /api/v1/docs/{docId}` with the id
@@ -710,7 +1074,7 @@ KEY=<paid Copilot license key>
 curl -sS -X POST "$BASE/api/v1/docs" \
   -H "authorization: Bearer $KEY" -H 'content-type: application/json' \
   -d '{"title":"Notes","html":"<!doctype html><html><body><p>hello</p></body></html>"}'
-# → {"docId":"9f2k…","url":"https://openartifacts.site/d/9f2k…","version":1}
+# → {"docId":"9f2k…","url":"https://openartifacts.site/d/9f2k…","version":1,"linkAccess":"anyone"}
 
 # The document reads use the `url` that push returned, never "$BASE/d/…": the
 # page lives on the serving domain, and the API host resolves every path to the
@@ -833,7 +1197,8 @@ signal maps to configured `pro_lifetime`; absent/null retains the previous
 mapping. A plain `pro` plan or null expiry never implies a storage allowance.
 The resolved plan follows the same cache, outage and newer-refresh rules above.
 `pro_lifetime` has 500 documents, 100 daily pushes, 10 MiB per upload and
-5,368,709,120 bytes across retained HTML versions and outstanding writes.
+5,368,709,120 bytes across retained HTML versions and outstanding writes, and
+includes private sharing like `pro`.
 
 Account responses add `usage.storedBytes`; capped plans add `limits.storageBytes`.
 The CLI's `account` command prints these when supplied and remains compatible

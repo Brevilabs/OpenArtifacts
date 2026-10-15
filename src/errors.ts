@@ -16,8 +16,9 @@ export type ErrorCode =
   // The four conditions RFC 8628 §3.5 defines for a device-flow poll. They keep
   // the RFC's names so a client written against the standard recognises them,
   // and they travel in this API's own error envelope rather than OAuth's, so a
-  // client still has exactly one error shape to parse. Only `/device/token`
-  // emits them.
+  // client still has exactly one error shape to parse. `/device/token` emits
+  // all four; `/embed/token`, the Share popover's claim, is the same kind of
+  // poll and emits `slow_down` too.
   | "authorization_pending"
   | "slow_down"
   | "expired_token"

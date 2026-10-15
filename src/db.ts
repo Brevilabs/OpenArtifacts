@@ -5,6 +5,7 @@
  * every row here is reconstructible from it, so a lost D1 is a rebuild rather
  * than a data loss. Queries land here as the phase that needs them arrives.
  */
+import { INVITE_WINDOW_MS, MAX_NEW_INVITES_PER_OWNER_PER_DAY } from "./config.js";
 import { PUBLISHER_USER_ID_SQL, OWNER_SCOPE_SQL } from "./owners.js";
 
 /** Publisher row, which doubles as the license-validation cache (phase 2). */
@@ -39,7 +40,11 @@ export interface DocRow {
   updated_at: number;
   /** Epoch ms when soft-deleted, else null. Deleted docs serve 410, not 404. */
   deleted_at: number | null;
+  /** `anyone` is a public document; `invited` is sign-in plus the invite list. */
+  link_access: LinkAccess;
 }
+
+export type LinkAccess = "anyone" | "invited";
 
 export interface VersionRow {
   doc_id: string;
@@ -230,14 +235,16 @@ export function d1PublisherStore(db: D1Database): PublisherStore {
  */
 export async function insertDocWithinQuota(
   db: D1Database,
-  doc: Omit<DocRow, "deleted_at" | "latest_version">,
+  doc: Omit<DocRow, "deleted_at" | "latest_version" | "link_access"> & { link_access?: LinkAccess },
   maxDocs: number,
 ): Promise<string | null> {
+  // `link_access` is written by the insert itself, so a private create is never
+  // public, not even for the moment between two statements.
   const inserted = await db
     .prepare(
       `${OWNER_SCOPE_SQL}
-       INSERT INTO docs (id, owner, title, latest_version, created_at, updated_at)
-       SELECT ?, ?, ?, ?, ?, ?
+       INSERT INTO docs (id, owner, title, latest_version, created_at, updated_at, link_access)
+       SELECT ?, ?, ?, ?, ?, ?, ?
         WHERE (SELECT COUNT(*) FROM docs WHERE owner IN (SELECT owner FROM owner_scope) AND deleted_at IS NULL) < ?
        RETURNING ${PUBLISHER_USER_ID_SQL} AS owner`,
     )
@@ -250,6 +257,7 @@ export async function insertDocWithinQuota(
       FIRST_VERSION,
       doc.created_at,
       doc.updated_at,
+      doc.link_access ?? "anyone",
       maxDocs,
     )
     .first<{ owner: string }>();
@@ -412,6 +420,7 @@ export interface ServableVersion {
   deleted_at: number | null;
   /** The version that has bytes, or null when the request names none. */
   version: number | null;
+  link_access: LinkAccess;
 }
 
 /**
@@ -442,7 +451,7 @@ export async function findServableVersion(
   // `return await`: see the note on the router's catch in index.ts.
   return await db
     .prepare(
-      `SELECT d.deleted_at AS deleted_at,
+      `SELECT d.deleted_at AS deleted_at, d.link_access AS link_access,
               (SELECT MAX(v.n)
                  FROM versions v
                 WHERE v.doc_id = d.id
@@ -455,20 +464,73 @@ export async function findServableVersion(
 }
 
 /**
- * Whether this owner has a live doc with that id — the same conflation of
- * "missing", "someone else's" and "deleted" that `reserveNextVersion` makes,
- * for the same reason, and answered identically for all three so the shape of
- * the reply cannot confirm another publisher's doc exists.
+ * `canManage`, as SQL: the document is in the principal's owner scope. Used
+ * inside a statement prefixed with `OWNER_SCOPE_SQL`, which binds the principal.
+ * A linked license key and its account are one owner, as everywhere else.
  */
-export async function ownsLiveDoc(db: D1Database, docId: string, owner: string): Promise<boolean> {
-  const row = await db
-    .prepare(
-      `${OWNER_SCOPE_SQL} SELECT 1 FROM docs WHERE id = ? AND owner IN (SELECT owner FROM owner_scope) AND deleted_at IS NULL`,
-    )
-    .bind(owner, owner, docId)
-    .first();
+export const CAN_MANAGE_SQL = `d.owner IN (SELECT owner FROM owner_scope)`;
 
-  return row !== null;
+/**
+ * `canRead`, as SQL: the document is `anyone`, or the principal manages it, or
+ * the principal is an account whose address is on its invite list. Two
+ * placeholders' worth of context: the statement must start with `OWNER_SCOPE_SQL`
+ * (bound to the principal) and this fragment carries one `?` for the principal
+ * as an account id. A license-key owner id matches no account, so it reads only
+ * what it owns.
+ *
+ * The one read rule. The apex asks it for the anonymous reader, where it
+ * reduces to `link_access = 'anyone'`; `/open`, a publisher's own origin and the
+ * owner route ask it for a principal. If any of them used a different rule, a
+ * reader could be sent from one to the other forever, so none does.
+ */
+export const CAN_READ_SQL = `(d.link_access = 'anyone'
+  OR ${CAN_MANAGE_SQL}
+  OR EXISTS (SELECT 1 FROM accounts a JOIN doc_invites i ON i.email = a.email
+              WHERE a.id = ? AND i.doc_id = d.id))`;
+
+/** What the operations on a document's access need to know about a document the caller manages. */
+export interface ManagedDoc {
+  title: string;
+  link_access: LinkAccess;
+  /**
+   * The publisher's app-sites `User.id` when one is known, else the local
+   * account id: the same value the publication events carry as `ownerId`, so
+   * an access event and a publish event count one publisher once. It is also
+   * the key an invite is rate-limited under, whichever credential made the
+   * request.
+   */
+  publisher_id: string;
+}
+
+/**
+ * The live document with that id when this principal manages it
+ * (`CAN_MANAGE_SQL`): sets its access, adds people, answers requests. Null for
+ * "missing", "someone else's" and "deleted" alike, the same conflation
+ * `reserveNextVersion` makes and for the same reason: the shape of the reply
+ * must not confirm that another publisher's doc exists.
+ *
+ * One read returns the mode too, so a caller can tell a switch from a repeat
+ * without a second query.
+ */
+export async function findManagedDoc(
+  db: D1Database,
+  docId: string,
+  principal: string,
+): Promise<ManagedDoc | null> {
+  // `return await`: see the note on the router's catch in index.ts.
+  return await db
+    .prepare(
+      `${OWNER_SCOPE_SQL}
+       SELECT d.title AS title, d.link_access AS link_access, ${PUBLISHER_USER_ID_SQL} AS publisher_id
+         FROM docs d WHERE d.id = ? AND ${CAN_MANAGE_SQL} AND d.deleted_at IS NULL`,
+    )
+    .bind(principal, principal, docId)
+    .first<ManagedDoc>();
+}
+
+/** Whether this principal manages a live doc with that id; see `findManagedDoc`. */
+export async function canManage(db: D1Database, docId: string, principal: string): Promise<boolean> {
+  return (await findManagedDoc(db, docId, principal)) !== null;
 }
 
 /**
@@ -492,18 +554,35 @@ export async function softDeleteDoc(
   owner: string,
   atMs: number,
 ): Promise<string | null> {
-  const deleted = await db
-    .prepare(
-      `${OWNER_SCOPE_SQL}
-       UPDATE docs
-          SET deleted_at = ?
-        WHERE id = ? AND owner IN (SELECT owner FROM owner_scope) AND deleted_at IS NULL
-        RETURNING ${PUBLISHER_USER_ID_SQL} AS owner`,
-    )
-    .bind(owner, owner, atMs, docId)
-    .first<{ owner: string }>();
+  // The invite list and the pending requests go with the bytes: a withdrawn
+  // document keeps its row and nothing else. `ON DELETE CASCADE` never fires,
+  // because the row is never deleted. The same transaction, so a retry never
+  // finds it half done.
+  const [deleted] = await db.batch<{ owner: string }>([
+    db
+      .prepare(
+        `${OWNER_SCOPE_SQL}
+         UPDATE docs
+            SET deleted_at = ?
+          WHERE id = ? AND owner IN (SELECT owner FROM owner_scope) AND deleted_at IS NULL
+          RETURNING ${PUBLISHER_USER_ID_SQL} AS owner`,
+      )
+      .bind(owner, owner, atMs, docId),
+    db
+      .prepare(
+        `DELETE FROM doc_invites
+          WHERE doc_id = ? AND EXISTS (SELECT 1 FROM docs WHERE id = ? AND deleted_at IS NOT NULL)`,
+      )
+      .bind(docId, docId),
+    db
+      .prepare(
+        `DELETE FROM doc_access_requests
+          WHERE doc_id = ? AND EXISTS (SELECT 1 FROM docs WHERE id = ? AND deleted_at IS NOT NULL)`,
+      )
+      .bind(docId, docId),
+  ]);
 
-  return deleted === null ? null : deleted.owner;
+  return deleted?.results[0]?.owner ?? null;
 }
 
 /** One row of the publisher's doc list, as the index scan yields it. */
@@ -519,6 +598,7 @@ export interface DocListRow {
    * doc's url does not serve. Null for a doc whose first push never landed.
    */
   version: number | null;
+  link_access: LinkAccess;
 }
 
 /**
@@ -564,7 +644,7 @@ export async function listPublisherDocs(
   limit: number,
 ): Promise<DocListRow[]> {
   const columns = `d.id AS id, d.title AS title, d.created_at AS created_at,
-                   d.updated_at AS updated_at,
+                   d.updated_at AS updated_at, d.link_access AS link_access,
                    (SELECT MAX(v.n) FROM versions v WHERE v.doc_id = d.id) AS version`;
   const order = "ORDER BY d.created_at DESC, d.id DESC LIMIT ?";
 
@@ -754,9 +834,11 @@ export async function deviceCodeIsPending(
  * false when there is no pending code to record it against.
  *
  * This is where a signed cookie would otherwise be minted. Keeping the handshake
- * in the row instead is what lets this Worker set no cookie anywhere, and it
- * costs nothing: the browser is not the thing being authorized, so it has
- * nothing to remember between the three requests.
+ * in the row instead is what lets the device and browser-login flows set no
+ * cookie, and it costs nothing: the browser is not the thing being authorized,
+ * so it has nothing to remember between the three requests. (A reader's
+ * handshake is the exception: it binds its `state` to the starting browser with
+ * a `__Host-oa_login` cookie on the API host, and ends in a session.)
  *
  * Starting a second handshake overwrites the first while neither provider has
  * proved an identity, which is what a person pressing the other provider's
@@ -962,6 +1044,29 @@ export async function confirmDeviceApproval(
 }
 
 /**
+ * Whether a confirm token belongs to a reader's or a browser account login
+ * rather than to a terminal's device code.
+ *
+ * The three flows share one table and one provider callback, so each consumer
+ * has to take only its own kind of row: `/signin/confirm` and
+ * `consumeBrowserLogin` already filter on their prefix, and the device
+ * approval's confirm and deny presses ask this. Otherwise a reader's token
+ * posted to `/approve/confirm` would create the account and mark the row
+ * approved with no session, stranding the reader's own sign-in.
+ */
+export async function isOtherFlowsToken(db: D1Database, confirmToken: string): Promise<boolean> {
+  const row = await db
+    .prepare(
+      `SELECT 1 FROM device_codes
+        WHERE confirm_token = ?
+          AND (user_code LIKE 'reader#_%' ESCAPE '#' OR user_code LIKE 'browser#_%' ESCAPE '#')`,
+    )
+    .bind(confirmToken)
+    .first();
+  return row !== null;
+}
+
+/**
  * Refuse the device code a proven handshake belongs to, returning the code
  * refused or null when there is nothing to refuse.
  *
@@ -1054,6 +1159,74 @@ export async function insertDeviceCode(
  */
 export async function sweepExpired(db: D1Database, nowMs: number): Promise<void> {
   await db.prepare("DELETE FROM device_codes WHERE expires_at <= ?").bind(nowMs).run();
+}
+
+/**
+ * How long the Share popover's sign-in popup leaves its handoff row waiting to
+ * be claimed: one minute and one use. The row exists only once the popup has a
+ * session, so this bounds the gap between the done page and the frame's next
+ * claim, not the sign-in itself.
+ */
+export const EMBED_HANDOFF_TTL_MS = 60 * 1000;
+
+/**
+ * The Share popover's handoff: what the sign-in popup leaves for the frame that
+ * opened it, so the frame can collect its token without the popup ever talking
+ * to it.
+ *
+ * One row in `embed_handoffs`, keyed by `h`, the SHA-256 of a nonce only the
+ * frame knows. It names the account the popup's session named and the document
+ * the popup was opened for, and it expires `EMBED_HANDOFF_TTL_MS` out. A repeat
+ * popup for the same `h` replaces the row.
+ *
+ * The row is not a credential. It can be taken only by presenting the nonce, and
+ * the nonce never leaves the frame's memory: the popup's url and every log
+ * carry only its hash. Use is single and atomic, in the way
+ * `collectDeviceToken` is.
+ *
+ * **This is also where the table is swept**, in the batch that writes the row,
+ * because the popup is the only writer and a deployment that never opens one
+ * has nothing to sweep: a row nobody collects costs one extra delete on the
+ * next popup, not a cron trigger.
+ */
+export async function putEmbedHandoff(
+  db: D1Database,
+  docId: string,
+  h: string,
+  accountId: string,
+  nowMs: number,
+): Promise<void> {
+  await db.batch([
+    db.prepare("DELETE FROM embed_handoffs WHERE expires_at <= ?").bind(nowMs),
+    db
+      .prepare(
+        `INSERT INTO embed_handoffs (h, doc_id, account_id, expires_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(h) DO UPDATE SET doc_id = excluded.doc_id,
+           account_id = excluded.account_id, expires_at = excluded.expires_at`,
+      )
+      .bind(h, docId, accountId, nowMs + EMBED_HANDOFF_TTL_MS),
+  ]);
+}
+
+/**
+ * The account a live handoff names, and the row is gone: pending, unknown, used,
+ * expired and another document's are all null, so a poller learns nothing about
+ * which.
+ */
+export async function takeEmbedHandoff(
+  db: D1Database,
+  docId: string,
+  h: string,
+  nowMs: number,
+): Promise<string | null> {
+  const row = await db
+    .prepare(
+      "DELETE FROM embed_handoffs WHERE h = ? AND doc_id = ? AND expires_at > ? RETURNING account_id",
+    )
+    .bind(h, docId, nowMs)
+    .first<{ account_id: string }>();
+  return row?.account_id ?? null;
 }
 
 /** What a poll needs to decide what to tell the terminal. */
@@ -1308,4 +1481,324 @@ export async function countLiveTokens(db: D1Database, accountId: string): Promis
     .first<{ n: number }>();
 
   return row?.n ?? 0;
+}
+
+/** What a request to read a document needs to decide, in one read. */
+export interface ReadableDoc {
+  /** The document's owner id, which names its publisher's origin. */
+  owner: string;
+  /** For the Share popover's reader view, shown only once a token has proved `canRead`. */
+  title: string;
+  deleted_at: number | null;
+  link_access: LinkAccess;
+  /** The version that has bytes, or null when the request names none. */
+  version: number | null;
+  /** `canRead` for the principal. */
+  allowed: boolean;
+}
+
+/**
+ * The document, whether `principal` may read it (`CAN_READ_SQL`), and which
+ * version to serve.
+ *
+ * `principal` is either a reader's account id or a publisher's owner id, and
+ * one rule covers both. Asked on every request to a publisher's own origin,
+ * which is what makes removing a person take effect on their next request, and
+ * by `/open` and the owner route before they mint a grant, which is what keeps
+ * the three in agreement.
+ *
+ * `owner` is returned because the caller needs it twice: the label host checks
+ * the document is its publisher's, and `/open` derives the label a grant is for
+ * from it. It is never the caller's own id: a linked publisher's documents sit
+ * under two owner ids, and the label follows the document.
+ */
+export async function findReadableDoc(
+  db: D1Database,
+  docId: string,
+  pinned: number | null,
+  principal: string,
+): Promise<ReadableDoc | null> {
+  // `return await`: see the note on the router's catch in index.ts.
+  const row = await db
+    .prepare(
+      `${OWNER_SCOPE_SQL}
+       SELECT d.owner AS owner, d.title AS title, d.deleted_at AS deleted_at, d.link_access AS link_access,
+              (SELECT MAX(v.n) FROM versions v
+                WHERE v.doc_id = d.id AND (? IS NULL OR v.n = ?)) AS version,
+              ${CAN_READ_SQL} AS allowed
+         FROM docs d
+        WHERE d.id = ?`,
+    )
+    .bind(principal, principal, pinned, pinned, principal, docId)
+    .first<Omit<ReadableDoc, "allowed"> & { allowed: number }>();
+  // SQLite has no boolean: the predicate comes back as 0 or 1.
+  return row === null ? null : { ...row, allowed: row.allowed === 1 };
+}
+
+export type InviteRole = "view" | "comment";
+
+/** One person a document is shared with. */
+export interface InviteRow {
+  email: string;
+  role: InviteRole;
+  created_at: number;
+}
+
+/** One address that has asked to open an invited-only document. */
+export interface RequestRow {
+  email: string;
+  created_at: number;
+}
+
+/**
+ * A live document's title, mode, invite list and pending requests. Callers have
+ * checked that the principal manages it.
+ */
+export async function readAccess(
+  db: D1Database,
+  docId: string,
+): Promise<{ title: string; link_access: LinkAccess; people: InviteRow[]; requests: RequestRow[] } | null> {
+  const [doc, people, requests] = await db.batch<DocAccessRow | InviteRow | RequestRow>([
+    db.prepare("SELECT title, link_access FROM docs WHERE id = ? AND deleted_at IS NULL").bind(docId),
+    db
+      .prepare("SELECT email, role, created_at FROM doc_invites WHERE doc_id = ? ORDER BY created_at, email")
+      .bind(docId),
+    db
+      .prepare("SELECT email, created_at FROM doc_access_requests WHERE doc_id = ? ORDER BY created_at, email")
+      .bind(docId),
+  ]);
+  const row = doc?.results[0] as DocAccessRow | undefined;
+  return row
+    ? {
+        ...row,
+        people: (people?.results ?? []) as InviteRow[],
+        requests: (requests?.results ?? []) as RequestRow[],
+      }
+    : null;
+}
+
+type DocAccessRow = { title: string; link_access: LinkAccess };
+
+/**
+ * Set a live document's mode. True only when this call changed it: false means
+ * the document already had that mode, or the principal manages no such
+ * document. A repeat is therefore not a change, which is what lets the caller
+ * record an access event only for a real one.
+ */
+export async function setLinkAccess(
+  db: D1Database,
+  docId: string,
+  owner: string,
+  mode: LinkAccess,
+): Promise<boolean> {
+  const updated = await db
+    .prepare(
+      `${OWNER_SCOPE_SQL}
+       UPDATE docs AS d SET link_access = ?
+        WHERE d.id = ? AND ${CAN_MANAGE_SQL} AND d.deleted_at IS NULL AND d.link_access <> ?
+        RETURNING id`,
+    )
+    .bind(owner, owner, mode, docId, mode)
+    .first();
+  return updated !== null;
+}
+
+/**
+ * Add an address to a live document's list. True only when this call added it:
+ * false means it was already there, or the list is full, or the owner has added
+ * `maxPerOwnerPerDay` new people in the last `windowMs`, or the publisher has no
+ * such document. Both caps are predicates on the insert for the reason
+ * `insertDocWithinQuota` gives about its own.
+ *
+ * The daily count is `invite_sends`, one row per invite ever added, so it bounds
+ * sends: removing an invite or unsharing a document never touches it, and an
+ * owner cannot loop add and remove past the cap. It counts every id in the
+ * principal's owner scope, so a linked license key and its account share one
+ * allowance.
+ *
+ * The four statements run in one D1 batch, which is one transaction on a database
+ * that serializes writes, so the cap check and both inserts are a single unit and
+ * concurrent adds cannot both pass. The send is recorded by `changes()`: it runs
+ * straight after the invite insert and writes only if that insert wrote a row, so
+ * a refused add, or a repeat of an address already listed, records nothing. The
+ * third statement prunes the scope's rows that have left the window, and the last
+ * clears a pending request from the same address.
+ *
+ * Adding is also approving: a pending request from the same address is deleted
+ * in the same batch, so the list and the requests can never show one address in
+ * both. The delete runs only when the address is on the list afterwards, so a
+ * full list leaves the request where the owner can still see it.
+ */
+export async function insertInvite(
+  db: D1Database,
+  docId: string,
+  owner: string,
+  email: string,
+  atMs: number,
+  maxPeople: number,
+  role: InviteRole = "comment",
+  maxPerOwnerPerDay: number = MAX_NEW_INVITES_PER_OWNER_PER_DAY,
+  windowMs: number = INVITE_WINDOW_MS,
+): Promise<boolean> {
+  const [inserted] = await db.batch<{ email: string }>([
+    db
+      .prepare(
+        `${OWNER_SCOPE_SQL}
+         INSERT INTO doc_invites (doc_id, email, role, created_at)
+         SELECT d.id, ?, ?, ? FROM docs d
+          WHERE d.id = ? AND ${CAN_MANAGE_SQL} AND d.deleted_at IS NULL
+            AND (SELECT COUNT(*) FROM doc_invites WHERE doc_id = d.id) < ?
+            AND (SELECT COUNT(*) FROM invite_sends
+                  WHERE owner IN (SELECT owner FROM owner_scope) AND created_at > ?) < ?
+         ON CONFLICT DO NOTHING
+         RETURNING email`,
+      )
+      .bind(owner, owner, email, role, atMs, docId, maxPeople, atMs - windowMs, maxPerOwnerPerDay),
+    db
+      .prepare(
+        `INSERT INTO invite_sends (owner, created_at)
+         SELECT d.owner, ? FROM docs d WHERE d.id = ? AND changes() > 0`,
+      )
+      .bind(atMs, docId),
+    db
+      .prepare(
+        `${OWNER_SCOPE_SQL}
+         DELETE FROM invite_sends
+          WHERE owner IN (SELECT owner FROM owner_scope) AND created_at <= ?`,
+      )
+      .bind(owner, owner, atMs - windowMs),
+    db
+      .prepare(
+        `DELETE FROM doc_access_requests
+          WHERE doc_id = ? AND email = ?
+            AND EXISTS (SELECT 1 FROM doc_invites WHERE doc_id = ? AND email = ?)`,
+      )
+      .bind(docId, email, docId, email),
+  ]);
+  return (inserted?.results.length ?? 0) > 0;
+}
+
+/**
+ * Record that the signed-in account asked to open an invited-only document.
+ *
+ * One statement, so every case is decided by the predicate and not by an
+ * earlier read: the document is live and invited-only, the account can not
+ * already read it (`CAN_READ_SQL`), it has no pending request, and the document
+ * has fewer than `maxRequests`. `ON CONFLICT DO NOTHING` is the "already
+ * pending" case and keeps the original `created_at`. The address is the
+ * account's own `accounts.email`, never anything typed.
+ *
+ * Returns the new request, with the title and owner the owner's email needs,
+ * only when a row was inserted. Every other case — unknown, deleted, public,
+ * already allowed, already pending, over the cap — returns null, and the caller
+ * answers all of them the same way so the route reveals nothing.
+ */
+export async function insertAccessRequest(
+  db: D1Database,
+  docId: string,
+  accountId: string,
+  atMs: number,
+  maxRequests: number,
+): Promise<{ email: string; title: string; owner: string } | null> {
+  return await db
+    .prepare(
+      `${OWNER_SCOPE_SQL}
+       INSERT INTO doc_access_requests (doc_id, email, created_at)
+       SELECT d.id, a.email, ? FROM docs d JOIN accounts a ON a.id = ?
+        WHERE d.id = ? AND d.deleted_at IS NULL AND d.link_access = 'invited'
+          AND NOT ${CAN_READ_SQL}
+          AND (SELECT COUNT(*) FROM doc_access_requests WHERE doc_id = d.id) < ?
+       ON CONFLICT DO NOTHING
+       RETURNING email,
+                 (SELECT title FROM docs WHERE id = doc_id) AS title,
+                 (SELECT owner FROM docs WHERE id = doc_id) AS owner`,
+    )
+    .bind(accountId, accountId, atMs, accountId, docId, accountId, maxRequests)
+    .first<{ email: string; title: string; owner: string }>();
+}
+
+/** Decline a request: remove it. Idempotent, and tells the requester nothing. */
+export async function deleteAccessRequest(
+  db: D1Database,
+  docId: string,
+  owner: string,
+  email: string,
+): Promise<void> {
+  await db
+    .prepare(
+      `${OWNER_SCOPE_SQL}
+       DELETE FROM doc_access_requests
+        WHERE doc_id = ? AND email = ?
+          AND doc_id IN (SELECT d.id FROM docs d WHERE ${CAN_MANAGE_SQL} AND d.deleted_at IS NULL)`,
+    )
+    .bind(owner, owner, docId, email)
+    .run();
+}
+
+/**
+ * Change the role of an address already on a live document's list. True only
+ * when the role actually changed, so naming the role it already has is a repeat.
+ */
+export async function setInviteRole(
+  db: D1Database,
+  docId: string,
+  owner: string,
+  email: string,
+  role: InviteRole,
+): Promise<boolean> {
+  const updated = await db
+    .prepare(
+      `${OWNER_SCOPE_SQL}
+       UPDATE doc_invites SET role = ?
+        WHERE doc_id = ? AND email = ? AND role <> ?
+          AND doc_id IN (SELECT d.id FROM docs d WHERE ${CAN_MANAGE_SQL} AND d.deleted_at IS NULL)
+        RETURNING email`,
+    )
+    .bind(owner, owner, role, docId, email, role)
+    .first();
+  return updated !== null;
+}
+
+/**
+ * Remove an address from a live document's list. True only when this call
+ * removed it; removing an absent one is fine and reports false.
+ */
+export async function deleteInvite(
+  db: D1Database,
+  docId: string,
+  owner: string,
+  email: string,
+): Promise<boolean> {
+  const deleted = await db
+    .prepare(
+      `${OWNER_SCOPE_SQL}
+       DELETE FROM doc_invites
+        WHERE doc_id = ? AND email = ?
+          AND doc_id IN (SELECT d.id FROM docs d WHERE ${CAN_MANAGE_SQL} AND d.deleted_at IS NULL)
+        RETURNING email`,
+    )
+    .bind(owner, owner, docId, email)
+    .first();
+  return deleted !== null;
+}
+
+/** The address of the account an owner id resolves to, when this Worker knows one. */
+export async function ownerEmail(db: D1Database, owner: string): Promise<string | null> {
+  const row = await db
+    .prepare(
+      `SELECT email FROM accounts
+        WHERE id = COALESCE((SELECT account_id FROM owner_links WHERE external_owner = ?), ?)`,
+    )
+    .bind(owner, owner)
+    .first<{ email: string }>();
+  return row?.email ?? null;
+}
+
+/** An account's address, or null when there is no such account. */
+export async function accountEmail(db: D1Database, accountId: string): Promise<string | null> {
+  const row = await db
+    .prepare("SELECT email FROM accounts WHERE id = ?")
+    .bind(accountId)
+    .first<{ email: string }>();
+  return row?.email ?? null;
 }

@@ -87,8 +87,10 @@ GET and HEAD with the exact path and query. The old API host remains attached
 only to return `410 Gone` for every request before authentication.
 
 `workers_dev` is `false` and stays that way. With any host var set, the router
-uses an explicit allowlist and fails closed on unknown hosts. Path-prefix
-fallback exists only for local development, when all four vars are empty.
+uses an explicit allowlist and fails closed on unknown hosts; the allowlist
+includes `{26-character label}.{SERVING_HOST}`, the publisher origins below, and
+no other subdomain. Path-prefix fallback exists only for local development, when
+all four vars are empty.
 
 The remaining serving work is unchanged:
 
@@ -98,20 +100,42 @@ The remaining serving work is unchanged:
    attached.
 2. **Add a Cache Rule.** Outstanding. Cloudflare does not cache HTML by default,
    and `/d/{docId}` has no file extension, so attaching the new domains will not
-   change caching by itself.
+   change caching by itself. The rule matches `hostname eq openartifacts.site`
+   and nothing broader: publisher origins (`{label}.openartifacts.site`) serve
+   private bytes and are never cache-rule targets, so a wildcard or a
+   "contains `openartifacts.site`" match would put them in a shared cache.
 3. **Purge on delete, in the same change.** Outstanding, and coupled to the one
    above. Once there is an edge cache, an unshared doc keeps being served from
    it. Shipping caching without purging is how a withdrawn document stays
    readable.
+   Making a document invited-only must purge exactly the same way.
 
-## What changes when reading stops being anonymous
+## What changed when reading stopped being anonymous
 
 The argument above rests on the serving origin being cookieless, which is also
-what lets uploaded documents run scripts. Private sharing breaks that, and the
-way out is to keep identity on the brand domain and grant access per document
-rather than by session — and that is not sufficient on its own. A hostile public
-document can `window.open` a private one and read the grant off the popup once it
-returns to this origin, so isolating documents from each other is a prerequisite,
-not an enhancement. It is nearly free to adopt now and effectively impossible
-once readers hold private links.
-[private-sharing.md](private-sharing.md) has the reasoning and the phases.
+what lets uploaded documents run scripts. Private sharing could not break that,
+so it did not: `openartifacts.site` is still cookieless and still holds nothing
+but public documents. An invited-only document is never served from it; the
+apex answers a `302` to sign-in.
+
+Identity lives on the brand domain's API host, and a grant alone is not
+sufficient, because a hostile public document can `window.open` a private one and
+read the grant off the popup once it returns to a shared origin. So the rule
+becomes: **no origin that runs more than one publisher's scripts ever holds a
+credential.** Private documents are served from one origin per *publisher*,
+`{label}.openartifacts.site`, where only that publisher's scripts run. The label
+is a one-way hash of the document's `docs.owner`, not of the document id, so the
+hostname never reveals the owner or the document. A label host holds one
+read-only grant cookie and checks each document against its access list on every
+request, and it answers `404` for any document whose owner does not hash to its
+label. A publisher's custom domain takes the same seat later.
+
+Label hosts are subdomains of the sacrificial domain, never of the brand domain,
+so "Why a subdomain does not work" is untouched: a listing against a label host
+lands on `openartifacts.site`, which is the domain that exists to absorb it. They
+are also never cache-rule targets, as the Cache Rule above says.
+
+The wildcard route and DNS record are one-time setup in
+[deploying.md](deploying.md#private-sharing). It was nearly free to adopt while
+every link was disposable and would have been effectively impossible afterwards.
+[private-sharing.md](private-sharing.md) has the reasoning and the whole flow.

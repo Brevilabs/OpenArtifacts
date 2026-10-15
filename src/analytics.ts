@@ -1,8 +1,8 @@
 /**
- * Product analytics: four document outcomes, delivered straight to PostHog.
+ * Product analytics: five document outcomes, delivered straight to PostHog.
  *
  * The module exists to make one property structural rather than a review habit.
- * What leaves this Worker is decided *here*, from a closed union of four event
+ * What leaves this Worker is decided *here*, from a closed union of five event
  * shapes, and never by a caller: `properties` is assembled below out of those
  * fields alone, and nothing in the interface accepts a property bag, a
  * `Request`, a title or a url. A call site that wanted to attach one
@@ -63,12 +63,14 @@ export const ANALYTICS_TIMEOUT_MS = 2000;
 export const MAX_USER_AGENT_LENGTH = 512;
 
 /**
- * The four outcomes worth counting, and the only things that can be recorded.
+ * The five outcomes worth counting, and the only things that can be recorded.
  *
  * A view event has no `ownerId` field to fill in, so a reader cannot be turned
- * into an account; the three publication events do have one, because the actor
- * there is an account this Worker already resolved from a credential it
+ * into an account; the publication and access events do have one, because the
+ * actor there is an account this Worker already resolved from a credential it
  * validated. The one thing a view carries about its reader is the user agent.
+ * An access event carries the state it left behind — the mode and how many
+ * people — never an address.
  */
 export type DocumentEvent =
   | {
@@ -79,6 +81,15 @@ export type DocumentEvent =
       atMs: number;
       /** The account that performed it — always derived, never request input. */
       ownerId: string;
+    }
+  | {
+      name: "document_access_changed";
+      docId: string;
+      atMs: number;
+      ownerId: string;
+      linkAccess: "anyone" | "invited";
+      /** How many people the document is shared with now. */
+      people: number;
     }
   | {
       name: "document_viewed";
@@ -195,6 +206,9 @@ function capturePayload(
       document_key: documentKey,
       $process_person_profile: !viewed,
       $geoip_disable: true,
+      ...(event.name === "document_access_changed"
+        ? { link_access: event.linkAccess, people: event.people }
+        : {}),
       ...(viewed && event.userAgent
         ? { $raw_user_agent: event.userAgent.slice(0, MAX_USER_AGENT_LENGTH) }
         : {}),
