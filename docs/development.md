@@ -126,9 +126,11 @@ OA_SCREENSHOTS=/some/dir npm run test:browser # bar.png, popover-signed-out.png,
 and runs it under Miniflare over HTTPS with real D1 and R2 and no `upstream`, so
 the router sees each request's own `Host` and its allowlist runs as in
 production. Chrome (the machine's own, through `playwright-core`; no browsers are
-downloaded) reaches `openartifacts.site`, a publisher's label host and
-`api.openartifacts.ai` through `--host-resolver-rules`, which is the one local
-way to see the bar and the popover on their real hosts. It signs a reader session
+downloaded) reaches `openartifacts.site` and `api.openartifacts.ai` through
+`--host-resolver-rules` (which also maps `*.openartifacts.site`, but the test
+loads only public documents on the apex; the label-host path is covered by
+`test/serve.test.ts` at the HTTP level only), which is the one local way to see
+the bar and the popover on their real hosts. It signs a reader session
 in Node, opens a page, presses **Share**, signs in through the real popup, and
 switches a document to private; it also checks that a hostile page embedding the
 frame learns nothing and that the frame says the same about every id a viewer

@@ -709,7 +709,9 @@ the frame makes a random nonce only it knows and passes the nonce's hash as `h`.
   and also posts the token to its opener if the opener survives.
 - `POST /embed/token {doc, nonce}` is how the frame collects it: the row is found
   by the hash of the nonce, so only the frame that made the nonce can take it, once.
-  Pending, unknown, used and expired all answer `404`. Every API-host page sends a
+  Pending, unknown, used and expired all answer `404`. A claim over the
+  per-address limit answers `400 slow_down`, which the frame treats like any other
+  non-`200` and keeps polling. Every API-host page sends a
   cross-origin opener policy and Google's sign-in pages probably do too, which can
   sever the popup's link to the frame, so the frame polls (every two seconds, for
   at most ten minutes, and again when its tab becomes visible) rather than waiting
@@ -915,12 +917,14 @@ exposes this API payload to a reader.
 | `limit_reached` | 402 | Account-token publish would exceed a plan limit. Carries the exceeded limit's identifier (`limit`), current plan name (`plan`), and optional `upgrade_url` inside `error`. Also returned, for license keys as well as account tokens, for a private-sharing operation the plan does not include (`limit: "privateSharing"`). |
 | `internal` | 500 | Our fault, including the license server being unreachable for a key we have never seen. |
 | `authorization_pending` | 400 | `POST /device/token`: nobody has approved the code yet. |
-| `slow_down` | 400 | `POST /device/token`: polled faster than the `interval`. |
+| `slow_down` | 400 | `POST /device/token`: polled faster than the `interval`. Also `POST /embed/token`, over its per-address limit. |
 | `expired_token` | 400 | `POST /device/token`: the code expired, was collected, or was never issued. |
 | `access_denied` | 400 | `POST /device/token`: someone pressed Deny on the approval page. |
 
-The last four appear on `POST /device/token` and nowhere else. They are RFC 8628
-§3.5's names, carried in this envelope so a client parses one error shape.
+The last four appear on `POST /device/token`, and `slow_down` also on
+`POST /embed/token` (the Share popover's claim, not a client surface) when the
+per-address limit is hit; they appear nowhere else. They are RFC 8628 §3.5's
+names, carried in this envelope so a client parses one error shape.
 
 Three of these are worth handling deliberately in a client:
 

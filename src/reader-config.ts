@@ -30,8 +30,8 @@ export function readerSecret(env: Env): string | null {
  *
  * When it is false the server behaves exactly like a Worker that predates
  * private sharing. `POST /api/v1/private-docs`, every `…/access` route,
- * `…/open`, `/open/*`, `/share/*`, `/signin/*` and every label host answer
- * `404`, and served pages carry no top bar. No half-configured state
+ * `…/open`, `/open/*`, `/share/*`, `/signin/*`, `/embed/*` and every label host
+ * answer `404`, and served pages carry no top bar. No half-configured state
  * exists, which is why the gates are all one call to this function.
  *
  * Documents already stored as invited-only are not made public by this: the
