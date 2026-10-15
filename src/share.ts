@@ -220,7 +220,7 @@ main{width:min(100%,40rem)}h1{max-width:none;font-size:clamp(1.5rem,5vw,2.25rem)
 section{margin-top:2rem}h2{margin:0 0 .75rem;color:#f4f5f7;font-size:1rem}
 .err{color:#f6ae52}.err a{display:inline;margin:0}
 ul{margin:0;padding:0;list-style:none}li{display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:.65rem 0;border-top:1px solid #20242c}
-li span{display:flex;flex-direction:column}li .pair{flex-direction:row;gap:.5rem}small{display:block;color:#8d94a0}
+li span{display:flex;flex-direction:column;min-width:0}li b{overflow-wrap:anywhere}li .pair{flex-direction:row;flex-shrink:0;gap:.5rem}small{display:block;color:#8d94a0}
 form{margin:0}.choice{display:flex;gap:.75rem;align-items:flex-start;margin:0 0 .75rem;color:#e9ebee}.choice input{margin-top:.3rem;accent-color:#f6ae52}
 button,input[type=email],input[readonly]{padding:.6rem 1rem;border:1px solid #2c313b;border-radius:.65rem;background:#07080b;color:#f4f5f7;font:inherit;cursor:pointer}
 button:hover{border-color:#f6ae52;color:#f9c47f}input[type=email],input[readonly]{flex:1;min-width:0;cursor:text}

@@ -91,7 +91,7 @@ export function signInPage(
     : "";
   const divider =
     providers.length > 0 && emailEnabled
-      ? '<p class="terms" style="margin:1.25rem 0 0;text-align:center">or</p>'
+      ? '<p class="terms divider">or</p>'
       : "";
   const email = emailEnabled
     ? `<form class="signup" method="post" action="${SIGNIN_PREFIX}/email">${hidden("next", next)}<div class="actions"><input type="email" name="email" placeholder="Email address" aria-label="Email address" autocomplete="email" style="${EMAIL_FIELD_STYLE}" required><button type="submit">Email me a code</button></div></form>`

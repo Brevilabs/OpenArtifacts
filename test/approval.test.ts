@@ -1409,6 +1409,21 @@ describe("reader sign-in", () => {
     expect(emailOnly).not.toContain(">or</p>");
   });
 
+  it("lays the sign-in page out with even spacing and wraps long values inside the card", async () => {
+    const { over } = mailbox();
+    const html = await (await send(`${API}${NEXT}`, {}, over)).text();
+    // The divider is a class, not inline margins, and the email form that follows it adds no gap of its own.
+    expect(html).toContain('<p class="terms divider">or</p>');
+    expect(html).toContain(".divider + .signup .actions { margin-top: 1rem; }");
+    // A stacked field takes no margin of its own: the column's gap spaces it, as it does the buttons.
+    expect(html).toContain(".signup .actions input { margin-top: 0; }");
+    // A long address or title in a heading or message wraps instead of overflowing the card.
+    expect(html).toMatch(/h1 \{[^}]*overflow-wrap: anywhere/);
+    expect(html).toMatch(/\n {2}p \{[^}]*overflow-wrap: anywhere/);
+    // An address inside a heading sits on its own line at half the heading's size, so a typical one fits the card.
+    expect(html).toContain("h1 bdi { display: block;");
+  });
+
   it("sends a code to any address and gives the same page for each, telling whoever typed it nothing", async () => {
     const { sent, over } = mailbox();
     await findOrCreateAccount(env.DB, newAccountId(), "linked@acme.com", NOW);
