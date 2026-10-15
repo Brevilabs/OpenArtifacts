@@ -41,6 +41,18 @@ export function createClient({ host, token, fetcher = fetch }) {
     return type.includes("application/json") ? response.json() : response.text();
   }
 
+  const listDocs = async () => {
+    const docs = [];
+    let cursor;
+    do {
+      const query = cursor ? `?limit=100&cursor=${encodeURIComponent(cursor)}` : "?limit=100";
+      const page = await request(`/api/v1/docs${query}`);
+      docs.push(...page.docs);
+      cursor = page.cursor;
+    } while (cursor);
+    return docs;
+  };
+
   return {
     account: () => request("/api/v1/account"),
     createHandoff: () => request("/api/v1/account/handoffs", { method: "POST" }),
@@ -56,25 +68,57 @@ export function createClient({ host, token, fetcher = fetch }) {
     /** @param {{title?: string, html: string}} body */
     createDoc: (body) =>
       request("/api/v1/docs", { method: "POST", body: JSON.stringify(body) }),
+    /**
+     * Create a document that is private from its first request. A server without
+     * private sharing answers 404, which reaches the caller as an APIError.
+     * @param {{title?: string, html: string}} body
+     */
+    createPrivateDoc: (body) =>
+      request("/api/v1/private-docs", { method: "POST", body: JSON.stringify(body) }),
     /** @param {string} docId @param {{title?: string, html: string}} body */
     updateDoc: (docId, body) =>
       request(`/api/v1/docs/${encodeURIComponent(docId)}`, {
         method: "PUT",
         body: JSON.stringify(body),
       }),
-    listDocs: async () => {
-      const docs = [];
-      let cursor;
-      do {
-        const query = cursor ? `?limit=100&cursor=${encodeURIComponent(cursor)}` : "?limit=100";
-        const page = await request(`/api/v1/docs${query}`);
-        docs.push(...page.docs);
-        cursor = page.cursor;
-      } while (cursor);
-      return docs;
+    listDocs,
+    /**
+     * The owner's latest HTML. A Worker that predates private sharing has no …/html and serves every document publicly, so there `get` reads the public url, as it always did, without the token.
+     * @param {string} docId
+     */
+    getHtml: async (docId) => {
+      const html = await request(`/api/v1/docs/${encodeURIComponent(docId)}/html`, {}, [404]);
+      if (html !== null) return html;
+      const doc = (await listDocs()).find((item) => item.docId === docId);
+      // A server that lists linkAccess has …/html, so its 404 is the answer.
+      if (!doc || doc.linkAccess !== undefined) {
+        throw new APIError(404, { error: { code: "not_found", message: `No document with id ${docId} is in this account.` } });
+      }
+      return request(doc.url, {}, [], false);
     },
-    /** @param {string} url */
-    readDocument: (url) => request(url, {}, [], false),
+    /** @param {string} docId */
+    getAccess: (docId) => request(`/api/v1/docs/${encodeURIComponent(docId)}/access`),
+    /** @param {string} docId @param {"anyone" | "invited"} linkAccess */
+    setLinkAccess: (docId, linkAccess) =>
+      request(`/api/v1/docs/${encodeURIComponent(docId)}/access`, {
+        method: "PUT",
+        body: JSON.stringify({ linkAccess }),
+      }),
+    /** @param {string} docId @param {string} email */
+    addPerson: (docId, email) =>
+      request(`/api/v1/docs/${encodeURIComponent(docId)}/access/people/${encodeURIComponent(email)}`, {
+        method: "PUT",
+      }),
+    /** @param {string} docId @param {string} email */
+    removePerson: (docId, email) =>
+      request(`/api/v1/docs/${encodeURIComponent(docId)}/access/people/${encodeURIComponent(email)}`, {
+        method: "DELETE",
+      }),
+    /** Decline a pending request. It is idempotent and tells the requester nothing. @param {string} docId @param {string} email */
+    declineRequest: (docId, email) =>
+      request(`/api/v1/docs/${encodeURIComponent(docId)}/access/requests/${encodeURIComponent(email)}`, {
+        method: "DELETE",
+      }),
     /** @param {string} docId */
     unshare: (docId) =>
       request(`/api/v1/docs/${encodeURIComponent(docId)}`, { method: "DELETE" }, [404]),

@@ -53,8 +53,9 @@ ${FAVICON_LINK}
   .brand { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 3.5rem; color: #8d94a0; font-family: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace; font-size: 0.7rem; font-weight: 500; letter-spacing: 0.16em; text-transform: uppercase; }
   .mark { display: block; width: 2rem; height: 2rem; }
   .mark svg { display: block; width: 100%; height: 100%; }
-  h1 { max-width: 12ch; margin: 0; color: #f4f5f7; font-size: clamp(2.25rem, 7vw, 4.25rem); font-weight: 700; line-height: 0.98; letter-spacing: -0.035em; }
-  p { max-width: 30rem; margin: 1.5rem 0 0; color: #8d94a0; font-size: 1.05rem; line-height: 1.7; }
+  h1 { max-width: 12ch; margin: 0; overflow-wrap: anywhere; color: #f4f5f7; font-size: clamp(2.25rem, 7vw, 4.25rem); font-weight: 700; line-height: 0.98; letter-spacing: -0.035em; }
+  h1 bdi { display: block; margin-top: 0.2em; font-size: 0.5em; line-height: 1.15; letter-spacing: -0.02em; }
+  p { max-width: 30rem; margin: 1.5rem 0 0; overflow-wrap: anywhere; color: #8d94a0; font-size: 1.05rem; line-height: 1.7; }
   a { display: inline-flex; margin-top: 2rem; color: #f6ae52; font-weight: 600; text-underline-offset: 0.25em; }
   a:hover { color: #f9c47f; }
   .code { display: inline-block; margin-top: 1.5rem; padding: 0.75rem 1.25rem; border: 1px solid #20242c; border-radius: 0.75rem; background: #07080b; color: #f4f5f7; font-family: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace; font-size: 1.5rem; letter-spacing: 0.22em; }
@@ -70,6 +71,7 @@ ${FAVICON_LINK}
   .newsletter input { accent-color: #f6ae52; width: 1rem; height: 1rem; margin: 0.2rem 0 0; flex-shrink: 0; }
   .signup .actions { flex-direction: column; gap: 0.75rem; margin-top: 2rem; }
   .signup .actions button { display: flex; align-items: center; justify-content: center; gap: 0.75rem; width: 100%; margin-top: 0; }
+  .signup .actions input { margin-top: 0; }
   .signup .actions button svg { width: 1.25rem; height: 1.25rem; flex-shrink: 0; }
   .signup .actions button:disabled { border-color: #292d35; background: #191c22; color: #636b78; cursor: not-allowed; }
   .signup .terms + .newsletter { margin-top: 1rem; }
@@ -77,6 +79,9 @@ ${FAVICON_LINK}
   .terms-consent a { display: inline; margin: 0; }
   .terms { font-size: 0.85rem; line-height: 1.6; }
   .terms a { display: inline; margin: 0; }
+  .divider { margin: 1rem 0 0; text-align: center; }
+  .divider + .signup { margin-top: 0; }
+  .divider + .signup .actions { margin-top: 1rem; }
 </style>
 </head>
 <body>

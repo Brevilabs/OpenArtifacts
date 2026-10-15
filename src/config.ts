@@ -4,6 +4,8 @@
  * The canonical, legacy, and retired host vars are declared in wrangler.jsonc.
  * Local development leaves all four empty, where the router falls back to path
  * prefixes. Production configures them together so unknown hosts fail closed.
+ * Publisher origins (`{26-character label}.{SERVING_HOST}`) are derived from
+ * `SERVING_HOST` and need no var of their own.
  */
 export interface Env {
   /** R2 bucket holding the served bytes. System of record. */
@@ -156,6 +158,62 @@ export interface Env {
    * out of them rather than the one that folds them in.
    */
   ANALYTICS_ENVIRONMENT?: string;
+
+  /**
+   * Key for reader sessions and grants (docs/private-sharing.md). At least 32
+   * characters; anything shorter counts as unset.
+   *
+   * **Absent, too short, or with no sign-in method configured, the whole
+   * private family answers `404 not_found` and served pages carry no top
+   * bar** (`readerSignInConfigured`), exactly as on a Worker that predates
+   * private sharing; every document stays public. It signs sessions and grants
+   * with domain-separated MACs, and rotating it signs every reader out. A secret
+   * rather than a var because anyone holding it can mint a session or a grant.
+   */
+  READER_SESSION_SECRET?: string;
+
+  /**
+   * Cloudflare Email Service `send_email` binding, for invite emails, request
+   * emails to owners, and sign-in codes. Absent means none is sent and the code
+   * form is not offered; Google and GitHub sign-in work without it. This binding
+   * plus `EMAIL_FROM` is what `Access.email` reports to clients.
+   */
+  EMAIL?: EmailSender;
+  /** Sending address on a domain onboarded to Email Service. Absent means no email. */
+  EMAIL_FROM?: string;
+
+  /** Emailed sign-in codes, counted per address. Absent means no limit. */
+  SIGNIN_EMAIL_LIMITER?: RateLimit;
+  /**
+   * The same codes, counted per client address, so one caller cannot mail codes
+   * to many addresses. Absent means no limit.
+   */
+  SIGNIN_EMAIL_CLIENT_LIMITER?: RateLimit;
+  /** Invite emails, counted per owner. Absent means no limit. */
+  INVITE_EMAIL_LIMITER?: RateLimit;
+  /**
+   * `POST /open/{docId}/request`, counted per requesting account. It bounds both
+   * the request rows one account can write and the emails they cause owners.
+   * Absent means no limit.
+   */
+  REQUEST_ACCESS_LIMITER?: RateLimit;
+  /**
+   * `POST /embed/token`, the Share popover's claim, counted per client address.
+   * A waiting frame polls it every two seconds, so this bounds a flood of
+   * misses against the D1 read budget. Absent means no limit.
+   */
+  EMBED_TOKEN_LIMITER?: RateLimit;
+}
+
+/** The part of the Email Service binding this Worker uses. */
+export interface EmailSender {
+  send(message: {
+    from: string | { email: string; name?: string };
+    to: string;
+    subject: string;
+    text: string;
+    html: string;
+  }): Promise<unknown>;
 }
 
 /**
@@ -170,6 +228,26 @@ export const MAX_DOC_BYTES = 10 * 1024 * 1024;
 
 /** Pushes a single owner may make in one UTC day, across credentials. */
 export const MAX_PUSHES_PER_DAY = 100;
+
+/** People one document can be shared with, so its list never needs paging. */
+export const MAX_INVITES_PER_DOC = 100;
+
+/**
+ * New invites one owner may add in a rolling 24 hours, across all their documents and
+ * credentials. Counted from invite_sends, one row per invite added, so it bounds sends:
+ * removing an invite or unsharing a document never frees allowance. Repeats and role
+ * changes never count. Email volume across colos is paced separately by
+ * INVITE_EMAIL_LIMITER.
+ */
+export const MAX_NEW_INVITES_PER_OWNER_PER_DAY = 100;
+export const INVITE_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Pending access requests one document holds, for the same reason. Its own
+ * constant, not `MAX_INVITES_PER_DOC`, so the two caps can diverge. Past it a
+ * new request is dropped silently and the requester still sees "Request sent".
+ */
+export const MAX_PENDING_REQUESTS_PER_DOC = 100;
 
 /** Live (non-deleted) docs a paid license owner may hold. */
 export const MAX_DOCS_PER_PUBLISHER = 500;

@@ -1,5 +1,6 @@
 import { handleAccount } from "./account.js";
 import { analyticsSink, type AnalyticsSink } from "./analytics.js";
+import { handleDocSection } from "./api/access.js";
 import { deleteDoc, listDocs } from "./api/manage.js";
 import { ADMIN_PREFIX, handleAdmin } from "./admin.js";
 import { APPROVAL_PREFIX, handleApproval } from "./approval/handler.js";
@@ -15,19 +16,30 @@ import type { Env } from "./config.js";
 import { DEVICE_PREFIX, handleDevice } from "./device.js";
 import { errorResponse } from "./errors.js";
 import { listTokens, revokeToken } from "./api/tokens.js";
-import {
-  handleServing,
-  servingError,
-  servingRedirect,
-  SERVING_PREFIX,
-} from "./serve.js";
+import { EMBED_PREFIX, OPEN_PREFIX, SERVING_PREFIX, SHARE_PREFIX, SIGNIN_PREFIX } from "./paths.js";
+import { handlePublisherServing, isolate, PRIVATE_LABEL } from "./private.js";
+import { handleEmbed } from "./embed.js";
+import { handleReader } from "./reader.js";
+import { readerSignInConfigured } from "./reader-config.js";
+import { READER_NOT_FOUND, readerIsolate } from "./reader-pages.js";
+import { handleShare } from "./share.js";
+import { handleServing, servingError, servingRedirect } from "./serve.js";
 
 /**
- * The two surfaces. They are separate because user HTML has to be served from a
- * sacrificial host that never carries the API — a doc that turns out to be
- * phishing should cost us the serving domain, not the brand domain.
+ * The surfaces. Public documents and the API are separate because user HTML has
+ * to be served from a sacrificial host that never carries the API — a doc that
+ * turns out to be phishing should cost us the serving domain, not the brand
+ * domain. A third, `publisher-serving`, is one publisher's own origin
+ * (`{label}.{SERVING_HOST}`), where that publisher's invited-only documents are
+ * served and only that publisher's scripts run.
  */
-export type Surface = "api" | "serving" | "legacy-serving" | "retired-api" | "unknown";
+export type Surface =
+  | "api"
+  | "serving"
+  | "publisher-serving"
+  | "legacy-serving"
+  | "retired-api"
+  | "unknown";
 
 export interface SurfaceConfig {
   /** Canonical host serving public docs. Empty/undefined locally. */
@@ -58,6 +70,25 @@ function hostMatches(hostname: string, configured: string | undefined): boolean 
   return normalizeHostname(hostname) === normalizeHostname(configured);
 }
 
+/**
+ * The publisher a host belongs to, or null when it is none. Today that is
+ * `{26-character label}.{servingHost}`, the label being the whole subdomain, so
+ * `a.b.openartifacts.site` and a short or mixed-case label are the unknown hosts
+ * they were before. A publisher's verified custom hostname resolves here later,
+ * by lookup; nothing else in the router changes when it does.
+ */
+export function resolvePublisherHost(
+  hostname: string,
+  servingHost: string | undefined,
+): { label: string } | null {
+  if (!servingHost?.trim()) return null;
+  const serving = normalizeHostname(servingHost);
+  const host = normalizeHostname(hostname);
+  if (!host.endsWith(`.${serving}`)) return null;
+  const label = host.slice(0, -serving.length - 1);
+  return PRIVATE_LABEL.test(label) ? { label } : null;
+}
+
 function pathIsUnder(pathname: string, prefix: string): boolean {
   return pathname === prefix || pathname.startsWith(`${prefix}/`);
 }
@@ -85,6 +116,7 @@ export function resolveSurface(hostname: string, pathname: string, config: Surfa
   if (hostMatches(hostname, config.legacyServingHost)) return "legacy-serving";
   if (hostMatches(hostname, config.apiHost)) return "api";
   if (hostMatches(hostname, config.retiredApiHost)) return "retired-api";
+  if (resolvePublisherHost(hostname, config.servingHost) !== null) return "publisher-serving";
 
   if (hostsAreConfigured(config)) return "unknown";
 
@@ -95,6 +127,10 @@ export function resolveSurface(hostname: string, pathname: string, config: Surfa
   // serve them too.
   if (pathIsUnder(pathname, APPROVAL_PREFIX)) return "api";
   if (pathIsUnder(pathname, DEVICE_PREFIX)) return "api";
+  if (pathIsUnder(pathname, OPEN_PREFIX)) return "api";
+  if (pathIsUnder(pathname, SIGNIN_PREFIX)) return "api";
+  if (pathIsUnder(pathname, SHARE_PREFIX)) return "api";
+  if (pathIsUnder(pathname, EMBED_PREFIX)) return "api";
   if (pathIsUnder(pathname, SERVING_PREFIX)) return "serving";
   return "unknown";
 }
@@ -103,8 +139,9 @@ export function resolveSurface(hostname: string, pathname: string, config: Surfa
  * Every API request authenticates before any handler sees it, so a handler can
  * assume a publisher and never has to reason about the license key.
  *
- * `analytics` rides down to the three handlers that change a document, for the
- * reason given where it is built.
+ * `analytics` rides down to the handlers that change a document or who can read
+ * it (create, update, delete, and the access section), for the reason given
+ * where it is built.
  */
 async function handleApi(
   request: Request,
@@ -115,8 +152,9 @@ async function handleApi(
   const auth = await authenticateRequest(request, env);
   if (!auth.ok) return publisherErrorResponse(auth);
 
-  // `/api/v1/docs`, `/api/v1/docs/{docId}` and `/api/v1/tokens/{tokenId}` are
-  // the whole surface. Anything the host matched into the API but that no route
+  // `/api/v1/account`, `/api/v1/docs`, `/api/v1/private-docs`,
+  // `/api/v1/docs/{docId}` with its `/access…`, `/html` and `/open` sections, and
+  // `/api/v1/tokens/{tokenId}` are the whole surface. Anything the host matched into the API but that no route
   // claims is a 404, never a fall-through to the serving surface.
   const [collection, docId, ...extra] = url.pathname
     .slice(API_PREFIX.length)
@@ -127,13 +165,22 @@ async function handleApi(
     return await handleAccount(request, env, auth.publisher);
   }
 
+  // `POST /api/v1/private-docs` is the create that is private from its first
+  // insert. A server with no reader sign-in has no such route, as one that
+  // predates private sharing has none: `404` after authentication and before the
+  // publishing gate, so even an ineligible key sees what an old Worker shows.
+  if (collection === "private-docs" && !readerSignInConfigured(env)) {
+    return errorResponse("not_found", `No API route for ${url.pathname}`);
+  }
+
   // Entitlement is per operation. Authentication above says *who* this is;
   // only publishing asks whether their plan may. Applying it to the whole
   // surface instead would refuse `GET` and `DELETE`, stranding a downgraded
   // publisher's already-public documents with no way to withdraw them — a
   // worse outcome than the gate exists to prevent.
   //
-  // Scoped to the two routes that actually publish, not to the method: a
+  // Scoped to the three routes that actually publish (`POST /docs`,
+  // `POST /private-docs` and `PUT /docs/{docId}`), not to the method: a
   // `POST` at a path no route claims stays `404`, as the contract says.
   const publishing = isPublishingRequest(request);
   if (publishing && auth.publisher.authKind !== "account" && !mayPublish(auth.publisher.plan)) {
@@ -142,9 +189,21 @@ async function handleApi(
 
   // Every dispatch is `return await`, never a bare `return` of the handler's
   // promise, for the reason spelled out on the catch below.
+  // `/docs/{docId}/access…`, `/html` and `/open`: who a document is shared
+  // with and how its owner opens it. Null means no such route, which falls
+  // through to the same `404` as every other unclaimed path.
+  if (collection === "docs" && docId !== undefined && extra.length > 0) {
+    const section = await handleDocSection(request, url, env, auth.publisher, docId, extra, analytics);
+    if (section !== null) return section;
+  }
+
+  if (collection === "private-docs" && docId === undefined && extra.length === 0 && request.method === "POST") {
+    return await createDoc(request, url, env, auth.publisher, analytics, "invited");
+  }
+
   if (collection === "docs" && extra.length === 0) {
     if (docId === undefined && request.method === "POST") {
-      return await createDoc(request, url, env, auth.publisher, analytics);
+      return await createDoc(request, url, env, auth.publisher, analytics, "anyone");
     }
     if (docId === undefined && request.method === "GET") {
       return await listDocs(url, env, auth.publisher);
@@ -214,6 +273,7 @@ export default {
     // only on an explicit serving/API host; an unknown Host still fails closed.
     if (
       url.pathname === "/health" &&
+      surface !== "publisher-serving" &&
       (surface !== "unknown" || !hostsAreConfigured(surfaceConfig))
     ) {
       return Response.json({ ok: true });
@@ -249,6 +309,37 @@ export default {
           if (pathIsUnder(url.pathname, APPROVAL_PREFIX)) {
             return await handleApproval(request, url, env);
           }
+          // Reader sign-in, the door a private document opens through and the
+          // share page: pages a person reaches with a browser, not API routes,
+          // so they sit outside `/api/v1` for the same reason approval does.
+          if (
+            pathIsUnder(url.pathname, OPEN_PREFIX) ||
+            pathIsUnder(url.pathname, SIGNIN_PREFIX) ||
+            pathIsUnder(url.pathname, SHARE_PREFIX)
+          ) {
+            // A server with no reader sign-in configured has none of these
+            // pages, as one that predates private sharing has none.
+            // Every response here carries the same opener policy, redirects
+            // included, so a popup is cut off whatever /open decides.
+            return readerIsolate(
+              !readerSignInConfigured(env)
+                ? READER_NOT_FOUND()
+                : pathIsUnder(url.pathname, SHARE_PREFIX)
+                  ? await handleShare(request, url, env, analytics)
+                  : await handleReader(request, url, env, ctx),
+            );
+          }
+          // The top bar's page script and, with it, everything the Share
+          // popover is made of. Served from the API host because the popover
+          // holds a credential no document's origin may see. Gated like the
+          // pages above: a server with no reader sign-in has no `/embed/*`
+          // and renders no tag that would ask for it. Wrapped like them too,
+          // so every response carries one opener policy.
+          if (pathIsUnder(url.pathname, EMBED_PREFIX)) {
+            return readerIsolate(
+              !readerSignInConfigured(env) ? READER_NOT_FOUND() : await handleEmbed(request, url, env, analytics),
+            );
+          }
           // Likewise before `handleApi`: a terminal asking for a device code
           // has no credential yet, which is the entire reason it is asking.
           // Outside `/api/v1`, so the promise that every request under that
@@ -259,6 +350,11 @@ export default {
           return await handleApi(request, url, env, analytics);
         case "serving":
           return await handleServing(request, url, env, analytics);
+        case "publisher-serving": {
+          const publisher = resolvePublisherHost(url.hostname, env.SERVING_HOST);
+          if (publisher === null) return servingError(request.method, "not_found");
+          return await handlePublisherServing(request, url, env, analytics, publisher);
+        }
         default:
           return errorResponse("not_found", `No route for ${url.pathname}`);
       }
@@ -271,6 +367,9 @@ export default {
       const message = "Something went wrong on our end. Please try again.";
       // The surface still decides the headers. A 500 on a doc url is a serving
       // response like any other, and has to carry the robots tag that proves it.
+      // A publisher's origin keeps its isolation headers on a 500 too: the
+      // handler that threw is the one that would have added them.
+      if (surface === "publisher-serving") return isolate(servingError(request.method, "internal"));
       return surface === "serving"
         ? servingError(request.method, "internal")
         : errorResponse("internal", message);

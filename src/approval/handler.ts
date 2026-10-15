@@ -16,12 +16,14 @@
  * attach an attacker's terminal to their account. Nothing this page does on a
  * `GET` changes what a device code is worth.
  *
- * **It sets no cookie, on any surface.** The handshake's `state` and PKCE
- * verifier live in the device code's own row, because the browser is not the
- * thing being authorized and has nothing to remember between the three
- * requests. That keeps the serving origin's cookieless promise an absolute
- * rather than a host-by-host argument, which matters because publishers' own
- * scripts run there.
+ * **The device and browser-login flows set no cookie.** The handshake's
+ * `state` and PKCE verifier live in the device code's own row, because the
+ * browser is not the thing being authorized and has nothing to remember between
+ * the three requests. The reader handshake (`reader_` rows, see `reader.ts`) is
+ * the exception: it binds `state` to the browser that started it with a
+ * `__Host-oa_login` cookie on this host and ends in a session cookie, and this
+ * callback clears the login cookie when the handshake ends. Neither cookie is
+ * ever set on a serving origin, where publishers' own scripts run.
  *
  * Every outcome is an HTML page, including the failures. The caller here is a
  * browser with a person behind it, not a client matching on an error code, so
@@ -36,19 +38,32 @@ import {
   deviceCodeIsPending,
   findPendingHandshake,
   holdProvenIdentity,
+  isOtherFlowsToken,
   resolveAccountForIdentity,
   startDeviceHandshake,
 } from "../db.js";
 import { newAccountId, newHandshakeToken } from "../ids.js";
+import { SIGNIN_PREFIX } from "../paths.js";
 import { defaultPlan } from "../plans.js";
 import { isTopLevelRequest, withinClientLimit } from "../limits.js";
 import { readBodyWithin } from "../quota.js";
 import { ABOUT_LINK, brandPageHtml, escapeHtml, type BrandPage } from "../page.js";
+import { readerSecret } from "../reader-config.js";
+import { addressClaimedPage, SIGNIN_FAILED, termsPage } from "../reader-pages.js";
+import {
+  cookie,
+  LOGIN_COOKIE,
+  readCookie,
+  returnPath,
+  sessionRedirect,
+  verifyPayload,
+} from "../session.js";
 import {
   approvalIsConfigured,
   arcticOAuthClient,
   configuredProviders,
   normalizeEmail,
+  PROVIDER_ICONS,
   PROVIDER_LABELS,
   type OAuthClient,
   type ProviderId,
@@ -69,7 +84,7 @@ export const USER_CODE_PARAM = "user_code";
  * This token is minted only once an identity is proved and appears only in the
  * page the returning browser receives.
  */
-const CONFIRM_TOKEN_FIELD = "confirm_token";
+export const CONFIRM_TOKEN_FIELD = "confirm_token";
 
 /** The words the confirmation page uses when the terminal named itself nothing. */
 const UNNAMED_DEVICE = "that terminal";
@@ -87,6 +102,14 @@ const USER_CODE_PATTERN = /^[A-Z0-9][A-Z0-9-]{0,63}$/;
 export const BROWSER_USER_CODE_PREFIX = "browser_";
 export const isBrowserLogin = (userCode: string): boolean =>
   userCode.startsWith(BROWSER_USER_CODE_PREFIX);
+/**
+ * A reader signing in to open a private document. The handshake rides the same
+ * rows and the same provider callback as the other two kinds, and ends in a
+ * session cookie on this host (`src/reader.ts`) instead of a token or a handoff.
+ */
+export const READER_USER_CODE_PREFIX = "reader_";
+export const isReaderLogin = (userCode: string): boolean =>
+  userCode.startsWith(READER_USER_CODE_PREFIX);
 
 /**
  * Ceiling on a submitted form.
@@ -174,7 +197,7 @@ export async function handleApproval(
         return await begin(request, url, env, provider, deps);
       }
       if (section === "callback" && request.method === "GET") {
-        return await prove(url, env, provider, deps);
+        return await prove(request, url, env, provider, deps);
       }
     }
     return page(NOT_FOUND, 404);
@@ -246,17 +269,11 @@ async function chooser(
   // through their provider and lands them on a confirmation they never asked
   // for is the first half of the attack the confirm step exists to stop, and
   // there is no reason to leave it lying around.
-  const providerIcons = {
-    google:
-      '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M12.48 10.92v3.28h7.84c-.24 1.84-.853 3.187-1.787 4.133-1.147 1.147-2.933 2.4-6.053 2.4-4.827 0-8.6-3.893-8.6-8.72s3.773-8.72 8.6-8.72c2.6 0 4.507 1.027 5.907 2.347l2.307-2.307C18.747 1.44 16.133 0 12.48 0 5.867 0 .307 5.387.307 12s5.56 12 12.173 12c3.573 0 6.267-1.173 8.373-3.36 2.16-2.16 2.84-5.213 2.84-7.667 0-.76-.053-1.467-.173-2.053H12.48z"/></svg>',
-    github:
-      '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M12 .75a11.25 11.25 0 0 0-3.558 21.922c.563.104.77-.244.77-.542 0-.267-.01-.975-.015-1.913-3.13.68-3.79-1.508-3.79-1.508-.512-1.3-1.25-1.646-1.25-1.646-1.022-.7.077-.686.077-.686 1.13.08 1.724 1.16 1.724 1.16 1.005 1.723 2.637 1.225 3.28.937.102-.728.393-1.225.715-1.507-2.498-.284-5.124-1.249-5.124-5.56 0-1.228.44-2.233 1.16-3.02-.116-.285-.503-1.429.11-2.979 0 0 .945-.303 3.094 1.154A10.8 10.8 0 0 1 12 6.184c.956.004 1.918.13 2.817.379 2.148-1.457 3.091-1.154 3.091-1.154.615 1.55.228 2.694.112 2.979.722.787 1.159 1.792 1.159 3.02 0 4.322-2.63 5.272-5.135 5.55.403.35.762 1.041.762 2.1 0 1.516-.014 2.739-.014 3.111 0 .3.203.65.774.54A11.251 11.251 0 0 0 12 .75Z"/></svg>',
-  };
   const providers = configuredProviders(env);
   const buttons = providers
     .map(
       (provider) =>
-        `<button type="submit" formaction="${APPROVAL_PREFIX}/start/${provider}">${providerIcons[provider]}<span>Sign in with ${PROVIDER_LABELS[provider]}</span></button>`,
+        `<button type="submit" formaction="${APPROVAL_PREFIX}/start/${provider}">${PROVIDER_ICONS[provider]}<span>Sign in with ${PROVIDER_LABELS[provider]}</span></button>`,
     )
     .join("\n");
   const signup = `<form class="signup" method="post" action="${APPROVAL_PREFIX}/start/${providers[0]}">
@@ -319,7 +336,13 @@ async function begin(
  * come out of that row rather than off the url, so neither can be swapped by
  * whoever follows the link.
  */
-async function prove(url: URL, env: Env, provider: string, deps: ApprovalDeps): Promise<Response> {
+async function prove(
+  request: Request,
+  url: URL,
+  env: Env,
+  provider: string,
+  deps: ApprovalDeps,
+): Promise<Response> {
   if (!approvalIsConfigured(env)) return page(NOT_CONFIGURED, 503);
 
   const now = (deps.now ?? Date.now)();
@@ -329,7 +352,13 @@ async function prove(url: URL, env: Env, provider: string, deps: ApprovalDeps): 
   // the same thing to the person in front of it — start again — and separating
   // them on screen would tell whoever guessed at one which half was wrong.
   if (state === null || handshake === null || handshake.provider !== provider) {
-    return page(EXPIRED, 400);
+    // A reader's callback is not a terminal's. When the request carries a login
+    // cookie of ours, say so in the reader's words and offer the way back.
+    const secret = readerSecret(env);
+    const login =
+      secret === null ? null : await verifyPayload(secret, "login", readCookie(request, LOGIN_COOKIE), now);
+    const retry = returnPath(login?.n ?? null);
+    return retry === null ? page(EXPIRED, 400) : SIGNIN_FAILED(retry);
   }
 
   const browser = isBrowserLogin(handshake.user_code);
@@ -347,7 +376,7 @@ async function prove(url: URL, env: Env, provider: string, deps: ApprovalDeps): 
       },
     });
   };
-  const endBrowserHandshake = async () => {
+  const endHandshake = async () => {
     await env.DB.prepare(
       `DELETE FROM device_codes
        WHERE user_code = ? AND state = ? AND confirm_token IS NULL`,
@@ -355,22 +384,47 @@ async function prove(url: URL, env: Env, provider: string, deps: ApprovalDeps): 
       .bind(handshake.user_code, state)
       .run();
   };
-  const browserFailure = async () => {
-    await endBrowserHandshake();
-    return back({ state, error: "sign_in_failed" });
+  const reader = isReaderLogin(handshake.user_code);
+
+  // A reader handshake belongs to the browser that started it. `/signin/start`
+  // set a signed cookie carrying this state and the page to return to, so a
+  // callback link sent to somebody else, who never started it, does not match.
+  // That is the standard defence against signing a victim in as the attacker.
+  let session: { secret: string; next: string } | null = null;
+  if (reader) {
+    const secret = readerSecret(env);
+    const login =
+      secret === null ? null : await verifyPayload(secret, "login", readCookie(request, LOGIN_COOKIE), now);
+    const next = returnPath(login?.n ?? null);
+    // Refused without touching the cookie or the handshake: a forwarded link
+    // must not end the real browser's sign-in.
+    if (secret === null || login?.s !== state || next === null) return SIGNIN_FAILED();
+    session = { secret, next };
+  }
+
+  // From here the login cookie has done its job, whichever way the handshake
+  // ends, so every reader exit also clears it rather than leaving it for the
+  // rest of its ten minutes.
+  const settle = (response: Response): Response => {
+    if (reader) response.headers.append("set-cookie", cookie(LOGIN_COOKIE, "", 0));
+    return response;
+  };
+  const failure = async () => {
+    await endHandshake();
+    return reader ? settle(SIGNIN_FAILED(session?.next)) : back({ state, error: "sign_in_failed" });
   };
 
   // A provider that sends `error` instead of `code` is almost always someone
   // pressing Cancel, and that deserves its own words rather than a failure.
   const code = url.searchParams.get("code");
   if (code === null)
-    return browser
-      ? await browserFailure()
+    return browser || reader
+      ? await failure()
       : page(url.searchParams.has("error") ? DECLINED : EXPIRED, 400);
   // Null once the handshake has been through here already, since the verifier is
   // cleared when it is spent. Reloading a callback cannot repeat an exchange.
   if (handshake.verifier === null)
-    return browser ? await browserFailure() : page(EXPIRED, 400);
+    return browser || reader ? await failure() : page(EXPIRED, 400);
 
   const oauth = deps.oauth ?? arcticOAuthClient(env);
   let asserted;
@@ -382,7 +436,7 @@ async function prove(url: URL, env: Env, provider: string, deps: ApprovalDeps): 
       handshake.verifier,
     );
   } catch (error) {
-    if (browser) return await browserFailure();
+    if (browser || reader) return await failure();
     throw error;
   }
   // Null covers a refused exchange and an address the provider will not vouch
@@ -396,7 +450,7 @@ async function prove(url: URL, env: Env, provider: string, deps: ApprovalDeps): 
   // documents and no way to reunite them.
   const email = asserted === null ? null : normalizeEmail(asserted.email);
   if (asserted === null || email === null)
-    return browser ? await browserFailure() : page(UNVERIFIED, 400);
+    return browser || reader ? await failure() : page(UNVERIFIED, 400);
 
   // The subject, not the email, is what brings someone back to an account. An
   // address can be reassigned to a new person; a provider's subject cannot,
@@ -415,8 +469,18 @@ async function prove(url: URL, env: Env, provider: string, deps: ApprovalDeps): 
     account === null &&
     (await env.DB.prepare("SELECT 1 FROM accounts WHERE email = ?").bind(email).first())
   ) {
-    if (browser) await endBrowserHandshake();
+    if (browser || reader) await endHandshake();
+    if (session !== null) return settle(addressClaimedPage(handshake.provider, session.next));
     return browser ? back({ state, error: "identity" }) : page(EMAIL_CLAIMED, 409);
+  }
+
+  // A reader who already has an account is signed in here, with no further
+  // press: unlike a device approval, this hands the browser a session cookie on
+  // this host and nothing a terminal could collect, and the cookie above is what
+  // ties the callback to the browser that asked.
+  if (session !== null && account !== null) {
+    await endHandshake();
+    return settle(await sessionRedirect(session.secret, account.id, session.next, now));
   }
 
   // Only the first callback can hold a proven identity. New identities remain
@@ -432,9 +496,18 @@ async function prove(url: URL, env: Env, provider: string, deps: ApprovalDeps): 
       account === null ? { subject: asserted.subject, email } : undefined,
     ))
   ) {
-    return browser ? await browserFailure() : page(EXPIRED, 400);
+    return browser || reader ? await failure() : page(EXPIRED, 400);
   }
 
+  if (session !== null) {
+    return settle(
+      termsPage(email, session.next, {
+        action: `${SIGNIN_PREFIX}/confirm`,
+        field: CONFIRM_TOKEN_FIELD,
+        token: confirmToken,
+      }),
+    );
+  }
   if (browser) return back({ state, code: confirmToken });
 
   // The machine's own name for itself, which is the only thing on this page
@@ -514,7 +587,7 @@ async function confirm(request: Request, env: Env, deps: ApprovalDeps): Promise<
 
   const accountId = newAccountId();
   const userCode =
-    token === null
+    token === null || (await isOtherFlowsToken(env.DB, token))
       ? null
       : await confirmDeviceApproval(
           env.DB,
@@ -553,7 +626,10 @@ async function deny(request: Request, env: Env, deps: ApprovalDeps): Promise<Res
   const token = submitted.get(CONFIRM_TOKEN_FIELD);
   const now = (deps.now ?? Date.now)();
 
-  const userCode = token === null ? null : await denyDeviceApproval(env.DB, token, now);
+  const userCode =
+    token === null || (await isOtherFlowsToken(env.DB, token))
+      ? null
+      : await denyDeviceApproval(env.DB, token, now);
   if (userCode === null) return page(EXPIRED, 400);
 
   return page({ ...DENIED, detail: codeDetail(userCode) }, 200);
@@ -590,7 +666,7 @@ function redirectUri(url: URL, provider: ProviderId): string {
  * that submitted one of our forms can land here, so the reader is a probe, and
  * a distinct status per check would only tell it which one it failed.
  */
-async function readSmallForm(request: Request): Promise<URLSearchParams | null> {
+export async function readSmallForm(request: Request): Promise<URLSearchParams | null> {
   const contentType = request.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase();
   if (contentType !== FORM_CONTENT_TYPE) return null;
 

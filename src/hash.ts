@@ -14,3 +14,13 @@ export async function sha256Hex(value: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
+
+/**
+ * A script's `sha256-…` source for a `script-src` directive: standard base64 of
+ * the SHA-256 of its exact text. A page that carries one inline script names it
+ * by hash, so that script is the only one the page can run.
+ */
+export async function scriptHashSource(script: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(script));
+  return `'sha256-${btoa(String.fromCharCode(...new Uint8Array(digest)))}'`;
+}

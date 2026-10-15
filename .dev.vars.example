@@ -29,6 +29,16 @@ OAUTH_GOOGLE_CLIENT_SECRET=""
 OAUTH_GITHUB_CLIENT_ID=""
 OAUTH_GITHUB_CLIENT_SECRET=""
 
+# Signs reader sessions and the grants that open a private document. At least 32
+# characters; anything shorter counts as unset. Private sharing is off unless
+# this is set AND a sign-in method exists (an OAuth pair above, or the EMAIL
+# binding): the whole private family then answers 404, as a server that predates
+# the feature does, and every document stays public. In a deployment this is set
+# with `wrangler secret put READER_SESSION_SECRET`. Rotating it signs every
+# reader out. Under `npm run dev` the host vars are empty and label hosts cannot
+# resolve, so setting it here does not turn the flow on; see docs/development.md.
+READER_SESSION_SECRET=""
+
 # PostHog project ingest key. Product analytics is gated on this alone, so
 # leaving it empty means the worker makes no analytics request at all — which is
 # what you want locally unless you are deliberately watching what it sends.

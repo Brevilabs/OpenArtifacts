@@ -138,6 +138,7 @@ interface ListedDoc {
    */
   version: number | null;
   updatedAt: number;
+  linkAccess: "anyone" | "invited";
 }
 
 interface ListResponse {
@@ -245,6 +246,7 @@ export async function listDocs(
       url: publicDocUrl(env, requestUrl, row.id),
       version: row.version,
       updatedAt: row.updated_at,
+      linkAccess: row.link_access,
     })),
   };
 

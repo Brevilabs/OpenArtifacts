@@ -15,12 +15,15 @@
     "deploy": "node scripts/check-account-actions.cjs && wrangler deploy",
     "typecheck": "tsc --noEmit && npm run typecheck -w packages/openartifacts",
     "test": "vitest run && npm test -w packages/openartifacts",
+    "test:browser": "node --test test/share-popover.browser.mjs",
     "test:watch": "vitest"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.12.21",
     "@cloudflare/workers-types": "^4.20250726.0",
     "@types/node": "^22",
+    "miniflare": "4.20260426.0",
+    "playwright-core": "^1.64.1",
     "typescript": "^5",
     "vitest": "^3",
     "wrangler": "^4"

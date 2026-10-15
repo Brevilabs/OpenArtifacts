@@ -11,7 +11,7 @@ import {
 } from "../src/auth.js";
 import { LICENSE_CACHE_TTL_MS, type Env } from "../src/config.js";
 import { d1PublisherStore, type PublisherRow, type PublisherStore } from "../src/db.js";
-import { DOC_ID_LENGTH } from "../src/ids.js";
+import { DOC_ID_LENGTH, SHARE_TOKEN_PREFIX } from "../src/ids.js";
 import worker from "../src/index.js";
 
 /** Shape-valid, never in the database. Derived so a length change cannot strand it. */
@@ -704,6 +704,24 @@ describe("resolvePublisher — license env not configured", () => {
     });
 
     expect(result.ok).toBe(true);
+  });
+});
+
+describe("resolvePublisher — the Share popover's token", () => {
+  it("refuses an oas_ value before the license path: nothing sent to the license server, nothing stored", async () => {
+    const license = licenseServer(validBeliever);
+    const store = memoryStore();
+
+    const result = await resolvePublisher(`${SHARE_TOKEN_PREFIX}eyJhIjoiYiJ9.c2ln`, env(), { fetch: license.fetch, store, now });
+
+    expect(result).toMatchObject({ ok: false, reason: "invalid_token" });
+    expect(license.calls).toHaveLength(0);
+    expect(store.rows.size).toBe(0);
+    // Whatever follows the prefix, including a real license key.
+    const key = await resolvePublisher(`${SHARE_TOKEN_PREFIX}${KEY}`, env(), { fetch: license.fetch, store, now });
+    expect(key).toMatchObject({ ok: false, reason: "invalid_token" });
+    expect(license.calls).toHaveLength(0);
+    expect(store.rows.size).toBe(0);
   });
 });
 

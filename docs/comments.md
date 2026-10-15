@@ -95,11 +95,31 @@ between pushes. Three ways out, and this is a real decision, not a detail:
 [positioning.md](positioning.md) ends on: agents fetch one predictable threads
 resource instead of parsing them out of the page.
 
-**Comments need reader identity, and there is none.** Reading currently requires
-nothing at all, and an anonymous reader cannot be attributed. Access control is a
-hard prerequisite, not a parallel track, and it is the larger piece of work.
-[private-sharing.md](private-sharing.md) is the design for it — comments are
-Phase 3 there, blocked on the OAuth reader identity in Phase 2.
+**Comments need reader identity, and it now exists for private documents.** On a
+public document an anonymous reader still cannot be attributed, so commenting
+there needs a signed-in reader. Access control was the hard prerequisite, not a
+parallel track, and it is built: [private-sharing.md](private-sharing.md) has
+readers sign in on the API host (one account, one session), and a private
+document is served from its publisher's origin, `{label}.openartifacts.site`,
+not from `openartifacts.site`. Comments are the next step on top of it, and
+take four adjustments from it, none of which changes the shape of this sketch:
+
+1. Call `canRead` from the threads resource and every comment route, so a private
+   document's discussion is as private as its page.
+2. Serve a private document's threads resource on the publisher's origin, behind
+   the grant cookie, which is how the grant check slots in front of it.
+3. Derive the comments sidebar's `frame-ancestors` per document from the document's serving
+   origin (`openartifacts.site` for public, the publisher's origin for private)
+   instead of the fixed `https://openartifacts.site`. The Share popover's frame
+   already follows this rule (the embedder's origin is echoed only when it is the
+   document's serving origin, `src/embed.ts`), and the sidebar follows the same one.
+4. Accept the Share popover's per-document token in the comment routes. The
+   sidebar runs in a third-party iframe where cookies are unreliable, so it carries
+   a bearer token, and the popup on the API host that mints it sees the reader
+   session, so a reader signs in once per document for both.
+
+`doc_invites.role` (`view` or `comment`) and the `canComment` predicate are
+reserved for it; nothing calls them yet.
 
 ## Open questions
 

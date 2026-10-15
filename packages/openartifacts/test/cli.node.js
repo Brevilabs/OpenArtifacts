@@ -150,16 +150,25 @@ test("publish reads only HTML files and parses its options before authentication
   await writeFile(markdown, "# Not rendered here");
   assert.deepEqual(await preparePublish(page, []), {
     docId: undefined,
+    private: false,
     body: { title: "My Page", html: "<!doctype html><p>kept</p>" },
   });
   assert.deepEqual(await preparePublish(page, ["--doc-id", "9f2k4mvq7t0xbz3n", "--title", "Notes"]), {
     docId: "9f2k4mvq7t0xbz3n",
+    private: false,
     body: { title: "Notes", html: "<!doctype html><p>kept</p>" },
   });
   // An update without --title omits the field so the server keeps the current title.
   assert.deepEqual(await preparePublish(page, ["--doc-id", "9f2k4mvq7t0xbz3n"]), {
     docId: "9f2k4mvq7t0xbz3n",
+    private: false,
     body: { html: "<!doctype html><p>kept</p>" },
+  });
+  // --private selects the private route; it never rides in the body.
+  assert.deepEqual(await preparePublish(page, ["--private"]), {
+    docId: undefined,
+    private: true,
+    body: { title: "My Page", html: "<!doctype html><p>kept</p>" },
   });
   await assert.rejects(preparePublish(markdown, []), /HTML file.*Render other formats/);
   await assert.rejects(preparePublish(page, ["--title"]), /Usage: openartifacts/);
@@ -182,7 +191,7 @@ test("publish reads only HTML files and parses its options before authentication
 
 async function publishingServer() {
   const requests = [];
-  const control = { staleUpdates: false, missingDeletes: false };
+  const control = { staleUpdates: false, missingDeletes: false, privateDocs: true };
   const server = createServer((request, response) => {
     let body = "";
     request.setEncoding("utf8");
@@ -195,6 +204,22 @@ async function publishingServer() {
         body: body ? JSON.parse(body) : undefined,
       });
       response.setHeader("content-type", "application/json");
+      const docId = "9f2k4mvq7t0xbz3n";
+      const url = `http://${request.headers.host}/d/${docId}`;
+      if (request.url.includes("/access")) {
+        response.end(JSON.stringify({
+          docId, url, linkAccess: "invited", email: true,
+          people: [{ email: "alice@acme.com", role: "comment", addedAt: 1 }],
+          requests: [{ email: "bob@other.com", requestedAt: 2 }],
+        }));
+        return;
+      }
+      // A Worker that predates private sharing has no such route.
+      if (request.url === "/api/v1/private-docs" && !control.privateDocs) {
+        response.statusCode = 404;
+        response.end(JSON.stringify({ error: { code: "not_found", message: "No API route for /api/v1/private-docs" } }));
+        return;
+      }
       if ((request.method === "PUT" && control.staleUpdates) || (request.method === "DELETE" && control.missingDeletes)) {
         response.statusCode = 404;
         response.end(JSON.stringify({ error: { code: "not_found", message: "Document not found." } }));
@@ -206,11 +231,8 @@ async function publishingServer() {
         return;
       }
       response.statusCode = request.method === "POST" ? 201 : 200;
-      response.end(JSON.stringify({
-        docId: "9f2k4mvq7t0xbz3n",
-        url: `http://${request.headers.host}/d/9f2k4mvq7t0xbz3n`,
-        version: requests.length,
-      }));
+      const mode = request.url === "/api/v1/private-docs" ? { linkAccess: "invited" } : {};
+      response.end(JSON.stringify({ docId, url, version: requests.length, ...mode }));
     });
   });
   server.listen(0, "127.0.0.1");
@@ -254,6 +276,106 @@ test("publish creates, --doc-id updates, and unshare withdraws using the environ
   assert(remote.requests.every((request) => request.authorization === "Bearer opaque-test-token"));
   assert.deepEqual(remote.requests[0].body, { title: "Notes", html });
   assert.deepEqual(remote.requests[1].body, { html });
+});
+
+test("share changes one thing per flag, then prints the access list, requests and the share page", async () => {
+  const remote = await publishingServer();
+  try {
+    await withEnvironment({
+      OPENARTIFACTS_CONFIG_DIR: await mkdtemp(join(tmpdir(), "openartifacts-share-")),
+      OPENARTIFACTS_API_HOST: remote.host,
+      OPENARTIFACTS_TOKEN: "opaque-test-token",
+    }, async (lines) => {
+      await main(["share", "9f2k4mvq7t0xbz3n", "--link", "invited", "--add", "alice@acme.com", "--remove", "bob@acme.com", "--decline", "bob@other.com"]);
+      await main(["share", "9f2k4mvq7t0xbz3n"]);
+      assert.equal(lines.length, 2);
+      // The share page is on the API host the CLI talks to, and the output stays one JSON document.
+      const printed = JSON.parse(lines[1]);
+      assert.deepEqual(printed.people, [{ email: "alice@acme.com", role: "comment", addedAt: 1 }]);
+      assert.deepEqual(printed.requests, [{ email: "bob@other.com", requestedAt: 2 }]);
+      assert.equal(printed.manageUrl, `${remote.host}/share/9f2k4mvq7t0xbz3n`);
+      assert.equal(JSON.parse(lines[0]).manageUrl, printed.manageUrl);
+      // Options are read before any request, and there is no flag that sends a whole list.
+      await assert.rejects(main(["share", "9f2k4mvq7t0xbz3n", "--add"]), /Usage: openartifacts/);
+      await assert.rejects(main(["share", "9f2k4mvq7t0xbz3n", "--people", "a@b.c"]), /Usage: openartifacts/);
+    });
+  } finally {
+    remote.server.close();
+  }
+  assert.deepEqual(remote.requests.map(({ method, path, body }) => [method, path, body]), [
+    ["PUT", "/api/v1/docs/9f2k4mvq7t0xbz3n/access", { linkAccess: "invited" }],
+    ["PUT", "/api/v1/docs/9f2k4mvq7t0xbz3n/access/people/alice%40acme.com", undefined],
+    ["DELETE", "/api/v1/docs/9f2k4mvq7t0xbz3n/access/people/bob%40acme.com", undefined],
+    ["DELETE", "/api/v1/docs/9f2k4mvq7t0xbz3n/access/requests/bob%40other.com", undefined],
+    ["GET", "/api/v1/docs/9f2k4mvq7t0xbz3n/access", undefined],
+  ]);
+});
+
+test("publish --private creates through /private-docs and reports the share page", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openartifacts-private-"));
+  const page = join(directory, "notes.html");
+  await writeFile(page, "<p>Private</p>");
+  const remote = await publishingServer();
+  try {
+    await withEnvironment({
+      OPENARTIFACTS_CONFIG_DIR: join(directory, "config"),
+      OPENARTIFACTS_API_HOST: remote.host,
+      OPENARTIFACTS_TOKEN: "opaque-test-token",
+    }, async (lines) => {
+      await main(["publish", page, "--private"]);
+      assert.deepEqual(remote.requests.map(({ method, path }) => [method, path]), [["POST", "/api/v1/private-docs"]]);
+      // The mode is the route; the body is the same as a public create.
+      assert.deepEqual(remote.requests[0].body, { title: "notes", html: "<p>Private</p>" });
+      assert.deepEqual(JSON.parse(lines[0]), {
+        docId: "9f2k4mvq7t0xbz3n",
+        url: `${remote.host}/d/9f2k4mvq7t0xbz3n`,
+        version: 1,
+        linkAccess: "invited",
+        manageUrl: `${remote.host}/share/9f2k4mvq7t0xbz3n`,
+      });
+
+      // Access to an existing page changes through share, never through publish.
+      await assert.rejects(main(["publish", page, "--private", "--doc-id", "9f2k4mvq7t0xbz3n"]), /share <docId> --link invited/);
+      assert.equal(remote.requests.length, 1);
+    });
+  } finally {
+    remote.server.close();
+  }
+});
+
+test("publish --private against a server without private documents creates nothing", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openartifacts-private-old-"));
+  const page = join(directory, "notes.html");
+  await writeFile(page, "<p>Private</p>");
+  const remote = await publishingServer();
+  remote.control.privateDocs = false;
+  try {
+    await withEnvironment({
+      OPENARTIFACTS_CONFIG_DIR: join(directory, "config"),
+      OPENARTIFACTS_API_HOST: remote.host,
+      OPENARTIFACTS_TOKEN: "opaque-test-token",
+    }, async (lines) => {
+      await assert.rejects(main(["publish", page, "--private"]), (error) =>
+        error.message === "This server does not support private documents. Nothing was published.");
+      assert.deepEqual(lines, []);
+    });
+    // The process exit code is the failure the agent sees.
+    const result = await cliProcess(["publish", page, "--private"], {
+      OPENARTIFACTS_CONFIG_DIR: join(directory, "config"),
+      OPENARTIFACTS_API_HOST: remote.host,
+      OPENARTIFACTS_TOKEN: "opaque-test-token",
+    });
+    assert.notEqual(result.code, 0);
+    assert.match(result.stderr, /This server does not support private documents\. Nothing was published\./);
+    assert.equal(result.stdout, "");
+  } finally {
+    remote.server.close();
+  }
+  // One attempt per run and nothing else: no public create, no delete.
+  assert.deepEqual(remote.requests.map(({ method, path }) => [method, path]), [
+    ["POST", "/api/v1/private-docs"],
+    ["POST", "/api/v1/private-docs"],
+  ]);
 });
 
 test("a stale --doc-id is reported, never silently replaced", async () => {
@@ -421,6 +543,30 @@ test("account commands use host-scoped stored OAuth tokens and print only safe J
     ]);
     assert(remote.requests.every((r) => r.authorization === "Bearer oat_stored-secret"));
   } finally { remote.server.close(); }
+});
+
+test("get on an unknown id prints the not-found sentence once", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "oa-get-404-"));
+  const server = createServer((request, response) => {
+    response.setHeader("content-type", "application/json");
+    if (request.url.startsWith("/api/v1/docs?")) {
+      response.end(JSON.stringify({ docs: [] }));
+    } else {
+      response.statusCode = 404;
+      response.end(JSON.stringify({ error: { code: "not_found", message: "Not found." } }));
+    }
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const host = `http://127.0.0.1:${server.address().port}`;
+  await writeFile(join(directory, "credentials.json"), JSON.stringify({ hosts: { [host]: { token: "oat_stored-secret" } } }));
+  try {
+    const result = await cliProcess(["get", "abc"], { OPENARTIFACTS_CONFIG_DIR: directory, OPENARTIFACTS_API_HOST: host });
+    assert.notEqual(result.code, 0);
+    assert.equal(result.stderr.match(/No document/g)?.length, 1, result.stderr);
+    assert.match(result.stderr, /No document abc is in this account\./);
+    assert(!/HTTP 404/.test(result.stderr), result.stderr);
+  } finally { server.close(); }
 });
 
 test("account actions honor environment credentials, refuse license arguments, and never silently re-login", async () => {

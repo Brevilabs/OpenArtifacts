@@ -9,11 +9,13 @@ import {
   type AnalyticsSink,
   type DocumentEvent,
 } from "../src/analytics.js";
+import { addPerson, declineRequest, removePerson, setMode } from "../src/api/access.js";
 import { deleteDoc } from "../src/api/manage.js";
 import { createDoc, updateDoc } from "../src/api/push.js";
 import type { Publisher } from "../src/auth.js";
 import type { Env } from "../src/config.js";
 import { MAX_DOC_BYTES } from "../src/config.js";
+import { insertAccessRequest } from "../src/db.js";
 import { sha256Hex } from "../src/hash.js";
 import { DOC_ID_LENGTH } from "../src/ids.js";
 import { linkExternalOwner } from "../src/owners.js";
@@ -167,6 +169,28 @@ describe("the capture payload", () => {
     expect(properties.$process_person_profile).toBe(true);
     // The capture comes from the Worker, so its address locates nobody.
     expect(properties.$geoip_disable).toBe(true);
+  });
+
+  it("carries only the allowlisted fields for document_access_changed, and a count rather than any address", async () => {
+    const { deliveries } = captureDeliveries();
+
+    await record({ name: "document_access_changed", docId: DOC_ID, atMs: AT_MS, ownerId: OWNER, linkAccess: "invited", people: 2 });
+
+    const delivery = only(deliveries);
+    expect(Object.keys(delivery.body).sort()).toEqual(PAYLOAD_KEYS);
+    expect(delivery.body.event).toBe("document_access_changed");
+    expect(delivery.body.distinct_id).toBe(OWNER);
+    expect(delivery.body.timestamp).toBe(AT_ISO);
+
+    const properties = delivery.body.properties as Record<string, unknown>;
+    expect(Object.keys(properties).sort()).toEqual([...PROPERTY_KEYS, "link_access", "people"].sort());
+    expect(properties.link_access).toBe("invited");
+    expect(properties.people).toBe(2);
+    expect(properties.document_key).toBe(await documentAnalyticsKey(DOC_ID));
+    expect(properties.$process_person_profile).toBe(true);
+    expect(properties.$geoip_disable).toBe(true);
+    // The doc id is a capability and stays out of the payload.
+    expect(delivery.raw).not.toContain(DOC_ID);
   });
 
   it("carries only the allowlisted fields for document_viewed", async () => {
@@ -507,7 +531,7 @@ const pushRequest = (body: unknown) =>
   });
 
 const create = (sink: AnalyticsSink, body: unknown, caller: Caller = {}) =>
-  createDoc(pushRequest(body), API_URL, caller.env ?? workerEnv(), caller.publisher ?? PUBLISHER, sink);
+  createDoc(pushRequest(body), API_URL, caller.env ?? workerEnv(), caller.publisher ?? PUBLISHER, sink, "anyone");
 
 const update = (sink: AnalyticsSink, docId: string, body: unknown, caller: Caller = {}) =>
   updateDoc(
@@ -855,6 +879,55 @@ describe("who a publication is attributed to", () => {
     expect(owners(events)).not.toContain(LINKED_ACCOUNT);
   });
 
+  it("records an access change once per real change under the publisher's id, and nothing for a repeat or a decline", async () => {
+    expect(await linkExternalOwner(env.DB, LICENSE_OWNER, LINKED_ACCOUNT, 1)).toBe("linked");
+    const { sink, events } = collectingSink();
+    const quiet = workerEnv({ EMAIL: { send: async () => {} }, EMAIL_FROM: "share@mail.openartifacts.ai" });
+    // The account token spends the plan; the document was published by the license key.
+    const token: Publisher = { owner: LINKED_ACCOUNT, plan: "pro", authKind: "account" };
+    const docId = await published(await create(sink, VALID_PUSH, BY_LICENSE));
+    events.length = 0;
+    await env.DB.prepare(
+      "INSERT INTO accounts (id, email, created_at, plan) VALUES ('oa_bbbbbbbbbbbbbbbbbbbbbbbbbb', 'bob@other.com', 0, 'free')",
+    ).run();
+
+    await setMode(quiet, token, docId, "invited", sink);
+    await setMode(quiet, token, docId, "invited", sink);
+    await addPerson(quiet, API_URL, token, docId, "alice@acme.com", undefined, sink);
+    await addPerson(quiet, API_URL, token, docId, "alice@acme.com", undefined, sink);
+    await addPerson(quiet, API_URL, token, docId, "alice@acme.com", "view", sink);
+    await addPerson(quiet, API_URL, token, docId, "alice@acme.com", "view", sink);
+    await insertAccessRequest(env.DB, docId, "oa_bbbbbbbbbbbbbbbbbbbbbbbbbb", 1000, 100);
+    expect((await declineRequest(quiet, token, docId, "bob@other.com")).ok).toBe(true);
+    await removePerson(quiet, token, docId, "alice@acme.com", sink);
+    await removePerson(quiet, token, docId, "alice@acme.com", sink);
+    await setMode(quiet, token, docId, "anyone", sink);
+
+    // Mode, add, role, remove, mode: five changes, each under the license owner the publication used.
+    expect(events.map((event) => event.name)).toEqual(Array(5).fill("document_access_changed"));
+    expect(owners(events)).toEqual(Array(5).fill(LICENSE_OWNER));
+    expect(events.map((event) => event.name === "document_access_changed" && [event.linkAccess, event.people])).toEqual([
+      ["invited", 0], ["invited", 1], ["invited", 1], ["invited", 0], ["anyone", 0],
+    ]);
+  });
+
+  it("answers a re-add of a listed address on a free plan as a repeat that records nothing", async () => {
+    expect(await linkExternalOwner(env.DB, LICENSE_OWNER, LINKED_ACCOUNT, 1)).toBe("linked");
+    const { sink, events } = collectingSink();
+    const quiet = workerEnv({ EMAIL: { send: async () => {} }, EMAIL_FROM: "share@mail.openartifacts.ai" });
+    const pro: Publisher = { owner: LINKED_ACCOUNT, plan: "pro", authKind: "account" };
+    const free: Publisher = { owner: LINKED_ACCOUNT, plan: "free", authKind: "account" };
+    const docId = await published(await create(sink, VALID_PUSH, BY_LICENSE));
+    await setMode(quiet, pro, docId, "invited", sink);
+    await addPerson(quiet, API_URL, pro, docId, "alice@acme.com", undefined, sink);
+    events.length = 0;
+
+    const repeat = await addPerson(quiet, API_URL, free, docId, "alice@acme.com", undefined, sink);
+
+    expect(repeat).toMatchObject({ ok: true, changed: false });
+    expect(events).toEqual([]);
+  });
+
   it("names an unlinked account token by its own account id", async () => {
     const { sink, events } = collectingSink();
 
@@ -1005,7 +1078,7 @@ describe("through the router", () => {
     const { docId } = body;
     // `docs/http-api.md` is frozen, and a publisher must not be able to tell
     // from any response whether analytics succeeded, failed, or is configured.
-    expect(body).toEqual({ docId, url: `${ORIGIN}/d/${docId}`, version: 1 });
+    expect(body).toEqual({ docId, url: `${ORIGIN}/d/${docId}`, version: 1, linkAccess: "anyone" });
 
     const updated = await api("PUT", `/api/v1/docs/${docId}`, { html: "<p>second</p>" });
     expect(updated.status).toBe(200);

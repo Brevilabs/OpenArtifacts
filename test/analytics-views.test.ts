@@ -142,6 +142,7 @@ async function readableDoc(): Promise<string> {
     workerEnv(),
     PUBLISHER,
     NO_ANALYTICS,
+    "anyone",
   );
   expect(response.status).toBe(201);
   return ((await response.json()) as { docId: string }).docId;
@@ -506,6 +507,7 @@ describe("the ceiling on view events", () => {
       callerEnv,
       PUBLISHER,
       sink,
+      "anyone",
     );
     expect(created.status).toBe(201);
     const { docId } = (await created.json()) as { docId: string };

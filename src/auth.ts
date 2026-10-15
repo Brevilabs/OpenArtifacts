@@ -43,7 +43,8 @@ import { d1PublisherStore, findLiveToken, touchTokenUse, type PublisherStore } f
 import { errorResponse, type ErrorCode } from "./errors.js";
 import { sha256Hex } from "./hash.js";
 import { accountPlan, type RefreshStatus } from "./entitlement.js";
-import { TOKEN_PREFIX } from "./ids.js";
+import { planLimits } from "./plans.js";
+import { SHARE_TOKEN_PREFIX, TOKEN_PREFIX } from "./ids.js";
 
 /** tRPC endpoint on the license server, appended to `LICENSE_API_URL`. */
 const VALIDATE_PATH = "/api/trpc/license.validateLicenseKey";
@@ -70,6 +71,22 @@ const UNKNOWN_PLAN = "unknown";
  * before it gets here, and because `publishers.plan` stores the folded form.
  */
 const PUBLISHING_PLANS: ReadonlySet<string> = new Set(["plus", "believer"]);
+
+/**
+ * Whether this publisher's plan includes private sharing. Every paid plan does.
+ * A license key qualifies when its plan may publish at all (`PUBLISHING_PLANS`),
+ * so Plus and Supporter (`believer`) share privately and a lapsed or unlisted
+ * plan fails closed. An account plan opts in with `"privateSharing": true` in
+ * `PLAN_LIMITS` (wrangler.jsonc), which `pro` and `pro_lifetime` carry and
+ * `free` does not. Asked only on the two writes that spend it; reading a
+ * private document never checks a plan, and a lapsed plan keeps what already
+ * exists.
+ */
+export function maySharePrivately(env: Env, publisher: Publisher): boolean {
+  return publisher.authKind === "account"
+    ? planLimits(env, publisher.plan).privateSharing === true
+    : PUBLISHING_PLANS.has(publisher.plan);
+}
 
 /**
  * Entitlement is per *operation*, not per identity, so this is deliberately not
@@ -151,15 +168,32 @@ export function parseBearerToken(header: string | null): string | null {
   return match?.[1] ?? null;
 }
 
-/** Match the API dispatcher, including its normalization of empty path segments. */
+/**
+ * The writes that publish: a create on `/docs` or on `/private-docs`, and an
+ * update. They read the plan fresh and, for a license key, need a plan that may
+ * publish. Matches the API dispatcher, including its normalization of empty
+ * path segments.
+ */
 export function isPublishingRequest(request: Request): boolean {
   const pathname = new URL(request.url).pathname;
   if (!pathname.startsWith("/api/v1/")) return false;
   const [collection, docId, ...extra] = pathname
     .slice("/api/v1".length).split("/").filter(Boolean);
-  return collection === "docs" && extra.length === 0 &&
+  if (extra.length > 0) return false;
+  return (collection === "docs" &&
     ((docId === undefined && request.method === "POST") ||
-     (docId !== undefined && request.method === "PUT"));
+     (docId !== undefined && request.method === "PUT"))) ||
+    (collection === "private-docs" && docId === undefined && request.method === "POST");
+}
+
+/**
+ * `PUT /api/v1/docs/{docId}/access` and `…/access/people/{email}`: the writes
+ * that need `privateSharing`. Like publishing, they read the plan fresh.
+ */
+function isAccessWrite(request: Request): boolean {
+  const [collection, , section, ...extra] = new URL(request.url).pathname
+    .slice("/api/v1".length).split("/").filter(Boolean);
+  return request.method === "PUT" && collection === "docs" && section === "access" && extra.length <= 2;
 }
 
 export async function authenticateRequest(
@@ -179,7 +213,8 @@ export async function authenticateRequest(
   const path = new URL(request.url).pathname;
   const account = request.method === "GET" && path === "/api/v1/account";
   const publishing = isPublishingRequest(request);
-  return await resolvePublisher(token, env, { ...deps, forceAccountRefresh: account, skipAccountRefresh: !account && !publishing });
+  const planMatters = publishing || isAccessWrite(request);
+  return await resolvePublisher(token, env, { ...deps, forceAccountRefresh: account, skipAccountRefresh: !account && !planMatters });
 }
 
 export async function resolvePublisher(
@@ -193,6 +228,14 @@ export async function resolvePublisher(
   if (token.startsWith(TOKEN_PREFIX)) {
     // `return await`: see the note on the router's catch in index.ts.
     return await resolveAccountToken(token, env, deps);
+  }
+
+  // The Share popover's per-document token is not an API credential, and it must
+  // not fall through to the license path below: that would post it to the
+  // license server as a key and cache a denial as a `publishers` row. Refused
+  // before anything is hashed, stored or sent.
+  if (token.startsWith(SHARE_TOKEN_PREFIX)) {
+    return { ok: false, reason: "invalid_token", message: "That token works only in the Share popover." };
   }
 
   const now = deps.now ?? Date.now;
