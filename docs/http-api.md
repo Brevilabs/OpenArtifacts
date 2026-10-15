@@ -700,8 +700,10 @@ writes. `origin` is the page's own origin, which the script fills in.
   document's serving origin. With a token, a non-reader gets what an unknown id
   gets, never `403`.
 - *It tells the page around it nothing about its viewer.* The frame has one fixed
-  size, and posts only `ready`, before it reads its storage, and `close`, after a
-  click inside it. On a public document any page on `openartifacts.site` can embed
+  size, and posts only `ready`, before it reads its storage, `close`, after a
+  click inside it, and `comments`, after the owner flips the Comments switch inside
+  it (which tells the page that this visitor is the owner, but only on that
+  click). On a public document any page on `openartifacts.site` can embed
   the frame, and they share its storage.
 - It sets no cookie, no `Access-Control-Allow-*` header and no
   `X-Frame-Options`; it is `no-store`.

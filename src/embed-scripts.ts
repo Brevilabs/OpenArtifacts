@@ -282,8 +282,9 @@ li button.link{font-size:12px;color:#8d94a0}li button.link:hover{color:#e9ebee}
  * with `credentials: "omit"`, accepted only by `/embed/api/docs/{docId}/access…`.
  *
  * **What it tells the page around it.** Only `ready`, once, before it touches
- * storage, and `close`, only from a user action in the frame (the × button or
- * Escape). Nothing the frame sends, and nothing it does that an embedding page
+ * storage, `close`, only from a user action in the frame (the × button or
+ * Escape), and `comments`, only after the owner's click on the Comments switch
+ * (it says this visitor is the owner, but never without the owner's own click). Nothing the frame sends, and nothing it does that an embedding page
  * can observe (a size change, a focus move), depends on what is in storage. On a
  * public document any page on `openartifacts.site` can embed this frame for any
  * document it knows, and the stored token lives in the partition that page
