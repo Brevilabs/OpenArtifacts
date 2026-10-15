@@ -17,6 +17,15 @@ export const SIGNIN_PREFIX = "/signin";
 /** The share page, where an owner manages one document: `/share/{docId}`. */
 export const SHARE_PREFIX = "/share";
 
+/**
+ * Everything the top bar's Share button needs from the API host: the page
+ * script and, later, the popover frame and its routes. Not a client surface.
+ */
+export const EMBED_PREFIX = "/embed";
+
+/** The script every served page loads. Permanent: pinned pages carry the tag for a year. */
+export const PAGE_SCRIPT_PATH = "/embed/page.js";
+
 /** Whether a return path is the share page, which is signed in to for a different reason. */
 const isSharePath = (next: string): boolean => next.startsWith(`${SHARE_PREFIX}/`);
 

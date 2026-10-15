@@ -264,6 +264,12 @@ describe("worker dispatch", () => {
     const serving = await get(`https://${WORKERS_DEV}/d/abc`);
     expect(serving.status).toBe(404);
     expect(serving.headers.get("x-robots-tag")).toBe("noindex, nofollow");
+
+    // The page script is the API surface's, and with no hosts configured there
+    // is no reader sign-in to serve it, so local development answers 404.
+    expect(resolveSurface(WORKERS_DEV, "/embed/page.js", {})).toBe("api");
+    expect(resolveSurface("openartifacts.site", "/embed/page.js", HOSTS)).toBe("serving");
+    expect((await get(`https://${WORKERS_DEV}/embed/page.js`)).status).toBe(404);
   });
 
   it("never sets a cookie on the canonical document surface", async () => {

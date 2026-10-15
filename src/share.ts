@@ -9,11 +9,12 @@
  * It is the dialog Copilot renders, served by the Worker, so it exists for
  * whoever published the document and for self-hosters. It lives on the API
  * host because the reader session does, and it is reached from the constant
- * **Manage** link in every served page's footer, from the request email, and
- * from `share` output. The document's origin can never see the owner's session,
- * so the page cannot know on the document whether its viewer is the owner; the
- * link is therefore the same for everyone, and a reader who follows it gets
- * sign-in and then the same not-available page `/open` shows.
+ * **Share** link in every served page's top bar (the popover's fallback when
+ * scripts do not run), from the request email, and from `share` output. The
+ * document's origin can never see the owner's session, so the page cannot know
+ * on the document whether its viewer is the owner; the link is therefore the
+ * same for everyone, and a reader who follows it gets sign-in and then the same
+ * not-available page `/open` shows.
  *
  * **It writes through the same operations as `/api/v1`** (`api/access.ts`), with
  * the session account as the principal, so the plan gate, the invite email,

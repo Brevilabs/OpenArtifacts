@@ -164,8 +164,8 @@ export interface Env {
    * characters; anything shorter counts as unset.
    *
    * **Absent, too short, or with no sign-in method configured, the whole
-   * private family answers `404 not_found` and served pages carry no Manage
-   * link** (`readerSignInConfigured`), exactly as on a Worker that predates
+   * private family answers `404 not_found` and served pages carry no top
+   * bar** (`readerSignInConfigured`), exactly as on a Worker that predates
    * private sharing; every document stays public. It signs sessions and grants
    * with domain-separated MACs, and rotating it signs every reader out. A secret
    * rather than a var because anyone holding it can mint a session or a grant.

@@ -1,6 +1,7 @@
 import { createExecutionContext, env, waitOnExecutionContext } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Env } from "../src/config.js";
+import { PAGE_SCRIPT } from "../src/embed-scripts.js";
 import { DOC_ID_LENGTH } from "../src/ids.js";
 import { newAccountId } from "../src/ids.js";
 import { linkExternalOwner } from "../src/owners.js";
@@ -8,6 +9,7 @@ import { grantUrl, originLabel, PRIVATE_LABEL } from "../src/private.js";
 import { readerSignInConfigured } from "../src/reader-config.js";
 import { signPayload, verifyPayload } from "../src/session.js";
 import { FAVICON_LINK, NOINDEX_META, OPENARTIFACTS_FOOTER, OPENARTIFACTS_HEADER, OPENARTIFACTS_MARK_SVG } from "../src/render.js";
+import { OPENARTIFACTS_BAR_SPACER, OPENARTIFACTS_BAR_STYLE } from "../src/render.js";
 import { versionObjectKey } from "../src/storage.js";
 import worker from "../src/index.js";
 
@@ -1492,36 +1494,140 @@ describe("an invited-only document", () => {
     });
   });
 
-  describe("the Manage link in the footer", () => {
-    const link = (docId: string) => `href="https://api.openartifacts.ai/share/${docId}"`;
+  describe("the top bar", () => {
+    const shareLink = (docId: string) => `data-openartifacts-share href="https://api.openartifacts.ai/share/${docId}"`;
+    const SCRIPT_TAG = '<script defer src="https://api.openartifacts.ai/embed/page.js"></script>';
+    const MARKER = '<style id="openartifacts-obsidian-publish-baseline"></style>';
 
-    it("is on public and private pages exactly once, and points at the share page", async () => {
+    /** A Copilot-marked public page, so the byline text has somewhere to go. */
+    async function markedPublicDoc(): Promise<string> {
+      const response = await sendTo("POST", "/api/v1/docs", {
+        headers: { authorization: `Bearer ${KEY}`, "content-type": "application/json" },
+        body: JSON.stringify({ title: "Marked", html: page("<p>a public page</p>").replace("</head>", `${MARKER}</head>`) }),
+      });
+      expect(response.status).toBe(201);
+      return ((await response.json()) as { docId: string }).docId;
+    }
+
+    it("S1: is on public, pinned and private pages exactly once, with Share pointing at the share page", async () => {
       const publicDoc = await privateDoc("a public page", KEY, "anyone");
       const doc = await privateDoc("for invited eyes");
       const cookie = await cookieFor(doc, doc.owner);
 
-      const open = await (await getFrom(`https://openartifacts.site/d/${publicDoc.docId}`, {}, PRIVATE)).text();
-      const pinned = await (await getFrom(`https://openartifacts.site/d/${publicDoc.docId}/v1`, {}, PRIVATE)).text();
-      const closed = await (await getFrom(`${doc.host}/d/${doc.docId}`, { headers: { cookie } }, PRIVATE)).text();
+      const open = await getFrom(`https://openartifacts.site/d/${publicDoc.docId}`, {}, PRIVATE);
+      const pinned = await getFrom(`https://openartifacts.site/d/${publicDoc.docId}/v1`, {}, PRIVATE);
+      const closed = await getFrom(`${doc.host}/d/${doc.docId}`, { headers: { cookie } }, PRIVATE);
 
-      for (const [html, docId] of [[open, publicDoc.docId], [pinned, publicDoc.docId], [closed, doc.docId]] as const) {
-        expect(occurrences(html, link(docId))).toBe(1);
-        expect(occurrences(html, ">Manage</a>")).toBe(1);
-        // After the existing footer, which keeps the link smoke.sh looks for.
-        expect(html).toContain("openartifacts.ai</a>");
-        expect(html.indexOf(">Manage</a>")).toBeGreaterThan(html.indexOf("Powered by"));
+      expect(open.headers.get("cache-control")).toBe("public, max-age=60");
+      expect(pinned.headers.get("cache-control")).toBe("public, max-age=31536000, immutable");
+      expect(closed.headers.get("cache-control")).toBe("private, no-store");
+      expect(open.headers.get("set-cookie")).toBeNull();
+      expect(pinned.headers.get("set-cookie")).toBeNull();
+
+      for (const [response, docId] of [[open, publicDoc.docId], [pinned, publicDoc.docId], [closed, doc.docId]] as const) {
+        const html = await response.text();
+        expect(occurrences(html, OPENARTIFACTS_BAR_SPACER)).toBe(1);
+        expect(occurrences(html, 'class="openartifacts-bar"')).toBe(1);
+        expect(occurrences(html, shareLink(docId))).toBe(1);
+        expect(occurrences(html, SCRIPT_TAG)).toBe(1);
+        expect(occurrences(html, OPENARTIFACTS_BAR_STYLE)).toBe(1);
+        // The footer is unchanged and keeps the link smoke.sh looks for; the Manage link is gone.
+        expect(html).toContain(OPENARTIFACTS_FOOTER);
+        expect(html).not.toContain(">Manage</a>");
+        expect(html).not.toContain("openartifacts-manage");
       }
-      expect(closed).toContain("for invited eyes");
+      expect(await (await getFrom(`${doc.host}/d/${doc.docId}`, { headers: { cookie } }, PRIVATE)).text()).toContain("for invited eyes");
     });
 
-    it("is absent on a server with no reader sign-in, and changes nothing else", async () => {
-      const publicDoc = await privateDoc("a public page", KEY, "anyone");
+    it("S1: replaces the header byline with the bar, keeping the byline text smoke.sh looks for", async () => {
+      const docId = await markedPublicDoc();
+
+      const html = await (await getFrom(`https://openartifacts.site/d/${docId}`, {}, PRIVATE)).text();
+
+      expect(html).not.toContain(OPENARTIFACTS_HEADER);
+      expect(occurrences(html, "Copilot for Obsidian</span>")).toBe(1);
+      expect(html).toContain(`<body>${OPENARTIFACTS_BAR_SPACER}`);
+    });
+
+    it("S2: is absent on a server with no reader sign-in, which keeps the header byline and changes nothing else", async () => {
+      const docId = await markedPublicDoc();
 
       for (const over of [{ ...PRIVATE, READER_SESSION_SECRET: undefined }, { ...PRIVATE, OAUTH_GITHUB_CLIENT_ID: "", EMAIL: undefined }, { ...PRIVATE, API_HOST: "" }]) {
-        const html = await (await getFrom(`https://openartifacts.site/d/${publicDoc.docId}`, {}, over)).text();
-        expect(html).not.toContain("/share/");
-        expect(html).not.toContain(">Manage</a>");
+        const html = await (await getFrom(`https://openartifacts.site/d/${docId}`, {}, over)).text();
+        expect(html).toContain(OPENARTIFACTS_HEADER);
         expect(html).toContain(OPENARTIFACTS_FOOTER);
+        expect(html).not.toContain("openartifacts-bar");
+        expect(html).not.toContain("scroll-padding");
+        expect(html).not.toContain("/embed/page.js");
+        expect(html).not.toContain("/share/");
+      }
+    });
+  });
+
+  describe("the page script", () => {
+    const SCRIPT = "https://api.openartifacts.ai/embed/page.js";
+    const etagOf = async () => `"${(await sha256Hex(PAGE_SCRIPT)).slice(0, 32)}"`;
+
+    it("S3: is the constant script, cached by the browser for an hour, with the headers that make it safe to load cross-site", async () => {
+      const response = await getFrom(SCRIPT, {}, PRIVATE);
+
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe(PAGE_SCRIPT);
+      expect(response.headers.get("content-type")).toBe("text/javascript; charset=utf-8");
+      expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+      expect(response.headers.get("cross-origin-resource-policy")).toBe("cross-origin");
+      expect(response.headers.get("cache-control")).toBe("public, max-age=3600, stale-while-revalidate=86400");
+      expect(response.headers.get("etag")).toBe(await etagOf());
+      expect(response.headers.get("etag")).toMatch(/^"[0-9a-f]{32}"$/);
+      expect(response.headers.get("cross-origin-opener-policy")).toBe("same-origin");
+      expect(response.headers.get("set-cookie")).toBeNull();
+      expect(response.headers.get("access-control-allow-origin")).toBeNull();
+    });
+
+    it("S3: answers a matching validator, weak or not, with a bodiless 304", async () => {
+      const etag = await etagOf();
+
+      for (const sent of [etag, `W/${etag}`, `"other", ${etag}`, "*"]) {
+        const response = await getFrom(SCRIPT, { headers: { "if-none-match": sent } }, PRIVATE);
+        expect(response.status).toBe(304);
+        expect(await response.text()).toBe("");
+        expect(response.headers.get("etag")).toBe(etag);
+        expect(response.headers.get("cache-control")).toBe("public, max-age=3600, stale-while-revalidate=86400");
+      }
+      const stale = await getFrom(SCRIPT, { headers: { "if-none-match": '"0123"' } }, PRIVATE);
+      expect(stale.status).toBe(200);
+      expect(await stale.text()).toBe(PAGE_SCRIPT);
+    });
+
+    it("S3: answers HEAD with the headers and no body, and every other method as not found", async () => {
+      const head = await sendTo("HEAD", SCRIPT, {}, PRIVATE);
+      expect(head.status).toBe(200);
+      expect(head.headers.get("etag")).toBe(await etagOf());
+      expect(head.headers.get("content-type")).toBe("text/javascript; charset=utf-8");
+      expect(await head.text()).toBe("");
+
+      for (const method of ["POST", "PUT", "DELETE", "OPTIONS"]) {
+        const response = await sendTo(method, SCRIPT, {}, PRIVATE);
+        expect(response.status).toBe(404);
+        expect(response.headers.get("access-control-allow-origin")).toBeNull();
+      }
+    });
+
+    it("S3: exists on the API host only", async () => {
+      const doc = await privateDoc();
+
+      expect((await getFrom("https://openartifacts.site/embed/page.js", {}, PRIVATE)).status).toBe(404);
+      expect((await getFrom(`${doc.host}/embed/page.js`, {}, PRIVATE)).status).toBe(404);
+      expect((await getFrom("https://api.openartifacts.ai/embed/other.js", {}, PRIVATE)).status).toBe(404);
+      expect((await getFrom("https://api.openartifacts.ai/embed", {}, PRIVATE)).status).toBe(404);
+    });
+
+    it("S8: is not there at all on a server with no reader sign-in", async () => {
+      for (const over of [{ ...PRIVATE, READER_SESSION_SECRET: undefined }, { ...PRIVATE, OAUTH_GITHUB_CLIENT_ID: "", EMAIL: undefined }, { ...PRIVATE, API_HOST: "" }]) {
+        const response = await getFrom(SCRIPT, {}, over);
+        expect(response.status).toBe(404);
+        expect(await response.text()).not.toBe(PAGE_SCRIPT);
+        expect(response.headers.get("etag")).toBeNull();
       }
     });
   });

@@ -45,11 +45,12 @@
  * constants in this file, so the thing that changes them is an edit to this
  * file, and a reviewer can see whether the number moved with it.
  *
- * One injection is not a constant: the Manage link's address is built from the
- * deployment's API host and the document id, and is present only when reader
- * sign-in is configured. So enabling or disabling sign-in, or changing the API
- * host, changes the rendering without moving this number, and a reader holding a
- * validator from before the flip keeps getting `304` for the old rendering.
+ * One injection is not a constant: the top bar's Share address and script tag
+ * are built from the deployment's API host and the document id, and exist only
+ * when reader sign-in is configured. So enabling or disabling sign-in, or
+ * changing the API host, changes the rendering without moving this number, and a
+ * reader holding a validator from before the flip keeps getting `304` for the
+ * old rendering.
  * Accepted: it never mixes one publisher's or one document's rendering with
  * another's, and the next edit to the injections, or the next push, refreshes it.
  */
@@ -290,7 +291,10 @@ const BYLINE_LINK_WITH_MARK =
  */
 const SPAN_RESET = "all:initial;font:inherit;color:inherit;";
 
-/** Where the document came from. Injected at the top of the body. */
+/**
+ * Where the document came from. Injected at the top of the body, except on a
+ * server with reader sign-in, where the top bar carries this text instead.
+ */
 export const OPENARTIFACTS_HEADER =
   '<div class="openartifacts-header" style="' +
   BYLINE_BASE +
@@ -309,23 +313,105 @@ export const OPENARTIFACTS_FOOTER =
   `Powered by <a href="https://openartifacts.ai" ${BYLINE_LINK}>openartifacts.ai</a>, ` +
   "a new mode of communication between agents and humans</div>";
 
+/** System fonts only: the bar fetches nothing. */
+const BAR_FONT = "font:500 13px/1.25 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
+
 /**
- * The link to the share page, in an element of its own right after the
- * "Powered by" footer. Constant for every viewer: it names no identity and
- * carries no script, which is what lets public pages stay cacheable, and it is
- * independent of `branding`, because a plan that removes the bylines must not
- * remove the owner's only route to the share page.
- *
- * It rides the byline's container and anchor resets, so a document's own
- * stylesheet cannot restyle it, and it leaves the footer's own text and its
- * `openartifacts.ai` anchor untouched.
+ * The strip's own height, as the spacer takes it: change both or content starts
+ * under the strip. `flex:none` keeps the spacer from shrinking when the author's
+ * body is a column flexbox, and like every element the bar adds it carries
+ * `all:initial` (an author `!important` rule still wins, as `BYLINE_LINK`
+ * already concedes).
  */
-function manageLink(manageUrl: string): string {
+export const OPENARTIFACTS_BAR_SPACER =
+  '<div class="openartifacts-bar-spacer" aria-hidden="true" style="all:initial;display:block;flex:none;height:40px"></div>';
+
+/**
+ * The one stylesheet the bar adds: a scroll offset the size of the strip, so an
+ * anchor jump or a focused control does not land under it, and a print rule,
+ * because a fixed strip repeats over the top of every printed page. Neither
+ * belongs in an inline style: a print rule needs a media query, and an inline
+ * `scroll-padding` would have to go on the author's own `<html>` element, where
+ * it would beat the author's own rule. `:where()` has zero specificity, so an
+ * author rule on `html` or `:root` wins.
+ *
+ * No `media` attribute: on a page with no head stylesheet this is
+ * `document.styleSheets[0]`, and author code calling `insertRule` on it must get
+ * rules that apply on screen. It carries no look, and lives in `<body>` with the
+ * bar because the bar has one injection site.
+ */
+export const OPENARTIFACTS_BAR_STYLE =
+  "<style>:where(html){scroll-padding-top:40px}" +
+  "@media print{.openartifacts-bar,.openartifacts-bar-spacer,.openartifacts-share-popover{display:none!important}}</style>";
+
+/**
+ * Fixed rather than sticky, because it survives author `overflow` rules that
+ * break `sticky`; the highest z-index there is; a light neutral with `#666` text
+ * (contrast at least 5:1) so it sits quietly over any page.
+ */
+const BAR_STYLE =
+  "all:initial;position:fixed;top:0;left:0;right:0;z-index:2147483647;box-sizing:border-box;" +
+  "height:40px;display:flex;align-items:center;justify-content:space-between;gap:12px;" +
+  "padding:0 12px 0 16px;background:#fbfbfa;border-bottom:1px solid rgba(0,0,0,0.1);color:#666;" +
+  BAR_FONT;
+
+/** The bar's byline link, reset like `BYLINE_LINK_WITH_MARK` and for the same reasons. */
+const BAR_BYLINE_LINK =
+  'target="_blank" rel="noopener noreferrer" style="all:initial;font:inherit;display:inline-flex;' +
+  'align-items:center;gap:0.4em;cursor:pointer;color:inherit;text-decoration:none"';
+
+const SHARE_STYLE =
+  "all:initial;flex:none;box-sizing:border-box;display:inline-flex;align-items:center;height:28px;" +
+  "padding:0 14px;border:1px solid rgba(0,0,0,0.18);border-radius:6px;background:#ffffff;" +
+  "color:#1f1f1f;cursor:pointer;" +
+  BAR_FONT;
+
+/**
+ * Where a served page's Share link leads and which script upgrades it. Both are
+ * built from the deployment's API host (`serve.ts`), and the bar exists only
+ * when reader sign-in is configured.
+ */
+export interface TopBar {
+  /** `https://{API_HOST}/share/{docId}`: the plain link, which works with no script. */
+  shareUrl: string;
+  /** `https://{API_HOST}/embed/page.js`: the script that turns the link into a popover. */
+  scriptUrl: string;
+}
+
+/**
+ * The top bar, in the order it must land: the spacer first, so it is the first
+ * child of `<body>` and the author's content starts below the strip, then the
+ * stylesheet, the strip, and the script tag.
+ *
+ * **The same bytes for every viewer of a document.** It names no identity, so a
+ * public page keeps `max-age=60` and a pinned one `immutable`.
+ *
+ * Left: the byline's text, for Copilot-rendered HTML that has branding. That
+ * text exists only where the header byline would have: printing it on other
+ * pages would be false attribution, or would undo `branding = false`, so those
+ * pages get an empty left side. Right: **Share**, a plain link to the share page
+ * that works with no script, and never branding, so a plan that removes the
+ * bylines does not remove the owner's route to it.
+ *
+ * No shadow DOM: declarative shadow DOM would hide the bar entirely in browsers
+ * without it, and the link must work with no script. The `data-` attribute is
+ * how the script finds the link rather than a class an author might reuse.
+ */
+function topBar(bar: TopBar, byline: boolean): string {
   return (
-    '<div class="openartifacts-manage" style="' +
-    BYLINE_BASE +
-    ';margin:0;padding:0 0 1rem">' +
-    `<a href="${escapeAttribute(manageUrl)}" ${BYLINE_LINK}>Manage</a></div>`
+    OPENARTIFACTS_BAR_SPACER +
+    OPENARTIFACTS_BAR_STYLE +
+    `<div class="openartifacts-bar" style="${BAR_STYLE}">` +
+    `<span style="${SPAN_RESET}display:inline-flex;align-items:center;gap:0.4em;min-width:0;overflow:hidden;white-space:nowrap">` +
+    (byline
+      ? `Shared from <a href="https://obsidiancopilot.com" ${BAR_BYLINE_LINK}>${COPILOT_MARK}` +
+        `<span style="${SPAN_RESET}text-decoration:underline">Copilot for Obsidian</span></a>`
+      : "") +
+    "</span>" +
+    `<a class="openartifacts-share" data-openartifacts-share href="${escapeAttribute(bar.shareUrl)}" ` +
+    `target="_blank" rel="noopener noreferrer" style="${SHARE_STYLE}">Share</a>` +
+    "</div>" +
+    `<script defer src="${escapeAttribute(bar.scriptUrl)}"></script>`
   );
 }
 
@@ -333,8 +419,8 @@ function manageLink(manageUrl: string): string {
 const AS_HTML = { html: true } as const;
 
 /**
- * Inject the robots meta, the favicon, the social card and the two bylines, and
- * change nothing else.
+ * Inject the robots meta, the favicon, the social card, the top bar and the
+ * bylines, and change nothing else.
  *
  * Every injection has a fallback, because a document is not guaranteed to have
  * the tag we want to hang it on:
@@ -353,12 +439,13 @@ const AS_HTML = { html: true } as const;
  *   `og:title` falls back to the `<title>` element, which is the same string.
  *   That is why the split is worth a second injection site rather than moving
  *   the whole card to the end tag.
- * - The header byline is prepended inside `<body>`. A document with no `<body>`
- *   start tag gets it at the document end instead, which puts the header below
- *   the content: wrong, but present. Hanging it on `<html>` would be no better,
+ * - The top bar, or without one the header byline, is prepended inside
+ *   `<body>`. A document with no `<body>` start tag gets it at the document end
+ *   instead, which puts it below the content: wrong, but present, and the bar is
+ *   fixed, so still visible. Hanging it on `<html>` would be no better,
  *   because that element's start tag is seen *before* `<body>`, so a fallback
- *   there would fire on every normal page and inject the header twice. The
- *   client renders whole documents, so the fallback is the rare path.
+ *   there would fire on every normal page and inject it twice. The client
+ *   renders whole documents, so the fallback is the rare path.
  * - The footer goes immediately before `</body>`. `append()` is not used for
  *   this: it silently does nothing when an element has no end tag, and an
  *   unclosed `<body>` is common enough in hand-written HTML that a silently
@@ -380,10 +467,11 @@ const AS_HTML = { html: true } as const;
  * passes through the worker without ever being a 10MB string in it, exactly as
  * it did when serving was a passthrough.
  *
- * `manageUrl` is the share page's address, or null on a server with no reader
- * sign-in. When set, one **Manage** link follows the footer, on every document
- * and whatever `branding` says. Like the bylines it is added here on the way
- * out and never stored.
+ * `bar` is the top bar's two addresses, or null on a server with no reader
+ * sign-in. When set it replaces the header byline (whose text moves into the
+ * bar), on every document and whatever `branding` says. When null the output is
+ * exactly what a server that predates the bar renders. Like the bylines it is
+ * added here on the way out and never stored.
  *
  * `branding` will be false for plans that pay to remove the bylines. It takes
  * the favicon and the social card with them — an OpenArtifacts mark in the reader's
@@ -399,9 +487,9 @@ const AS_HTML = { html: true } as const;
 export function renderServedHtml(
   response: Response,
   branding = true,
-  manageUrl: string | null = null,
+  bar: TopBar | null = null,
 ): Response {
-  const footer = (branding ? OPENARTIFACTS_FOOTER : "") + (manageUrl === null ? "" : manageLink(manageUrl));
+  const footer = branding ? OPENARTIFACTS_FOOTER : "";
   const head = branding ? NOINDEX_META + FAVICON_LINK + SOCIAL_CARD_META : NOINDEX_META;
   let fromCopilot = false;
   let headPlaced = false;
@@ -477,7 +565,8 @@ export function renderServedHtml(
         // before `c`.
         if (headerPlaced) return;
         headerPlaced = true;
-        if (branding && fromCopilot) body.prepend(OPENARTIFACTS_HEADER, AS_HTML);
+        if (bar !== null) body.prepend(topBar(bar, branding && fromCopilot), AS_HTML);
+        else if (branding && fromCopilot) body.prepend(OPENARTIFACTS_HEADER, AS_HTML);
         body.onEndTag((endTag) => {
           footerPlaced = true;
           if (footer !== "") endTag.before(footer, AS_HTML);
@@ -491,7 +580,10 @@ export function renderServedHtml(
           const titleMeta = socialTitleMeta(documentTitle);
           if (titleMeta.length > 0) end.append(titleMeta, AS_HTML);
         }
-        if (branding && fromCopilot && !headerPlaced) end.append(OPENARTIFACTS_HEADER, AS_HTML);
+        if (!headerPlaced) {
+          if (bar !== null) end.append(topBar(bar, branding && fromCopilot), AS_HTML);
+          else if (branding && fromCopilot) end.append(OPENARTIFACTS_HEADER, AS_HTML);
+        }
         if (footer !== "" && !footerPlaced) end.append(footer, AS_HTML);
       },
     })

@@ -17,9 +17,17 @@ import { DEVICE_PREFIX, handleDevice } from "./device.js";
 import { errorResponse } from "./errors.js";
 import { listTokens, revokeToken } from "./api/tokens.js";
 import { handlePublisherServing, isolate, PRIVATE_LABEL } from "./private.js";
+import { handleEmbed } from "./embed.js";
 import { handleReader } from "./reader.js";
 import { readerSignInConfigured } from "./reader-config.js";
-import { OPEN_PREFIX, READER_NOT_FOUND, SHARE_PREFIX, SIGNIN_PREFIX, readerIsolate } from "./reader-pages.js";
+import {
+  EMBED_PREFIX,
+  OPEN_PREFIX,
+  READER_NOT_FOUND,
+  SHARE_PREFIX,
+  SIGNIN_PREFIX,
+  readerIsolate,
+} from "./reader-pages.js";
 import { handleShare } from "./share.js";
 import {
   handleServing,
@@ -133,6 +141,7 @@ export function resolveSurface(hostname: string, pathname: string, config: Surfa
   if (pathIsUnder(pathname, OPEN_PREFIX)) return "api";
   if (pathIsUnder(pathname, SIGNIN_PREFIX)) return "api";
   if (pathIsUnder(pathname, SHARE_PREFIX)) return "api";
+  if (pathIsUnder(pathname, EMBED_PREFIX)) return "api";
   if (pathIsUnder(pathname, SERVING_PREFIX)) return "serving";
   return "unknown";
 }
@@ -329,6 +338,17 @@ export default {
                 : pathIsUnder(url.pathname, SHARE_PREFIX)
                   ? await handleShare(request, url, env, analytics)
                   : await handleReader(request, url, env, ctx),
+            );
+          }
+          // The top bar's page script and, with it, everything the Share
+          // popover is made of. Served from the API host because the popover
+          // holds a credential no document's origin may see. Gated like the
+          // pages above: a server with no reader sign-in has no `/embed/*`
+          // and renders no tag that would ask for it. Wrapped like them too,
+          // so every response carries one opener policy.
+          if (pathIsUnder(url.pathname, EMBED_PREFIX)) {
+            return readerIsolate(
+              !readerSignInConfigured(env) ? READER_NOT_FOUND() : await handleEmbed(request, url),
             );
           }
           // Likewise before `handleApi`: a terminal asking for a device code

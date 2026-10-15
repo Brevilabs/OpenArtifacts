@@ -2,7 +2,7 @@
  * The public serving surface: `GET /d/{docId}` and `GET /d/{docId}/v{n}`.
  *
  * R2 holds the publisher's own bytes; OpenArtifacts' additions — the robots meta,
- * the favicon, the social card, the two bylines and the Manage link — are injected here, on the
+ * the favicon, the social card, the top bar and the bylines — are injected here, on the
  * way out, by `renderServedHtml`. That is what lets a byline change, or a plan that removes
  * one, reach documents already published, and it is why the stored object and
  * the served page are no longer byte-identical. `immutable` on `/v{n}` stays
@@ -23,7 +23,8 @@ import { findServableVersion } from "./db.js";
 import { isDocId } from "./ids.js";
 import { ABOUT_LINK, brandPageHtml } from "./page.js";
 import { readerSignInConfigured } from "./reader-config.js";
-import { RENDER_REVISION, renderServedHtml } from "./render.js";
+import { PAGE_SCRIPT_PATH, SHARE_PREFIX } from "./reader-pages.js";
+import { RENDER_REVISION, renderServedHtml, type TopBar } from "./render.js";
 import { STORED_CONTENT_TYPE, versionObjectKey } from "./storage.js";
 
 /** Path prefix of the serving surface, used by the router's path fallback. */
@@ -400,12 +401,20 @@ function matchesConditions(conditions: Headers, object: R2Object): boolean {
 }
 
 /**
- * The share page's address for the Manage link every served page carries, or
- * null on a server with no reader sign-in. Public and invited-only documents get
- * the same link, and it is the same for every viewer.
+ * The top bar every served page carries: the share page's address for its
+ * **Share** link and the address of the script that turns that link into a
+ * popover. Null on a server with no reader sign-in, which renders exactly what a
+ * server that predates the bar does. The path-prefix development fallback has
+ * every host empty, so it is unconfigured and keeps the header byline.
+ *
+ * Public and invited-only documents get the same bar, and it is the same for
+ * every viewer: it names no identity, which is what keeps public pages
+ * cacheable.
  */
-function manageUrlFor(env: Env, route: DocRoute): string | null {
-  return readerSignInConfigured(env) ? `https://${env.API_HOST!.trim()}/share/${route.docId}` : null;
+function topBarFor(env: Env, route: DocRoute): TopBar | null {
+  if (!readerSignInConfigured(env)) return null;
+  const api = `https://${env.API_HOST!.trim()}`;
+  return { shareUrl: `${api}${SHARE_PREFIX}/${route.docId}`, scriptUrl: `${api}${PAGE_SCRIPT_PATH}` };
 }
 
 /**
@@ -477,7 +486,7 @@ async function serveObject(
   // variant has to enter this validator too, or a shared cache will hand one
   // publisher's branding to another's reader.
   //
-  // The Manage link adds one more input: the API host and whether reader
+  // The top bar adds one more input: the API host and whether reader
   // sign-in is configured. That is deployment configuration, the same for every
   // document and viewer, so it cannot mix renderings between publishers; a
   // config flip without a revision bump leaves 304s on the old rendering until
@@ -488,7 +497,7 @@ async function serveObject(
   headers.set("content-type", STORED_CONTENT_TYPE);
   // Still the stream, never the bytes: HTMLRewriter transforms as it passes, so
   // a 10MB doc is never a 10MB string in the worker.
-  return renderServedHtml(new Response(object.body, { status: 200, headers }), true, manageUrlFor(env, route));
+  return renderServedHtml(new Response(object.body, { status: 200, headers }), true, topBarFor(env, route));
 }
 
 /**
