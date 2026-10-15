@@ -720,6 +720,13 @@ test("comments reject malformed arguments before any credential is read or reque
       await assert.rejects(main(["comments", "add", DOC, "--quote", "x".repeat(1001), "--body", "b"]), /limit is 1000/);
       await assert.rejects(main(["comments", "add", DOC, "--quote", "x", "--body", "b".repeat(4001)]), /limit is 4000/);
       await assert.rejects(main(["comments", "add", DOC, "--quote", "x", "--body", "b", "--prefix", "p".repeat(33)]), /limit is 32/);
+      // Measured as the server measures: UTF-16 units, so 2,500 emoji are 5,000 and refused before any credential is read.
+      await assert.rejects(main(["comments", "add", DOC, "--quote", "x", "--body", "\u{1F600}".repeat(2500)]), /5000 characters; the limit is 4000/);
+      await assert.rejects(main(["comments", "add", DOC, "--quote", "\u{1F600}".repeat(501), "--body", "b"]), /1002 characters; the limit is 1000/);
+      // The body is counted after trimming, and a quote is not trimmed; an NFD letter counts once it is NFC.
+      assert.equal(prepareComments("add", [DOC, "--quote", "x", "--body", ` ${"b".repeat(4000)} `]).body.body.length, 4002);
+      assert.equal(prepareComments("add", [DOC, "--quote", "e\u0301".repeat(1000), "--body", "b"]).body.anchor.exact.length, 2000);
+      await assert.rejects(main(["comments", "add", DOC, "--quote", `x${" ".repeat(1000)}`, "--body", "b"]), /1001 characters; the limit is 1000/);
       await assert.rejects(main(["comments", "add", DOC, "--quote", "x", "--body", "b", "--version", "0"]), /--version must be/);
       await assert.rejects(main(["comments", "add", DOC, "--quote", "x", "--body", "b", "--quote", "y"]), usage);
       await assert.rejects(main(["comments", "add", DOC, "--quote", "x", "--body", "b", "--owner", "me"]), usage);

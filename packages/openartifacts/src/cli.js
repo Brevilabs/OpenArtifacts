@@ -334,7 +334,11 @@ export function prepareShare(options) {
 const THREAD_ID = /^th_[A-Za-z0-9_-]{1,64}$/;
 const COMMENT_ID = /^cm_[A-Za-z0-9_-]{1,64}$/;
 const VERSION = /^[1-9][0-9]{0,8}$/;
-/** The text limits the server enforces, checked here so a mistake costs no credential or request. */
+/**
+ * The text limits the server enforces, checked here so a mistake costs no credential or request.
+ * Measured the way the server measures: UTF-16 length (`.length`, so an emoji is 2) after the
+ * same normalising, in `text()` below.
+ */
 const COMMENT_LIMITS = { body: 4000, quote: 1000, context: 32, section: 128, name: 64 };
 
 /** @typedef {{action: "list", docId: string, state: "open" | "resolved" | "all", since?: string}
@@ -377,17 +381,24 @@ export function prepareComments(action, extra) {
     }
     return { positional, flags };
   };
-  /** @param {string} label @param {string | undefined} value @param {number} max @param {boolean} required */
-  const text = (label, value, max, required) => {
+  /** @param {string} label @param {string | undefined} value @param {number} max @param {boolean} required
+   * @param {(value: string) => string} measured the text as the server reads it before counting */
+  const text = (label, value, max, required, measured) => {
     if (value === undefined) {
       if (required) throw new Error(`${label} is required.`);
       return undefined;
     }
-    const length = [...value].length;
+    const length = measured(value).length;
     if (required && !value.trim()) throw new Error(`${label} cannot be empty.`);
     if (length > max) throw new Error(`${label} is ${length} characters; the limit is ${max}.`);
     return value;
   };
+  /** A comment body: trimmed. */
+  const trimmed = (/** @type {string} */ value) => value.trim();
+  /** A quote, its context and a section: NFC. */
+  const normalised = (/** @type {string} */ value) => value.normalize("NFC");
+  /** A display name: NFC, then trimmed. */
+  const named = (/** @type {string} */ value) => value.normalize("NFC").trim();
   /** @param {string | undefined} value */
   const version = (value) => {
     if (value === undefined) return undefined;
@@ -414,11 +425,11 @@ export function prepareComments(action, extra) {
   }
   if (action === "add") {
     const { positional: [docId = ""], flags } = parse(1, ["--quote", "--body", "--prefix", "--suffix", "--section", "--version"]);
-    const exact = text("--quote", flags.get("--quote"), COMMENT_LIMITS.quote, true) ?? "";
-    const body = text("--body", flags.get("--body"), COMMENT_LIMITS.body, true) ?? "";
-    const prefix = text("--prefix", flags.get("--prefix"), COMMENT_LIMITS.context, false);
-    const suffix = text("--suffix", flags.get("--suffix"), COMMENT_LIMITS.context, false);
-    const section = text("--section", flags.get("--section"), COMMENT_LIMITS.section, false);
+    const exact = text("--quote", flags.get("--quote"), COMMENT_LIMITS.quote, true, normalised) ?? "";
+    const body = text("--body", flags.get("--body"), COMMENT_LIMITS.body, true, trimmed) ?? "";
+    const prefix = text("--prefix", flags.get("--prefix"), COMMENT_LIMITS.context, false, normalised);
+    const suffix = text("--suffix", flags.get("--suffix"), COMMENT_LIMITS.context, false, normalised);
+    const section = text("--section", flags.get("--section"), COMMENT_LIMITS.section, false, normalised);
     const atVersion = version(flags.get("--version"));
     return {
       action, docId,
@@ -431,7 +442,7 @@ export function prepareComments(action, extra) {
   }
   if (action === "reply") {
     const { positional: [docId = "", threadId = ""], flags } = parse(2, ["--body"]);
-    return { action, docId, threadId: identifier(threadId, THREAD_ID), body: text("--body", flags.get("--body"), COMMENT_LIMITS.body, true) ?? "" };
+    return { action, docId, threadId: identifier(threadId, THREAD_ID), body: text("--body", flags.get("--body"), COMMENT_LIMITS.body, true, trimmed) ?? "" };
   }
   if (action === "resolve") {
     const { positional: [docId = "", threadId = ""], flags } = parse(2, ["--version"]);
@@ -456,7 +467,7 @@ export function prepareComments(action, extra) {
     if (extra.length !== 1) throw new Error(HELP);
     const name = (extra[0] ?? "").trim();
     if (!name) throw new Error("The display name cannot be empty.");
-    return { action, name: text("The display name", name, COMMENT_LIMITS.name, true) ?? "" };
+    return { action, name: text("The display name", name, COMMENT_LIMITS.name, true, named) ?? "" };
   }
   throw new Error(HELP);
 }
