@@ -1536,9 +1536,20 @@ export async function setLinkAccess(
  * false means it was already there, or the list is full, or the owner has added
  * `maxPerOwnerPerDay` new people in the last `windowMs`, or the publisher has no
  * such document. Both caps are predicates on the insert for the reason
- * `insertDocWithinQuota` gives about its own. The daily count is read from
- * `doc_invites.created_at` across every document of the principal's owner scope,
- * so it needs no table of its own.
+ * `insertDocWithinQuota` gives about its own.
+ *
+ * The daily count is `invite_sends`, one row per invite ever added, so it bounds
+ * sends: removing an invite or unsharing a document never touches it, and an
+ * owner cannot loop add and remove past the cap. It counts every id in the
+ * principal's owner scope, so a linked license key and its account share one
+ * allowance.
+ *
+ * The three statements run in one D1 batch, which is one transaction on a database
+ * that serializes writes, so the cap check and both inserts are a single unit and
+ * concurrent adds cannot both pass. The send is recorded by `changes()`: it runs
+ * straight after the invite insert and writes only if that insert wrote a row, so
+ * a refused add, or a repeat of an address already listed, records nothing. The
+ * last statement prunes the scope's rows that have left the window.
  *
  * Adding is also approving: a pending request from the same address is deleted
  * in the same batch, so the list and the requests can never show one address in
@@ -1564,12 +1575,25 @@ export async function insertInvite(
          SELECT d.id, ?, ?, ? FROM docs d
           WHERE d.id = ? AND ${CAN_MANAGE_SQL} AND d.deleted_at IS NULL
             AND (SELECT COUNT(*) FROM doc_invites WHERE doc_id = d.id) < ?
-            AND (SELECT COUNT(*) FROM doc_invites i JOIN docs o ON o.id = i.doc_id
-                  WHERE o.owner IN (SELECT owner FROM owner_scope) AND i.created_at > ?) < ?
+            AND (SELECT COUNT(*) FROM invite_sends
+                  WHERE owner IN (SELECT owner FROM owner_scope) AND created_at > ?) < ?
          ON CONFLICT DO NOTHING
          RETURNING email`,
       )
       .bind(owner, owner, email, role, atMs, docId, maxPeople, atMs - windowMs, maxPerOwnerPerDay),
+    db
+      .prepare(
+        `INSERT INTO invite_sends (owner, created_at)
+         SELECT d.owner, ? FROM docs d WHERE d.id = ? AND changes() > 0`,
+      )
+      .bind(atMs, docId),
+    db
+      .prepare(
+        `${OWNER_SCOPE_SQL}
+         DELETE FROM invite_sends
+          WHERE owner IN (SELECT owner FROM owner_scope) AND created_at <= ?`,
+      )
+      .bind(owner, owner, atMs - windowMs),
     db
       .prepare(
         `DELETE FROM doc_access_requests

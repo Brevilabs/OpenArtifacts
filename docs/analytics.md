@@ -125,7 +125,7 @@ the row it describes can never be counted in different reporting intervals.
 | `document_published` | `createDoc`, on the 201 path | `docs.created_at` and `versions.created_at` for version 1 |
 | `document_updated` | `updateDoc`, on the 200 path, after `commitVersionMetadata` | `versions.created_at` for the version this push wrote |
 | `document_unshared` | `deleteDoc`, on the 204 path, as soon as `softDeleteDoc` marks the row | `docs.deleted_at` |
-| `document_access_changed` | An access write that changed state, and a create that was private from its first insert | The request's own clock read; the access tables keep `doc_invites.created_at` only |
+| `document_access_changed` | An access write that changed state, and a create that was private from its first insert | The request's own clock read; the access tables keep `doc_invites.created_at` and `invite_sends.created_at` only |
 
 **What counts as a change.** A switch of `link_access` that actually changed it, an
 address added (which includes approving a request), a role changed, and an address

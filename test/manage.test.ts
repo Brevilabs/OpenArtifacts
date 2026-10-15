@@ -899,8 +899,11 @@ describe("private sharing through the owner's credential", () => {
     const owner = await seedPublisher(KEY_PLUS, undefined, "plus");
     const other = await push(KEY_B, { title: "Not mine", html: page("<p>b</p>") });
     const now = Date.now();
-    const seed = (docId: string, email: string, createdAt: number) =>
-      env.DB.prepare("INSERT INTO doc_invites (doc_id, email, created_at) VALUES (?, ?, ?)").bind(docId, email, createdAt).run();
+    const seed = async (docId: string, email: string, createdAt: number) => {
+      await env.DB.prepare("INSERT INTO doc_invites (doc_id, email, created_at) VALUES (?, ?, ?)").bind(docId, email, createdAt).run();
+      const row = await env.DB.prepare("SELECT owner FROM docs WHERE id = ?").bind(docId).first<{ owner: string }>();
+      await env.DB.prepare("INSERT INTO invite_sends (owner, created_at) VALUES (?, ?)").bind(row!.owner, createdAt).run();
+    };
     for (let i = 0; i < 99; i += 1) await seed(i % 2 === 0 ? first.docId : second.docId, `recent${i}@acme.com`, now - 1000);
     // Outside the window, and another publisher's: neither counts.
     for (let i = 0; i < 5; i += 1) await seed(first.docId, `old${i}@acme.com`, now - 86_400_001);
@@ -938,25 +941,54 @@ describe("private sharing through the owner's credential", () => {
     expect(removed.status).toBe(200);
   });
 
-  it("counts invites that are still listed, so removing or unsharing a recent invite frees its slot", async () => {
+  it("counts sends, not listed rows: removing an invite or unsharing a document frees nothing", async () => {
     const first = await privateDoc();
     const second = await privateDoc();
-    const now = Date.now();
-    const seed = (docId: string, email: string) =>
-      env.DB.prepare("INSERT INTO doc_invites (doc_id, email, created_at) VALUES (?, ?, ?)").bind(docId, email, now - 1000).run();
-    for (let i = 0; i < 50; i += 1) await seed(first.docId, `a${i}@acme.com`);
-    for (let i = 0; i < 50; i += 1) await seed(second.docId, `b${i}@acme.com`);
-    const put = (docId: string, email: string) => send("PUT", `${API}/api/v1/docs/${docId}/access/people/${email}`, KEY_PLUS, undefined, hosts);
+    const sends = async () => (await env.DB.prepare("SELECT COUNT(*) AS n FROM invite_sends").first<{ n: number }>())!.n;
+    // No Email binding: a hundred real adds must not spend the invite email limiter other tests share.
+    const quiet = { ...hosts, EMAIL: undefined, OAUTH_GOOGLE_CLIENT_ID: "id", OAUTH_GOOGLE_CLIENT_SECRET: "secret" } as Partial<Env>;
+    const put = (docId: string, email: string) => send("PUT", `${API}/api/v1/docs/${docId}/access/people/${email}`, KEY_PLUS, undefined, quiet);
+    // 99 recent sends through the API, then the 100th: the cap is reached by real adds.
+    for (let i = 0; i < 99; i += 1) {
+      expect((await put(i % 2 === 0 ? first.docId : second.docId, `a${i}%40acme.com`)).status).toBe(200);
+    }
+    expect((await put(first.docId, "hundredth%40acme.com")).status).toBe(200);
+    expect(await sends()).toBe(100);
     expect((await put(first.docId, "over%40acme.com")).status).toBe(429);
+    // A refused add records nothing.
+    expect(await sends()).toBe(100);
 
-    // The cap bounds the list, not the number of invites ever sent: a removal hands the slot back.
-    expect((await send("DELETE", `${API}/api/v1/docs/${first.docId}/access/people/a0%40acme.com`, KEY_PLUS, undefined, hosts)).status).toBe(200);
-    expect((await put(first.docId, "over%40acme.com")).status).toBe(200);
+    // Removing an invite hands nothing back.
+    expect((await send("DELETE", `${API}/api/v1/docs/${first.docId}/access/people/a0%40acme.com`, KEY_PLUS, undefined, quiet)).status).toBe(200);
+    expect((await put(first.docId, "over%40acme.com")).status).toBe(429);
+    // Re-adding the removed address is a new send, so it is refused too.
+    expect((await put(first.docId, "a0%40acme.com")).status).toBe(429);
+
+    // Neither does unsharing a document.
+    expect((await send("DELETE", `${API}/api/v1/docs/${second.docId}`, KEY_PLUS, undefined, quiet)).status).toBe(204);
     expect((await put(first.docId, "again%40acme.com")).status).toBe(429);
+    expect(await sends()).toBe(100);
+  });
 
-    // So does unsharing the other document.
-    expect((await send("DELETE", `${API}/api/v1/docs/${second.docId}`, KEY_PLUS, undefined, hosts)).status).toBe(204);
-    expect((await put(first.docId, "again%40acme.com")).status).toBe(200);
+  it("records one send per new invite, none for repeats, and prunes the owner's expired rows on the next add", async () => {
+    const doc = await privateDoc();
+    const owner = (await env.DB.prepare("SELECT owner FROM docs WHERE id = ?").bind(doc.docId).first<{ owner: string }>())!.owner;
+    const put = (email: string, body?: unknown) =>
+      send("PUT", `${API}/api/v1/docs/${doc.docId}/access/people/${email}`, KEY_PLUS, body, hosts);
+    const rows = async () =>
+      (await env.DB.prepare("SELECT owner, created_at FROM invite_sends ORDER BY created_at").all<{ owner: string; created_at: number }>()).results;
+    await env.DB.prepare("INSERT INTO invite_sends (owner, created_at) VALUES (?, ?), ('someone-else', ?)")
+      .bind(owner, Date.now() - 86_400_001, Date.now() - 86_400_001)
+      .run();
+
+    expect((await put("a%40acme.com")).status).toBe(200);
+    expect((await put("a%40acme.com")).status).toBe(200);
+    expect((await put("a%40acme.com", { role: "view" })).status).toBe(200);
+
+    const after = await rows();
+    // The owner's expired row is gone, another owner's is untouched, and the owner has exactly one send.
+    expect(after.filter((row) => row.owner === owner)).toHaveLength(1);
+    expect(after.filter((row) => row.owner === "someone-else")).toHaveLength(1);
   });
 });
 

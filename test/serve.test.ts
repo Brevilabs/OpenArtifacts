@@ -1810,6 +1810,9 @@ describe("an invited-only document", () => {
         await env.DB.prepare("INSERT INTO doc_invites (doc_id, email, created_at) VALUES (?, ?, ?)")
           .bind(other.docId, `p${i}@acme.com`, Date.now() - 1000)
           .run();
+        await env.DB.prepare("INSERT INTO invite_sends (owner, created_at) VALUES (?, ?)")
+          .bind(doc.owner, Date.now() - 1000)
+          .run();
       }
       await env.DB.prepare("INSERT INTO doc_access_requests (doc_id, email, created_at) VALUES (?, 'bob@other.com', ?)")
         .bind(doc.docId, Date.now())

@@ -20,6 +20,18 @@ CREATE TABLE doc_invites (
   PRIMARY KEY (doc_id, email)
 );
 
+-- One row per invite an owner has ever added, written in the same batch as the
+-- `doc_invites` row and never touched by removal or unshare. The daily cap on new
+-- invites counts these rows, so it bounds sends and not the list: an owner cannot
+-- loop add and remove past it. `owner` is the document's owner id; the cap reads
+-- every id in the owner's scope. Rows older than the window are pruned by the next
+-- add, so the table stays small. No foreign key: a row must outlive its document.
+CREATE TABLE invite_sends (
+  owner      TEXT    NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX invite_sends_by_owner ON invite_sends (owner, created_at);
+
 -- Pending "Request access" clicks; a row leaves on approve or decline. One row
 -- per document and address, capped like the invite list.
 CREATE TABLE doc_access_requests (
