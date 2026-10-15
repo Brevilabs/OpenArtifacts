@@ -169,7 +169,7 @@ function of the stored version. So comments are a **separate resource**:
 The reader never sees a credential on the document's origin: the frame is on the API
 host in a closed `iframe`, with the token in its own storage, and the highlights are
 painted with `CSS.highlights`, which mutates nothing in the author's DOM. A margin
-needs 300 px free beside the content; otherwise the frame is a bottom sheet, which
+needs 256 px free beside the content; otherwise the frame is a bottom sheet, which
 shows only a focused thread or a draft and not orphaned threads. See
 [http-api.md](http-api.md#the-embed-family-not-part-of-the-client-contract) for the
 frame, its policy and the `postMessage` protocol.

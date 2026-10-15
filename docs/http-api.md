@@ -1026,7 +1026,7 @@ inertly where it cannot: it fetches `/d/{docId}/threads[?v=n]` same-origin, and 
 a `404` does nothing more. Otherwise it adds `💬 N` (open threads) beside **Share**,
 paints highlights with `CSS.highlights` (it never changes the author's DOM), shows a
 **Comment** button over a selection, and embeds the comments frame: in the page's
-margin when at least 300 px are free beside the content, else as a bottom sheet
+margin when at least 256 px are free beside the content, else as a bottom sheet
 shown on a highlight tap or **Comment**. It holds no credential, polls the threads
 resource every 30 seconds while the tab is visible, and learns of the viewer only
 that `canComment` flag.

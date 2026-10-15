@@ -41,13 +41,18 @@
  * **Messages.** To the frame, `{type, event, …}` with the API origin as the
  * target: `threads`, `positions`, `draft`, `focus`, `mode`, `visible`. From it,
  * accepted only from that iframe's window and the API origin: `ready`, `viewer`,
- * `changed`, `focus`, `close`. Nothing in either direction is a credential.
+ * `changed`, `focus`, `close`, and three that are layout only and reveal nothing
+ * beyond `viewer`: `size` (the height the margin's stacked cards need), `height`
+ * (the height of the overlay sheet's content) and `reveal` (where the focused
+ * card sits). Nothing in either direction is a credential.
  *
- * **Margin or overlay.** If the author's content leaves 300px at the right of
- * the viewport the frame is a column there, as tall as the document so it
- * scrolls with the page, and the cards sit at the heights this script reports in
- * document coordinates. Otherwise the frame is a bottom sheet, shown only for a
- * tapped highlight or a new comment.
+ * **Margin or overlay.** If the author's content leaves 256px at the right of
+ * the viewport (the real Copilot export, a 46rem column centred at 1280px, leaves
+ * 272) the frame is a column there, as tall as the document or as its stacked
+ * cards need if that is taller, so it scrolls with the page, and the cards sit at
+ * the heights this script reports in document coordinates. Otherwise, or when the
+ * window is not what scrolls the content, the frame is a bottom sheet that is
+ * only as tall as its card, shown only for a tapped highlight or a new comment.
  */
 export const PAGE_COMMENTS_SCRIPT = String.raw`
   // Comments. See src/comments-scripts.ts.
@@ -64,15 +69,18 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
     let data = null, active = false, shown = true, canComment = true, mode = "margin", polling = false;
     let mhost = null, mframe = null, ready = false, sheet = false, button = null, tipHost = null, tip = null;
     let canon = null, dirty = true, ranges = new Map(), lost = [], draft = null, draftRange = null, focusId = "", timer = 0;
+    let need = 0, sheetH = 0;
     const out = {};
 
     // ---- canonical text ---------------------------------------------------
     const SKIP = ["head", "script", "style", "template", "noscript"];
     const OURS = ["openartifacts-bar", "openartifacts-bar-spacer", "openartifacts-header", "openartifacts-footer"];
     const skipped = (el) => SKIP.includes(el.localName) || OURS.some((name) => el.classList.contains(name));
-    const inChrome = (node) => {
-      for (let n = node; n && n !== document.body; n = n.parentNode) if (n.nodeType === 1 && skipped(n)) return true;
-      return false;
+    // The outermost skipped element at or above a node (below <body>), or null.
+    const outermost = (node) => {
+      let hit = null;
+      for (let n = node; n && n !== document.body; n = n.parentNode) if (n.nodeType === 1 && skipped(n)) hit = n;
+      return hit;
     };
     const normalize = (text) => text.split(CRLF).join(LF).normalize("NFC");
     const build = () => {
@@ -94,9 +102,13 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
     const normOff = (e, k) => (e.same ? k : normalize(e.raw.slice(0, k)).length);
     const rawOff = (e, k) => {
       if (e.same) return k;
-      let r = 0;
-      while (r < e.raw.length && normalize(e.raw.slice(0, r)).length < k) r++;
-      return r;
+      // The smallest raw prefix whose normalised length reaches k; that length never shrinks as the prefix grows, so a search finds it in n log n, not n squared.
+      let lo = 0, hi = e.raw.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (normalize(e.raw.slice(0, mid)).length < k) lo = mid + 1; else hi = mid;
+      }
+      return lo;
     };
     // The entry holding offset off, or with atEnd the one that ends at or after it.
     const entryAt = (off, atEnd) => {
@@ -190,10 +202,16 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
     const capture = () => {
       const sel = window.getSelection();
       if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return null;
-      const range = sel.getRangeAt(0);
+      const live = sel.getRangeAt(0);
+      const range = live.cloneRange();
       if (!document.body.contains(range.commonAncestorContainer)) return null;
-      if (inChrome(range.startContainer) || inChrome(range.endContainer) || inChrome(range.commonAncestorContainer)) return null;
-      if (Array.from(document.body.children).some((el) => skipped(el) && range.intersectsNode(el))) return null;
+      // A drag that starts in a byline or overshoots into the footer, or a triple-click on the last paragraph (which ends at the footer's start), is clamped to the author's side. A selection wholly inside one skipped subtree, or one that still covers our bar (select-all), is refused. Skipped scripts and styles need no refusal: boundary() already maps both ends onto the canonical text, which leaves them out.
+      const cs = outermost(range.startContainer), ce = outermost(range.endContainer);
+      if (cs && cs === ce) return null;
+      if (cs) range.setStartAfter(cs);
+      if (ce) range.setEndBefore(ce);
+      if (range.collapsed) return null;
+      if (Array.from(document.body.children).some((el) => OURS.some((name) => el.classList.contains(name)) && range.intersectsNode(el))) return null;
       if (dirty || !canon) build();
       let a = boundary(range.startContainer, range.startOffset), b = boundary(range.endContainer, range.endOffset);
       if (a < 0 || b < 0) return null;
@@ -207,7 +225,7 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       for (let el = first && first.node.parentElement; el && el !== document.body; el = el.parentElement) {
         if (el.id && el.id.length <= 128) { anchor.section = el.id; break; }
       }
-      return { a: a, b: b, anchor: anchor, rect: range.getClientRects()[range.getClientRects().length - 1] || range.getBoundingClientRect() };
+      return { a: a, b: b, anchor: anchor, rect: live.getClientRects()[live.getClientRects().length - 1] || live.getBoundingClientRect() };
     };
 
     // ---- the frame ----------------------------------------------------------
@@ -235,20 +253,36 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
     };
     const contentRight = () => {
       let right = 0;
+      const vw = viewport().clientWidth;
       for (const el of document.body.children) {
         if (skipped(el)) continue;
         const cs = getComputedStyle(el);
-        if (cs.display === "none" || cs.position === "fixed") continue;
+        if (cs.display === "none") continue;
         const r = el.getBoundingClientRect();
+        // A fixed bar across the whole width says nothing about the column; any other fixed box (a contents list, a sidebar) is content the margin must not cover.
+        if (cs.position === "fixed" && r.left <= 1 && r.right >= vw - 1) continue;
         if (r.width > 0 || r.height > 0) right = Math.max(right, r.right);
       }
       return right;
     };
+    // When the window is not what scrolls the content (an inner overflow container), a passage can be out of the viewport while the window has nothing to scroll: document coordinates mean nothing there.
+    const innerScrolled = () => {
+      const se = document.scrollingElement || document.documentElement;
+      if (se.scrollHeight > window.innerHeight + 1) return false;
+      for (const range of ranges.values()) {
+        const r = range.getBoundingClientRect();
+        if (r.bottom < 0 || r.top > window.innerHeight) return true;
+      }
+      return false;
+    };
     let visible = null;
     const layout = () => {
       const vw = viewport().clientWidth, right = contentRight();
-      const next = vw - right >= 300 ? "margin" : "overlay";
-      if (next !== mode) { mode = next; send({ event: "mode", mode: mode }); }
+      const next = vw - right >= 256 && !innerScrolled() ? "margin" : "overlay";
+      if (next !== mode) { mode = next; need = 0; sheetH = 0; send({ event: "mode", mode: mode }); }
+      // The host is a child of <html>, so an html{zoom} would multiply every length written below; cancel it.
+      const z = document.documentElement.currentCSSZoom || 1;
+      const flat = base + (z !== 1 ? "zoom:" + 1 / z + ";" : "");
       if (!active || !shown) {
         mhost.style.display = "none";
         if (visible !== false) { visible = false; send({ event: "visible", shown: false }); }
@@ -258,11 +292,12 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       if (now !== visible) { visible = now; send({ event: "visible", shown: now }); }
       if (mode === "margin") {
         mhost.style.display = "none";
-        const height = Math.max(document.documentElement.scrollHeight, document.body.scrollHeight);
-        mhost.setAttribute("style", base + "display:block;position:absolute;top:0;left:" + Math.round(right + 16 + window.pageXOffset) + "px;width:" + Math.round(Math.min(320, vw - right - 24)) + "px;height:" + height + "px");
+        // The cards may need more than the document is tall; the host then extends the page, so they can be reached by scrolling it.
+        const height = Math.round(Math.max(document.documentElement.scrollHeight, document.body.scrollHeight) * z);
+        mhost.setAttribute("style", flat + "display:block;position:absolute;top:0;left:" + Math.round(right + 16 + window.pageXOffset) + "px;width:" + Math.round(Math.min(320, vw - right - 24)) + "px;height:" + Math.max(height, need) + "px");
       } else {
         const phone = vw <= 600;
-        mhost.setAttribute("style", base + "position:fixed;bottom:0;height:min(55vh,560px);display:" + (sheet ? "block" : "none") +
+        mhost.setAttribute("style", flat + "position:fixed;bottom:0;height:" + (sheetH ? "min(" + sheetH + "px,55vh,560px)" : "min(55vh,560px)") + ";opacity:" + (unsure && !sheetH ? "0" : "1") + ";display:" + (sheet ? "block" : "none") +
           ";border-radius:18px 18px 0 0;overflow:hidden;background:#f6f2e9;box-shadow:0 -8px 32px rgba(0,0,0,.18),0 0 0 1px rgba(0,0,0,.08);" +
           (phone ? "left:0;right:0" : "right:16px;width:420px;max-width:calc(100vw - 32px);border-radius:18px 18px 0 0"));
       }
@@ -370,16 +405,31 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       window.getSelection().removeAllRanges();
       const top = draftRange.getClientRects()[0] || draftRange.getBoundingClientRect();
       send({ event: "draft", anchor: draft, top: Math.round(top.top + window.pageYOffset - (mhost.getBoundingClientRect().top + window.pageYOffset)) });
-      if (mode === "overlay") openSheet();
+      if (mode === "overlay") { openSheet(); reveal(draftRange); }
       paint();
     };
     const endDraft = () => { draft = null; draftRange = null; send({ event: "draft", anchor: null, top: 0 }); paint(); };
 
     // ---- the overlay sheet --------------------------------------------------
-    const openSheet = () => { sheet = true; layout(); };
+    // The sheet is invisible until the frame has said how tall its card is (or 300ms have passed), so it opens at its size and does not shrink under the reader's finger.
+    let unsure = false;
+    const openSheet = () => {
+      if (!sheet && !sheetH) { unsure = true; window.setTimeout(() => { unsure = false; if (sheet) layout(); }, 300); }
+      sheet = true;
+      layout();
+    };
+    // Scroll the passage out from under the sheet, unless it is already clear of it. Call after openSheet, whose layout sets the height this reads.
+    const reveal = (range) => {
+      if (mode !== "overlay" || !range) return;
+      const rect = range.getBoundingClientRect();
+      const limit = window.innerHeight - mhost.getBoundingClientRect().height - 8;
+      if (rect.top >= 48 && rect.bottom <= limit) return;
+      window.scrollTo({ top: Math.max(0, rect.top + window.pageYOffset - window.innerHeight * 0.15), behavior: "smooth" });
+    };
     const closeSheet = () => {
       if (!sheet) return;
       sheet = false;
+      sheetH = 0;
       focusId = "";
       send({ event: "focus", threadId: "" });
       layout();
@@ -423,15 +473,32 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       window.addEventListener("resize", schedule);
       window.addEventListener("load", schedule);
       window.addEventListener("scroll", () => { if (tipHost && tipHost.style.display === "block") refreshTip(); }, { passive: true });
-      if (window.ResizeObserver) new ResizeObserver(schedule).observe(document.body);
-      if (window.MutationObserver) new MutationObserver((records) => { if (records.some((r) => !link.parentNode.contains(r.target))) { dirty = true; schedule(); } }).observe(document.body, { childList: true, subtree: true, characterData: true });
+      // With html,body{height:100%} the body's own box never changes, so the author's top-level boxes are watched too; a <details> opening, a late image and a class or style flip move text without touching the body.
+      if (window.ResizeObserver) {
+        const watch = new ResizeObserver(schedule);
+        watch.observe(document.body);
+        watch.observe(document.documentElement);
+        for (const el of document.body.children) if (!skipped(el)) watch.observe(el);
+      }
+      if (window.MutationObserver) {
+        new MutationObserver((records) => {
+          const theirs = records.filter((r) => !link.parentNode.contains(r.target));
+          if (!theirs.length) return;
+          if (theirs.some((r) => r.type !== "attributes")) dirty = true;
+          schedule();
+        }).observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ["open", "hidden", "class", "style"] });
+      }
+      document.addEventListener("toggle", schedule, true);
+      document.addEventListener("load", schedule, true);
+      document.addEventListener("scroll", (event) => { if (event.target !== document) schedule(); }, { capture: true, passive: true });
       if (document.fonts && document.fonts.ready) document.fonts.ready.then(schedule);
       let settle = 0;
       document.addEventListener("selectionchange", () => { window.clearTimeout(settle); settle = window.setTimeout(refreshTip, 150); });
       link.addEventListener("click", closeSheet);
       document.addEventListener("keydown", (event) => { if (sheet && event.key === "Escape") { endDraft(); closeSheet(); } }, true);
       document.addEventListener("pointerdown", (event) => {
-        if (sheet && event.target !== mhost && event.target !== tipHost) { if (draft) endDraft(); closeSheet(); }
+        // A draft is the reader's own words and the sheet covers half the page: a touch on the page above it (to scroll back to the passage) must not throw them away. Cancel, the close button, Escape and a post end it.
+        if (sheet && !draft && event.target !== mhost && event.target !== tipHost) closeSheet();
       }, true);
       document.addEventListener("click", (event) => {
         if (!active || !shown || event.button !== 0 || ranges.size === 0) return;
@@ -448,9 +515,10 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
         if (!node || node.nodeType !== 3) return;
         for (const [id, range] of ranges) {
           if (range.isPointInRange(node, offset)) {
+            if (draft) endDraft();
             focusId = id;
             send({ event: "focus", threadId: id });
-            if (mode === "overlay") openSheet();
+            if (mode === "overlay") { openSheet(); reveal(range); }
             paint();
             return;
           }
@@ -473,15 +541,18 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
         } else if (msg.event === "focus" && typeof msg.threadId === "string") {
           focusId = msg.threadId;
           send({ event: "focus", threadId: focusId });
-          if (mode === "overlay") {
-            openSheet();
-            const range = ranges.get(focusId);
-            if (range) {
-              const rect = range.getBoundingClientRect();
-              window.scrollTo({ top: Math.max(0, rect.top + window.pageYOffset - window.innerHeight * 0.15), behavior: "smooth" });
-            }
-          }
+          if (mode === "overlay") { openSheet(); reveal(ranges.get(focusId)); }
           paint();
+        } else if (msg.event === "size" && Number.isFinite(msg.height)) {
+          const n = Math.max(0, Math.min(Math.round(msg.height), 1000000));
+          if (mode === "margin" && n !== need) { need = n; schedule(); }
+        } else if (msg.event === "height" && Number.isFinite(msg.px)) {
+          const n = Math.max(80, Math.min(Math.round(msg.px), 4000));
+          if (n !== sheetH || unsure) { sheetH = n; unsure = false; if (sheet) layout(); }
+        } else if (msg.event === "reveal" && Number.isFinite(msg.top) && Number.isFinite(msg.height)) {
+          if (mode !== "margin" || !shown) return;
+          const t = mhost.getBoundingClientRect().top + msg.top;
+          if (t < 48 || t + msg.height > window.innerHeight) window.scrollTo({ top: Math.max(0, t + window.pageYOffset - window.innerHeight * 0.15), behavior: "smooth" });
         } else if (msg.event === "close") {
           if (draft) endDraft();
           focusId = "";
@@ -518,34 +589,42 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
  */
 export const COMMENTS_FRAME_CSS = `:root{color-scheme:light;font:13px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:#18191d;background:transparent}
 *{box-sizing:border-box}html,body{height:100%;margin:0;background:transparent}
-main{min-height:100%}
+[hidden]{display:none!important}
+html:has(main.margin),html:has(main.margin) body{overflow:hidden}
+main.margin{min-height:100%}
 main.overlay{background:#f6f2e9;padding:6px 14px 18px}
 .cards{position:relative}
 .card{background:#fffdf8;border:1px solid #cbbfa8;border-radius:12px;padding:10px 12px;box-shadow:0 1px 2px rgba(40,30,10,.12),0 14px 28px -20px rgba(40,30,10,.4)}
 .margin .card,.margin .heading{position:absolute;left:4px;right:10px}
 .card.focus{border-color:#16786a;box-shadow:0 0 0 3px #dcf0ea,0 1px 2px rgba(40,30,10,.12)}
-.card.muted{opacity:.8}
+.card.muted{background:#f4f1ea;border-color:#ddd5c4}
+.card.muted .quote{color:#8f8a7e;border-left-color:#ddd5c4}
 .card.resolved{background:#f4f1ea;border-color:#ddd5c4}
-.heading{font:10px/1.4 ui-monospace,"SF Mono",Menlo,Consolas,monospace;letter-spacing:.1em;text-transform:uppercase;color:#6d6a62}
+.heading{font:10px/1.4 ui-monospace,"SF Mono",Menlo,Consolas,monospace;letter-spacing:.1em;text-transform:uppercase;color:#6d6a62;background:#fffdf8;border:1px solid #ddd5c4;border-radius:6px;padding:2px 6px}
+.margin .heading{right:auto}
 .grab{display:flex;align-items:center;justify-content:center;position:relative;height:22px}
 .grab i{width:36px;height:4px;border-radius:2px;background:#cbbfa8}
-.grab button{position:absolute;right:-6px;top:0;border:0;background:none;font-size:20px;line-height:1;color:#6d6a62;cursor:pointer;padding:0 6px}
+.grab .x{position:absolute;right:0;top:0;border:0;background:none;font-size:20px;line-height:1;color:#6d6a62;cursor:pointer;padding:0 6px}
 .quote{font-size:11.5px;color:#6d6a62;border-left:2px solid #cbbfa8;padding-left:7px;margin:0 0 8px;font-style:italic;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
 .where{font-size:11.5px;color:#6d6a62;margin:0 0 6px}
-.who{display:flex;align-items:center;gap:6px;font-weight:700;font-size:12.5px;min-width:0}
-.who small{font-weight:400;color:#6d6a62}
+.who{display:flex;flex-wrap:wrap;align-items:center;gap:2px 6px;font-weight:700;font-size:12.5px;min-width:0}
+.who small{font-weight:400;color:#6d6a62;white-space:nowrap}
 .av{width:20px;height:20px;border-radius:50%;display:inline-grid;place-items:center;font-size:10px;font-weight:700;color:#1b1b1b;background:#9fd6c9;flex:none}
 .av.agent{background:#c9b8f0}
-.badge{font:9.5px/1.4 ui-monospace,"SF Mono",Menlo,Consolas,monospace;letter-spacing:.08em;text-transform:uppercase;padding:1px 6px;border-radius:999px;font-weight:600;background:#fbe3d8;color:#b03d1b}
+.badge{font:9.5px/1.4 ui-monospace,"SF Mono",Menlo,Consolas,monospace;letter-spacing:.05em;text-transform:uppercase;padding:1px 6px;border-radius:999px;font-weight:600;background:#fbe3d8;color:#b03d1b}
+.badge{white-space:nowrap}
 .badge.done{background:#ece7da;color:#6d6a62;border:1px solid #ddd5c4}
+.badge.open{background:#dcf0ea;color:#16786a}
 .txt{margin:3px 0 8px 26px;white-space:pre-wrap;overflow-wrap:anywhere}
-.acts{display:flex;flex-wrap:wrap;gap:12px;margin:0 0 6px 26px;font-size:11.5px;color:#6d6a62}
+.acts{display:flex;flex-wrap:wrap;align-items:center;gap:4px 10px;margin:0 0 6px;font-size:11.5px;color:#6d6a62}
 .acts button,button.link{border:0;background:none;padding:0;font:inherit;color:inherit;cursor:pointer}
 .acts button:hover,button.link:hover{color:#18191d;text-decoration:underline}
+.acts button.danger{color:#b4342b;font-weight:600}
+.who button.link{margin-left:auto;font-weight:400;font-size:11.5px;color:#6d6a62}
 .line{display:flex;align-items:center;gap:6px;width:100%;border:0;background:none;padding:0;font:inherit;font-size:12px;color:#6d6a62;cursor:pointer;text-align:left}
 .line span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 textarea,input{width:100%;font:inherit;border:1px solid #cbbfa8;border-radius:9px;padding:8px 10px;background:#f7f4ec;color:inherit}
-textarea{resize:vertical;min-height:38px}
+textarea{resize:vertical;min-height:34px}
 textarea:focus,input:focus{outline:2px solid #16786a;outline-offset:-1px;background:#fff}
 .btns{display:flex;justify-content:flex-end;gap:8px;margin-top:8px}
 button.b{font:inherit;font-size:12px;font-weight:650;padding:5px 11px;border-radius:8px;border:1px solid #cbbfa8;background:#fffdf8;color:#18191d;cursor:pointer}
@@ -640,6 +719,7 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
   let draft = null, draftTop = 0, focusId = "", loadSeq = 0, lastViewer = null, positionsKey = "";
   let signState = "", prepared = null, opened = null, generation = 0, wake = null;
   let confirming = "", needName = "", nameText = "", pending = null;
+  let modelKey = "", inFlight = false, lastLoad = 0, composing = false, owed = false, stacked = [], sentNeed = -1;
   const expanded = new Set(), texts = {}, errors = {}, busy = {};
 
   const model = () => own || relayed;
@@ -739,10 +819,13 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     return { status: response.status, body: parsed };
   };
   const docPath = (suffix) => "/embed/api/docs/" + doc + suffix;
+  // Ids come from data; one that is not the server's shape never reaches a path.
+  const idOk = (value) => typeof value === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(value);
   const failure = (result) => {
     const error = result.body && result.body.error;
     if (result.status === 401) return "Sign in again to comment.";
     if (result.status === 404) return "This page can’t be commented on.";
+    if (error && error.code === "anchor_not_found") return "That text isn’t in the document itself, perhaps because the page draws it with a script. Select text from the page’s own content. Nothing was posted.";
     return error && typeof error.message === "string" ? error.message : "Something went wrong. Nothing was posted.";
   };
   const reportViewer = () => {
@@ -753,14 +836,24 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
       if (can !== null) post({ event: "viewer", canComment: can });
     }
   };
+  // Draws only when the data changed: a poll that finds nothing new must not rebuild the box someone is typing in.
+  const settle = (next) => {
+    const key = JSON.stringify(next);
+    if (key === modelKey) return false;
+    modelKey = key;
+    return true;
+  };
   const load = async () => {
     const mine = ++loadSeq;
-    if (readToken() === null) { own = null; reportViewer(); render(); return; }
+    if (readToken() === null) { own = null; modelKey = ""; reportViewer(); render(); return; }
+    inFlight = true;
+    lastLoad = Date.now();
     const result = await call("GET", docPath("/threads" + (pinned ? "?v=" + pinned : "")));
     if (mine !== loadSeq) return;
+    inFlight = false;
     own = result.status === 200 && result.body && Array.isArray(result.body.threads) ? result.body : null;
     reportViewer();
-    render();
+    if (settle(own)) render();
   };
 
   // Runs one write, then reloads the cards and tells the page. A human who has no display name yet is asked for it once and the write is retried.
@@ -774,6 +867,7 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     if (result.status >= 200 && result.status < 300) {
       if (done) done(result.body);
       await load();
+      render();
       post({ event: "changed" });
       if (focusId) post({ event: "focus", threadId: focusId });
       return;
@@ -835,15 +929,19 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
       input.value = nameText;
       input.addEventListener("input", () => { nameText = input.value; });
       input.addEventListener("keydown", (event) => { if (event.key === "Enter") saveName(); });
-      return [node("p", { class: "ask" }, ["Add your name so people know who is commenting."]), input, node("div", { class: "btns" }, [button("Save and post", saveName, "b primary")]), errorLine(key)];
+      const back = () => { needName = ""; pending = null; nameText = ""; errors[key] = ""; render(); };
+      input.addEventListener("keydown", (event) => { if (event.key === "Escape") { event.stopPropagation(); back(); } });
+      return [node("p", { class: "ask" }, ["Add your name so people know who is commenting."]), input, node("div", { class: "btns" }, [button("Cancel", back), button("Save and post", saveName, "b primary")]), errorLine(key)];
     }
-    const area = node("textarea", { rows: cancel ? "3" : "2", maxlength: "4000", placeholder: placeholder, "aria-label": placeholder, "data-key": key });
+    const area = node("textarea", { rows: cancel ? "3" : "1", maxlength: "4000", placeholder: placeholder, "aria-label": placeholder, "data-key": key });
     area.value = texts[key] || "";
     const send = button("Post", submit, "b primary");
     const actions = node("div", { class: "btns" }, cancel ? [button("Cancel", cancel), send] : [send]);
+    // The box's height changes when the buttons appear; the card observer re-stacks. Posting takes a click on Post: a keystroke that lands in this frame some other way must never send.
     const sync = () => { send.disabled = area.value.trim() === "" || !!busy[key]; actions.hidden = !cancel && area.value === ""; };
     area.addEventListener("input", () => { texts[key] = area.value; sync(); });
-    area.addEventListener("keydown", (event) => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && !send.disabled) submit(); });
+    area.addEventListener("compositionstart", () => { composing = true; });
+    area.addEventListener("compositionend", () => { composing = false; if (owed) { owed = false; render(); } });
     sync();
     return [area, actions, errorLine(key)];
   };
@@ -855,25 +953,18 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     post({ event: "focus", threadId: id });
   };
 
+  // One comment: who and when (a reply's Delete sits there, after the time), then its text. A first comment's Delete belongs to the thread's action row.
   const commentRow = (thread, comment, index) => {
-    const kids = [who(comment.author, comment.createdAt), node("div", { class: "txt" }, [text(comment.body)])];
-    if (comment.mine) {
-      const id = text(comment.commentId);
-      if (confirming === id) {
-        const first = index === 0;
-        kids.push(node("div", { class: "acts" }, [
-          first ? "Delete this thread?" : "Delete this comment?",
-          button("Delete", () => { confirming = ""; act("c:" + id, () => call("DELETE", docPath("/comments/" + id)), null); }, "link"),
-          button("Keep", () => { confirming = ""; render(); }, "link"),
-        ]));
-      } else {
-        const remove = () => {
-          if (index === 0) { confirming = id; render(); } else act("c:" + id, () => call("DELETE", docPath("/comments/" + id)), null);
-        };
-        kids.push(node("div", { class: "acts" }, [button("Delete", remove, "link")]));
-      }
-      if (errors["c:" + id]) kids.push(errorLine("c:" + id));
+    const w = who(comment.author, comment.createdAt);
+    if (index === 0 && thread.state !== "resolved") w.insertBefore(node("span", { class: "badge open" }, ["open"]), w.querySelector("small"));
+    const id = text(comment.commentId);
+    const kids = [w];
+    // Only the authenticated read may enable a write control: relayed data is the page's, and the page is not trusted.
+    if (own !== null && comment.mine && index > 0 && idOk(id)) {
+      w.append(button("Delete", () => act("c:" + id, () => call("DELETE", docPath("/comments/" + encodeURIComponent(id))), null), "link"));
     }
+    kids.push(node("div", { class: "txt" }, [text(comment.body)]));
+    if (index > 0 && errors["c:" + id]) kids.push(errorLine("c:" + id));
     return kids;
   };
 
@@ -892,21 +983,34 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     }
     const quote = text(thread.anchor && thread.anchor.exact);
     card.append(node("div", { class: "quote" }, [quote]));
-    (Array.isArray(thread.comments) ? thread.comments : []).forEach((comment, index) => card.append(...commentRow(thread, comment, index)));
+    const comments = Array.isArray(thread.comments) ? thread.comments : [];
+    comments.forEach((comment, index) => card.append(...commentRow(thread, comment, index)));
+    const first = comments[0];
+    const firstId = first ? text(first.commentId) : "";
+    const canDelete = own !== null && !!first && first.mine === true && idOk(firstId);
+    const canResolve = own !== null && thread.canResolve === true && idOk(id);
     const acts = [];
-    if (resolved) {
-      acts.push(node("span", { class: "badge done" }, [summary]));
-      if (thread.canResolve) acts.push(button("Reopen", () => act("t:" + id, () => call("POST", docPath("/threads/" + id + "/reopen"), { version: versionOf() || undefined }), null), "link"));
-      if (!alone) acts.push(button("Hide", () => { expanded.delete(id); render(); }, "link"));
-    } else if (thread.canResolve) {
-      acts.push(button("Resolve", () => act("t:" + id, () => call("POST", docPath("/threads/" + id + "/resolve"), { version: versionOf() || undefined }), null), "link"));
+    if (canDelete && confirming === firstId) {
+      acts.push("Delete this thread?",
+        button("Delete", () => { confirming = ""; act("c:" + firstId, () => call("DELETE", docPath("/comments/" + encodeURIComponent(firstId))), null); }, "link danger"),
+        button("Keep", () => { confirming = ""; render(); }, "link"));
+    } else {
+      if (resolved) {
+        acts.push(node("span", { class: "badge done" }, [res ? "Resolved in v" + res.atVersion : "Resolved"]));
+        if (canResolve) acts.push(button("Reopen", () => act("t:" + id, () => call("POST", docPath("/threads/" + encodeURIComponent(id) + "/reopen"), { version: versionOf() || undefined }), null), "link"));
+        if (!alone) acts.push(button("Hide", () => { expanded.delete(id); render(); }, "link"));
+      } else if (canResolve) {
+        acts.push(button("Resolve", () => act("t:" + id, () => call("POST", docPath("/threads/" + encodeURIComponent(id) + "/resolve"), { version: versionOf() || undefined }), null), "link"));
+      }
+      if (canDelete) acts.push(button("Delete", () => { confirming = firstId; render(); }, "link"));
     }
     if (acts.length) card.append(node("div", { class: "acts" }, acts));
     if (errors["t:" + id]) card.append(errorLine("t:" + id));
-    if (!resolved) {
+    if (firstId && errors["c:" + firstId]) card.append(errorLine("c:" + firstId));
+    if (!resolved && idOk(id)) {
       const reply = () => {
         const body = (texts["r:" + id] || "").trim();
-        if (body) act("r:" + id, () => call("POST", docPath("/threads/" + id + "/comments"), { body: body, version: versionOf() || undefined }), () => { texts["r:" + id] = ""; });
+        if (body) act("r:" + id, () => call("POST", docPath("/threads/" + encodeURIComponent(id) + "/comments"), { body: body, version: versionOf() || undefined }), () => { texts["r:" + id] = ""; });
       };
       card.append(...writer("r:" + id, "Reply…", reply, null));
     }
@@ -924,7 +1028,10 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
   const draftCard = () => {
     const card = node("div", { class: "card focus", "data-thread": "" });
     const name = titleOf();
-    card.append(node("p", { class: "where" }, [name ? "Comment on “" + name + "”" : "New comment"]), node("div", { class: "quote" }, [text(draft.exact)]));
+    card.append(node("p", { class: "where" }, [name ? "Comment on “" + name + "”" : "New comment"]));
+    const v = viewer();
+    if (v && text(v.name) !== "") card.append(who({ name: v.name, kind: "human" }));
+    card.append(node("div", { class: "quote" }, [text(draft.exact)]));
     const submit = () => {
       const body = (texts.draft || "").trim();
       const snapshot = draft;
@@ -943,7 +1050,7 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
 
   const threadsOf = () => {
     const m = model();
-    return m && Array.isArray(m.threads) ? m.threads.filter((t) => t && typeof t === "object" && typeof t.threadId === "string") : [];
+    return m && Array.isArray(m.threads) ? m.threads.filter((t) => t && typeof t === "object" && typeof t.threadId === "string" && (own === null || idOk(t.threadId))) : [];
   };
 
   const renderMargin = () => {
@@ -965,17 +1072,32 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     flow.sort((a, b) => a.want - b.want);
     const all = items.concat(flow);
     cards.replaceChildren(...all.map((item) => item.el));
+    stacked = all;
+    restack();
+    if (sizes) for (const item of all) sizes.observe(item.el);
+  };
+
+  // Lay the cards out by their wants, each pushed below the one before it, and tell the page how tall that needs the column to be (it can then extend the document, so the last card is reached by scrolling the page, never the frame). Run again whenever a card's height changes: a reply box dragged taller, the Post row appearing on the first keystroke.
+  const restack = () => {
     let floor = BAR;
-    for (const item of all) {
+    for (const item of stacked) {
       const top = Math.max(item.want, floor);
       item.el.style.top = top + "px";
       floor = top + item.el.offsetHeight + item.gap;
     }
     cards.style.height = Math.max(height, floor) + "px";
+    const need = Math.ceil(floor);
+    if (need !== sentNeed) { sentNeed = need; post({ event: "size", height: need }); }
   };
+  const sizes = window.ResizeObserver ? new ResizeObserver(() => {
+    if (mode === "margin" && stacked.length) restack();
+    else if (mode === "overlay") reportSheet();
+  }) : null;
+  // The sheet is as tall as its card, up to the page's cap, so it reports the content's height.
+  const reportSheet = () => post({ event: "height", px: Math.ceil(main.scrollHeight) });
 
   const renderOverlay = () => {
-    const close = button("×", () => { if (draft) cancelDraft(); else post({ event: "close" }); }, "");
+    const close = button("×", () => { if (draft) cancelDraft(); else post({ event: "close" }); }, "x");
     close.setAttribute("aria-label", "Close");
     const kids = [node("div", { class: "grab" }, [node("i"), close])];
     if (draft) kids.push(draftCard());
@@ -991,7 +1113,10 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     const active = document.activeElement;
     const key = active && active.dataset ? active.dataset.key : undefined;
     const from = key !== undefined && typeof active.selectionStart === "number" ? [active.selectionStart, active.selectionEnd] : null;
+    if (composing) { owed = true; return; }
     main.className = mode;
+    if (sizes) sizes.disconnect();
+    stacked = [];
     try {
       if (!shown || (mode === "overlay" && !draft && !focusId)) cards.replaceChildren();
       else if (mode === "overlay") renderOverlay();
@@ -1001,7 +1126,11 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     }
     if (key !== undefined) {
       const again = Array.from(cards.querySelectorAll("[data-key]")).find((element) => element.dataset.key === key);
-      if (again) { again.focus(); if (from) again.setSelectionRange(from[0], from[1]); }
+      if (again) { again.focus({ preventScroll: true }); if (from) again.setSelectionRange(from[0], from[1]); }
+    }
+    if (mode === "overlay" && cards.firstChild) {
+      if (sizes) sizes.observe(main);
+      reportSheet();
     }
   };
 
@@ -1013,13 +1142,18 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     if (msg === null || typeof msg !== "object" || msg.type !== NS) return;
     if (msg.event === "mode") {
       mode = msg.mode === "overlay" ? "overlay" : "margin";
+      sentNeed = -1;
       render();
     } else if (msg.event === "visible") {
       shown = msg.shown !== false;
       render();
     } else if (msg.event === "threads") {
       relayed = msg.data && typeof msg.data === "object" && Array.isArray(msg.data.threads) ? msg.data : null;
-      if (readToken() !== null) load(); else render();
+      // The page is not trusted to trigger reads: a flood of these is one read at most every few seconds, and none while one is under way.
+      if (readToken() !== null) {
+        if (!inFlight && Date.now() - lastLoad > 5000) load();
+        else if (own === null) render();
+      } else if (settle(relayed)) render();
     } else if (msg.event === "positions") {
       const next = msg.tops && typeof msg.tops === "object" ? msg.tops : {};
       const key = JSON.stringify([next, msg.lost, msg.height]);
@@ -1037,9 +1171,8 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
         draftTop = typeof msg.top === "number" ? msg.top : 0;
         texts.draft = "";
         errors.draft = "";
+        // No focus() here: a page message must never move focus into this frame, or any page on the shared serving origin could capture the reader's keystrokes. The reader clicks into the box.
         render();
-        const area = cards.querySelector("textarea");
-        if (area) area.focus();
       } else if (draft) {
         draft = null;
         render();
@@ -1047,7 +1180,15 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     } else if (msg.event === "focus") {
       focusId = typeof msg.threadId === "string" ? msg.threadId : "";
       if (mode === "overlay") render();
-      else for (const element of cards.querySelectorAll("[data-thread]")) element.classList.toggle("focus", element.dataset.thread === focusId);
+      else {
+        let target = null;
+        for (const element of cards.querySelectorAll("[data-thread]")) {
+          const on = element.dataset.thread === focusId && focusId !== "";
+          element.classList.toggle("focus", on);
+          if (on) target = element;
+        }
+        if (target) post({ event: "reveal", top: target.offsetTop, height: target.offsetHeight });
+      }
     }
   });
   document.addEventListener("keydown", (event) => {
