@@ -416,7 +416,7 @@ export function prepareComments(action, extra) {
     const states = ["--open", "--resolved", "--all"].filter((flag) => flags.has(flag));
     if (states.length > 1) throw new Error(HELP);
     const since = flags.get("--since");
-    if (since !== undefined && (!since || Number.isNaN(Date.parse(since)))) {
+    if (since !== undefined && (!/^\d{4}-\d{2}-\d{2}/.test(since) || Number.isNaN(Date.parse(since)))) {
       throw new Error("--since must be a date such as 2026-10-14T09:00:00Z.");
     }
     // The CLI names the state it wants rather than leaning on the server's default.
@@ -580,7 +580,10 @@ export async function main(args) {
       // Not yours to read, deleted, comments off for a non-owner, and a server that
       // predates comments all answer 404, and the CLI cannot tell them apart.
       if (error instanceof APIError && error.status === 404) {
-        error.message = "Not found, or this server does not support comments.";
+        // `name` has no document: its 404 is either a missing route (a server without comments) or the
+        // server's own "no account to name, sign in to link one", which the user must be told.
+        if (comments.action !== "name") error.message = "Not found, or this server does not support comments.";
+        else if (!/Sign in to link/.test(error.message)) error.message = "This server does not support comments.";
       }
       throw error;
     }

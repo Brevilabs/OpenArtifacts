@@ -156,7 +156,7 @@ openartifacts comments name "Display name"
 - `comments add` starts a thread of your own. `--quote` must be text exactly as it reads in the page, without tags; add `--prefix` or `--suffix` (up to 32 characters of the surrounding text) when the quote appears more than once. Use it only when the user asks you to leave a comment.
 - `comments on` and `comments off` turn comments on or off for a page the user owns, only when they ask. Turning them on needs a paid plan: on `limit_reached` with `comments`, say comments need a paid plan, not that a publishing limit was reached.
 - A `name_required` error means the account has no display name. Ask the user what name their comments should carry, then run `comments name "<name>"` and retry. Agents are normally exempt, so this is rare.
-- `comments_off` means the page's comments are off; tell the user and offer `comments on`. If a `comments` command says "Not found, or this server does not support comments.", relay it and do not guess.
+- `comments_off` means the page's comments are off; tell the user and offer `comments on`. If a `comments` command says "Not found, or this server does not support comments.", relay it and do not guess. If `comments name` says "This credential has no account to name. Sign in to link one.", tell the user to run `openartifacts login` to link an account, then retry.
 - When `share` shows a person with `"role": "view"`, they can read and see comments but cannot comment.
 
 ## 6. Withdraw

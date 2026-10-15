@@ -191,7 +191,7 @@ test("publish reads only HTML files and parses its options before authentication
 
 async function publishingServer() {
   const requests = [];
-  const control = { staleUpdates: false, missingDeletes: false, privateDocs: true, comments: true };
+  const control = { staleUpdates: false, missingDeletes: false, privateDocs: true, comments: true, unlinked: false };
   const server = createServer((request, response) => {
     let body = "";
     request.setEncoding("utf8");
@@ -212,6 +212,12 @@ async function publishingServer() {
           people: [{ email: "alice@acme.com", role: "comment", addedAt: 1 }],
           requests: [{ email: "bob@other.com", requestedAt: 2 }],
         }));
+        return;
+      }
+      // A license key with no linked account cannot name anyone.
+      if (control.unlinked && request.method === "PUT" && request.url === "/api/v1/account") {
+        response.statusCode = 404;
+        response.end(JSON.stringify({ error: { code: "not_found", message: "This credential has no account to name. Sign in to link one." } }));
         return;
       }
       // A Worker that predates comments has none of these routes.
@@ -770,6 +776,23 @@ test("comments name a missing resource the same way whatever the reason", async 
   } finally {
     remote.server.close();
   }
+});
+
+test("comments name keeps the server's answer for a key with no linked account", async () => {
+  const remote = await publishingServer();
+  remote.control.unlinked = true;
+  try {
+    await withEnvironment({
+      OPENARTIFACTS_CONFIG_DIR: await mkdtemp(join(tmpdir(), "openartifacts-comments-name-")),
+      OPENARTIFACTS_API_HOST: remote.host,
+      OPENARTIFACTS_TOKEN: "opaque-test-token",
+    }, async () => {
+      await assert.rejects(main(["comments", "name", "Alice"]), /Sign in to link one/);
+    });
+  } finally {
+    remote.server.close();
+  }
+  assert.throws(() => prepareComments("list", [DOC, "--since", "October 14, 2026"]), /--since must be a date/);
 });
 
 test("share --role sets the role of the people added in the same call", async () => {
