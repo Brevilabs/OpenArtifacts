@@ -18,7 +18,7 @@ The surfaces:
 | Private serving | `/d/*` on `{label}.openartifacts.site` | grant cookie | One publisher's invited-only documents per origin. Sets one read-only grant cookie. See [Private documents](#private-documents). |
 | Reader | `/open/*` (`GET`, and `POST /open/{docId}/request`), `/signin/*`, `/share/*`, `/embed/sign-in` | session | Human-facing HTML pages on the API host: sign in, the door a private document opens through, requesting access, the share page, and the Share popover's sign-in popup. Not a client surface. |
 | Embed | `/embed/page.js`, `/embed/share`, `/embed/sign-in`, `/embed/token`, `/embed/api/*` | none, the session (sign-in only) or the popover token | The top bar's page script, the Share popover frame, its sign-in popup and the routes the frame calls, on the API host. Not a client surface. See [The top bar, the Share popover and the share page](#the-top-bar-the-share-popover-and-the-share-page). |
-| Comments | `/api/v1/docs/{docId}/threads…`, `/d/{docId}/threads`, `/embed/api/docs/{docId}/threads…` | token, none, or the popover token | Inline comments: the agent routes, the unauthenticated threads resource on the serving origin, and the JSON a browser frame would call. See [Comments](#comments). |
+| Comments | `/api/v1/docs/{docId}/threads…`, `/d/{docId}/threads`, `/embed/comments`, `/embed/api/docs/{docId}/threads…` | token, none, or the popover token | Inline comments: the agent routes, the unauthenticated threads resource on the serving origin, and the frame and its JSON. See [Comments](#comments). |
 | Approval | `/approve/*` | none | Human-facing. HTML pages on the API host. Not a client surface. |
 | Device | `/device/*` | none | How a client with no credential gets one. JSON, on the API host. |
 
@@ -674,7 +674,7 @@ stale-while-revalidate=86400`, an `ETag` (`If-None-Match` answers `304`),
 **Its address is permanent**: pinned `/v{n}` pages are served `immutable` for a
 year and carry the tag, so the path never moves or changes meaning, and a fix to
 the script reaches pages through that cache lifetime. It turns **Share** into a
-popover and does nothing else. It holds no credential and reads no cookie or
+popover and, where comments are available, runs the comments margin (see [Comments](#comments)). It holds no credential and reads no cookie or
 storage. Where a page's own policy blocks it, or scripts do not run, **Share** is
 still the plain link to the share page.
 
@@ -786,7 +786,7 @@ and the reasons.
 Durable Object binding, none of it exists.** Every route under a document in this
 section answers `404 not_found` (the document routes are part of the
 private-sharing family, so they need reader sign-in as well), so does
-`PUT /api/v1/account`, and the threads resource answers `404`. A client
+`PUT /api/v1/account`, the threads resource answers `404`, the frame is absent, and the page script adds no button. A client
 shows "Not found, or this server does not support comments."
 
 ### The routes
@@ -896,7 +896,7 @@ compute the anchors for that version, `404` if it does not exist). A bad `state`
 `since` or `v` is `400 bad_request`. Anchors are computed once per thread and
 version and then remembered, so an old version costs one pass.
 
-The authenticated variants (this API, and the embed API with a token) add
+The authenticated variants (this API, and the frame's with a token) add
 `"viewer": {"canComment", "canManage", "name"}` at the top, `"canResolve"` on each
 thread and `"mine"` on each comment. The unauthenticated variant on the serving
 origin carries none of them.
@@ -938,7 +938,7 @@ order. A write refused at steps 1 to 5 never spends the rate limit:
 4. The owner's plan has comments: else `402 limit_reached` (`limit: "comments"`) to
    the owner and `404` to everyone else.
 5. A person has a display name: else `409 name_required`. Agents are exempt, being
-   named after their account. `PUT /api/v1/account` (or `PUT /embed/api/account`)
+   named after their account. `PUT /api/v1/account` (or the frame's equivalent)
    sets it: trimmed, 1 to 64 characters, no control characters, else `400`.
 6. The rate limit.
 
@@ -979,7 +979,8 @@ GET|HEAD https://{label}.openartifacts.site/d/{docId}/threads[?v={n}]    an invi
 ```
 
 The same `Threads` JSON, unauthenticated: no `viewer`, `canResolve` or `mine`, and
-the same bytes for every reader. It is what an agent can fetch without a credential for a public
+the same bytes for every reader. It is what the page script reads to paint
+highlights, and what an agent can fetch without a credential for a public
 document. It counts no view, is `Cache-Control: no-store`, `Content-Type:
 application/json`, carries the full serving header policy, and never sets a cookie
 on the apex.
@@ -994,19 +995,31 @@ on the apex.
   that does not exist are `404`; a deleted document is `410`, decided before the
   version so `?v=` cannot tell a deleted document from one that never had it.
 
-### The embed API (not part of the client contract)
+### The embed family (not part of the client contract)
 
-The remainder is for a browser frame, documented because it is on the wire. No
-page draws such a frame yet; see [What is not built](comments.md#what-is-not-built).
+The remainder is for people in a browser, documented because it is on the wire.
 
-**The embed JSON.** The same operations under the Share popover's token:
+**The comments frame.** `GET https://{API host}/embed/comments?doc={docId}&origin=…[&v={n}]`
+is what draws the cards, in an `iframe` on the API host, like the Share popover and
+for the same reason: the token it writes with must never be on a page whose
+scripts the author writes. It is built exactly as the popover's frame is: one shell
+for every id and every viewer carrying only the id and the embedder's origin, a
+policy `default-src 'none'; script-src <hash>; style-src 'unsafe-inline'; img-src
+data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors
+<origin>` naming its one script by hash, `no-store`, `Referrer-Policy:
+same-origin`, no cookie, no `Access-Control-Allow-*` and no `X-Frame-Options`.
+`frame-ancestors` is the document's own serving origin when `origin` equals it, and
+`'none'` for an unknown or deleted id or any other origin. It is absent (`404`)
+where `COMMENTS` is unbound or reader sign-in is not configured.
+
+**The frame's JSON.** The same operations under the Share popover's token:
 
 ```http
 GET    /embed/api/docs/{docId}/threads?state=&since=&v=      the token is optional
 POST   /embed/api/docs/{docId}/threads
 POST   /embed/api/docs/{docId}/threads/{threadId}/comments | resolve | reopen
 DELETE /embed/api/docs/{docId}/comments/{commentId}
-PUT    /embed/api/docs/{docId}/settings                      the comments switch
+PUT    /embed/api/docs/{docId}/settings                      the Share popover's switch
 PUT    /embed/api/account                                    the display name
 ```
 
@@ -1022,9 +1035,52 @@ serving origin, `404` for a document only an invited person can read. A token th
 is present but wrong is `401`, never quietly anonymous. There is no CORS and no
 cookie.
 
-The Share popover's `PUT …/access/people/{email}` also takes `{"role": "view" |
-"comment"}` (as `PUT /api/v1/docs/{docId}/access/people/{email}` does), and its
-owner view carries `"comments": true | false`, left out where `COMMENTS` is unbound.
+**The page script's comment half.** `/embed/page.js` also does the following,
+inertly where it cannot: it fetches `/d/{docId}/threads[?v=n]` same-origin, and on
+a `404` does nothing more. Otherwise it adds `💬 N` (open threads) beside **Share**,
+paints highlights with `CSS.highlights` (it never changes the author's DOM), shows a
+**Comment** button over a selection, and embeds the comments frame: in the page's
+margin when at least 256 px are free beside the content, else as a bottom sheet
+shown on a highlight tap or **Comment**. It holds no credential, polls the threads
+resource every 30 seconds while the tab is visible, and learns of the viewer only
+that `canComment` flag.
+
+**The messages.** All are `postMessage` objects `{type: "openartifacts:comments",
+event, …}`. The page sends to the frame with the API origin as `targetOrigin`; the
+frame sends to its parent. Each side accepts only the other window, and the page
+also checks the origin.
+
+| Direction | `event` | Payload |
+| --- | --- | --- |
+| page → frame | `mode` | `{mode: "margin" \| "overlay"}` |
+| page → frame | `visible` | `{shown}`: the margin is shown or the sheet is open |
+| page → frame | `threads` | `{data, version}`: the threads resource JSON |
+| page → frame | `positions` | `{tops, lost, height}`: each placed thread's top in document coordinates, the ids it could not place, and the document height |
+| page → frame | `draft` | `{anchor \| null, top}`: a selection awaiting its comment |
+| page → frame | `focus` | `{threadId}` (empty clears) |
+| frame → page | `ready` | none |
+| frame → page | `viewer` | `{canComment}`, only after an authenticated read |
+| frame → page | `changed` | none: refetch now |
+| frame → page | `focus` | `{threadId}` |
+| frame → page | `close` | none: hide the sheet or cancel the draft |
+| frame → page | `size` | `{height}`: how tall the margin's stacked cards need the column to be (margin mode) |
+| frame → page | `height` | `{px}`: the height of the overlay sheet's content (overlay mode) |
+| frame → page | `reveal` | `{top, height}`: where the focused card sits in the margin, so the page can scroll it into view |
+
+A hostile page on the document's own serving origin can embed the frame and so
+learn, from `viewer`, whether this visitor holds a token for the document and may
+comment. The layout messages (`size`, `height`, `reveal`) carry only heights, but
+those depend on what the frame draws for this visitor, so the page can also infer
+whether they may resolve a thread, whether a comment is theirs and whether they
+have set a display name. It learns nothing else about them, and no message in
+either direction carries a credential.
+
+**Signing in.** The frame's **Sign in to comment** runs the Share popover's flow
+(`/embed/sign-in`, `POST /embed/token`) and keeps the token under the same storage
+key, so one sign-in serves both frames. The Share popover's owner view gains a
+**Comments** switch (`PUT …/settings`) and a **Can view / Can comment** select on
+each person (`PUT …/access/people/{email}` with `{role}`), and the share page the
+same two controls as forms; neither is drawn where `COMMENTS` is unbound.
 
 ### Old clients
 

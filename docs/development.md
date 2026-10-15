@@ -122,8 +122,30 @@ a frame or a popup. The browser test does:
 ```bash
 npm run test:browser   # Node 22 and Google Chrome
 OA_HEADED=1 npm run test:browser             # watch it
-OA_SCREENSHOTS=/some/dir npm run test:browser # bar.png, popover-signed-out.png, popover-owner.png, popover-private.png
+OA_SCREENSHOTS=/some/dir npm run test:browser # bar.png, popover-*.png, and the comments shots
 ```
+
+`npm run test:browser` runs three files, one after the other (`--test-concurrency=1`):
+`test/share-popover.browser.mjs`, `test/comments.browser.mjs` and
+`test/comments-e2e.browser.mjs`. All need Google
+Chrome installed (they drive the machine's own through `playwright-core`; nothing
+is downloaded). `OA_HEADED=1` shows the window and `OA_SCREENSHOTS=dir` writes
+screenshots to `dir` (the comments test writes the margin, the draft card, a
+resolved and an orphaned thread, the Can-view reader, the phone bottom sheet and
+the popover's Comments switch). The comments test uses the same harness plus the
+`COMMENTS` Durable Object binding, and covers selecting and posting through the
+frame after a real sign-in, card placement, highlights that leave the author's DOM
+untouched, the bar's count and toggle, the narrow-viewport sheet, and an orphaned
+thread after a version without its text.
+
+`test/comments-e2e.browser.mjs` is the whole story in twelve ordered steps (each
+relies on the one before): the owner and the owner's agent drive the real
+`openartifacts` CLI code in-process against the Worker, and Alice, Bob, a
+stranger, a signed-out reader, a Free-plan owner and a phone drive Chrome, from
+publishing a private page and turning Comments on, through a comment, a reply and
+a resolve across versions, to the unshare. Its Worker is wrapped so the `EMAIL`
+binding hands each message to the test, which asserts who was told and what the
+email carried.
 
 `test/share-popover.browser.mjs` bundles the Worker (`wrangler deploy --dry-run`)
 and runs it under Miniflare over HTTPS with real D1 and R2 and no `upstream`, so
@@ -144,7 +166,7 @@ cookies, CSP, `frame-ancestors`, the opener policy), so the test never uses
 ## Comments locally
 
 Like private sharing, comments need reader sign-in, so `npm run dev` does not
-expose them: the document routes and the threads resource answer `404`
+expose them: the document routes, the frame and the threads resource answer `404`
 (and so does the account route `PUT /api/v1/account`, since a display name exists only for comments). The Durable Object
 itself runs under `wrangler dev` and in the tests, which hold the real
 `DocComments` class: `test/comments-anchor.test.ts` (pure anchoring),
