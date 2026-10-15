@@ -178,14 +178,19 @@ export const POPUP_DONE_SCRIPT = String.raw`(function () {
 
 /**
  * The popover frame's stylesheet (`src/embed.ts` puts it in the shell). The
- * frame fills the popover's fixed height; `main` scrolls when an owner's lists
- * are long, and `.foot` with the account line after it sits at the bottom, so
- * the short views read as a dialog rather than a clipped list. Flex items do not
+ * frame fills the popover's fixed height, whatever it shows: nothing here sizes
+ * the popover to its content. `main` scrolls when an owner's lists are long. On
+ * the short views `.foot` follows the last line, so the spare room falls below it
+ * inside the panel rather than as a gap above the actions. Flex items do not
  * collapse margins, so spacing is adjusted in the margins, not the structure.
+ * Children of `main` never shrink: an `overflow:hidden` item such as `.seg` has
+ * no content minimum, so it would squash to a line and the footer would be
+ * clipped instead of `main` scrolling.
  */
 export const FRAME_CSS = `:root{color-scheme:light;font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:#1f1f1f;background:#fff}
 *{box-sizing:border-box}html,body{height:100%}body{margin:0}
 main{height:100%;overflow:auto;display:flex;flex-direction:column;padding:16px}
+main>*{flex-shrink:0}
 header{display:flex;align-items:flex-start;gap:8px;margin:0 0 8px}
 h1{flex:1;min-width:0;margin:0;font-size:15px;font-weight:600;overflow-wrap:anywhere}
 h2{margin:16px 0 6px;font-size:12px;font-weight:600;color:#666}
@@ -202,7 +207,7 @@ input{font:inherit;flex:1;min-width:0;padding:6px 10px;border:1px solid #d0d0d0;
 ul{list-style:none;margin:0;padding:0}
 li{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 0;border-top:1px solid #eee}
 li span{min-width:0;overflow-wrap:anywhere}li small{display:block;color:#666}
-.foot{display:flex;justify-content:flex-end;margin-top:auto;padding-top:12px}
+.foot{display:flex;justify-content:flex-end;margin-top:12px}
 `;
 
 /**

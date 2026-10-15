@@ -261,6 +261,11 @@ window.setInterval(() => { if (document.activeElement !== document.body) window.
   await signIn.waitFor();
   assert.equal(await frame.evaluate(() => window.isSecureContext), true);
   await shoot(page, "popover-signed-out");
+  // A short view is a compact panel: Copy link follows the last line of text
+  // instead of being pushed to the bottom of the fixed-height popover.
+  const sentence = await frame.getByText("Only the owner can change who can open this.").boundingBox();
+  const copyLink = await frame.getByRole("button", { name: "Copy link" }).boundingBox();
+  assert.ok(copyLink.y - (sentence.y + sentence.height) < 40, `Copy link sits ${copyLink.y - (sentence.y + sentence.height)}px below the line above it`);
 
   // 3. Sign in to manage opens the popup, which sees the owner's session through
   //    the browser's own Sec-Fetch-Site and cookie. A 400 here would mean the
@@ -690,6 +695,44 @@ async function ownerFrame(context, docId) {
   await frame.getByRole("radio", { name: "Only those invited" }).waitFor();
   return { page, frame };
 }
+
+test("an owner view taller than the popover scrolls instead of squashing its controls", { timeout: 120_000 }, async () => {
+  // The frame is a fixed 480px tall. With a request and a dozen invitees the owner
+  // view is far taller, and `main` has to scroll: flex children that shrink would
+  // flatten the Link access control to a line and clip Copy link off the bottom.
+  const X = await publish("Crowded", "<p>Mine.</p>");
+  for (let n = 0; n < 12; n++) {
+    assert.equal((await api(`/api/v1/docs/${X}/access/people/${encodeURIComponent(`person${n}@example.com`)}`, { method: "PUT", body: "{}" })).status, 200);
+  }
+  await db.prepare("INSERT INTO doc_access_requests (doc_id, email, created_at) VALUES (?, 'carol@example.org', ?)").bind(X, Date.now()).run();
+
+  const context = await newContext(OWNER_ACCOUNT);
+  const { page, frame } = await ownerFrame(context, X);
+  await frame.getByText("carol@example.org").waitFor();
+  await shoot(page, "popover-crowded");
+  const radios = frame.getByRole("radio", { name: "Only those invited" });
+  const group = frame.getByRole("radiogroup", { name: "Link access" });
+  const groupBox = await group.boundingBox();
+  const radioBox = await radios.boundingBox();
+  assert.ok(groupBox.height > 20 && groupBox.height >= radioBox.height, `Link access is ${groupBox.height}px tall beside buttons ${radioBox.height}px tall`);
+
+  const main = await frame.evaluate(() => {
+    const element = document.querySelector("main");
+    return { scrollHeight: element.scrollHeight, clientHeight: element.clientHeight };
+  });
+  assert.ok(main.scrollHeight > main.clientHeight, `main overflows (${main.scrollHeight} > ${main.clientHeight}) and so has to scroll`);
+
+  const copy = frame.getByRole("button", { name: "Copy link" });
+  await copy.evaluate((element) => element.scrollIntoView({ block: "end" }));
+  const copyBox = await copy.boundingBox();
+  const view = await frame.evaluate(() => ({ height: window.innerHeight }));
+  const frameBox = await (await frame.frameElement()).boundingBox();
+  assert.ok(
+    copyBox.y >= frameBox.y && copyBox.y + copyBox.height <= frameBox.y + view.height + 1,
+    `Copy link (y ${copyBox.y}..${copyBox.y + copyBox.height}) is inside the frame (y ${frameBox.y}..${frameBox.y + view.height}) once main is scrolled to the bottom`,
+  );
+  await context.close();
+});
 
 test("a stale frame whose pre-write read fails does not write", { timeout: 180_000 }, async () => {
   const X = await publish("Read fails", "<p>Mine.</p>");
