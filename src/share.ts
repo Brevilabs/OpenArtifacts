@@ -2,7 +2,7 @@
  * The share page: where an owner manages who can open one document.
  *
  * ```
- * GET  /share/{docId}   the dialog, for a signed-in owner
+ * GET  /share/{docId}   the dialog for a signed-in owner; Copy link for any other reader
  * POST /share/{docId}   one write: op=link | add | remove | decline
  * ```
  *
@@ -13,8 +13,19 @@
  * scripts do not run), from the request email, and from `share` output. The
  * document's origin can never see the owner's session, so the page cannot know
  * on the document whether its viewer is the owner; the link is therefore the
- * same for everyone, and a reader who follows it gets sign-in and then the same
- * not-available page `/open` shows.
+ * same for everyone, and the page decides who is looking.
+ *
+ * **Who sees what.** The owner gets the dialog. Anyone else who may already read
+ * the document gets its title, a sentence saying only the owner can change who
+ * can open it, and **Copy link**: a visitor with no session to a public document
+ * (the title and url are what anyone holding the link has), and a signed-in
+ * reader of a public or invited-only one. A visitor to anything else, whether
+ * invited-only, unknown or deleted, gets the manage sign-in page, the same bytes
+ * for all three, so the page tells a stranger nothing about an id. A signed-in
+ * account that can neither manage nor read gets the not-available page `/open`
+ * shows, never `403`. `?signin` asks a visitor to a public document for the
+ * sign-in page, which is where **Is this your page? Sign in to manage** leads;
+ * like `?notice`, it only selects a page.
  *
  * **It writes through the same operations as `/api/v1`** (`api/access.ts`), with
  * the session account as the principal, so the plan gate, the invite email,
@@ -42,7 +53,8 @@ import {
 import { readSmallForm } from "./approval/handler.js";
 import type { Publisher } from "./auth.js";
 import { MAX_INVITES_PER_DOC, MAX_NEW_INVITES_PER_OWNER_PER_DAY, type Env } from "./config.js";
-import { accountEmail } from "./db.js";
+import { accountEmail, findReadableDoc } from "./db.js";
+import { COPILOT_HINT } from "./embed-scripts.js";
 import { emailConfigured } from "./email.js";
 import { accountPlan } from "./entitlement.js";
 import { sameOriginPost } from "./limits.js";
@@ -55,6 +67,7 @@ import {
   READER_NOT_FOUND,
   readerPage,
   SHARE_PREFIX,
+  useAnotherAccount,
 } from "./reader-pages.js";
 import { signIn } from "./reader.js";
 import { parseDocPath } from "./serve.js";
@@ -90,6 +103,31 @@ function sharePolicy(): Promise<string> {
   return scriptPolicy;
 }
 
+/**
+ * The page's styles, shared by the owner's dialog and the reader's view so the
+ * Copy link section looks the same on both. The dialog-only rules (lists,
+ * radio choices, the add row) cost the reader view a few unused bytes.
+ */
+const SHARE_STYLE = `<style>
+main{width:min(100%,40rem)}h1{max-width:none;font-size:clamp(1.5rem,5vw,2.25rem);line-height:1.1}
+section{margin-top:2rem}h2{margin:0 0 .75rem;color:#f4f5f7;font-size:1rem}
+.err{color:#f6ae52}.err a{display:inline;margin:0}
+ul{margin:0;padding:0;list-style:none}li{display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:.65rem 0;border-top:1px solid #20242c}
+li span{display:flex;flex-direction:column;min-width:0}li b{overflow-wrap:anywhere}li .pair{flex-direction:row;flex-shrink:0;gap:.5rem}small{display:block;color:#8d94a0}
+form{margin:0}.choice{display:flex;gap:.75rem;align-items:flex-start;margin:0 0 .75rem;color:#e9ebee}.choice input{margin-top:.3rem;accent-color:#f6ae52}
+button,input[type=email],input[readonly]{padding:.6rem 1rem;border:1px solid #2c313b;border-radius:.65rem;background:#07080b;color:#f4f5f7;font:inherit;cursor:pointer}
+button:hover{border-color:#f6ae52;color:#f9c47f}input[type=email],input[readonly]{flex:1;min-width:0;cursor:text}
+.row{display:flex;gap:.5rem}.hint{margin-top:1rem;font-size:.9rem}
+</style>`;
+
+/**
+ * The Copy link section and the script that powers its button. Both views of
+ * the page end with it, which is why the page's policy names that script's hash.
+ */
+const copyLinkSection = (url: string) =>
+  `<section><h2>Copy link</h2><div class="row"><input id="link" type="text" readonly value="${escapeHtml(url)}" aria-label="Link"><button id="copy" type="button">Copy</button></div></section>
+<script>${COPY_SCRIPT}</script>`;
+
 /** `/share/{docId}`, or null for any other path: no version, no extra segment. */
 function shareRoute(pathname: string): string | null {
   const route = parseDocPath(pathname, SHARE_PREFIX);
@@ -111,9 +149,20 @@ export async function handleShare(
 
   const next = `${SHARE_PREFIX}/${docId}`;
   const accountId = await readSession(request, secret, Date.now());
-  if (accountId === null) return signIn(env, next);
-  const email = await accountEmail(env.DB, accountId);
-  if (email === null) return signIn(env, next);
+  const email = accountId === null ? null : await accountEmail(env.DB, accountId);
+  if (accountId === null || email === null) {
+    // No one is signed in. A live public document shows Copy link, because
+    // nothing on the page is more than its url and title, which anyone holds;
+    // everything else, and anyone who asked to sign in, gets sign-in, the same
+    // page for an invited-only, an unknown and a deleted id.
+    if (!writing && !url.searchParams.has("signin")) {
+      const found = await findReadableDoc(env.DB, docId, null, "");
+      if (found !== null && found.deleted_at === null && found.link_access === "anyone") {
+        return await readerView(env, url, docId, found.title, null);
+      }
+    }
+    return signIn(env, next);
+  }
 
   // The session account as a publisher: its documents are everything in its
   // owner scope. A write asks for its current plan, refreshed like a bearer
@@ -128,10 +177,16 @@ export async function handleShare(
 
   if (!writing) {
     const result = await getAccess(env, principal, docId);
-    return result.ok
-      ? await dialog(env, url, principal, docId, result.state, {
-          notice: url.searchParams.get("notice") === "private",
-        })
+    if (result.ok) {
+      return await dialog(env, url, principal, docId, result.state, {
+        notice: url.searchParams.get("notice") === "private",
+      });
+    }
+    // Not the owner. A reader who may open the document sees its link, nothing
+    // more; anyone else sees what `/open` shows them.
+    const found = await findReadableDoc(env.DB, docId, null, accountId);
+    return found !== null && found.deleted_at === null && found.allowed === 1
+      ? readerView(env, url, docId, found.title, email)
       : unavailable();
   }
 
@@ -156,6 +211,41 @@ export async function handleShare(
   const state = await getAccess(env, principal, docId);
   if (!state.ok) return unavailable();
   return await dialog(env, url, principal, docId, state.state, { error: result.refusal });
+}
+
+/**
+ * What a reader who is not the owner sees: the title, who can change access, and
+ * **Copy link** (`publicDocUrl`, the canonical url whichever host the reader
+ * came from). `email` is the signed-in reader, or null for a visitor to a public
+ * document. A visitor is offered sign-in to manage; a signed-in reader is told
+ * how to manage from Copilot, because an owner who published with a license key
+ * that is not linked to a browser account looks like any other reader here, and
+ * offered **Use another account** in case this one is the wrong one. It lists no
+ * people, no mode and no requests.
+ */
+async function readerView(
+  env: Env,
+  requestUrl: URL,
+  docId: string,
+  title: string,
+  email: string | null,
+): Promise<Response> {
+  const next = `${SHARE_PREFIX}/${docId}`;
+  const actions =
+    email === null
+      ? `<div class="actions"><a href="${next}?signin">Is this your page? Sign in to manage</a></div>`
+      : `<div class="actions">${useAnotherAccount(next)}</div>\n<p class="hint">${escapeHtml(COPILOT_HINT)}</p>`;
+  return readerPage(
+    {
+      title: "Share document",
+      heading: `Share “${escapeHtml(title)}”`,
+      message: "Only the owner can change who can open this.",
+      detail: `${SHARE_STYLE}\n${copyLinkSection(publicDocUrl(env, requestUrl, docId))}`,
+      actions,
+    },
+    200,
+    await sharePolicy(),
+  );
 }
 
 /** Run the one operation a form names, or null when it names none. */
@@ -216,17 +306,7 @@ async function dialog(
 
   const message = await errorMessage(env, principal, shown.error);
   const url = publicDocUrl(env, requestUrl, docId);
-  const detail = `<style>
-main{width:min(100%,40rem)}h1{max-width:none;font-size:clamp(1.5rem,5vw,2.25rem);line-height:1.1}
-section{margin-top:2rem}h2{margin:0 0 .75rem;color:#f4f5f7;font-size:1rem}
-.err{color:#f6ae52}.err a{display:inline;margin:0}
-ul{margin:0;padding:0;list-style:none}li{display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:.65rem 0;border-top:1px solid #20242c}
-li span{display:flex;flex-direction:column;min-width:0}li b{overflow-wrap:anywhere}li .pair{flex-direction:row;flex-shrink:0;gap:.5rem}small{display:block;color:#8d94a0}
-form{margin:0}.choice{display:flex;gap:.75rem;align-items:flex-start;margin:0 0 .75rem;color:#e9ebee}.choice input{margin-top:.3rem;accent-color:#f6ae52}
-button,input[type=email],input[readonly]{padding:.6rem 1rem;border:1px solid #2c313b;border-radius:.65rem;background:#07080b;color:#f4f5f7;font:inherit;cursor:pointer}
-button:hover{border-color:#f6ae52;color:#f9c47f}input[type=email],input[readonly]{flex:1;min-width:0;cursor:text}
-.row{display:flex;gap:.5rem}
-</style>
+  const detail = `${SHARE_STYLE}
 ${message === null ? "" : `<p class="err" role="alert">${message}</p>`}
 ${shown.notice === true ? `<p>${COPY_NOTICE}</p>` : ""}
 <section><h2>Link access</h2>${form(
@@ -241,8 +321,7 @@ ${shown.notice === true ? `<p>${COPY_NOTICE}</p>` : ""}
   )}</section>
 ${requests}
 <section><h2>Who has access</h2><ul><li><span><b>You</b><small>Owner</small></span></li>${people}</ul></section>
-<section><h2>Copy link</h2><div class="row"><input id="link" type="text" readonly value="${escapeHtml(url)}" aria-label="Link"><button id="copy" type="button">Copy</button></div></section>
-<script>${COPY_SCRIPT}</script>`;
+${copyLinkSection(url)}`;
 
   return readerPage(
     {

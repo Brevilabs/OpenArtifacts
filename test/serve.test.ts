@@ -2120,7 +2120,7 @@ describe("an invited-only document", () => {
       const doc = await privateDoc();
       const deleted = await privateDoc("gone");
       await softDelete(deleted.docId);
-      const bob = await reader("bob@other.com", doc.docId); // even an invitee cannot manage
+      const bob = await reader("bob@other.com"); // not invited: an invitee sees Copy link instead
 
       const responses = await Promise.all([open(doc.docId, bob), open(UNKNOWN_DOC_ID, bob), open(deleted.docId, bob)]);
 
@@ -2136,6 +2136,66 @@ describe("an invited-only document", () => {
       expect(new Set(pages).size).toBe(1);
       // "Use another account" comes back here, not to /open.
       expect(pages[0]).toContain('name="next" value="/share/ID"');
+    });
+
+    it("SP-b: shows readers only Copy link: a visitor to a public page, and an invitee with a session on a private one", async () => {
+      const pub = await privateDoc("a public page", KEY, "anyone");
+      const doc = await privateDoc();
+      const bob = await reader("bob@other.com", doc.docId);
+      const carol = await reader("carol@other.com"); // not invited, but the public page is open to her
+      const hint = "Open the note in Copilot and run Publish file to OpenArtifacts";
+
+      // A visitor to a public document: the title and link, an invitation to sign in to manage.
+      const visitor = await open(pub.docId, null);
+      expect(visitor.status).toBe(200);
+      expect(visitor.headers.get("cache-control")).toBe("no-store");
+      expect(visitor.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+      const html = await visitor.text();
+      expect(html).toContain("Share “Secret”");
+      expect(html).toContain("Only the owner can change who can open this.");
+      expect(html).toContain(`value="https://openartifacts.site/d/${pub.docId}"`);
+      expect(html).toContain(`href="/share/${pub.docId}?signin"`);
+      expect(html).toContain("Is this your page? Sign in to manage");
+      for (const absent of ["Who has access", "Add people", "Link access", "Sign in or create", "Sign in to manage this document", hint, "Use another account"]) {
+        expect(html, absent).not.toContain(absent);
+      }
+      expect(occurrences(html, "<script")).toBe(1);
+      // The policy admits exactly the one inline script, by hash.
+      const script = /<script>([\s\S]*?)<\/script>/.exec(html)![1]!;
+      const digest = btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(script)))));
+      expect(visitor.headers.get("content-security-policy")).toContain(`script-src 'sha256-${digest}'`);
+
+      // ?signin selects the manage sign-in page, and changes nothing.
+      const signin = await (await open(pub.docId, null, PRIVATE, "?signin")).text();
+      expect(signin).toContain("Sign in to manage this document");
+      expect(signin).toContain(`name="next" value="/share/${pub.docId}"`);
+      expect(signin).not.toContain("Secret");
+
+      // Invited-only, unknown and deleted ids are one page for a visitor.
+      const deleted = await privateDoc("gone", KEY, "anyone");
+      await softDelete(deleted.docId);
+      const pages = await Promise.all(
+        [doc.docId, UNKNOWN_DOC_ID, deleted.docId].map(async (id) => (await (await open(id, null)).text()).replaceAll(id, "ID")),
+      );
+      expect(new Set(pages).size).toBe(1);
+      expect(pages[0]).toContain("Sign in to manage this document");
+      expect(pages[0]).not.toContain("Secret");
+
+      // An invitee with a session on the private document, and any signed-in reader of a public one.
+      for (const [account, id] of [[bob, doc.docId], [carol, pub.docId]] as const) {
+        const reading = await open(id, account);
+        expect(reading.status).toBe(200);
+        const page = await reading.text();
+        expect(page).toContain("Share “Secret”");
+        expect(page).toContain("Only the owner can change who can open this.");
+        expect(page).toContain(`value="https://openartifacts.site/d/${id}"`);
+        expect(page).toContain("Use another account");
+        expect(page).toContain(`name="next" value="/share/${id}"`);
+        expect(page).toContain(hint);
+        for (const absent of ["Add people", "Who has access", "Link access", "Is this your page", "?signin"]) {
+          expect(page, absent).not.toContain(absent);
+        }
+      }
     });
 
     it("shows the owner the dialog, with the link, the people and the requests, and no role control", async () => {

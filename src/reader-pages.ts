@@ -182,8 +182,12 @@ export function termsPage(
   );
 }
 
-/** "Use another account": sign out, then come back to `next` and sign in again. */
-const useAnotherAccount = (next: string) =>
+/**
+ * "Use another account": sign out, then come back to `next` and sign in again.
+ * Exported for the share page's reader view, which offers it beside the same
+ * Copilot hint the popover shows.
+ */
+export const useAnotherAccount = (next: string) =>
   `<form method="post" action="${SIGNIN_PREFIX}/out">${hidden("next", next)}<button type="submit">Use another account</button></form>`;
 
 /**
@@ -194,7 +198,8 @@ const useAnotherAccount = (next: string) =>
  *
  * **Request access** is a plain form post to `/open/{docId}/request`: the
  * address comes from the session, never from a field, and the route answers
- * every case alike. The share page shows this same page to a non-owner.
+ * every case alike. The share page shows this same page to a signed-in account
+ * that neither manages the document nor may read it.
  */
 export function notAvailablePage(email: string, docId: string, next: string): Response {
   return readerPage(
