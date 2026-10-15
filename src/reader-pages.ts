@@ -46,8 +46,17 @@ export function readerPage(copy: BrandPage, status: number, csp = READER_CSP): R
       "referrer-policy": "same-origin",
       "x-content-type-options": "nosniff",
       "content-security-policy": csp,
+      "cross-origin-opener-policy": READER_OPENER_POLICY,
     },
   });
+}
+
+/** Every reader page and redirect on the API host: a popup loses its opener whatever /open decides, so `w.closed` tells an opener nothing. */
+export const READER_OPENER_POLICY = "same-origin";
+export function readerIsolate(response: Response): Response {
+  const isolated = new Response(response.body, response);
+  isolated.headers.set("cross-origin-opener-policy", READER_OPENER_POLICY);
+  return isolated;
 }
 
 export const hidden = (name: string, value: string) =>

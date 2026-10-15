@@ -163,6 +163,28 @@ describe("configured account plans", () => {
     await refused(await asApi("PUT", access, { linkAccess: "invited" }));
   });
 
+  it("answers a re-add of a listed address on a lapsed plan as a repeat, and still refuses a role change", async () => {
+    expect((await setPlan("pro")).status).toBe(200);
+    const { docId } = await (await create()).json<{ docId: string }>();
+    const access = `/api/v1/docs/${docId}/access`;
+    const alice = `${access}/people/alice%40acme.com`;
+    const people = async () => (await (await asApi("GET", access)).json<{ people: Array<{ email: string; role: string }> }>()).people;
+    expect((await asApi("PUT", access, { linkAccess: "invited" })).status).toBe(200);
+    expect((await asApi("PUT", alice)).status).toBe(200);
+    expect((await setPlan("free")).status).toBe(200);
+
+    const repeat = await asApi("PUT", alice);
+    expect(repeat.status).toBe(200);
+    expect(await repeat.json()).toMatchObject({ people: [{ email: "alice@acme.com", role: "comment" }] });
+    expect((await asApi("PUT", alice, { role: "comment" })).status).toBe(200);
+    const view = await asApi("PUT", alice, { role: "view" });
+    expect(view.status).toBe(402);
+    expect(await error(view)).toMatchObject({ error: { code: "limit_reached", limit: "privateSharing" } });
+    expect(await people()).toEqual([expect.objectContaining({ email: "alice@acme.com", role: "comment" })]);
+    expect((await asApi("PUT", `${access}/people/carol%40acme.com`)).status).toBe(402);
+    expect(await people()).toHaveLength(1);
+  });
+
   it("shares three slots across existing tokens, updates at capacity and replaces an unshared doc", async () => {
     const other = await issue();
     const first = await (await create()).json<{ docId: string }>();

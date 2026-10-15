@@ -19,12 +19,12 @@ export class APIError extends Error {
 export function createClient({ host, token, fetcher = fetch }) {
   const base = host.replace(/\/$/, "");
 
-  /** @param {string} path @param {RequestInit} [init] @param {number[]} [allowed] */
-  async function request(path, init = {}, allowed = []) {
+  /** @param {string} path @param {RequestInit} [init] @param {number[]} [allowed] @param {boolean} [authenticated] */
+  async function request(path, init = {}, allowed = [], authenticated = true) {
     const headers = new Headers(init.headers);
-    if (token) headers.set("authorization", `Bearer ${token}`);
+    if (token && authenticated) headers.set("authorization", `Bearer ${token}`);
     if (init.body !== undefined) headers.set("content-type", "application/json");
-    const response = await fetcher(`${base}${path}`, {
+    const response = await fetcher(path.startsWith("http") ? path : `${base}${path}`, {
       ...init,
       headers,
     });
@@ -40,6 +40,18 @@ export function createClient({ host, token, fetcher = fetch }) {
     const type = response.headers.get("content-type") ?? "";
     return type.includes("application/json") ? response.json() : response.text();
   }
+
+  const listDocs = async () => {
+    const docs = [];
+    let cursor;
+    do {
+      const query = cursor ? `?limit=100&cursor=${encodeURIComponent(cursor)}` : "?limit=100";
+      const page = await request(`/api/v1/docs${query}`);
+      docs.push(...page.docs);
+      cursor = page.cursor;
+    } while (cursor);
+    return docs;
+  };
 
   return {
     account: () => request("/api/v1/account"),
@@ -69,19 +81,21 @@ export function createClient({ host, token, fetcher = fetch }) {
         method: "PUT",
         body: JSON.stringify(body),
       }),
-    listDocs: async () => {
-      const docs = [];
-      let cursor;
-      do {
-        const query = cursor ? `?limit=100&cursor=${encodeURIComponent(cursor)}` : "?limit=100";
-        const page = await request(`/api/v1/docs${query}`);
-        docs.push(...page.docs);
-        cursor = page.cursor;
-      } while (cursor);
-      return docs;
+    listDocs,
+    /**
+     * The owner's latest HTML. A Worker that predates private sharing has no …/html and serves every document publicly, so there `get` reads the public url, as it always did, without the token.
+     * @param {string} docId
+     */
+    getHtml: async (docId) => {
+      const html = await request(`/api/v1/docs/${encodeURIComponent(docId)}/html`, {}, [404]);
+      if (html !== null) return html;
+      const doc = (await listDocs()).find((item) => item.docId === docId);
+      // A server that lists linkAccess has …/html, so its 404 is the answer.
+      if (!doc || doc.linkAccess !== undefined) {
+        throw new APIError(404, { error: { code: "not_found", message: `No document with id ${docId} is in this account.` } });
+      }
+      return request(doc.url, {}, [], false);
     },
-    /** The owner's latest stored HTML, which works once a page is private. @param {string} docId */
-    getHtml: (docId) => request(`/api/v1/docs/${encodeURIComponent(docId)}/html`),
     /** @param {string} docId */
     getAccess: (docId) => request(`/api/v1/docs/${encodeURIComponent(docId)}/access`),
     /** @param {string} docId @param {"anyone" | "invited"} linkAccess */

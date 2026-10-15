@@ -26,7 +26,8 @@
  * Removing people, declining and switching to `anyone` never need it, which
  * extends the rule that losing the ability to publish must never cost the
  * ability to unshare. A lapsed plan keeps what exists: naming the mode a
- * document already has is a repeat, not a switch.
+ * document already has is a repeat, not a switch, and so is adding an address
+ * that is already listed with no new role and no request to approve.
  *
  * **One operation layer.** `getAccess`, `setMode`, `addPerson`, `removePerson`
  * and `declineRequest` take the principal as a `Publisher` and answer with a
@@ -37,7 +38,7 @@
  */
 import type { AnalyticsSink } from "../analytics.js";
 import { maySharePrivately, type Publisher } from "../auth.js";
-import { MAX_INVITES_PER_DOC, type Env } from "../config.js";
+import { MAX_INVITES_PER_DOC, MAX_NEW_INVITES_PER_OWNER_PER_DAY, type Env } from "../config.js";
 import {
   canManage,
   deleteAccessRequest,
@@ -115,9 +116,10 @@ export type AccessState = NonNullable<Awaited<ReturnType<typeof readAccess>>>;
 
 /**
  * Why an operation did nothing. `not_found` covers a missing, deleted and
- * someone else's document alike; `full` is the 101st person.
+ * someone else's document alike; `full` is the 101st person; `invite_quota` is
+ * the owner's daily cap on new invites.
  */
-export type AccessRefusal = "not_found" | "bad_email" | "full" | "plan";
+export type AccessRefusal = "not_found" | "bad_email" | "full" | "plan" | "invite_quota";
 
 /**
  * What an operation did. `state` is read after the write, and `changed` says
@@ -167,7 +169,11 @@ export async function setMode(
  * Add a person, which is also how a request is approved. An address that is
  * already on the list stays as it is, unless `role` names a different one. The
  * invite email goes out only on the call that added the address, so a retry does
- * not mail the same person twice. Needs the plan.
+ * not mail the same person twice. Needs the plan, except for a pure repeat: an
+ * address already listed, with no role or the same role and no request to
+ * approve, answers on any plan, mails nobody and records nothing. A role
+ * change, a new address and an approval still reach the plan check.
+ * A new address also counts against the owner's daily invite cap.
  */
 export async function addPerson(
   env: Env,
@@ -182,6 +188,13 @@ export async function addPerson(
   if (doc === null) return refused("not_found");
   const email = inviteAddress(rawEmail);
   if (email === null) return refused("bad_email");
+  const before = await readAccess(env.DB, docId);
+  if (before === null) return refused("not_found");
+  const listed = before.people.find((person) => person.email === email);
+  // A pure repeat: already listed, no role or the same role, and no request to approve. Like naming the mode a document already has, it answers on any plan, mails nobody and records nothing.
+  if (listed && (role === undefined || role === listed.role) && !before.requests.some((r) => r.email === email)) {
+    return { ok: true, state: before, changed: false };
+  }
   if (!maySharePrivately(env, principal)) return refused("plan");
 
   const added = await insertInvite(env.DB, docId, principal.owner, email, Date.now(), MAX_INVITES_PER_DOC, role);
@@ -192,7 +205,9 @@ export async function addPerson(
   // response and the count the event carries.
   const state = await readAccess(env.DB, docId);
   if (state === null) return refused("not_found");
-  if (!added && !state.people.some((person) => person.email === email)) return refused("full");
+  if (!added && !state.people.some((person) => person.email === email)) {
+    return refused(state.people.length >= MAX_INVITES_PER_DOC ? "full" : "invite_quota");
+  }
 
   if (added) await invite(env, requestUrl, doc.publisher_id, docId, doc.title, email);
   if (added || roleChanged) recordChange(analytics, docId, doc.publisher_id, state);
@@ -336,6 +351,8 @@ function jsonOf(env: Env, requestUrl: URL, publisher: Publisher, docId: string, 
       return errorResponse("bad_request", `A document can be shared with at most ${MAX_INVITES_PER_DOC} people.`);
     case "plan":
       return planRefusal(env, publisher);
+    case "invite_quota":
+      return errorResponse("quota_exceeded", `You have added ${MAX_NEW_INVITES_PER_OWNER_PER_DAY} new people in the last 24 hours. Try again later.`);
   }
 }
 

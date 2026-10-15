@@ -19,7 +19,7 @@ import { listTokens, revokeToken } from "./api/tokens.js";
 import { handlePublisherServing, isolate, PRIVATE_LABEL } from "./private.js";
 import { handleReader } from "./reader.js";
 import { readerSignInConfigured } from "./reader-config.js";
-import { OPEN_PREFIX, READER_NOT_FOUND, SHARE_PREFIX, SIGNIN_PREFIX } from "./reader-pages.js";
+import { OPEN_PREFIX, READER_NOT_FOUND, SHARE_PREFIX, SIGNIN_PREFIX, readerIsolate } from "./reader-pages.js";
 import { handleShare } from "./share.js";
 import {
   handleServing,
@@ -321,10 +321,15 @@ export default {
           ) {
             // A server with no reader sign-in configured has none of these
             // pages, as one that predates private sharing has none.
-            if (!readerSignInConfigured(env)) return READER_NOT_FOUND();
-            return pathIsUnder(url.pathname, SHARE_PREFIX)
-              ? await handleShare(request, url, env, analytics)
-              : await handleReader(request, url, env, ctx);
+            // Every response here carries the same opener policy, redirects
+            // included, so a popup is cut off whatever /open decides.
+            return readerIsolate(
+              !readerSignInConfigured(env)
+                ? READER_NOT_FOUND()
+                : pathIsUnder(url.pathname, SHARE_PREFIX)
+                  ? await handleShare(request, url, env, analytics)
+                  : await handleReader(request, url, env, ctx),
+            );
           }
           // Likewise before `handleApi`: a terminal asking for a device code
           // has no credential yet, which is the entire reason it is asking.

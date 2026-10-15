@@ -5,6 +5,7 @@
  * every row here is reconstructible from it, so a lost D1 is a rebuild rather
  * than a data loss. Queries land here as the phase that needs them arrives.
  */
+import { INVITE_WINDOW_MS, MAX_NEW_INVITES_PER_OWNER_PER_DAY } from "./config.js";
 import { PUBLISHER_USER_ID_SQL, OWNER_SCOPE_SQL } from "./owners.js";
 
 /** Publisher row, which doubles as the license-validation cache (phase 2). */
@@ -1532,9 +1533,12 @@ export async function setLinkAccess(
 
 /**
  * Add an address to a live document's list. True only when this call added it:
- * false means it was already there, or the list is full, or the publisher has no
- * such document. The cap is a predicate on the insert for the reason
- * `insertDocWithinQuota` gives about its own.
+ * false means it was already there, or the list is full, or the owner has added
+ * `maxPerOwnerPerDay` new people in the last `windowMs`, or the publisher has no
+ * such document. Both caps are predicates on the insert for the reason
+ * `insertDocWithinQuota` gives about its own. The daily count is read from
+ * `doc_invites.created_at` across every document of the principal's owner scope,
+ * so it needs no table of its own.
  *
  * Adding is also approving: a pending request from the same address is deleted
  * in the same batch, so the list and the requests can never show one address in
@@ -1549,6 +1553,8 @@ export async function insertInvite(
   atMs: number,
   maxPeople: number,
   role: InviteRole = "comment",
+  maxPerOwnerPerDay: number = MAX_NEW_INVITES_PER_OWNER_PER_DAY,
+  windowMs: number = INVITE_WINDOW_MS,
 ): Promise<boolean> {
   const [inserted] = await db.batch<{ email: string }>([
     db
@@ -1558,10 +1564,12 @@ export async function insertInvite(
          SELECT d.id, ?, ?, ? FROM docs d
           WHERE d.id = ? AND ${CAN_MANAGE_SQL} AND d.deleted_at IS NULL
             AND (SELECT COUNT(*) FROM doc_invites WHERE doc_id = d.id) < ?
+            AND (SELECT COUNT(*) FROM doc_invites i JOIN docs o ON o.id = i.doc_id
+                  WHERE o.owner IN (SELECT owner FROM owner_scope) AND i.created_at > ?) < ?
          ON CONFLICT DO NOTHING
          RETURNING email`,
       )
-      .bind(owner, owner, email, role, atMs, docId, maxPeople),
+      .bind(owner, owner, email, role, atMs, docId, maxPeople, atMs - windowMs, maxPerOwnerPerDay),
     db
       .prepare(
         `DELETE FROM doc_access_requests

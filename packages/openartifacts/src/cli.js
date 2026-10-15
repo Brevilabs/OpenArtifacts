@@ -413,7 +413,7 @@ export async function main(args) {
       process.stdout.write(await client.getHtml(value));
     } catch (error) {
       if (error instanceof APIError && error.status === 404) {
-        error.message += ` No document ${value} is in this account, or this server predates \`get\` for private documents.`;
+        error.message += ` No document ${value} is in this account.`;
       }
       throw error;
     }

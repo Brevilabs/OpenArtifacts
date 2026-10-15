@@ -40,7 +40,7 @@ import {
 } from "./api/access.js";
 import { readSmallForm } from "./approval/handler.js";
 import type { Publisher } from "./auth.js";
-import { MAX_INVITES_PER_DOC, type Env } from "./config.js";
+import { MAX_INVITES_PER_DOC, MAX_NEW_INVITES_PER_OWNER_PER_DAY, type Env } from "./config.js";
 import { accountEmail } from "./db.js";
 import { emailConfigured } from "./email.js";
 import { accountPlan } from "./entitlement.js";
@@ -250,7 +250,7 @@ ${requests}
       message: "Choose who can open it. The link never changes.",
       detail,
     },
-    shown.error === undefined ? 200 : shown.error === "plan" ? 402 : 400,
+    shown.error === undefined ? 200 : shown.error === "plan" ? 402 : shown.error === "invite_quota" ? 429 : 400,
     await sharePolicy(),
   );
 }
@@ -264,6 +264,8 @@ async function errorMessage(env: Env, principal: Publisher, error: DialogError |
       return "That is not an email address.";
     case "full":
       return `A document can be shared with at most ${MAX_INVITES_PER_DOC} people.`;
+    case "invite_quota":
+      return `You have added ${MAX_NEW_INVITES_PER_OWNER_PER_DAY} new people in the last 24 hours. Try again later. Nothing was changed.`;
     case "plan": {
       // The upgrade link the API's own `402` carries, already stripped of what
       // must not reach a checkout.

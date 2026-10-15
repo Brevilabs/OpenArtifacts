@@ -530,6 +530,10 @@ have not been answered.
   bad_request`. The call that adds an address sends it an invite email where the
   server has email; a repeat does not, and a repeat that names a different role
   updates the role. At most 100 people per document; the 101st is `400`.
+  At most 100 new invites per owner in any 24 hours, across all their documents:
+  past that, an add that would list a new address, approvals included, is `429
+  quota_exceeded`, nothing is stored or sent, and a pending request stays.
+  Repeats, role changes and removals never count.
   `DELETE` removes one. Neither needs the address to belong to an account.
 - **Approving a request is adding the address.** There is no approve route:
   `PUT …/access/people/{email}` for an address with a pending request lists the
@@ -553,7 +557,7 @@ have not been answered.
 Errors reuse the existing codes: `404 not_found` for a document that is not yours,
 `400 bad_request` for an invalid address, role or mode, or a 101st person, and
 `402 limit_reached` with `"limit": "privateSharing"` when the plan does not include
-it. On a server without reader sign-in configured, every route in this section
+it, and `429 quota_exceeded` past the daily invite cap. On a server without reader sign-in configured, every route in this section
 except `…/html` answers `404 not_found`, like a server that predates it.
 
 ### The plan check
@@ -561,7 +565,9 @@ except `…/html` answers `404 not_found`, like a server that predates it.
 On write, and only on the operations that spend it: `POST /api/v1/private-docs`,
 making a document invited-only that is public now (`PUT …/access` from `anyone`
 to `invited`), and adding a person, which includes approving a request. Naming
-the mode a document already has is a repeat and never checks. Removing people,
+the mode a document already has is a repeat and never checks. So is adding an
+address that is already on the list with no role or the role it already has: it
+answers `200` with the current `Access` on any plan, and sends no email. Removing people,
 **declining a request**, switching to `anyone`, reading, and opening never check
 a plan, so invitees never pay and a lapsed plan keeps what exists. A lapse never
 makes a private document public. Every paid plan qualifies: a license key whose
@@ -573,6 +579,9 @@ configuration, not part of this contract.
 
 The pages in this section are for people in a browser, not for clients, and none
 of them is under `/api/v1`.
+
+Every response from `/open/*`, `/signin/*` and `/share/*` on the API host, pages
+and redirects alike, carries `Cross-Origin-Opener-Policy: same-origin`.
 
 `GET /d/{docId}[/v{n}]` on `openartifacts.site` for an invited-only document
 answers `302`, `Cache-Control: no-store`, to
@@ -808,7 +817,7 @@ exposes this API payload to a reader.
 | `not_found` | 404 | No such doc, not yours, already deleted, or no route. |
 | `gone` | 410 | Every request to the retired `api.symposium.md` host. The canonical API does not emit this code. |
 | `too_large` | 413 | `html` over 10MB. |
-| `quota_exceeded` | 429 | License-key publishing ceiling or device-flow rate limit reached. |
+| `quota_exceeded` | 429 | License-key publishing ceiling, device-flow rate limit, or the daily invite cap reached. |
 | `limit_reached` | 402 | Account-token publish would exceed a plan limit. Carries the exceeded limit's identifier (`limit`), current plan name (`plan`), and optional `upgrade_url` inside `error`. Also returned, for license keys as well as account tokens, for a private-sharing operation the plan does not include (`limit: "privateSharing"`). |
 | `internal` | 500 | Our fault, including the license server being unreachable for a key we have never seen. |
 | `authorization_pending` | 400 | `POST /device/token`: nobody has approved the code yet. |

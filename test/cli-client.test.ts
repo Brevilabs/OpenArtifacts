@@ -68,3 +68,53 @@ describe("the CLI client against the local Worker", () => {
     expect(await client.listDocs()).toEqual([]);
   });
 });
+
+describe("get against a Worker that predates private sharing", () => {
+  const olderWorker = () => {
+    const requests: Request[] = [];
+    const fetcher: typeof fetch = async (input, init) => {
+      const request = new Request(input, init);
+      requests.push(request);
+      const path = new URL(request.url).pathname;
+      if (request.method === "GET" && /^\/api\/v1\/docs\/[^/]+\/html$/.test(path)) {
+        return Response.json({ error: { code: "not_found", message: `No API route for ${path}` } }, { status: 404 });
+      }
+      const response = await localFetch(request);
+      if (request.method === "GET" && path === "/api/v1/docs") {
+        const body = (await response.json()) as { docs: Record<string, unknown>[] };
+        return Response.json({ ...body, docs: body.docs.map(({ linkAccess: _, ...item }) => item) });
+      }
+      return response;
+    };
+    return { requests, fetcher };
+  };
+
+  it("reads a document from a Worker that predates .../html through its public url, without sending the token there", async () => {
+    const issued = await issueToken();
+    const { requests, fetcher } = olderWorker();
+    const client = createClient({ host: ORIGIN, token: issued.token, fetcher });
+    const created = await client.createDoc({ title: "Old", html: "<!doctype html><p>one</p>" });
+    await client.updateDoc(created.docId, { title: "Old", html: "<!doctype html><p>two</p>" });
+    expect(await client.getHtml(created.docId)).toContain("<p>two</p>");
+    const last = requests[requests.length - 1]!;
+    expect(last.url).toBe(`${ORIGIN}/d/${created.docId}`);
+    expect(last.headers.get("authorization")).toBeNull();
+    await expect(client.getHtml("0000000000000000")).rejects.toMatchObject({ status: 404 });
+  });
+
+  it("trusts the 404 of a current Worker, whose list carries linkAccess, and never reads /d/", async () => {
+    const issued = await issueToken();
+    const requests: Request[] = [];
+    const fetcher: typeof fetch = async (input, init) => {
+      const request = new Request(input, init);
+      requests.push(request);
+      return localFetch(request);
+    };
+    const client = createClient({ host: ORIGIN, token: issued.token, fetcher });
+    const created = await client.createDoc({ title: "New", html: "<!doctype html><p>one</p>" });
+    await client.unshare(created.docId);
+    requests.length = 0;
+    await expect(client.getHtml(created.docId)).rejects.toMatchObject({ status: 404 });
+    expect(requests.some((request) => new URL(request.url).pathname.startsWith("/d/"))).toBe(false);
+  });
+});

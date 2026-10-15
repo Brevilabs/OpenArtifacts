@@ -226,6 +226,10 @@ export const MAX_PUSHES_PER_DAY = 100;
 /** People one document can be shared with, so its list never needs paging. */
 export const MAX_INVITES_PER_DOC = 100;
 
+/** New invites one owner may add in any 24 hours, across all their documents and credentials. Counted from doc_invites.created_at; repeats, role changes and removals never count. */
+export const MAX_NEW_INVITES_PER_OWNER_PER_DAY = 100;
+export const INVITE_WINDOW_MS = 24 * 60 * 60 * 1000;
+
 /**
  * Pending access requests one document holds, for the same reason. Its own
  * constant, not `MAX_INVITES_PER_DOC`, so the two caps can diverge. Past it a

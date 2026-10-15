@@ -65,7 +65,8 @@ code) and open the same url. Private sharing is a paid feature. A server that pr
 private sharing, or that has no reader sign-in configured, answers 404 to
 `publish --private`: nothing is created, and the CLI says "This server does not
 support private documents." `list` shows each page's `linkAccess`, and `get` prints
-the owner's stored HTML, private pages included.
+the owner's stored HTML, private pages included; against an older server that has
+no private pages, `get` reads the public url as it always did.
 
 The CLI never renders Markdown and keeps no record of which file became which page.
 Both are the agent's job: it writes the HTML the user reviewed, and it remembers the

@@ -877,6 +877,66 @@ describe("private sharing through the owner's credential", () => {
 
     expect(await listOf(await send("DELETE", person, KEY_PLUS, undefined, hosts))).toEqual([]);
   });
+
+  it("answers a repeat add on a lapsed license plan with 200 and sends no email", async () => {
+    const created = await privateDoc();
+    const person = `${API}/api/v1/docs/${created.docId}/access/people/alice%40acme.com`;
+    expect((await send("PUT", person, KEY_PLUS, undefined, hosts)).status).toBe(200);
+    await env.DB.prepare("UPDATE publishers SET plan = 'free' WHERE key_hash = ?").bind(await sha256Hex(KEY_PLUS)).run();
+    sent.length = 0;
+
+    for (let i = 0; i < 2; i += 1) {
+      const repeat = await send("PUT", person, KEY_PLUS, undefined, hosts);
+      expect(repeat.status).toBe(200);
+      expect(await repeat.json()).toMatchObject({ people: [{ email: "alice@acme.com" }] });
+    }
+    expect(sent).toEqual([]);
+  });
+
+  it("caps new invites at 100 per owner in a rolling 24 hours, across documents, and refuses nothing else", async () => {
+    const first = await privateDoc();
+    const second = await privateDoc();
+    const owner = await seedPublisher(KEY_PLUS, undefined, "plus");
+    const other = await push(KEY_B, { title: "Not mine", html: page("<p>b</p>") });
+    const now = Date.now();
+    const seed = (docId: string, email: string, createdAt: number) =>
+      env.DB.prepare("INSERT INTO doc_invites (doc_id, email, created_at) VALUES (?, ?, ?)").bind(docId, email, createdAt).run();
+    for (let i = 0; i < 99; i += 1) await seed(i % 2 === 0 ? first.docId : second.docId, `recent${i}@acme.com`, now - 1000);
+    // Outside the window, and another publisher's: neither counts.
+    for (let i = 0; i < 5; i += 1) await seed(first.docId, `old${i}@acme.com`, now - 86_400_001);
+    for (let i = 0; i < 100; i += 1) await seed(other.docId, `theirs${i}@acme.com`, now - 1000);
+    const bob = (await findOrCreateAccount(env.DB, newAccountId(), "late@acme.com", now)).id;
+    expect(await insertAccessRequest(env.DB, second.docId, bob, now, 100)).not.toBeNull();
+    sent.length = 0;
+    const put = (docId: string, email: string, body?: unknown) =>
+      send("PUT", `${API}/api/v1/docs/${docId}/access/people/${email}`, KEY_PLUS, body, hosts);
+
+    // The 100th new invite in the window is the last one.
+    expect((await put(first.docId, "hundredth%40acme.com")).status).toBe(200);
+    expect(sent.map((message) => message.to)).toEqual(["hundredth@acme.com"]);
+
+    const refused = await put(second.docId, "late%40acme.com");
+    expect(refused.status).toBe(429);
+    expect(await refused.json()).toEqual({ error: { code: "quota_exceeded", message: expect.stringContaining("100") } });
+    expect(
+      (await env.DB.prepare("SELECT COUNT(*) AS n FROM doc_invites WHERE doc_id = ?").bind(second.docId).first<{ n: number }>())!.n,
+    ).toBe(49);
+    expect(sent).toHaveLength(1);
+    expect((await readAccess(env.DB, second.docId))!.requests.map((request) => request.email)).toEqual(["late@acme.com"]);
+
+    // A linked account draws on the same allowance.
+    const mine = (await findOrCreateAccount(env.DB, newAccountId(), "me@acme.com", now)).id;
+    expect(await linkExternalOwner(env.DB, owner, mine, 1000)).toBe("linked");
+    const asAccount: Publisher = { owner: mine, plan: "pro", authKind: "account" };
+    const viaAccount = await addPerson({ ...env, ...hosts } as Env, new URL(`${API}/api/v1/docs`), asAccount, second.docId, "zed@acme.com", undefined, NO_ANALYTICS);
+    expect(viaAccount).toEqual({ ok: false, refusal: "invite_quota" });
+
+    // Repeats, role changes and removals are not new invites.
+    expect((await put(first.docId, "recent0%40acme.com")).status).toBe(200);
+    expect((await put(first.docId, "recent0%40acme.com", { role: "view" })).status).toBe(200);
+    const removed = await send("DELETE", `${API}/api/v1/docs/${first.docId}/access/people/recent0%40acme.com`, KEY_PLUS, undefined, hosts);
+    expect(removed.status).toBe(200);
+  });
 });
 
 describe("access requests", () => {

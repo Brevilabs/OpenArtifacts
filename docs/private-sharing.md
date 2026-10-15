@@ -192,8 +192,10 @@ Rotating the secret signs every reader out.
 - A hostile document can start a grant by navigating to `/open/{target}`, since a
   top-level navigation is the only request that carries the `Lax` session cookie.
   The grant lands on the target's own origin, which the attacker cannot script,
-  and `Cross-Origin-Opener-Policy: same-origin-allow-popups` cuts the attacker's
-  window reference.
+  and `Cross-Origin-Opener-Policy` cuts the attacker's window reference: the
+  API-host pages and redirects carry `same-origin`, so the reference is cut
+  whichever way /open decides and an opener cannot tell allowed from refused;
+  the label host carries `same-origin-allow-popups`.
 - A publisher's scripts reach only that publisher's documents: they never see the
   URL grant (the label host answers it with a bodiless `303`), and the cookie they
   can make same-origin requests with opens only documents their publisher
@@ -216,8 +218,13 @@ The unit is the document. Migration `0014` adds `docs.link_access` (`anyone` or
 email)` and `email_codes`. The invite list is independent of the mode: switching
 to `anyone` keeps it and the pending requests, and switching back restores them.
 At most 100 people and at most 100 pending requests per document, so neither
-list needs paging. Unshare deletes the invites and requests with the bytes and
-keeps the `docs` row for the `410`.
+list needs paging. An owner may also add at most 100 new invites in any rolling
+24 hours, across all their documents and credentials (a linked license key and its
+account share one allowance). It is counted from `doc_invites.created_at`, as a
+predicate on the insert, so it needs no table and cannot be raced past. Repeats,
+role changes and removals never count; past the cap an add answers `429
+quota_exceeded` and a pending request stays where it is. Unshare deletes the
+invites and requests with the bytes and keeps the `docs` row for the `410`.
 
 Two predicates, named once, so every surface asks the same question. They live in
 `src/db.ts` as SQL fragments (`CAN_READ_SQL`, `CAN_MANAGE_SQL`):
@@ -379,7 +386,8 @@ Writes are `POST /share/{docId}` with an `op` of `link`, `add`, `remove` or
 `/api/v1`** (`src/api/access.ts`) with the session account as the publisher, so
 the plan gate, the invite email, idempotency and the `document_access_changed`
 event cannot differ between the two. A refused write re-renders the dialog with
-the reason, including "Private sharing needs a paid plan." and the upgrade link;
+the reason, including "Private sharing needs a paid plan." and the upgrade link
+(`402`), or the 24-hour invite cap (`429`, "Nothing was changed.");
 a successful one redirects (`303`) back to the page. The page is `no-store` with
 `frame-ancestors 'none'` and `Referrer-Policy: same-origin` (as on every page of
 the API host that holds a form: a form posted from a `no-referrer` page sends
@@ -418,8 +426,10 @@ The plan is checked on write, in the Worker, and only on the operations that spe
 it: creating a private document (`POST /api/v1/private-docs`), switching a public
 document to invited-only, and adding a person, which includes approving a
 request. Removing people, declining a request and switching to `anyone` never
-need it, naming the mode a document already has is a repeat that never checks,
-and reading never checks a plan, so invitees never pay. A lapsed plan keeps what
+need it, naming the mode a document already has is a repeat that never checks, and
+so is adding an address that is already on the list with no role or the role it
+already has (`200` with the current `Access` on any plan, no email), and
+reading never checks a plan, so invitees never pay. A lapsed plan keeps what
 exists: private documents stay private and current invitees keep reading; new
 invites and new private documents get `402 limit_reached` with `limit:
 "privateSharing"`. A lapse never makes a private document public.
@@ -450,6 +460,8 @@ work.
   `https://{SERVING_HOST}/d/{docId}`, and "Sign in with this address, {email}, to
   open it." The address is on the list whether or not the email goes out. Invites
   are rate-limited per owner by `INVITE_EMAIL_LIMITER`, and only paid plans can add.
+  The limiter only paces email, per colo; the bound that survives across colos is
+  the D1 cap of 100 new invites per owner in any 24 hours.
 - **The request email** is described above. It is rate-limited by the per-account
   request limiter that bounds the rows it comes from.
 - **Sign-in codes** are limited by `SIGNIN_EMAIL_LIMITER` per address and

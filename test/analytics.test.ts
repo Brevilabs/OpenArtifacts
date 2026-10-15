@@ -911,6 +911,23 @@ describe("who a publication is attributed to", () => {
     ]);
   });
 
+  it("answers a re-add of a listed address on a free plan as a repeat that records nothing", async () => {
+    expect(await linkExternalOwner(env.DB, LICENSE_OWNER, LINKED_ACCOUNT, 1)).toBe("linked");
+    const { sink, events } = collectingSink();
+    const quiet = workerEnv({ EMAIL: { send: async () => {} }, EMAIL_FROM: "share@mail.openartifacts.ai" });
+    const pro: Publisher = { owner: LINKED_ACCOUNT, plan: "pro", authKind: "account" };
+    const free: Publisher = { owner: LINKED_ACCOUNT, plan: "free", authKind: "account" };
+    const docId = await published(await create(sink, VALID_PUSH, BY_LICENSE));
+    await setMode(quiet, pro, docId, "invited", sink);
+    await addPerson(quiet, API_URL, pro, docId, "alice@acme.com", undefined, sink);
+    events.length = 0;
+
+    const repeat = await addPerson(quiet, API_URL, free, docId, "alice@acme.com", undefined, sink);
+
+    expect(repeat).toMatchObject({ ok: true, changed: false });
+    expect(events).toEqual([]);
+  });
+
   it("names an unlinked account token by its own account id", async () => {
     const { sink, events } = collectingSink();
 

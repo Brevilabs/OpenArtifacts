@@ -1261,6 +1261,63 @@ describe("an invited-only document", () => {
     expect(unknown.replaceAll(UNKNOWN_DOC_ID, "ID")).toBe(html.replaceAll(doc.docId, "ID"));
   });
 
+  it("gives every API-host reader response the same opener policy, so an opener cannot tell allowed from refused", async () => {
+    const doc = await privateDoc();
+    const anyone = await privateDoc("public", KEY, "anyone");
+    const owner = await ownerAccount(doc);
+    const alice = await reader("alice@acme.com", doc.docId);
+    const bob = await reader("bob@other.com");
+    const as = async (accountId: string) => ({ headers: { cookie: await sessionFor(accountId) } });
+    const asSameOrigin = async (accountId: string) => ({ headers: { cookie: await sessionFor(accountId), ...SAME_ORIGIN } });
+    const shareUrl = `${API}/share/${doc.docId}`;
+
+    const responses: Record<string, Response> = {
+      "sign-in page": await getFrom(`${API}/open/${doc.docId}`, {}, PRIVATE),
+      "not available": await getFrom(`${API}/open/${doc.docId}`, await as(bob), PRIVATE),
+      "invited reader": await getFrom(`${API}/open/${doc.docId}`, await as(alice), PRIVATE),
+      "anyone doc": await getFrom(`${API}/open/${anyone.docId}`, await as(bob), PRIVATE),
+      "request sent": await sendTo("POST", `${API}/open/${doc.docId}/request`, await asSameOrigin(bob), PRIVATE),
+      "sign out": await sendTo(
+        "POST",
+        `${API}/signin/out`,
+        { ...(await asSameOrigin(bob)), body: new URLSearchParams({ next: `/open/${doc.docId}` }) },
+        PRIVATE,
+      ),
+      "share, no session": await getFrom(shareUrl, {}, PRIVATE),
+      "share, owner": await getFrom(shareUrl, await as(owner), PRIVATE),
+      "share, non-owner": await getFrom(shareUrl, await as(bob), PRIVATE),
+      "share, link write": await sendTo(
+        "POST",
+        shareUrl,
+        { ...(await asSameOrigin(owner)), body: new URLSearchParams({ op: "link", linkAccess: "anyone" }) },
+        PRIVATE,
+      ),
+      "no reader sign-in": await getFrom(`${API}/open/${doc.docId}`, {}, { ...PRIVATE, READER_SESSION_SECRET: undefined }),
+    };
+
+    // The statuses show the outcomes really differ, which is what an opener must not see.
+    expect(Object.fromEntries(Object.entries(responses).map(([name, response]) => [name, response.status]))).toEqual({
+      "sign-in page": 200,
+      "not available": 404,
+      "invited reader": 302,
+      "anyone doc": 302,
+      "request sent": 200,
+      "sign out": 303,
+      "share, no session": 200,
+      "share, owner": 200,
+      "share, non-owner": 404,
+      "share, link write": 303,
+      "no reader sign-in": 404,
+    });
+    for (const [name, response] of Object.entries(responses)) {
+      expect([name, response.headers.get("cross-origin-opener-policy")]).toEqual([name, "same-origin"]);
+    }
+
+    // The label host keeps its own policy.
+    const swapped = await getFrom(await grantFor(doc, doc.owner), {}, PRIVATE);
+    expect(swapped.headers.get("cross-origin-opener-policy")).toBe(ISOLATION["cross-origin-opener-policy"]);
+  });
+
   describe("POST /open/{docId}/request", () => {
     const API_OPEN = (docId: string) => `${API}/open/${docId}/request`;
     const post = async (docId: string, accountId: string, over: Partial<Env> = PRIVATE, headers: Record<string, string> = SAME_ORIGIN) =>
@@ -1728,6 +1785,45 @@ describe("an invited-only document", () => {
         expect((await write(doc.docId, owner, { op: "add", email: "x@acme.com" }, over)).status).toBe(404);
       }
       expect((await access(doc.docId)).people).toEqual([]);
+    });
+
+    it("answers a re-add of a listed address as a repeat on a free plan, not a refusal", async () => {
+      const doc = await privateDoc();
+      const owner = await ownerAccount(doc, "free");
+      await env.DB.prepare("INSERT INTO doc_invites (doc_id, email, created_at) VALUES (?, 'alice@acme.com', ?)")
+        .bind(doc.docId, Date.now())
+        .run();
+
+      const repeat = await write(doc.docId, owner, { op: "add", email: "alice@acme.com" });
+
+      expect(repeat.status).toBe(303);
+      expect((await access(doc.docId)).people.map((person) => person.email)).toEqual(["alice@acme.com"]);
+      expect((await write(doc.docId, owner, { op: "add", email: "carol@acme.com" })).status).toBe(402);
+    });
+
+    it("refuses a new address past the daily invite cap with 429, keeps the pending request and changes nothing", async () => {
+      const doc = await privateDoc();
+      const other = await privateDoc("other");
+      expect(other.owner).toBe(doc.owner);
+      const owner = await ownerAccount(doc);
+      for (let i = 0; i < 100; i++) {
+        await env.DB.prepare("INSERT INTO doc_invites (doc_id, email, created_at) VALUES (?, ?, ?)")
+          .bind(other.docId, `p${i}@acme.com`, Date.now() - 1000)
+          .run();
+      }
+      await env.DB.prepare("INSERT INTO doc_access_requests (doc_id, email, created_at) VALUES (?, 'bob@other.com', ?)")
+        .bind(doc.docId, Date.now())
+        .run();
+
+      const refused = await write(doc.docId, owner, { op: "add", email: "bob@other.com" });
+
+      expect(refused.status).toBe(429);
+      const html = await refused.text();
+      expect(html).toContain("You have added 100 new people in the last 24 hours. Try again later.");
+      expect(html).toContain("Nothing was changed.");
+      const state = await access(doc.docId);
+      expect(state.requests.map((request) => request.email)).toEqual(["bob@other.com"]);
+      expect(state.people).toEqual([]);
     });
   });
 });
