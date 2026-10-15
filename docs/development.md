@@ -167,7 +167,7 @@ cookies, CSP, `frame-ancestors`, the opener policy), so the test never uses
 
 Like private sharing, comments need reader sign-in, so `npm run dev` does not
 expose them: the document routes, the frame and the threads resource answer `404`
-(the account route `PUT /api/v1/account` does not need it). The Durable Object
+(and so does the account route `PUT /api/v1/account`, since a display name exists only for comments). The Durable Object
 itself runs under `wrangler dev` and in the tests, which hold the real
 `DocComments` class: `test/comments-anchor.test.ts` (pure anchoring),
 `test/comments-object.test.ts` (the object, over RPC), `test/comments-api.test.ts`

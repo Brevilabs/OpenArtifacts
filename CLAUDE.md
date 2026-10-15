@@ -165,6 +165,11 @@ publicly at its canonical url, and detaching domains does not help, so there is 
 safe pre-floor emergency rollback: roll forward. Record the version id beside the
 cutover's, and treat the newer of the two as the floor (`docs/deploying.md`).
 
+The comments deploy adds a third: the first version carrying the `DocComments`
+Durable Object migration. Cloudflare refuses any rollback across it, so it is the
+effective floor once shipped, and the pre-floor emergency rollback above can no
+longer be carried out (`docs/deploying.md`).
+
 ## Git hygiene
 
 Stage explicit paths (`git add src/foo.ts`), never `git add -A` / `git add .`.

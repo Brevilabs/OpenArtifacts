@@ -520,8 +520,9 @@ GET    /api/v1/docs/{docId}/html                            → 200 the latest s
 POST   /api/v1/docs/{docId}/open                            → 200 {url, expiresAt}
 ```
 
-All owner-only, and a document that is not yours, never existed, or was deleted is
-`404 not_found`. A client changes **one address at a time**: it never sends the
+All owner-only except `GET …/html`, which anyone who can read the document may call
+(see [Comments](#comments)). A document you may not use this way, never existed, or
+was deleted is `404 not_found`. A client changes **one address at a time**: it never sends the
 whole list, so a retry cannot remove everyone, and a repeated `PUT` or `DELETE`
 answers `200` with the same list. An `Access` response is `no-store`.
 
@@ -536,8 +537,8 @@ answers `200` with the same list. An `Access` response is `no-store`.
 
 `url` is always the canonical link, never a grant. `email` says whether this
 server sends invite and request emails: when it is `false` the owner shares the
-link themselves. `role` is `"view"` or `"comment"`; clients may ignore it until
-comments ship. `requests` are the addresses that asked to open the document and
+link themselves. `role` is `"view"` or `"comment"`; only `comment` may post threads
+(see [Comments](#comments)). `requests` are the addresses that asked to open the document and
 have not been answered.
 
 - `PUT …/access` takes `{"linkAccess": "anyone" | "invited"}`. Switching to
@@ -564,8 +565,10 @@ have not been answered.
   silently.
 - `GET …/html` returns the latest stored HTML (`text/html`, `private, no-store`,
   sandboxed), so `openartifacts get` keeps working once a page's public url stops
-  answering. It is owner-only and is not part of the family that a server without
-  reader sign-in answers `404`.
+  answering. Anyone who can read the document may call it, not only the owner, so an
+  invited reviewer's agent can quote the page; a document the caller cannot read is
+  `404`. It is not part of the family that a server without reader sign-in answers
+  `404`.
 - `POST …/open` returns `{"url", "expiresAt"}`, with `expiresAt` 60 seconds out.
   For an invited-only document `url` is the publisher's own origin with a
   60-second grant, which opens it in a browser with no sign-in; for a public one
@@ -573,7 +576,7 @@ have not been answered.
   store it, or put it in a publish receipt: agent wrappers print receipts into
   transcripts. No plan is needed.
 
-Errors reuse the existing codes: `404 not_found` for a document that is not yours,
+Errors reuse the existing codes: `404 not_found` for a document that is not yours (for `…/html`, one you cannot read),
 `400 bad_request` for an invalid address, role or mode, or a 101st person, and
 `402 limit_reached` with `"limit": "privateSharing"` when the plan does not include
 it, and `429 quota_exceeded` past the daily invite cap. On a server without reader sign-in configured, every route in this section
@@ -640,7 +643,7 @@ and the full serving header policy. Unknown ids are still `404` and deleted ones
 | | Lifetime | Holds |
 | --- | --- | --- |
 | Reader session `__Host-oa_session`, on the API host | 30 days | An account id. Read only by `/open/*`, `/share/*`, `/signin/*` and `/embed/sign-in`; `/api/v1` ignores it. |
-| Popover token, in the Share frame's own storage | 24 hours | An account id and one document id; prefixed `oas_`, which `/api/v1` refuses. Accepted only by `/embed/api/docs/{docId}/…` for that document. |
+| Popover token, in the Share frame's own storage | 24 hours | An account id and one document id; prefixed `oas_`, which `/api/v1` refuses. Accepted only by `/embed/api/docs/{docId}/…` for that document, and by `PUT /embed/api/account` (the display name) with a token for any document. |
 | URL grant `?grant=` | 60 seconds | An origin label and a principal. Never stays in the address bar. |
 | Origin cookie `__Host-oa_grant`, on the publisher's origin | 1 hour | An origin label and a principal. Every document is checked again on every request. |
 
@@ -729,9 +732,10 @@ the frame makes a random nonce only it knows and passes the nonce's hash as `h`.
 **The token.** `oas_…`, signed with the reader secret under its own purpose,
 valid for 24 hours, naming one account and one document, and kept in the frame's
 own storage. It is a bearer credential accepted only by
-`/embed/api/docs/{docId}/…` (the access routes and the comment routes) for that document. `/api/v1` refuses its
-prefix, and the share page, `/open` and `/signin` read only the session cookie.
-It cannot publish, list, delete or touch another document.
+`/embed/api/docs/{docId}/…` (the access routes and the comment routes) for that document, and by
+`PUT /embed/api/account`, which sets the account's display name and takes a token for any document.
+`/api/v1` refuses its prefix, and the share page, `/open` and `/signin` read only the session cookie.
+It cannot publish, list, delete or touch another document; the display name is the one account-wide thing it changes.
 
 **The frame's JSON.** `GET`, `PUT` and `DELETE /embed/api/docs/{docId}/access…`
 are the five access operations of [The access routes](#the-access-routes) under
@@ -780,8 +784,8 @@ and the reasons.
 **On a server without reader sign-in configured, or without the `COMMENTS`
 Durable Object binding, none of it exists.** Every route under a document in this
 section answers `404 not_found` (the document routes are part of the
-private-sharing family, so they need reader sign-in as well), the threads resource
-answers `404`, the frame is absent, and the page script adds no button. A client
+private-sharing family, so they need reader sign-in as well), so does
+`PUT /api/v1/account`, the threads resource answers `404`, the frame is absent, and the page script adds no button. A client
 shows "Not found, or this server does not support comments."
 
 ### The routes
@@ -810,7 +814,7 @@ other method or path under a document is `404 not_found`, as before.
 | `POST …/resolve`, `POST …/reopen` | The document's owner, or the thread's author while they can still comment. |
 | `DELETE …/comments/{commentId}` | The comment's author, on any document they can still read. |
 | `PUT …/settings` | The document's owner. |
-| `PUT /api/v1/account` | An account token, or a license key whose owner is linked to an account (it names that account). An unlinked key has no account to name: `404 not_found`. Needs no reader sign-in. |
+| `PUT /api/v1/account` | An account token, or a license key whose owner is linked to an account (it names that account). An unlinked key has no account to name: `404 not_found`. Like every route in this section, it answers `404 not_found` on a server without reader sign-in or the `COMMENTS` binding. |
 
 **Who can comment.** The caller can read the document, the owner has turned
 comments on, the owner's plan includes comments, and the caller is the owner, an
@@ -920,7 +924,7 @@ write is `402 limit_reached` with `limit: "threads"` or `limit: "comments"` and 
 `upgrade_url`. A principal may write **30 comments a minute** (create, reply,
 resolve and reopen share the allowance; delete and the settings switch do not),
 else `429 quota_exceeded` with `Retry-After: 60`. A write is checked in this
-order, and a refused write never spends the rate limit:
+order. A write refused at steps 1 to 5 never spends the rate limit:
 
 1. The caller can read the document, and comments are available on this server:
    else `404`. A deleted document is `404`, and its comment object refuses writes
@@ -935,6 +939,11 @@ order, and a refused write never spends the rate limit:
    named after their account. `PUT /api/v1/account` (or the frame's equivalent)
    sets it: trimmed, 1 to 64 characters, no control characters, else `400`.
 6. The rate limit.
+
+A write that passes the rate limit and is then refused for its content (a malformed
+or over-long body or quote, `anchor_not_found`, a `version` that does not exist, the
+500 and 2,000 caps, or an unknown or forbidden `threadId`) has spent one unit of the
+allowance.
 
 Anything else the caller may not see or do (another publisher's document, a
 `threadId` or `commentId` that is not theirs to touch, a resolve by someone who is
@@ -1049,10 +1058,17 @@ also checks the origin.
 | frame → page | `changed` | none: refetch now |
 | frame → page | `focus` | `{threadId}` |
 | frame → page | `close` | none: hide the sheet or cancel the draft |
+| frame → page | `size` | `{height}`: how tall the margin's stacked cards need the column to be (margin mode) |
+| frame → page | `height` | `{px}`: the height of the overlay sheet's content (overlay mode) |
+| frame → page | `reveal` | `{top, height}`: where the focused card sits in the margin, so the page can scroll it into view |
 
 A hostile page on the document's own serving origin can embed the frame and so
 learn, from `viewer`, whether this visitor holds a token for the document and may
-comment. It learns nothing else about them.
+comment. The layout messages (`size`, `height`, `reveal`) carry only heights, but
+those depend on what the frame draws for this visitor, so the page can also infer
+whether they may resolve a thread, whether a comment is theirs and whether they
+have set a display name. It learns nothing else about them, and no message in
+either direction carries a credential.
 
 **Signing in.** The frame's **Sign in to comment** runs the Share popover's flow
 (`/embed/sign-in`, `POST /embed/token`) and keeps the token under the same storage
@@ -1065,8 +1081,15 @@ same two controls as forms; neither is drawn where `COMMENTS` is unbound.
 
 Copilot and CLI releases that predate comments never call these routes and are
 unaffected. A client that does, against a server that predates them, gets
-`404 not_found` on `…/threads`, `…/settings` and `PUT /api/v1/account`, which it
-should read as "this server does not support comments".
+`404 not_found` on `…/threads` and `…/settings`, which it should read as "this
+server does not support comments". `PUT /api/v1/account` on such a server answers
+`404 not_found` to an account token but `401 unauthorized` to a license key,
+because that server's account routes take account tokens only. A license-key
+client should therefore decide whether comments are supported from the
+`…/threads` or `…/settings` `404`, never from that one status, and should not
+treat the `401` as a revoked key. (On a current server an unlinked license key
+also gets `404` there, so that status alone does not prove the server lacks
+comments.)
 
 ## Signing in from a terminal
 

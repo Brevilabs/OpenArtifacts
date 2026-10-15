@@ -325,9 +325,11 @@ A reader is an `accounts` row, the same principal a publisher is. There is no
   no second provider sign-in.
 - The **popover token writes, for one document**. It lives in the Share frame's own
   storage on the API host, never on a document's origin, and it is a bearer header
-  on the frame's same-origin `fetch`. It can change that document's access from the
-  popover and read its title; it cannot publish, list, delete or touch another
-  document. `/api/v1` refuses its `oas_` prefix, the share page, `/open` and
+  on the frame's same-origin `fetch`. For that document it can change access, read
+  the title, and post, resolve, reopen and delete comments and flip the comments
+  switch, as each route's own checks allow. It can also set the account's display
+  name (`PUT /embed/api/account`), which is account-wide, so a token for any
+  document serves. It cannot publish, list, delete or touch another document. `/api/v1` refuses its `oas_` prefix, the share page, `/open` and
   `/signin` read only the session cookie, and a label host reads only the grant
   cookie.
 - **Writes never ride a cookie a document can use.** Approving, declining and
@@ -528,7 +530,7 @@ embedding page or any other window does nothing.
 account and the document, valid for 24 hours, kept in the frame's `localStorage`
 (with an in-memory copy where storage is blocked). The frame sends it as a bearer
 header on same-origin `fetch` with `credentials: "omit"`, and only
-`/embed/api/docs/{docId}/access…` accepts it, for that document, checking the
+`/embed/api/docs/{docId}/…` (the access and comment routes) accepts it, for that document, plus `PUT /embed/api/account` for the display name, checking the
 token before the path's document is read. Because the account must still exist and
 each call is authorised live, a token carries no more than the account's own
 current rights.

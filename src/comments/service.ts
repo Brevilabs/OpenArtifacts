@@ -154,7 +154,8 @@ async function viewerOf(env: Env, standing: Standing, now: number): Promise<View
  * Everything a write has to clear before the object is asked: readable, comments
  * on, the role allows writing, the owner's plan has comments, a person has a
  * name, and the principal is under the rate limit. The limit comes last so a
- * refused write never spends it.
+ * write refused by these gates never spends it; one refused after it, for its
+ * content (see `docs/http-api.md`), has.
  */
 async function authoriseWrite(env: Env, docId: string, caller: Caller, now: number): Promise<Standing | Response> {
   const standing = await standingOn(env, docId, caller);
