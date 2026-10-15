@@ -203,6 +203,17 @@ export interface Env {
    * misses against the D1 read budget. Absent means no limit.
    */
   EMBED_TOKEN_LIMITER?: RateLimit;
+  /**
+   * Comment writes (a thread, a reply, a resolve, a reopen), counted per
+   * principal. Over the limit the write answers `429 quota_exceeded` with a
+   * `Retry-After`. Absent means no limit.
+   */
+  COMMENT_WRITE_LIMITER?: RateLimit;
+  /**
+   * Comment notification emails, counted per document. Over the limit the
+   * comment still posts and only the email is skipped. Absent means no limit.
+   */
+  COMMENT_EMAIL_LIMITER?: RateLimit;
 
   /**
    * One SQLite Durable Object per document, holding its comment threads

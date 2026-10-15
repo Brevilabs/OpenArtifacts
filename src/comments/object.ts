@@ -30,6 +30,8 @@
  *     state "open"|"resolved"|"all" (default all); since filters on a thread's
  *     last activity (epoch ms). Re-anchors every thread for `version` the first
  *     time that version is asked for, then answers from the memo.
+ *   getThread({docId, threadId, version})
+ *     -> {ok, thread: ThreadRecord}   one thread, anchored for `version`
  *   createThread({docId, principal, kind, onBehalfOf, anchor, body, version, at})
  *     -> {ok, threadId, commentId, anchorStatus: "anchored", matchedText}
  *   reply({docId, threadId, principal, kind, onBehalfOf, body, version, at})
@@ -256,6 +258,18 @@ export class DocComments extends DurableObject<Env> {
       (t) => (state === "all" || t.state === state) && (since === undefined || t.updatedAt > since),
     );
     return { ok: true, version: args.version, latestVersion: args.latestVersion ?? null, threads };
+  }
+
+  /** One thread as `list` would show it for `version`; the Worker reads it to address a notification. */
+  async getThread(args: { docId: string; threadId: string; version: number }): Promise<
+    { ok: true; thread: ThreadRecord } | Failure<"thread_not_found"> | VersionFailure
+  > {
+    if (!isVersion(args.version)) return { ok: false, reason: "version_not_found" };
+    if (!this.threadRow(args.threadId)) return { ok: false, reason: "thread_not_found" };
+    const ready = await this.ensureAnchors(args.docId, args.version);
+    if (!ready.ok) return ready;
+    const thread = this.readThreads(args.version, args.threadId)[0];
+    return thread ? { ok: true, thread } : { ok: false, reason: "thread_not_found" };
   }
 
   // --------------------------------------------------------------- writes

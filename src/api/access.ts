@@ -11,8 +11,11 @@
  * POST   /api/v1/docs/{docId}/open                            → 200 {url, expiresAt}
  * ```
  *
- * Everything is owner-only, and a document that is not yours is `404` exactly as
- * it is everywhere else. A client adds or removes **one address at a time**; it
+ * Everything is owner-only except `…/html`, which is open to anyone who can read
+ * the document (an invited reviewer's agent needs the text to quote it), and a
+ * document that is not yours is `404` exactly as it is everywhere else.
+ * The comment routes under the same prefix (`…/threads`, `…/comments`,
+ * `…/settings`) are `src/comments/routes.ts`. A client adds or removes **one address at a time**; it
  * never sends the whole list, so a retry cannot remove everyone by mistake and a
  * repeated `PUT` or `DELETE` answers `200` with the same list.
  *
@@ -45,7 +48,6 @@ import {
   deleteInvite,
   findManagedDoc,
   findReadableDoc,
-  findServableVersion,
   insertInvite,
   ownerEmail,
   readAccess,
@@ -54,6 +56,7 @@ import {
   type InviteRole,
   type LinkAccess,
 } from "../db.js";
+import { commentRoute } from "../comments/routes.js";
 import { emailConfigured, inviteMessage, sendEmail } from "../email.js";
 import { docNotFound, errorResponse } from "../errors.js";
 import { sha256Hex } from "../hash.js";
@@ -305,6 +308,7 @@ export function accessBody(env: Env, requestUrl: URL, docId: string, state: Acce
     docId,
     url: publicDocUrl(env, requestUrl, docId),
     linkAccess: state.link_access,
+    comments: state.comments_enabled === 1,
     email: emailConfigured(env),
     people: state.people.map((person) => ({ email: person.email, role: person.role, addedAt: person.created_at })),
     requests: state.requests.map((request) => ({ email: request.email, requestedAt: request.created_at })),
@@ -389,8 +393,14 @@ export async function handleDocSection(
   // Everything but `…/html` is private sharing, and an unconfigured server has
   // none of it: no route, as on a Worker that predates the feature. After
   // authentication and before any plan gate, so the answer is `404` however the
-  // caller's plan stands. `…/html` is owner-only bytes and `get` depends on it.
+  // caller's plan stands. `…/html` is the stored bytes and `get` depends on it.
   if (section !== "html" && !readerSignInConfigured(env)) return null;
+
+  // Comments, for an agent: an account token or a license key writes as an
+  // agent acting for its account. Null means these segments are not a comment
+  // route, and the access routes below get their turn.
+  const comments = await commentRoute(request, url, env, { publisher, kind: "agent" }, docId, extra);
+  if (comments !== null) return comments;
 
   const access = section === "access" && rest.length === 0;
   const people = access && kind === "people" && person !== undefined;
@@ -403,9 +413,10 @@ export async function handleDocSection(
     (section === "open" && kind === undefined && method === "POST");
   if (!route) return null;
 
-  if (section === "html" || section === "open") {
+  if (section === "html") return await storedHtml(env, publisher, docId);
+  if (section === "open") {
     if (!isDocId(docId) || !(await canManage(env.DB, docId, publisher.owner))) return docNotFound(docId);
-    return section === "html" ? await storedHtml(env, docId) : await openOwn(env, publisher, docId, url);
+    return await openOwn(env, publisher, docId, url);
   }
 
   let result: AccessResult;
@@ -430,13 +441,19 @@ export async function handleDocSection(
 }
 
 /**
- * The owner's latest stored bytes, so `openartifacts get` keeps working once the
- * page is private and its public url stops answering. A browser cannot reach this:
- * it needs a bearer header, and the sandbox says so anyway.
+ * The latest stored bytes of a document the caller can read, so `openartifacts
+ * get` keeps working once the page is private and its public url stops
+ * answering, and so an invited reviewer's agent can fetch the text it quotes in
+ * a comment. The owner's behaviour is unchanged; a reader is anyone `canRead`
+ * (`CAN_READ_SQL`) allows, and everyone else, a deleted document included, is `404`.
+ * A browser cannot reach this: it needs a bearer header, and the sandbox says so
+ * anyway.
  */
-async function storedHtml(env: Env, docId: string): Promise<Response> {
-  const found = await findServableVersion(env.DB, docId, null);
-  const object = found?.version ? await env.DOCS.get(versionObjectKey(docId, found.version)) : null;
+async function storedHtml(env: Env, publisher: Publisher, docId: string): Promise<Response> {
+  if (!isDocId(docId)) return docNotFound(docId);
+  const found = await findReadableDoc(env.DB, docId, null, publisher.owner);
+  if (found === null || found.deleted_at !== null || !found.allowed) return docNotFound(docId);
+  const object = found.version ? await env.DOCS.get(versionObjectKey(docId, found.version)) : null;
   if (object === null) return docNotFound(docId);
   return new Response(object.body, {
     headers: {

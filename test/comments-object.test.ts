@@ -70,6 +70,18 @@ describe("DocComments", () => {
     ]);
   });
 
+  it("reads one thread as list would, and says when there is none", async () => {
+    const { docId, stub } = await start();
+    const made = mustCreate(
+      await stub.createThread({ docId, ...alice, at: 1000, version: 1, anchor: { exact: "lazy dog" }, body: "x" }),
+    );
+    const found = await stub.getThread({ docId, threadId: made.threadId, version: 1 });
+    if (!found.ok) throw new Error("getThread failed");
+    expect(found.thread).toMatchObject({ threadId: made.threadId, anchorStatus: "anchored", matchedText: "lazy dog" });
+    expect(await stub.getThread({ docId, threadId: "th_nope", version: 1 })).toEqual({ ok: false, reason: "thread_not_found" });
+    expect(await stub.getThread({ docId, threadId: made.threadId, version: 7 })).toEqual({ ok: false, reason: "version_not_found" });
+  });
+
   it("stores an agent's onBehalfOf and drops it for a human", async () => {
     const { docId, stub } = await start();
     const agent = { principal: "acct_alice", kind: "agent" as const, onBehalfOf: "acct_alice" };

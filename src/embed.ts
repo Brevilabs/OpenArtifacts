@@ -59,13 +59,15 @@ import {
   type AccessResult,
   type AccessState,
 } from "./api/access.js";
-import { parseBearerToken, type Publisher } from "./auth.js";
+import type { Publisher } from "./auth.js";
 import { stringField } from "./account.js";
 import type { Env } from "./config.js";
 import { accountEmail, findReadableDoc, putEmbedHandoff, sweepExpired, takeEmbedHandoff } from "./db.js";
 import { COPILOT_HINT, FRAME_CSS, FRAME_SCRIPT, PAGE_SCRIPT } from "./embed-scripts.js";
 import { accountPlan } from "./entitlement.js";
+import { handleCommentsEmbed } from "./comments/embed-api.js";
 import { docNotFound, errorResponse } from "./errors.js";
+import { verifyFrameToken } from "./frame-token.js";
 import { scriptHashSource, sha256Hex } from "./hash.js";
 import { isDocId, SHARE_TOKEN_PREFIX } from "./ids.js";
 import { sameOriginPost, withinClientLimit } from "./limits.js";
@@ -418,16 +420,12 @@ async function frameApi(
     access === "access" &&
     rest.length === 0 &&
     ((kind === undefined && (method === "GET" || method === "PUT")) || people || requests);
-  const secret = readerSecret(env);
-  if (!route || secret === null) return errorResponse("not_found", "No route.", NO_STORE);
+  if (!route || readerSecret(env) === null) return errorResponse("not_found", "No route.", NO_STORE);
 
-  const unauthorized = () => errorResponse("unauthorized", "Sign in again to manage this document.", NO_STORE);
-  const bearer = parseBearerToken(request.headers.get("authorization"));
-  if (bearer === null || !bearer.startsWith(SHARE_TOKEN_PREFIX)) return unauthorized();
-  const claims = await verifyPayload(secret, "share-token", bearer.slice(SHARE_TOKEN_PREFIX.length), now);
-  if (typeof claims?.a !== "string" || claims.a === "" || claims.d !== docId) return unauthorized();
-  const email = await accountEmail(env.DB, claims.a);
-  if (email === null) return unauthorized();
+  const identity = await verifyFrameToken(request, env, docId, now);
+  if (identity === null) return errorResponse("unauthorized", "Sign in again to manage this document.", NO_STORE);
+  const claims = { a: identity.accountId };
+  const email = identity.email;
 
   // The session account as a publisher, as the share page builds it: its
   // documents are everything in its owner scope, and the plan gate reads its
@@ -474,6 +472,11 @@ export async function handleEmbed(
   if (url.pathname === EMBED_SHARE_PATH) return await shareFrame(request, url, env);
   if (url.pathname === EMBED_SIGNIN_PATH) return await popup(request, url, env, now);
   if (url.pathname === EMBED_TOKEN_PATH) return await claimToken(request, url, env, now);
-  if (url.pathname.startsWith(`${EMBED_API_PREFIX}/`)) return await frameApi(request, url, env, analytics, now);
+  if (url.pathname.startsWith(`${EMBED_API_PREFIX}/`)) {
+    // The comments family first; null means the path is not one of its routes.
+    const comments = await handleCommentsEmbed(request, url, env, now);
+    if (comments !== null) return comments;
+    return await frameApi(request, url, env, analytics, now);
+  }
   return READER_NOT_FOUND();
 }

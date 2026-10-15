@@ -123,6 +123,21 @@
       "name": "EMBED_TOKEN_LIMITER",
       "namespace_id": "1010",
       "simple": { "limit": 20, "period": 10 }
+    },
+    // Comment writes (a thread, a reply, a resolve or a reopen), counted per
+    // principal. Over the limit the write is refused with `quota_exceeded` and a
+    // `Retry-After`. Absent means no limit.
+    {
+      "name": "COMMENT_WRITE_LIMITER",
+      "namespace_id": "1011",
+      "simple": { "limit": 30, "period": 60 }
+    },
+    // Comment notification emails, counted per document. Over the limit the
+    // comment still posts; only the email is skipped.
+    {
+      "name": "COMMENT_EMAIL_LIMITER",
+      "namespace_id": "1012",
+      "simple": { "limit": 20, "period": 60 }
     }
   ],
 
@@ -196,7 +211,7 @@
     // `pro` and `pro_lifetime` and absent from `free`. The license-key side has
     // no flag: any plan that may publish with a key (PUBLISHING_PLANS in
     // src/auth.ts) may share privately.
-    "PLAN_LIMITS": "{\"free\":{\"documents\":3,\"pushesPerDay\":6,\"htmlBytes\":1048576},\"pro\":{\"documents\":500,\"pushesPerDay\":100,\"htmlBytes\":10485760,\"privateSharing\":true},\"pro_lifetime\":{\"documents\":500,\"pushesPerDay\":100,\"htmlBytes\":10485760,\"storageBytes\":5368709120,\"privateSharing\":true}}",
+    "PLAN_LIMITS": "{\"free\":{\"documents\":3,\"pushesPerDay\":6,\"htmlBytes\":1048576},\"pro\":{\"documents\":500,\"pushesPerDay\":100,\"htmlBytes\":10485760,\"privateSharing\":true,\"comments\":true},\"pro_lifetime\":{\"documents\":500,\"pushesPerDay\":100,\"htmlBytes\":10485760,\"storageBytes\":5368709120,\"privateSharing\":true,\"comments\":true}}",
 
     // Product analytics labels every event with this; business queries filter
     // on it. A local run that turns delivery on must override it with

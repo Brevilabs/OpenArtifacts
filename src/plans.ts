@@ -9,6 +9,8 @@ export interface PlanLimits {
   storageBytes?: number;
   /** The plan may make documents invited-only and add people to them. */
   privateSharing?: boolean;
+  /** The plan may turn comments on for a document, and its documents accept comments. */
+  comments?: boolean;
 }
 
 const DEFAULT_PLANS: Record<string, PlanLimits> = {
@@ -28,9 +30,9 @@ export function configuredPlans(env: Env): Record<string, PlanLimits> {
       throw new Error("Invalid PLAN_LIMITS entry.");
     }
     const limits = value as Record<string, unknown>;
-    if (Object.keys(limits).some((key) => !["documents", "pushesPerDay", "htmlBytes", "storageBytes", "privateSharing"].includes(key)) || ["documents", "pushesPerDay", "htmlBytes"].some(
+    if (Object.keys(limits).some((key) => !["documents", "pushesPerDay", "htmlBytes", "storageBytes", "privateSharing", "comments"].includes(key)) || ["documents", "pushesPerDay", "htmlBytes"].some(
       (field) => typeof limits[field] !== "number" || !Number.isSafeInteger(limits[field]) || (limits[field] as number) <= 0,
-    ) || (limits.storageBytes !== undefined && (!Number.isSafeInteger(limits.storageBytes) || (limits.storageBytes as number) <= 0)) || (limits.privateSharing !== undefined && typeof limits.privateSharing !== "boolean") || (limits.htmlBytes as number) > MAX_DOC_BYTES) throw new Error("Invalid plan ceilings.");
+    ) || (limits.storageBytes !== undefined && (!Number.isSafeInteger(limits.storageBytes) || (limits.storageBytes as number) <= 0)) || (limits.privateSharing !== undefined && typeof limits.privateSharing !== "boolean") || (limits.comments !== undefined && typeof limits.comments !== "boolean") || (limits.htmlBytes as number) > MAX_DOC_BYTES) throw new Error("Invalid plan ceilings.");
   }
   return raw as Record<string, PlanLimits>;
 }

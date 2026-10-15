@@ -111,6 +111,16 @@ export async function deleteDoc(
   // row is marked, and the handler answers 204 even if the sweep fails.
   analytics.record({ name: "document_unshared", docId, atMs: now, ownerId: owner });
 
+  // The comments object goes before the sweep, which removes the snapshot the
+  // object wrote (`threads.json`) along with the versions. Best effort, like the
+  // sweep: once the row says deleted nothing can reach the threads, so a failure
+  // here costs storage and not exposure, and the log makes it findable.
+  try {
+    if (env.COMMENTS !== undefined) await env.COMMENTS.get(env.COMMENTS.idFromName(docId)).purge();
+  } catch (error) {
+    console.error("delete left comments behind", { docId, error });
+  }
+
   try {
     await deleteDocObjects(env, docId, deps.objectBatch ?? OBJECT_BATCH);
   } catch (error) {

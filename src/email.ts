@@ -103,3 +103,54 @@ export function requestMessage(requesterAddress: string, title: string, shareUrl
     ].join(""),
   };
 }
+
+/** What a comment notification is about. */
+export type CommentEvent = "thread" | "reply" | "resolved";
+
+/**
+ * The note a comment sends: a new thread to the document's owner, a reply or a
+ * resolve to everyone who wrote in the thread. `actor` is a display name, the
+ * only thing the recipient learns about who wrote it: never anyone's address.
+ * `quote` is the passage the thread sits on and `text` the comment (null for a
+ * resolve, which says so instead). Both are other people's words, so they reach
+ * the text part as plain text and the HTML part escaped, trimmed to a length an
+ * inbox can hold; the one link is the document's canonical page.
+ */
+export function commentMessage(args: {
+  event: CommentEvent;
+  actor: string;
+  title: string;
+  quote: string;
+  text: string | null;
+  url: string;
+  version: number;
+}) {
+  const title = oneLine(args.title);
+  const actor = oneLine(args.actor);
+  const quote = args.quote.length > 300 ? `${args.quote.slice(0, 300)}…` : args.quote;
+  const text = args.text === null ? null : args.text.length > 2000 ? `${args.text.slice(0, 2000)}…` : args.text;
+  const headline =
+    args.event === "thread"
+      ? `${actor} commented on "${title}"`
+      : args.event === "reply"
+        ? `${actor} replied on "${title}"`
+        : `${actor} resolved a comment on "${title}" in version ${args.version}`;
+  const ignore = "You are receiving this because you wrote on this thread or own the document.";
+  return {
+    subject: headline,
+    text: [
+      headline,
+      `On: “${quote}”`,
+      ...(text === null ? [] : [text]),
+      `Open document: ${args.url}`,
+      ignore,
+    ].join("\n\n"),
+    html: [
+      `<p><b>${escapeHtml(headline)}</b></p>`,
+      `<blockquote>${escapeHtml(quote)}</blockquote>`,
+      ...(text === null ? [] : [`<p style="white-space:pre-wrap">${escapeHtml(text)}</p>`]),
+      `<p><a href="${escapeHtml(args.url)}">Open document</a></p>`,
+      `<p>${ignore}</p>`,
+    ].join(""),
+  };
+}
