@@ -1537,6 +1537,243 @@ export async function findReadableDoc(
 
 export type InviteRole = "view" | "comment";
 
+/**
+ * What a comment request needs to decide, in one read: the document, what
+ * `principal` may do with it, and the facts the caller turns into a status.
+ * `principal` is a reader's account id, a publisher's owner id, or `""` for
+ * an anonymous reader (who can read only an `anyone` document).
+ */
+export interface CommentableDoc {
+  /** The document's owner id, which names its publisher's origin. */
+  owner: string;
+  title: string;
+  deleted_at: number | null;
+  link_access: LinkAccess;
+  /** The owner's switch, as 0 or 1. */
+  comments_enabled: number;
+  /** The version asked for (`pinned`) or the newest that has bytes, or null. */
+  version: number | null;
+  /** The newest version that has bytes, or null before the first lands. */
+  latest_version: number | null;
+  /** `canRead` for the principal. */
+  allowed: boolean;
+  /** `canManage` for the principal, as 0 or 1. */
+  can_manage: number;
+  /** The principal is an invited account whose role is `comment`, as 0 or 1. */
+  invited_comment: number;
+  /**
+   * The principal as comments store it: the account id when the principal is a
+   * license owner linked to one, else the principal itself. So a linked key and
+   * its account are one author, as they are one owner everywhere else.
+   */
+  principal_id: string;
+  /** The owner as comments store it, by the same rule. */
+  owner_account: string;
+  /**
+   * Every id the principal's comments may be stored under: its whole owner scope,
+   * as a JSON array. A license key that comments and is linked to an account
+   * afterwards has comments under the key's id while `principal_id` is now the
+   * account's, and both are the same author.
+   */
+  scope_ids: string;
+  /** The principal's display name, or null when it has none (or is no account). */
+  viewer_name: string | null;
+}
+
+/**
+ * The document, the principal's standing on it, and the version to answer for,
+ * in one read. `canComment` is not computed here because it also depends on the
+ * owner's plan, which the caller reads separately; this returns its two inputs
+ * that live in D1 (`comments_enabled`, `invited_comment`) beside `allowed` and
+ * `can_manage`, so the rule is assembled in one place (`src/comments/access.ts`).
+ *
+ * Bind order: the owner scope twice, then the principal for `CAN_READ_SQL`, then
+ * for the invited-role check, then the pinned version twice, then the id.
+ */
+export async function findCommentableDoc(
+  db: D1Database,
+  docId: string,
+  principal: string,
+  pinned: number | null,
+): Promise<CommentableDoc | null> {
+  // `return await`: see the note on the router's catch in index.ts.
+  const row = await db
+    .prepare(
+      `${OWNER_SCOPE_SQL}
+       SELECT d.owner AS owner, d.title AS title, d.deleted_at AS deleted_at, d.link_access AS link_access,
+              d.comments_enabled AS comments_enabled,
+              (SELECT MAX(v.n) FROM versions v
+                WHERE v.doc_id = d.id AND (? IS NULL OR v.n = ?)) AS version,
+              (SELECT MAX(v.n) FROM versions v WHERE v.doc_id = d.id) AS latest_version,
+              ${CAN_READ_SQL} AS allowed,
+              (${CAN_MANAGE_SQL}) AS can_manage,
+              EXISTS (SELECT 1 FROM accounts a JOIN doc_invites i ON i.email = a.email
+                       WHERE a.id = ? AND i.doc_id = d.id AND i.role = 'comment') AS invited_comment,
+              (SELECT id FROM canonical) AS principal_id,
+              COALESCE((SELECT account_id FROM owner_links WHERE external_owner = d.owner), d.owner) AS owner_account,
+              (SELECT json_group_array(owner) FROM owner_scope) AS scope_ids,
+              (SELECT display_name FROM accounts WHERE id = (SELECT id FROM canonical)) AS viewer_name
+         FROM docs d
+        WHERE d.id = ?`,
+    )
+    .bind(principal, principal, pinned, pinned, principal, principal, docId)
+    .first<Omit<CommentableDoc, "allowed"> & { allowed: number }>();
+  // As in `findReadableDoc`: the predicate comes back as 0 or 1.
+  return row === null ? null : { ...row, allowed: row.allowed === 1 };
+}
+
+/**
+ * Set a live document's comments switch. The principal must manage the
+ * document; the plan check is the caller's.
+ */
+export async function setCommentsEnabled(
+  db: D1Database,
+  docId: string,
+  owner: string,
+  enabled: boolean,
+): Promise<void> {
+  await db
+    .prepare(
+      `${OWNER_SCOPE_SQL}
+       UPDATE docs AS d SET comments_enabled = ?
+        WHERE d.id = ? AND ${CAN_MANAGE_SQL} AND d.deleted_at IS NULL`,
+    )
+    .bind(owner, owner, enabled ? 1 : 0, docId)
+    .run();
+}
+
+/**
+ * Set the display name of the account `owner` resolves to: the account itself,
+ * or the one a license-key owner id is linked to. False when there is no such
+ * account (an unlinked license owner), which the caller reports as not found.
+ */
+export async function setDisplayName(db: D1Database, owner: string, name: string): Promise<boolean> {
+  const updated = await db
+    .prepare(
+      `UPDATE accounts SET display_name = ?
+        WHERE id = COALESCE((SELECT account_id FROM owner_links WHERE external_owner = ?), ?)
+        RETURNING id`,
+    )
+    .bind(name, owner, owner)
+    .first();
+  return updated !== null;
+}
+
+/** D1 allows 100 bound parameters a statement; names and emails are read in chunks under it. */
+const ID_CHUNK = 40;
+
+function chunks<T>(items: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
+}
+
+/**
+ * Display names for a set of principals as comments store them. A principal is
+ * an account id, or an external owner id that is (now) linked to an account;
+ * both resolve, so a comment written before a link keeps its author's name.
+ * Principals with no account or no name are absent from the result.
+ */
+export async function displayNames(db: D1Database, ids: string[]): Promise<Map<string, string>> {
+  const names = new Map<string, string>();
+  const unique = [...new Set(ids.filter((id) => id !== ""))];
+  if (unique.length === 0) return names;
+  const statements = chunks(unique, ID_CHUNK).map((part) => {
+    const marks = part.map(() => "?").join(",");
+    return db
+      .prepare(
+        `SELECT a.id AS id, l.external_owner AS ext, a.display_name AS name
+           FROM accounts a LEFT JOIN owner_links l ON l.account_id = a.id
+          WHERE a.display_name IS NOT NULL AND (a.id IN (${marks}) OR l.external_owner IN (${marks}))`,
+      )
+      .bind(...part, ...part);
+  });
+  for (const result of await db.batch<{ id: string; ext: string | null; name: string }>(statements)) {
+    for (const row of result.results) {
+      names.set(row.id, row.name);
+      if (row.ext) names.set(row.ext, row.name);
+    }
+  }
+  return names;
+}
+
+/**
+ * Which of these accounts can read `docId` right now: `CAN_READ_SQL`'s rule for
+ * each (a public document, the account owns it or a key linked to it does, or its
+ * address is on the invite list). Notifications go only to these, because access
+ * is revocable and a past commenter must not be mailed text they can no longer open.
+ */
+export async function readableAccounts(db: D1Database, docId: string, ids: string[]): Promise<Set<string>> {
+  const readable = new Set<string>();
+  const unique = [...new Set(ids.filter((id) => id !== ""))];
+  if (unique.length === 0) return readable;
+  const statements = chunks(unique, ID_CHUNK).map((part) =>
+    db
+      .prepare(
+        `SELECT a.id AS id FROM accounts a JOIN docs d ON d.id = ?
+          WHERE a.id IN (${part.map(() => "?").join(",")})
+            AND (d.link_access = 'anyone'
+              OR d.owner = a.id
+              OR d.owner IN (SELECT external_owner FROM owner_links WHERE account_id = a.id)
+              OR EXISTS (SELECT 1 FROM doc_invites i WHERE i.doc_id = d.id AND i.email = a.email))`,
+      )
+      .bind(docId, ...part),
+  );
+  for (const result of await db.batch<{ id: string }>(statements)) {
+    for (const row of result.results) readable.add(row.id);
+  }
+  return readable;
+}
+
+/** Addresses for a set of account ids. Ids with no account are absent. */
+export async function accountEmails(db: D1Database, ids: string[]): Promise<Map<string, string>> {
+  const emails = new Map<string, string>();
+  const unique = [...new Set(ids.filter((id) => id !== ""))];
+  if (unique.length === 0) return emails;
+  const statements = chunks(unique, ID_CHUNK).map((part) =>
+    db.prepare(`SELECT id, email FROM accounts WHERE id IN (${part.map(() => "?").join(",")})`).bind(...part),
+  );
+  for (const result of await db.batch<{ id: string; email: string }>(statements)) {
+    for (const row of result.results) emails.set(row.id, row.email);
+  }
+  return emails;
+}
+
+/** What the plans an owner holds say, for the comments entitlement check. */
+export interface OwnerPlans {
+  /** Stored account plans in the owner's scope, with their expiry. */
+  accounts: Array<{ plan: string; expiresAt: number | null }>;
+  /** Plans of license keys in the owner's scope whose last validation stands. */
+  licenses: string[];
+}
+
+/**
+ * The plans held by an owner id and everything linked to it (`OWNER_SCOPE_SQL`),
+ * read from what is stored: no license-server call, so the write path costs one
+ * D1 read. Staleness is bounded by the owner's own requests, which refresh it.
+ */
+export async function ownerPlans(db: D1Database, owner: string): Promise<OwnerPlans> {
+  const rows = await db
+    .prepare(
+      `${OWNER_SCOPE_SQL}
+       SELECT 'account' AS kind, a.plan AS plan, a.plan_expires_at AS expires_at
+         FROM accounts a WHERE a.id IN (SELECT owner FROM owner_scope)
+       UNION ALL
+       SELECT 'license', p.plan, NULL
+         FROM publishers p
+        WHERE p.owner IN (SELECT owner FROM owner_scope)
+          AND (p.rejected_at IS NULL OR p.validated_at > p.rejected_at)`,
+    )
+    .bind(owner, owner)
+    .all<{ kind: "account" | "license"; plan: string; expires_at: number | null }>();
+  const plans: OwnerPlans = { accounts: [], licenses: [] };
+  for (const row of rows.results) {
+    if (row.kind === "account") plans.accounts.push({ plan: row.plan, expiresAt: row.expires_at });
+    else plans.licenses.push(row.plan);
+  }
+  return plans;
+}
+
 /** One person a document is shared with. */
 export interface InviteRow {
   email: string;
@@ -1557,9 +1794,9 @@ export interface RequestRow {
 export async function readAccess(
   db: D1Database,
   docId: string,
-): Promise<{ title: string; link_access: LinkAccess; people: InviteRow[]; requests: RequestRow[] } | null> {
+): Promise<{ title: string; link_access: LinkAccess; comments_enabled: number; people: InviteRow[]; requests: RequestRow[] } | null> {
   const [doc, people, requests] = await db.batch<DocAccessRow | InviteRow | RequestRow>([
-    db.prepare("SELECT title, link_access FROM docs WHERE id = ? AND deleted_at IS NULL").bind(docId),
+    db.prepare("SELECT title, link_access, comments_enabled FROM docs WHERE id = ? AND deleted_at IS NULL").bind(docId),
     db
       .prepare("SELECT email, role, created_at FROM doc_invites WHERE doc_id = ? ORDER BY created_at, email")
       .bind(docId),
@@ -1577,7 +1814,7 @@ export async function readAccess(
     : null;
 }
 
-type DocAccessRow = { title: string; link_access: LinkAccess };
+type DocAccessRow = { title: string; link_access: LinkAccess; comments_enabled: number };
 
 /**
  * Set a live document's mode. True only when this call changed it: false means

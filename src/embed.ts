@@ -55,17 +55,20 @@ import {
   parseLinkAccess,
   refusalResponse,
   removePerson,
+  roleOf,
   setMode,
   type AccessResult,
   type AccessState,
 } from "./api/access.js";
-import { parseBearerToken, type Publisher } from "./auth.js";
+import type { Publisher } from "./auth.js";
 import { stringField } from "./account.js";
 import type { Env } from "./config.js";
 import { accountEmail, findReadableDoc, putEmbedHandoff, takeEmbedHandoff } from "./db.js";
 import { COPILOT_HINT, FRAME_CSS, FRAME_SCRIPT, PAGE_SCRIPT } from "./embed-scripts.js";
 import { accountPlan } from "./entitlement.js";
+import { handleCommentsEmbed } from "./comments/embed-api.js";
 import { docNotFound, errorResponse } from "./errors.js";
+import { verifyFrameToken } from "./frame-token.js";
 import { scriptHashSource, sha256Hex } from "./hash.js";
 import { isDocId, SHARE_TOKEN_PREFIX } from "./ids.js";
 import { sameOriginPost, withinClientLimit } from "./limits.js";
@@ -383,7 +386,7 @@ const noStore = (response: Response): Response => {
  * ```
  * GET    …/access                     → 200 owner | 200 reader | 404
  * PUT    …/access  {linkAccess}       → 200 owner
- * PUT    …/access/people/{email}      → 200 owner   (approving a request is an add)
+ * PUT    …/access/people/{email} {role?} → 200 owner (approving a request is an add; {role} sets the role)
  * DELETE …/access/people/{email}      → 200 owner
  * DELETE …/access/requests/{email}    → 200 owner   (decline)
  * ```
@@ -419,43 +422,44 @@ async function frameApi(
     access === "access" &&
     rest.length === 0 &&
     ((kind === undefined && (method === "GET" || method === "PUT")) || people || requests);
-  const secret = readerSecret(env);
-  if (!route || secret === null) return errorResponse("not_found", "No route.", NO_STORE);
+  if (!route || readerSecret(env) === null) return errorResponse("not_found", "No route.", NO_STORE);
 
-  const unauthorized = () => errorResponse("unauthorized", "Sign in again to manage this document.", NO_STORE);
-  const bearer = parseBearerToken(request.headers.get("authorization"));
-  if (bearer === null || !bearer.startsWith(SHARE_TOKEN_PREFIX)) return unauthorized();
-  const claims = await verifyPayload(secret, "share-token", bearer.slice(SHARE_TOKEN_PREFIX.length), now);
-  if (typeof claims?.a !== "string" || claims.a === "" || claims.d !== docId) return unauthorized();
-  const email = await accountEmail(env.DB, claims.a);
-  if (email === null) return unauthorized();
+  const identity = await verifyFrameToken(request, env, docId, now);
+  if (identity === null) return errorResponse("unauthorized", "Sign in again to manage this document.", NO_STORE);
+  const accountId = identity.accountId;
+  const email = identity.email;
 
   // The session account as a publisher, as the share page builds it: its
   // documents are everything in its owner scope, and the plan gate reads its
   // current plan. Reading needs no plan, so a GET makes no license-server call.
   const principal: Publisher = {
-    owner: claims.a,
-    plan: (await accountPlan(env, claims.a, { skipAccountRefresh: method === "GET" })).plan,
+    owner: accountId,
+    plan: (await accountPlan(env, accountId, { skipAccountRefresh: method === "GET" })).plan,
     authKind: "account",
   };
   // `changed` says whether a write changed anything. The frame needs it to tell
   // its own switch to private from a repeat on a stale view.
   const owner = (state: AccessState, changed = false) =>
-    Response.json({ viewer: "owner", account: email, title: state.title, changed, ...accessBody(env, url, docId, state) }, { headers: NO_STORE });
+    Response.json({ viewer: "owner", account: email, title: state.title, changed, ...accessBody(env, url, docId, state), ...(env.COMMENTS === undefined ? { comments: undefined } : {}) }, { headers: NO_STORE });
   const answer = (result: AccessResult) =>
     result.ok ? owner(result.state, result.changed) : noStore(refusalResponse(env, principal, docId, result.refusal));
 
   if (method === "GET") {
     const managed = await getAccess(env, principal, docId);
     if (managed.ok) return owner(managed.state);
-    const readable = await findReadableDoc(env.DB, docId, null, claims.a);
+    const readable = await findReadableDoc(env.DB, docId, null, accountId);
     if (readable === null || readable.deleted_at !== null || !readable.allowed) return noStore(docNotFound(docId));
     return Response.json(
       { viewer: "reader", account: email, docId, url: publicDocUrl(env, url, docId), title: readable.title },
       { headers: NO_STORE },
     );
   }
-  if (people && method === "PUT") return answer(await addPerson(env, url, principal, docId, decodeAddress(person), undefined, analytics));
+  if (people && method === "PUT") {
+    // A client may send {role}; Approve and the add box send no body.
+    const role = await roleOf(request);
+    if (role === null) return errorResponse("bad_request", 'Expected {"role": "view" | "comment"} or no body.', NO_STORE);
+    return answer(await addPerson(env, url, principal, docId, decodeAddress(person), role, analytics));
+  }
   if (people) return answer(await removePerson(env, principal, docId, decodeAddress(person), analytics));
   if (requests) return answer(await declineRequest(env, principal, docId, decodeAddress(person)));
 
@@ -469,12 +473,18 @@ export async function handleEmbed(
   url: URL,
   env: Env,
   analytics: AnalyticsSink,
+  ctx: ExecutionContext,
 ): Promise<Response> {
   const now = Date.now();
   if (url.pathname === PAGE_SCRIPT_PATH) return await pageScript(request);
   if (url.pathname === EMBED_SHARE_PATH) return await shareFrame(request, url, env);
   if (url.pathname === EMBED_SIGNIN_PATH) return await popup(request, url, env, now);
   if (url.pathname === EMBED_TOKEN_PATH) return await claimToken(request, url, env, now);
-  if (url.pathname.startsWith(`${EMBED_API_PREFIX}/`)) return await frameApi(request, url, env, analytics, now);
+  if (url.pathname.startsWith(`${EMBED_API_PREFIX}/`)) {
+    // The comments family first; null means the path is not one of its routes.
+    const comments = await handleCommentsEmbed(request, url, env, now, ctx);
+    if (comments !== null) return comments;
+    return await frameApi(request, url, env, analytics, now);
+  }
   return READER_NOT_FOUND();
 }

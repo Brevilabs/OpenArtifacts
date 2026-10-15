@@ -152,6 +152,7 @@ async function handleApi(
   url: URL,
   env: Env,
   analytics: AnalyticsSink,
+  ctx: ExecutionContext,
 ): Promise<Response> {
   const auth = await authenticateRequest(request, env);
   if (!auth.ok) return publisherErrorResponse(auth);
@@ -197,7 +198,7 @@ async function handleApi(
   // with and how its owner opens it. Null means no such route, which falls
   // through to the same `404` as every other unclaimed path.
   if (collection === "docs" && docId !== undefined && extra.length > 0) {
-    const section = await handleDocSection(request, url, env, auth.publisher, docId, extra, analytics);
+    const section = await handleDocSection(request, url, env, auth.publisher, docId, extra, analytics, ctx);
     if (section !== null) return section;
   }
 
@@ -341,7 +342,7 @@ export default {
           // so every response carries one opener policy.
           if (pathIsUnder(url.pathname, EMBED_PREFIX)) {
             return readerIsolate(
-              !readerSignInConfigured(env) ? READER_NOT_FOUND() : await handleEmbed(request, url, env, analytics),
+              !readerSignInConfigured(env) ? READER_NOT_FOUND() : await handleEmbed(request, url, env, analytics, ctx),
             );
           }
           // Likewise before `handleApi`: a terminal asking for a device code
@@ -351,7 +352,7 @@ export default {
           if (pathIsUnder(url.pathname, DEVICE_PREFIX)) {
             return await handleDevice(request, url, env);
           }
-          return await handleApi(request, url, env, analytics);
+          return await handleApi(request, url, env, analytics, ctx);
         case "serving":
           return await handleServing(request, url, env, analytics);
         case "publisher-serving": {

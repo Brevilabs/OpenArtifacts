@@ -1,4 +1,5 @@
 import { parseBearerToken, type Publisher } from "./auth.js";
+import { setName } from "./comments/service.js";
 import type { Env } from "./config.js";
 import { errorResponse } from "./errors.js";
 import { sha256Hex } from "./hash.js";
@@ -35,6 +36,12 @@ export function actionUrl(env: Env): URL | null {
 }
 
 export async function handleAccount(request: Request, env: Env, publisher: Publisher): Promise<Response> {
+  // `PUT /api/v1/account {displayName}` is open to a license key as well as a
+  // token: a key whose owner is linked to an account names that account, and
+  // an unlinked one has none to name (`404`). Everything else here is an account's.
+  if (request.method === "PUT" && new URL(request.url).pathname === "/api/v1/account") {
+    return await setName(request, env, publisher.owner);
+  }
   if (publisher.authKind !== "account") return errorResponse("unauthorized", "Sign in with an account token.", { "www-authenticate": "Bearer" });
   const path = new URL(request.url).pathname;
   if (path === "/api/v1/account" && request.method === "GET") {

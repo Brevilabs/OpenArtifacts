@@ -87,3 +87,16 @@ export function parseDocPath(pathname: string, prefix: string = SERVING_PREFIX):
   const digits = VERSION_SEGMENT.exec(versionSegment)?.[1];
   return digits === undefined ? null : { docId, pinned: Number(digits) };
 }
+
+/**
+ * `{prefix}/{docId}/threads`, the comments resource, or null for any other
+ * path. A separate matcher because `parseDocPath` reads the second segment as a
+ * version and returns null for this one.
+ */
+export function parseThreadsPath(pathname: string, prefix: string = SERVING_PREFIX): string | null {
+  if (!pathname.startsWith(`${prefix}/`)) return null;
+  const segments = pathname.slice(prefix.length + 1).split("/");
+  if (segments.length === 3 && segments[2] === "") segments.pop();
+  const [docId, resource, ...extra] = segments;
+  return docId !== undefined && resource === "threads" && extra.length === 0 && isDocId(docId) ? docId : null;
+}
