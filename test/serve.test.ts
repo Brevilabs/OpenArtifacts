@@ -1725,6 +1725,10 @@ describe("an invited-only document", () => {
       expect(FRAME_SCRIPT).not.toContain("ResizeObserver");
       expect(FRAME_SCRIPT).not.toContain('"size"');
       expect(FRAME_SCRIPT).not.toContain("autofocus");
+      // A focusable element carries no id, in the shell or in the views the script draws.
+      // <main> counts: it scrolls, and a scroller takes focus when its content overflows.
+      expect(html).not.toMatch(/<(?:main|button|a|input)\b[^>]*\sid=/);
+      expect(FRAME_SCRIPT).not.toContain("oa-close");
 
       // Not a frame for a malformed id, a missing one or any other method.
       expect((await getFrom(frameUrl("nope"), {}, OPEN)).status).toBe(404);

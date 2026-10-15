@@ -222,8 +222,8 @@ async function shareFrame(request: Request, url: URL, env: Env): Promise<Respons
 <style>${FRAME_CSS}</style>
 </head>
 <body>
-<main id="oa" data-doc="${escapeHtml(doc)}" data-link="${escapeHtml(publicDocUrl(env, url, doc))}" data-origin="${matched ? escapeHtml(servingOrigin) : ""}" data-hint="${escapeHtml(COPILOT_HINT)}">
-<header><h1 id="oa-title">Share</h1><button type="button" id="oa-close" aria-label="Close">×</button></header>
+<main data-doc="${escapeHtml(doc)}" data-link="${escapeHtml(publicDocUrl(env, url, doc))}" data-origin="${matched ? escapeHtml(servingOrigin) : ""}" data-hint="${escapeHtml(COPILOT_HINT)}">
+<header><h1 id="oa-title">Share</h1><button type="button" aria-label="Close">×</button></header>
 <p class="muted">Only the owner can change who can open this.</p>
 <div class="foot"><button type="button" class="primary">Copy link</button></div>
 <p class="muted" id="oa-account">Is this your page? <button type="button" class="link" disabled>Sign in to manage</button></p>

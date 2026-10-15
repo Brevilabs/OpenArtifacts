@@ -11,8 +11,10 @@
  * Miniflare over HTTPS with real D1 and R2, and no `upstream`, so the Worker
  * sees each request's real `Host` and its host allowlist runs as in production.
  * Chrome (the runner's own, through `channel: "chrome"`) is pointed at it with
- * `--host-resolver-rules`, so `openartifacts.site`, a publisher's label host and
- * `api.openartifacts.ai` are reached by name. Every request therefore goes
+ * `--host-resolver-rules`, so `openartifacts.site` and `api.openartifacts.ai` are
+ * reached by name (the rule also maps `*.openartifacts.site`, but the test loads
+ * only public documents on the apex; a document on its label host is covered by
+ * `test/serve.test.ts` at the HTTP level only). Every request therefore goes
  * through Chrome's network stack, where Fetch Metadata, cookies, CSP,
  * `frame-ancestors`, the opener policy and storage partitioning are Chrome's.
  *
@@ -260,14 +262,9 @@ window.setInterval(() => { if (document.activeElement !== document.body) window.
 
   // 3. Sign in to manage opens the popup, which sees the owner's session through
   //    the browser's own Sec-Fetch-Site and cookie. A 400 here would mean the
-  //    popup's binding refused it. The popup posts its token to the frame when
-  //    its opener survives (same-origin here, so it does); watch that arrive.
-  await frame.evaluate(() => {
-    window.__tokens = [];
-    window.addEventListener("message", (event) => {
-      if (event.data && event.data.type === "openartifacts:share-token") window.__tokens.push({ origin: event.origin, doc: event.data.doc });
-    });
-  });
+  //    popup's binding refused it. Embedded in a document page the popup's opener
+  //    is severed (see step 4), so the poll is what lands; the popup's posted
+  //    message is covered by the second test.
   const [popup, popupResponse] = await Promise.all([
     context.waitForEvent("page"),
     context.waitForEvent("response", (r) => r.url().includes("/embed/sign-in?")),
@@ -408,24 +405,41 @@ test("a page that embeds the frame cannot tell from a fragment navigation whethe
   // Scrolling to a fragment focuses the target when it exists and can take focus,
   // and a focus change inside the frame shows on the embedding page as a blur and
   // as `activeElement` becoming the iframe. A same-document navigation does not
-  // reload the frame, so it keeps the view it drew from storage. Every view must
-  // therefore have the same focusable ids, or the page learns what is in storage
+  // reload the frame, so it keeps the view it drew from storage. No focusable
+  // element may therefore have an id in any view, or the page learns what is in storage
   // without a click. Run the same probes with and without a token and compare.
-  const X = await publish("Fragment oracle", "<p>Mine.</p>");
+  //
+  // Focus is not the only tell: the browser scrolls the embedding page to the
+  // element it focuses, by an amount that follows where the element sits. So the
+  // frame is narrow, the document's title long (it wraps in the owner view and not
+  // in the signed-out one, which moves a button that is vertically centred against
+  // it), and the frame is below the fold, and the page's `scrollY` is compared too.
+  const X = await publish("Fragment oracle with a title long enough to wrap in a narrow frame", "<p>Mine.</p>");
   const Y = await publish(
     "Fragment prober",
-    `<iframe id="f" src="https://${API}/embed/share?doc=${X}&origin=${encodeURIComponent(`https://${SERVING}`)}" style="width:380px;height:480px"></iframe>`,
+    `<div style="height:1500px"></div><iframe id="f" src="https://${API}/embed/share?doc=${X}&origin=${encodeURIComponent(`https://${SERVING}`)}" style="width:120px;height:480px"></iframe><div style="height:1500px"></div>`,
   );
 
-  // The ids drawn in any view: the owner view's and the signed-out view's, plus
-  // the two the signed-out view used to carry, which must now be absent from both.
+  // The ids drawn in a view.
   const idsIn = (frame) => frame.evaluate(() => Array.from(document.querySelectorAll("[id]"), (element) => element.id));
+  // The ids a fragment could focus: every focusable element must be anonymous.
+  // <main> counts: it scrolls, and Chrome lets a scroll container take focus when
+  // its content overflows, which in a narrow frame only some views do.
+  const focusableIdsIn = (frame) =>
+    frame.evaluate(() =>
+      Array.from(document.querySelectorAll("[id]"))
+        .filter((element) => element.matches("main,a[href],button,input,select,textarea,summary,[tabindex],[contenteditable]"))
+        .map((element) => element.id),
+    );
 
-  const probe = async (context, id) => {
+  // `expected` waits for the view the context should draw, so the probe never runs
+  // against the signed-out shell that every context starts from.
+  const probe = async (context, id, expected, expectedIds) => {
     const page = await context.newPage();
     await page.goto(docUrl(Y));
     const frame = await until("the prober's frame", () => frameOf(page, X));
-    await until("the frame to draw a view", () => frame.locator("main button").first().isVisible());
+    await expected(frame).waitFor();
+    assert.deepEqual(await idsIn(frame), expectedIds, "the frame drew the view this context should see");
     await page.waitForTimeout(500);
     await page.evaluate(() => {
       window.__blurred = false;
@@ -436,10 +450,16 @@ test("a page that embeds the frame cannot tell from a fragment navigation whethe
       element.src = element.src.split("#")[0] + "#" + fragment;
     }, id);
     await page.waitForTimeout(600);
-    const seen = await page.evaluate(() => ({ focused: document.activeElement === document.getElementById("f"), blurred: window.__blurred }));
+    const seen = await page.evaluate(() => ({
+      focused: document.activeElement === document.getElementById("f"),
+      blurred: window.__blurred,
+      scrollY: window.scrollY,
+    }));
     await page.close();
     return seen;
   };
+  const signedOutView = (frame) => frame.getByRole("button", { name: "Sign in to manage" });
+  const ownerView = (frame) => frame.getByRole("radio", { name: "Only those invited" });
 
   // Signed out: the frame draws the signed-out view.
   const bare = await newContext(null);
@@ -448,6 +468,7 @@ test("a page that embeds the frame cannot tell from a fragment navigation whethe
   const bareFrame = await until("the signed-out frame", () => frameOf(bareProbe, X));
   await bareFrame.getByRole("button", { name: "Sign in to manage" }).waitFor();
   const signedOutIds = await idsIn(bareFrame);
+  const signedOutFocusable = await focusableIdsIn(bareFrame);
   await bareProbe.close();
 
   // With a token: the owner signs in through the popover, as in the first test.
@@ -460,13 +481,20 @@ test("a page that embeds the frame cannot tell from a fragment navigation whethe
   await popup.waitForEvent("close").catch(() => {});
   await frame.getByRole("radio", { name: "Only those invited" }).waitFor();
   const ownerIds = await idsIn(frame);
+  const ownerFocusable = await focusableIdsIn(frame);
 
-  const ids = [...new Set([...signedOutIds, ...ownerIds, "oa-copy", "oa-signin"])];
-  assert.ok(ids.includes("oa-close"), `ids probed: ${ids}`);
+  // No focusable element in any view has an id, so no fragment reaches one.
+  assert.deepEqual(signedOutFocusable, [], "signed-out view: a focusable element has an id");
+  assert.deepEqual(ownerFocusable, [], "owner view: a focusable element has an id");
+
+  // The names a page could try: every id either view has, plus the ones earlier
+  // versions carried on buttons, which must now match nothing in either view.
+  const ids = [...new Set([...signedOutIds, ...ownerIds, "oa-close", "oa-copy", "oa-signin"])];
+  assert.ok(!signedOutIds.includes("oa-close") && !ownerIds.includes("oa-close"), `ids probed: ${ids}`);
   assert.ok(!signedOutIds.includes("oa-copy") && !signedOutIds.includes("oa-signin"), `signed-out ids: ${signedOutIds}`);
   for (const id of ids) {
-    const withToken = await probe(owner, id);
-    const withoutToken = await probe(bare, id);
+    const withToken = await probe(owner, id, ownerView, ownerIds);
+    const withoutToken = await probe(bare, id, signedOutView, signedOutIds);
     assert.deepEqual(withToken, withoutToken, `#${id} behaves the same with and without a token`);
   }
   await owner.close();

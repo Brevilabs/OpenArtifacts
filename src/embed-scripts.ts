@@ -176,7 +176,7 @@ export const POPUP_DONE_SCRIPT = String.raw`(function () {
 export const FRAME_CSS = `:root{color-scheme:light;font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:#1f1f1f;background:#fff}
 *{box-sizing:border-box}html,body{height:100%}body{margin:0}
 main{height:100%;overflow:auto;display:flex;flex-direction:column;padding:16px}
-header{display:flex;align-items:center;gap:8px;margin:0 0 8px}
+header{display:flex;align-items:flex-start;gap:8px;margin:0 0 8px}
 h1{flex:1;min-width:0;margin:0;font-size:15px;font-weight:600;overflow-wrap:anywhere}
 h2{margin:16px 0 6px;font-size:12px;font-weight:600;color:#666}
 p{margin:8px 0}.muted{color:#666}.err{color:#b3261e}.notice{color:#7a4b00}.err:empty{display:none}
@@ -184,7 +184,7 @@ button{font:inherit;cursor:pointer;border:1px solid #d0d0d0;border-radius:6px;ba
 button:hover{border-color:#999}button:disabled{cursor:default;opacity:.6}
 button.primary{background:#1f1f1f;border-color:#1f1f1f;color:#fff}
 button.link{border:0;padding:0;background:none;color:inherit;text-decoration:underline}
-#oa-close{border:0;padding:2px 6px;font-size:18px;line-height:1;color:#666}
+header button{border:0;padding:2px 6px;font-size:18px;line-height:1;color:#666}
 input{font:inherit;flex:1;min-width:0;padding:6px 10px;border:1px solid #d0d0d0;border-radius:6px}
 .row{display:flex;gap:8px;align-items:center}
 .seg{display:flex;border:1px solid #d0d0d0;border-radius:8px;overflow:hidden}
@@ -227,13 +227,17 @@ li span{min-width:0;overflow-wrap:anywhere}li small{display:block;color:#666}
  * knows and puts the nonce's SHA-256 in the popup's address. The popup, once it
  * has a session, stores a one-minute, one-use handoff under that hash on the
  * server. The frame claims it with the nonce itself (`POST /embed/token`), by
- * polling, and also when its tab becomes visible again. The popup is never
- * consulted: every API-host page sends a cross-origin opener policy, so its link
- * to the frame may be gone.
+ * polling, and also when its tab becomes visible again. Polling is the path that
+ * always works, because every API-host page sends a cross-origin opener policy
+ * and the popup's link to the frame is usually severed. When that link survives,
+ * the popup also posts the token, and the frame accepts it through the listener
+ * above, but only from the window it opened.
  */
 export const FRAME_SCRIPT = String.raw`(() => {
   "use strict";
-  const main = document.getElementById("oa");
+  // No id on <main>: it scrolls (overflow:auto), and a scroll container is
+  // focusable, but only when its content overflows, which differs by view.
+  const main = document.querySelector("main");
   const doc = main.dataset.doc;
   const link = main.dataset.link;
   const parentOrigin = main.dataset.origin;
@@ -307,10 +311,12 @@ export const FRAME_SCRIPT = String.raw`(() => {
   // Found by position, not by id. An id a view has and another lacks is a fragment
   // an embedding page can navigate the frame to (a URL fragment), and whether the
   // browser then focuses something shows as a blur on that page: a read of
-  // storage it has no right to. Only ids every view carries are safe.
+  // storage it has no right to. A focusable element carries no id at all, even one
+  // every view has: where it sits can differ by view (a wrapped title pushes it
+  // down), and a focus move scrolls the embedding page by that difference.
   const signInButton = account.querySelector("button");
   const guestMessage = document.getElementById("oa-msg");
-  closeButton(document.getElementById("oa-close"));
+  closeButton(main.querySelector("header button"));
   copyButton(main.querySelector(".foot button"));
 
   let prepared = null;
@@ -431,7 +437,6 @@ export const FRAME_SCRIPT = String.raw`(() => {
 
   const header = (title) => {
     const close = button("×", null);
-    close.id = "oa-close";
     close.setAttribute("aria-label", "Close");
     closeButton(close);
     return node("header", {}, [node("h1", { id: "oa-title" }, [title]), close]);
