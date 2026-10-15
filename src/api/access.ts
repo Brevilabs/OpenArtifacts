@@ -416,12 +416,10 @@ export async function handleDocSection(
   if (section !== "html" && !readerSignInConfigured(env)) return null;
 
   // Comments, for an agent: an account token or a license key writes as an
-  // agent acting for its account. Null means these segments are not a comment
-  // route, and the access routes below get their turn.
-  // Order matters: this runs for every /docs/{id}/… request, ahead of the access
-  // routes, and answers only the exact comment shapes (threads, comments,
-  // settings), so a later access route cannot shadow a comment one. Do not
-  // reorder without checking both route sets for overlap.
+  // agent acting for its account. This runs ahead of the access routes and
+  // claims only the exact comment shapes (threads, comments, settings), so it
+  // never takes an access path; null hands the segments to the routes below. A
+  // new comment shape must not overlap an access one, or it would shadow it.
   const comments = await commentRoute(request, url, env, { publisher, kind: "agent", ctx }, docId, extra);
   if (comments !== null) return comments;
 
