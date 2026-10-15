@@ -218,12 +218,14 @@ The unit is the document. Migration `0014` adds `docs.link_access` (`anyone` or
 email)` and `email_codes`. The invite list is independent of the mode: switching
 to `anyone` keeps it and the pending requests, and switching back restores them.
 At most 100 people and at most 100 pending requests per document, so neither
-list needs paging. An owner may also add at most 100 new invites in any rolling
-24 hours, across all their documents and credentials (a linked license key and its
-account share one allowance). It is counted from `doc_invites.created_at`, as a
-predicate on the insert, so it needs no table and cannot be raced past. Repeats,
-role changes and removals never count; past the cap an add answers `429
-quota_exceeded` and a pending request stays where it is. Unshare deletes the
+list needs paging. An owner may also have at most 100 invites added in the last
+24 hours still listed, across all their documents and credentials (a linked license
+key and its account share one allowance). It is counted from `doc_invites.created_at`,
+as a predicate on the insert, so it needs no table and concurrent adds cannot race
+past it. It bounds the list, not the number of emails: removing a recent invite, or
+unsharing its document, frees the slot. Repeats and role changes never count; past
+the cap an add answers `429 quota_exceeded` and a pending request stays where
+it is. Unshare deletes the
 invites and requests with the bytes and keeps the `docs` row for the `410`.
 
 Two predicates, named once, so every surface asks the same question. They live in
@@ -460,8 +462,9 @@ work.
   `https://{SERVING_HOST}/d/{docId}`, and "Sign in with this address, {email}, to
   open it." The address is on the list whether or not the email goes out. Invites
   are rate-limited per owner by `INVITE_EMAIL_LIMITER`, and only paid plans can add.
-  The limiter only paces email, per colo; the bound that survives across colos is
-  the D1 cap of 100 new invites per owner in any 24 hours.
+  The limiter only paces email, per colo. The D1 cap of 100 recent invites per
+  owner bounds the list, not the emails: an owner who removes invites frees their
+  slots, so email volume across colos is bounded by this limiter alone.
 - **The request email** is described above. It is rate-limited by the per-account
   request limiter that bounds the rows it comes from.
 - **Sign-in codes** are limited by `SIGNIN_EMAIL_LIMITER` per address and

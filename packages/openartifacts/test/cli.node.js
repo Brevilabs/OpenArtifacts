@@ -545,6 +545,30 @@ test("account commands use host-scoped stored OAuth tokens and print only safe J
   } finally { remote.server.close(); }
 });
 
+test("get on an unknown id prints the not-found sentence once", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "oa-get-404-"));
+  const server = createServer((request, response) => {
+    response.setHeader("content-type", "application/json");
+    if (request.url.startsWith("/api/v1/docs?")) {
+      response.end(JSON.stringify({ docs: [] }));
+    } else {
+      response.statusCode = 404;
+      response.end(JSON.stringify({ error: { code: "not_found", message: "Not found." } }));
+    }
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const host = `http://127.0.0.1:${server.address().port}`;
+  await writeFile(join(directory, "credentials.json"), JSON.stringify({ hosts: { [host]: { token: "oat_stored-secret" } } }));
+  try {
+    const result = await cliProcess(["get", "abc"], { OPENARTIFACTS_CONFIG_DIR: directory, OPENARTIFACTS_API_HOST: host });
+    assert.notEqual(result.code, 0);
+    assert.equal(result.stderr.match(/No document/g)?.length, 1, result.stderr);
+    assert.match(result.stderr, /No document abc is in this account\./);
+    assert(!/HTTP 404/.test(result.stderr), result.stderr);
+  } finally { server.close(); }
+});
+
 test("account actions honor environment credentials, refuse license arguments, and never silently re-login", async () => {
   const directory = await mkdtemp(join(tmpdir(), "oa-01a08465-cli-credentials-"));
   const remote = await accountServer();

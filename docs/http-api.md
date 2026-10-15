@@ -530,10 +530,11 @@ have not been answered.
   bad_request`. The call that adds an address sends it an invite email where the
   server has email; a repeat does not, and a repeat that names a different role
   updates the role. At most 100 people per document; the 101st is `400`.
-  At most 100 new invites per owner in any 24 hours, across all their documents:
-  past that, an add that would list a new address, approvals included, is `429
-  quota_exceeded`, nothing is stored or sent, and a pending request stays.
-  Repeats, role changes and removals never count.
+  At most 100 invites added in the last 24 hours may be listed per owner, across
+  all their documents: past that, an add that would list a new address, approvals
+  included, is `429 quota_exceeded`, nothing is stored or sent, and a pending
+  request stays. Repeats and role changes never count; removing a recent invite, or
+  unsharing its document, frees its slot.
   `DELETE` removes one. Neither needs the address to belong to an account.
 - **Approving a request is adding the address.** There is no approve route:
   `PUT …/access/people/{email}` for an address with a pending request lists the

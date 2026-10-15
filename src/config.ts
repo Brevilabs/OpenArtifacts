@@ -226,7 +226,13 @@ export const MAX_PUSHES_PER_DAY = 100;
 /** People one document can be shared with, so its list never needs paging. */
 export const MAX_INVITES_PER_DOC = 100;
 
-/** New invites one owner may add in any 24 hours, across all their documents and credentials. Counted from doc_invites.created_at; repeats, role changes and removals never count. */
+/**
+ * Invites one owner may have added in the last 24 hours and still listed, across all
+ * their documents and credentials. Counted from doc_invites.created_at, so removing a
+ * recent invite or unsharing a document frees its slots: this bounds the list, not the
+ * number of emails. Email volume across colos is bounded only by INVITE_EMAIL_LIMITER.
+ * Repeats and role changes never count.
+ */
 export const MAX_NEW_INVITES_PER_OWNER_PER_DAY = 100;
 export const INVITE_WINDOW_MS = 24 * 60 * 60 * 1000;
 

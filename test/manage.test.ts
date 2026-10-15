@@ -937,6 +937,27 @@ describe("private sharing through the owner's credential", () => {
     const removed = await send("DELETE", `${API}/api/v1/docs/${first.docId}/access/people/recent0%40acme.com`, KEY_PLUS, undefined, hosts);
     expect(removed.status).toBe(200);
   });
+
+  it("counts invites that are still listed, so removing or unsharing a recent invite frees its slot", async () => {
+    const first = await privateDoc();
+    const second = await privateDoc();
+    const now = Date.now();
+    const seed = (docId: string, email: string) =>
+      env.DB.prepare("INSERT INTO doc_invites (doc_id, email, created_at) VALUES (?, ?, ?)").bind(docId, email, now - 1000).run();
+    for (let i = 0; i < 50; i += 1) await seed(first.docId, `a${i}@acme.com`);
+    for (let i = 0; i < 50; i += 1) await seed(second.docId, `b${i}@acme.com`);
+    const put = (docId: string, email: string) => send("PUT", `${API}/api/v1/docs/${docId}/access/people/${email}`, KEY_PLUS, undefined, hosts);
+    expect((await put(first.docId, "over%40acme.com")).status).toBe(429);
+
+    // The cap bounds the list, not the number of invites ever sent: a removal hands the slot back.
+    expect((await send("DELETE", `${API}/api/v1/docs/${first.docId}/access/people/a0%40acme.com`, KEY_PLUS, undefined, hosts)).status).toBe(200);
+    expect((await put(first.docId, "over%40acme.com")).status).toBe(200);
+    expect((await put(first.docId, "again%40acme.com")).status).toBe(429);
+
+    // So does unsharing the other document.
+    expect((await send("DELETE", `${API}/api/v1/docs/${second.docId}`, KEY_PLUS, undefined, hosts)).status).toBe(204);
+    expect((await put(first.docId, "again%40acme.com")).status).toBe(200);
+  });
 });
 
 describe("access requests", () => {
