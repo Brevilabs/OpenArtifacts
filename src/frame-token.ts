@@ -1,6 +1,5 @@
 /**
- * The per-document token the Share popover and the comments frame (a later
- * change) hold
+ * The per-document token the Share popover and the comments frame hold
  * (`oas_…`, a signed `{a: accountId, d: docId}`, 24 hours), checked once for
  * every `/embed/api/…` route that takes it.
  *

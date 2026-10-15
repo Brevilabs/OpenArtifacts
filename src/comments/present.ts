@@ -1,6 +1,6 @@
 /**
  * The threads JSON, one shape for every surface that serves it: the serving
- * origin's `/d/{docId}/threads`, `/api/v1/docs/{docId}/threads` and the in-page client's
+ * origin's `/d/{docId}/threads`, `/api/v1/docs/{docId}/threads` and the frame's
  * `/embed/api/docs/{docId}/threads`.
  *
  * The object stores principals; this turns them into the only thing a reader

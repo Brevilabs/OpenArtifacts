@@ -2,7 +2,7 @@
  * Character references for canonical text (src/comments/anchor.ts).
  *
  * HTMLRewriter hands text chunks over as raw source, so `&amp;` arrives as five
- * characters while the reader's DOM holds one. The page script (a later change) quotes DOM text,
+ * characters while the reader's DOM holds one. The page script quotes DOM text,
  * so the server has to decode the same way a browser does or a passage with an
  * ampersand in it could never be found. The scope is the numeric forms and the
  * HTML 4 named set (the 252 names every Obsidian render can contain) plus

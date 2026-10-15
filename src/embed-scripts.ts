@@ -9,6 +9,7 @@
  * it), and no backslash (`String.raw` keeps it, but a reader should not have to
  * know that to read the script).
  */
+import { PAGE_COMMENTS_SCRIPT } from "./comments-scripts.js";
 
 /**
  * The script every served page loads, from `https://{API_HOST}/embed/page.js`
@@ -17,7 +18,7 @@
  *
  * It runs inside the publisher's page, so it is written as the least trusting
  * code on that page can be. It defines no global, binds only our own link, reads
- * no cookie and no storage, holds no credential, and sends the frame nothing.
+ * no cookie and no storage, holds no credential, and sends the Share frame nothing.
  * The frame is the thing that holds a credential, and it is a frame precisely
  * because the credential that changes who can read a document must never be on
  * a page whose scripts the author writes.
@@ -49,6 +50,14 @@
  * The URL it is served from is permanent: pinned `/v{n}` pages carry the tag for
  * a year. A fix to this script reaches them by the route's short cache, not by a
  * new address.
+ *
+ * **Comments are the second half** (`PAGE_COMMENTS_SCRIPT`, `src/comments-scripts.ts`,
+ * joined here so both share `api`, `docId` and `link`). It is inert unless the
+ * document's threads resource answers, adds a button to the bar and a margin frame
+ * on the API host, and holds no credential either: everything above about what
+ * the page script holds is true of it too. It reads the Share half's `api`,
+ * `docId`, `link` and `viewport` and changes none of them, and closes its own
+ * sheet when Share is pressed.
  */
 export const PAGE_SCRIPT = String.raw`(() => {
   "use strict";
@@ -140,8 +149,9 @@ export const PAGE_SCRIPT = String.raw`(() => {
   document.addEventListener("keydown", (event) => { if (open && event.key === "Escape") hide(true); }, true);
   document.addEventListener("pointerdown", (event) => { if (open && event.target !== host && !link.contains(event.target)) hide(false); }, true);
   window.addEventListener("resize", () => { if (open) place(); });
-})();
-`;
+` +
+  PAGE_COMMENTS_SCRIPT +
+  "})();\n";
 
 /**
  * What the owner of a Copilot-published page sees when their license key is not
@@ -231,6 +241,8 @@ button.link.block{display:block;margin-top:2px}
 button.link:hover{background:none;text-decoration:underline;text-underline-offset:3px}
 header button{flex:none;width:28px;padding:0;border:0;font-size:20px;font-weight:400;color:#8d94a0}
 header button:hover{background:rgba(255,255,255,.06);color:#f4f5f7}
+select{font:inherit;font-size:13px;height:28px;padding:0 6px;border:1px solid #2c313b;border-radius:8px;background:#07080b;color:#e9ebee;cursor:pointer}
+select:hover{border-color:#3a404b}
 input{font:inherit;flex:1;min-width:0;height:36px;padding:0 12px;border:1px solid #20242c;border-radius:10px;background:#07080b;color:#e9ebee}
 input::placeholder{color:#5b626e}
 input:focus-visible{outline:0;border-color:#f6ae52;box-shadow:0 0 0 3px rgba(246,174,82,.18)}
@@ -242,7 +254,9 @@ input:focus-visible{outline:0;border-color:#f6ae52;box-shadow:0 0 0 3px rgba(246
 .seg button:focus-visible{outline-offset:0}
 ul{list-style:none;margin:0;padding:0}
 li{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 0;border-top:1px solid #1a1d24}
-li span{min-width:0;overflow-wrap:anywhere}li small{display:block;font-size:12px;color:#8d94a0}
+li span{flex:1;min-width:0;overflow-wrap:anywhere}li .row{margin-left:auto;flex:none}li small{display:block;font-size:12px;color:#8d94a0}
+li button.link{font-size:12px;color:#8d94a0}li button.link:hover{color:#e9ebee}
+.sw{justify-content:space-between;margin-top:16px}.sw .seg button{flex:none;padding:0 14px}
 .foot{display:flex;flex-direction:column;gap:8px;margin:16px 0 4px}header+.foot{margin-top:0}
 .field{display:flex;align-items:center;height:36px;padding:0 12px;border:1px solid #20242c;border-radius:10px;background:#07080b;color:#c9ced6;font:12.5px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
 .field span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;user-select:all}
@@ -406,10 +420,14 @@ export const FRAME_SCRIPT = String.raw`(() => {
   let wake = null;
   let writing = false;
   let notice = false;
+  // The line shown after this frame turned comments on. Like notice, it lasts until the next write.
+  let commentsNote = false;
   // Whether this frame made the document private. See exposed().
   let switched = false;
   let latest = null;
   let message = null;
+  // The line under the Comments switch: its confirmation, or why it refused.
+  let commentsMsg = null;
   // Orders reads against writes. Each refresh takes a number and is applied only
   // if no later refresh or write has started, so an older GET resolving after a
   // write cannot redraw the document as it was. A refresh asked for while a write
@@ -517,12 +535,12 @@ export const FRAME_SCRIPT = String.raw`(() => {
     refresh();
   });
 
-  const call = (method, suffix, body) => {
+  const call = (method, path, body) => {
     const stored = readToken();
     if (stored === null) return Promise.resolve(null);
     const headers = { authorization: "Bearer " + stored.token };
     if (body) headers["content-type"] = "application/json";
-    return fetch("/embed/api/docs/" + doc + "/access" + suffix, { method: method, headers: headers, body: body ? JSON.stringify(body) : undefined, credentials: "omit", cache: "no-store" });
+    return fetch("/embed/api/docs/" + doc + path, { method: method, headers: headers, body: body ? JSON.stringify(body) : undefined, credentials: "omit", cache: "no-store" });
   };
 
   const header = (title) => {
@@ -553,9 +571,9 @@ export const FRAME_SCRIPT = String.raw`(() => {
     main.replaceChildren(header("Share"), muted([SENTENCE]), footer(), bottom([anotherAccount("Is this your page? "), hintLine()]));
   };
 
-  const fail = (target, response, body) => {
+  const fail = (target, response, body, what) => {
     if (response.status === 402) {
-      const kids = ["Private sharing needs a paid plan. Nothing was changed."];
+      const kids = [(what || "Private sharing needs a paid plan.") + " Nothing was changed."];
       const upgrade = body && body.error ? body.error.upgrade_url : undefined;
       if (typeof upgrade === "string" && upgrade.startsWith("https://")) kids.push(" ", node("a", { href: upgrade, target: "_blank", rel: "noopener noreferrer" }, ["Upgrade"]));
       target.replaceChildren(...kids);
@@ -599,7 +617,7 @@ export const FRAME_SCRIPT = String.raw`(() => {
     let response;
     let current = null;
     try {
-      response = await call("GET", "");
+      response = await call("GET", "/access");
       if (response === null) return true;
       if (response.status === 200) current = await response.json();
     } catch (error) {
@@ -626,6 +644,7 @@ export const FRAME_SCRIPT = String.raw`(() => {
     if (writing) return;
     writing = true;
     seq += 1;
+    commentsNote = false;
     try {
       if (!(await stillPublic())) return;
       await run();
@@ -637,11 +656,22 @@ export const FRAME_SCRIPT = String.raw`(() => {
     }
   };
 
-  const write = (method, suffix, body, modeAfter) => guarded(async () => {
-    const response = await call(method, suffix, body);
+  const write = (method, path, body, modeAfter) => guarded(async () => {
+    const settings = path === "/settings";
+    let response = await call(method, path, body);
     if (response === null) { showGuest("", false); return; }
     let parsed = null;
     try { parsed = await response.json(); } catch (error) {}
+    if (settings && response.status === 200 && parsed && typeof parsed.comments === "boolean") {
+      // The switch answers with its own two fields, not the owner view, so the
+      // view is read again, which also confirms the mode once more before it is drawn.
+      const turned = parsed.comments;
+      response = await call("GET", "/access");
+      if (response === null) { showGuest("", false); return; }
+      parsed = null;
+      try { parsed = await response.json(); } catch (error) {}
+      commentsNote = turned && response.status === 200;
+    }
     if (response.status === 200 && parsed && parsed.viewer === "owner") {
       // Only a write that changed the mode counts, so a repeat of "Only those
       // invited" on a stale view neither shows the notice nor vouches for the frame.
@@ -653,7 +683,7 @@ export const FRAME_SCRIPT = String.raw`(() => {
     } else if (response.status === 404) {
       showNone();
     } else {
-      fail(message, response, parsed);
+      fail(settings && commentsMsg ? commentsMsg : message, response, parsed, settings ? "Comments need a paid plan." : undefined);
     }
   });
 
@@ -683,7 +713,7 @@ export const FRAME_SCRIPT = String.raw`(() => {
     const count = found.emails.length + found.bad.length;
     if (count <= 1) {
       const lone = count === 1 ? found.emails.concat(found.bad)[0] : text.trim();
-      return lone === "" ? undefined : write("PUT", "/people/" + encodeURIComponent(lone));
+      return lone === "" ? undefined : write("PUT", "/access/people/" + encodeURIComponent(lone));
     }
     return guarded(async () => {
       let added = 0;
@@ -702,7 +732,7 @@ export const FRAME_SCRIPT = String.raw`(() => {
         let response;
         let parsed = null;
         try {
-          response = await call("PUT", "/people/" + encodeURIComponent(address));
+          response = await call("PUT", "/access/people/" + encodeURIComponent(address));
           if (response !== null) parsed = await response.json().catch(() => null);
         } catch (error) { crashed = true; break; }
         if (response === null) { showGuest("", false); return; }
@@ -736,7 +766,11 @@ export const FRAME_SCRIPT = String.raw`(() => {
   const showOwner = (body) => {
     latest = body;
     if (body.linkAccess !== "invited") { notice = false; switched = false; }
+    if (!body.comments) commentsNote = false;
     message = node("p", { id: "oa-msg", class: "err", role: "alert" });
+    commentsMsg = node("p", { class: "err", role: "alert" });
+    // The server leaves the field out where the comments object is not bound, and then there is nothing to switch or to grant.
+    const commentable = typeof body.comments === "boolean";
     const input = node("input", { type: "text", inputmode: "email", placeholder: "Emails, separated by commas", "aria-label": "Add people by email, separated by commas", autocomplete: "off" });
     const add = () => addMany(input.value);
     input.addEventListener("keydown", (event) => { if (event.key === "Enter") add(); });
@@ -749,8 +783,20 @@ export const FRAME_SCRIPT = String.raw`(() => {
       event.preventDefault();
       input.setRangeText(lines.join(", "), input.selectionStart, input.selectionEnd, "end");
     });
-    const choice = (value, label) => node("button", { type: "button", role: "radio", "aria-checked": String(body.linkAccess === value), onclick: () => { if (body.linkAccess !== value) write("PUT", "", { linkAccess: value }, true); } }, [label]);
+    const choice = (value, label) => node("button", { type: "button", role: "radio", "aria-checked": String(body.linkAccess === value), onclick: () => { if (body.linkAccess !== value) write("PUT", "/access", { linkAccess: value }, true); } }, [label]);
     const narrow = limited(body);
+    const roleSelect = (entry) => {
+      const select = node("select", { "aria-label": "Access for " + entry.email }, [
+        node("option", { value: "view" }, ["Can view"]),
+        node("option", { value: "comment" }, ["Can comment"]),
+      ]);
+      select.value = entry.role === "comment" ? "comment" : "view";
+      select.addEventListener("change", () => {
+        if (select.value === entry.role) return;
+        write("PUT", "/access/people/" + encodeURIComponent(entry.email), { role: select.value });
+      });
+      return select;
+    };
     const person = (address, detail, buttons) => node("li", {}, [node("span", {}, [address, node("small", {}, [detail])]), node("div", { class: "row" }, buttons)]);
     const kids = [
       header(quoted(body.title)),
@@ -759,17 +805,35 @@ export const FRAME_SCRIPT = String.raw`(() => {
       node("div", { class: "seg", role: "radiogroup", "aria-label": "Link access" }, [choice("anyone", "Anyone with the link"), choice("invited", "Only those invited")]),
     ];
     if (notice) kids.push(node("p", { class: "notice" }, ["People who opened it while it was public may have kept a copy."]));
+    // The limited view (see limited()) offers only what a switch to private needs. Neither
+    // control here is a threat to a private document alone, but a roster change or a new
+    // way in is not something to offer under a frame that may not be the owner's own page.
+    if (!narrow && commentable) {
+      const on = body.comments === true;
+      kids.push(
+        node("div", { class: "row sw" }, [
+          node("span", {}, ["Comments"]),
+          node("div", { class: "seg", role: "radiogroup", "aria-label": "Comments" }, [
+            node("button", { type: "button", role: "radio", "aria-checked": String(!on), onclick: () => { if (on) write("PUT", "/settings", { comments: false }); } }, ["Off"]),
+            node("button", { type: "button", role: "radio", "aria-checked": String(on), onclick: () => { if (!on) write("PUT", "/settings", { comments: true }); } }, ["On"]),
+          ]),
+        ]),
+        commentsMsg,
+      );
+      if (commentsNote) kids.push(muted(["People who can comment can now leave comments on this page."]));
+    }
     kids.push(node("h2", {}, ["Add people"]), node("div", { class: "row" }, [input, button("Add", add, "primary tall")]), message);
     if (body.requests.length > 0) {
       kids.push(node("h2", {}, ["Requests"]), node("ul", {}, body.requests.map((request) => person(request.email, "Asked to open it", narrow ? [] : [
-        button("Approve", () => write("PUT", "/people/" + encodeURIComponent(request.email)), "primary"),
-        button("Decline", () => write("DELETE", "/requests/" + encodeURIComponent(request.email))),
+        button("Approve", () => write("PUT", "/access/people/" + encodeURIComponent(request.email)), "primary"),
+        button("Decline", () => write("DELETE", "/access/requests/" + encodeURIComponent(request.email))),
       ]))));
     }
     const invitationLabel = body.email ? "Invited" : "Invited · send them the link";
     kids.push(node("h2", {}, ["Who has access"]), node("ul", {}, [person("You", "Owner", [])].concat(body.people.map((entry) => person(entry.email, invitationLabel, narrow ? [] : [
-      button("Remove", () => write("DELETE", "/people/" + encodeURIComponent(entry.email))),
-    ])))));
+      commentable ? roleSelect(entry) : null,
+      button("Remove", () => write("DELETE", "/access/people/" + encodeURIComponent(entry.email)), "link"),
+    ].filter((kid) => kid !== null))))));
     if (body.email) kids.push(muted(["OpenArtifacts emails each invitation. If someone doesn’t get it, send them the link."]));
     // Approve, Decline and Remove are one click on a private document, and this
     // frame is on the public origin. See exposed().
@@ -786,7 +850,7 @@ export const FRAME_SCRIPT = String.raw`(() => {
     const stored = readToken();
     if (stored === null) { showGuest("", false); return; }
     let response;
-    try { response = await call("GET", ""); } catch (error) { if (mine === seq) showGuest("Couldn’t load the sharing settings. Try again.", false); return; }
+    try { response = await call("GET", "/access"); } catch (error) { if (mine === seq) showGuest("Couldn’t load the sharing settings. Try again.", false); return; }
     if (response === null) { if (mine === seq) showGuest("", false); return; }
     let body = null;
     try { body = await response.json(); } catch (error) {}

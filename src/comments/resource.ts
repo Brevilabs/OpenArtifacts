@@ -6,8 +6,8 @@
  * GET|HEAD https://{label}.openartifacts.site/d/{docId}/threads[?v={n}]    an invited-only one, behind the grant cookie
  * ```
  *
- * What the page script will fetch (the in-page experience, a later change),
- * same-origin, to paint highlights and size the margin. It carries no credential and answers no more than the page does: the
+ * What the page script fetches, same-origin, to paint highlights and size the
+ * margin. It carries no credential and answers no more than the page does: the
  * unauthenticated `ThreadsResponse` (`present.ts`), with display names and no
  * account id, email, viewer or `canResolve`. The same bytes serve every reader,
  * so the author's script, which can read this response, learns nothing about
