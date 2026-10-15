@@ -10,6 +10,9 @@ import { readerSignInConfigured } from "../src/reader-config.js";
 import { signPayload, verifyPayload } from "../src/session.js";
 import { FAVICON_LINK, NOINDEX_META, OPENARTIFACTS_FOOTER, OPENARTIFACTS_HEADER, OPENARTIFACTS_MARK_SVG } from "../src/render.js";
 import { OPENARTIFACTS_BAR_SPACER, OPENARTIFACTS_BAR_STYLE } from "../src/render.js";
+import { SHARE_TOKEN_PREFIX } from "../src/ids.js";
+import { putEmbedHandoff, takeEmbedHandoff } from "../src/db.js";
+import { FRAME_SCRIPT, POPUP_DONE_SCRIPT } from "../src/embed-scripts.js";
 import { versionObjectKey } from "../src/storage.js";
 import worker from "../src/index.js";
 
@@ -1628,6 +1631,460 @@ describe("an invited-only document", () => {
         expect(response.status).toBe(404);
         expect(await response.text()).not.toBe(PAGE_SCRIPT);
         expect(response.headers.get("etag")).toBeNull();
+      }
+    });
+  });
+
+  describe("the Share popover", () => {
+    /** S5–S8 pass with these limiters off: their counters live in the runtime and every test request shares one anonymous bucket. */
+    const OPEN = { ...PRIVATE, APPROVAL_LOOKUP_LIMITER: undefined, EMBED_TOKEN_LIMITER: undefined } satisfies Partial<Env>;
+    const frameUrl = (docId: string, origin?: string) =>
+      `${API}/embed/share?doc=${docId}${origin === undefined ? "" : `&origin=${encodeURIComponent(origin)}`}`;
+    const APEX = "https://openartifacts.site";
+
+    const hashOf = async (script: string) =>
+      btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(script)))));
+    const inlineScript = (html: string) => /<script>([\s\S]*?)<\/script>/.exec(html)![1]!;
+
+    const newNonce = () =>
+      btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))))
+        .replaceAll("+", "-")
+        .replaceAll("/", "_")
+        .replaceAll("=", "");
+
+    const popupUrl = (docId: string, h: string, query = "") => `${API}/embed/sign-in?doc=${docId}&h=${h}${query}`;
+    const popup = (docId: string, h: string, headers: Record<string, string>, query = "", over: Partial<Env> = OPEN) =>
+      getFrom(popupUrl(docId, h, query), { headers }, over);
+    const claim = (body: unknown, over: Partial<Env> = OPEN, headers: Record<string, string> = SAME_ORIGIN) =>
+      sendTo("POST", `${API}/embed/token`, { headers: { "content-type": "application/json", ...headers }, body: typeof body === "string" ? body : JSON.stringify(body) }, over);
+    const bindingName = (h: string) => `__Host-oa_embed_${h.slice(0, 16)}`;
+
+    /** A per-document token, minted directly the way the claim route does. */
+    const tokenFor = async (accountId: string, docId: string, exp = Date.now() + 60_000, purpose: "share-token" | "session" = "share-token") =>
+      SHARE_TOKEN_PREFIX + (await signPayload(SECRET, purpose, { a: accountId, d: docId }, exp));
+    const embedApi = (path: string, token: string | null, init: RequestInit = {}, over: Partial<Env> = OPEN) =>
+      sendTo(init.method ?? "GET", `${API}/embed/api/docs/${path}`, { ...init, headers: { ...(token === null ? {} : { authorization: `Bearer ${token}` }), ...(init.headers as Record<string, string> | undefined) } }, over);
+    const json = (value: unknown): RequestInit => ({ headers: { "content-type": "application/json" }, body: JSON.stringify(value) });
+
+    it("S4: serves the same frame for every id, framed only by the document's own serving origin", async () => {
+      const publicDoc = await privateDoc("a public page", KEY, "anyone");
+      const doc = await privateDoc("for invited eyes");
+      const other = await privateDoc("text of Q", KEY_Q);
+      const gone = await privateDoc("withdrawn");
+      await softDelete(gone.docId);
+      const label = new URL(doc.host).origin;
+
+      const cases: Array<[string, string | undefined, string]> = [
+        [publicDoc.docId, APEX, APEX],
+        [publicDoc.docId, other.host, "'none'"],
+        [doc.docId, doc.host, label],
+        [doc.docId, APEX, "'none'"],
+        [doc.docId, other.host, "'none'"],
+        [doc.docId, undefined, "'none'"],
+        [doc.docId, doc.host.toUpperCase().replace("HTTPS", "https"), label],
+        [gone.docId, APEX, "'none'"],
+        [UNKNOWN_DOC_ID, APEX, "'none'"],
+      ];
+      for (const [docId, origin, ancestors] of cases) {
+        const response = await getFrom(frameUrl(docId, origin), {}, OPEN);
+        expect(response.status, `${docId} ${origin}`).toBe(200);
+        const csp = response.headers.get("content-security-policy")!;
+        expect(csp, `${docId} ${origin}`).toContain(`frame-ancestors ${ancestors}`);
+        const html = await response.text();
+        expect(csp).toContain(`script-src 'sha256-${await hashOf(inlineScript(html))}'`);
+        expect(csp).toContain("connect-src 'self'");
+        expect(csp).toContain("default-src 'none'");
+        expect(response.headers.get("x-frame-options")).toBeNull();
+        expect(response.headers.get("referrer-policy")).toBe("same-origin");
+        expect(response.headers.get("cross-origin-opener-policy")).toBe("same-origin");
+        expect(response.headers.get("cache-control")).toBe("no-store");
+        expect(response.headers.get("set-cookie")).toBeNull();
+        expect(html).not.toContain("Secret");
+        expect(html).not.toContain("data-title");
+        expect(html).not.toContain("title=");
+        expect(html).toContain("Sign in to manage");
+        expect(html).toContain("<h1 id=\"oa-title\">Share</h1>");
+        expect(html).toContain(`data-link="https://openartifacts.site/d/${docId}"`);
+      }
+
+      // Nothing but the doc id and the origin the caller named reaches the body.
+      const body = async (docId: string, origin?: string, mark?: string) => {
+        const html = await (await getFrom(frameUrl(docId, origin), {}, OPEN)).text();
+        const same = html.replaceAll(docId, "ID");
+        return mark === undefined ? same : same.replace(`data-origin="${mark}"`, 'data-origin="ORIGIN"');
+      };
+      expect(await body(publicDoc.docId, APEX, APEX)).toBe(await body(doc.docId, doc.host, label));
+      const refused = [await body(doc.docId, APEX), await body(gone.docId, APEX), await body(UNKNOWN_DOC_ID, APEX), await body(doc.docId)];
+      expect(new Set(refused).size).toBe(1);
+      expect(refused[0]).toContain('data-origin=""');
+
+      // The script is the constant, sends exactly one kind of message call, and reports no size.
+      const html = await (await getFrom(frameUrl(doc.docId, doc.host), {}, OPEN)).text();
+      expect(inlineScript(html)).toBe(FRAME_SCRIPT);
+      expect(occurrences(FRAME_SCRIPT, "postMessage(")).toBe(1);
+      expect(FRAME_SCRIPT).not.toContain("ResizeObserver");
+      expect(FRAME_SCRIPT).not.toContain('"size"');
+      expect(FRAME_SCRIPT).not.toContain("autofocus");
+
+      // Not a frame for a malformed id, a missing one or any other method.
+      expect((await getFrom(frameUrl("nope"), {}, OPEN)).status).toBe(404);
+      expect((await getFrom(`${API}/embed/share`, {}, OPEN)).status).toBe(404);
+      expect((await sendTo("POST", frameUrl(doc.docId), {}, OPEN)).status).toBe(404);
+      expect((await getFrom(`${doc.host}/embed/share?doc=${doc.docId}`, {}, OPEN)).status).toBe(404);
+    });
+
+    it("S5: signs the popup in from a session, hands the frame its token once, and refuses a popup our frame did not open", async () => {
+      const doc = await privateDoc();
+      const owner = await ownerAccount(doc);
+      const session = await sessionFor(owner);
+      const nonce = newNonce();
+      const h = await sha256Hex(nonce);
+      const rowFor = (docId: string, hash: string) =>
+        env.DB.prepare("SELECT account_id, expires_at, created_at FROM device_codes WHERE user_code = ?")
+          .bind(`embed_${docId}_${hash}`)
+          .first<{ account_id: string; expires_at: number; created_at: number }>();
+
+      // A session and a request our frame made: the done page, the row, a cleared binding.
+      const done = await popup(doc.docId, h, { cookie: session, "sec-fetch-site": "same-origin" });
+      expect(done.status).toBe(200);
+      expect(done.headers.get("cache-control")).toBe("no-store");
+      expect(done.headers.get("referrer-policy")).toBe("same-origin");
+      expect(done.headers.get("cross-origin-opener-policy")).toBe("same-origin");
+      expect(done.headers.get("set-cookie")).toBe(`${bindingName(h)}=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0`);
+      const csp = done.headers.get("content-security-policy")!;
+      expect(csp).toContain("frame-ancestors 'none'");
+      const page = await done.text();
+      expect(page).toContain("Signed in.");
+      // One inline script, and the policy admits exactly that one.
+      expect(occurrences(page, "<script")).toBe(1);
+      expect(csp).toContain(`script-src 'sha256-${await hashOf(inlineScript(page))}'`);
+      expect(inlineScript(page)).toBe(POPUP_DONE_SCRIPT);
+      expect(inlineScript(page)).toContain("location.origin");
+      expect(inlineScript(page)).not.toContain('"*"');
+      // The page also carries the token, and it is this account's for this document.
+      const carried = /data-token="([^"]+)"/.exec(page)![1]!;
+      expect(carried.startsWith("oas_")).toBe(true);
+      expect(await verifyPayload(SECRET, "share-token", carried.slice(4), Date.now())).toMatchObject({ a: owner, d: doc.docId });
+      expect(await verifyPayload(SECRET, "session", carried.slice(4), Date.now())).toBeNull();
+      expect(page).toContain(`data-doc="${doc.docId}"`);
+
+      const row = await rowFor(doc.docId, h);
+      expect(row!.account_id).toBe(owner);
+      expect(row!.expires_at - row!.created_at).toBe(60_000);
+
+      // The claim: the token for that account and document, about a day, and once only.
+      const claimed = await claim({ doc: doc.docId, nonce });
+      expect(claimed.status).toBe(200);
+      expect(claimed.headers.get("cache-control")).toBe("no-store");
+      expect(claimed.headers.get("set-cookie")).toBeNull();
+      const { token, expiresAt } = (await claimed.json()) as { token: string; expiresAt: number };
+      expect(token.startsWith("oas_")).toBe(true);
+      const payload = await verifyPayload(SECRET, "share-token", token.slice(4), Date.now());
+      expect(payload).toMatchObject({ a: owner, d: doc.docId });
+      expect(Math.abs(expiresAt - (Date.now() + 24 * 60 * 60 * 1000))).toBeLessThan(60_000);
+      expect(payload!.exp).toBe(expiresAt);
+      expect((await claim({ doc: doc.docId, nonce })).status).toBe(404);
+      expect(await rowFor(doc.docId, h)).toBeNull();
+
+      // Not opened by our frame: cross-site, none, or no Fetch Metadata at all.
+      for (const headers of [{ "sec-fetch-site": "cross-site" }, { "sec-fetch-site": "none" }, { "sec-fetch-site": "same-site" }, {}] as Array<Record<string, string>>) {
+        const n = newNonce();
+        const hash = await sha256Hex(n);
+        const refused = await popup(doc.docId, hash, { cookie: session, ...headers });
+        expect(refused.status).toBe(400);
+        const text = await refused.text();
+        expect(text).toContain("Start from the page.");
+        expect(text).toContain(`<a href="/share/${doc.docId}">Open the share page</a>`);
+        expect(refused.headers.get("set-cookie")).toBeNull();
+        expect(await rowFor(doc.docId, hash)).toBeNull();
+        expect((await claim({ doc: doc.docId, nonce: n })).status).toBe(404);
+      }
+
+      // No session: the manage sign-in page, returning here, with a binding cookie.
+      const fresh = newNonce();
+      const hFresh = await sha256Hex(fresh);
+      const signIn = await popup(doc.docId, hFresh, { "sec-fetch-site": "same-origin" });
+      expect(signIn.status).toBe(200);
+      const html = await signIn.text();
+      expect(html).toContain("Sign in to manage this document");
+      expect(html).toContain(`name="next" value="/embed/sign-in?doc=${doc.docId}&amp;h=${hFresh}"`);
+      const binding = signIn.headers.get("set-cookie")!;
+      expect(binding).toMatch(new RegExp(`^${bindingName(hFresh)}=.+; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=600$`));
+      expect(await rowFor(doc.docId, hFresh)).toBeNull();
+      expect((await claim({ doc: doc.docId, nonce: fresh })).status).toBe(404);
+
+      // The return from a provider is cross-site; the binding cookie is what lets it through.
+      const returned = await popup(doc.docId, hFresh, { cookie: `${session}; ${binding.split(";")[0]}`, "sec-fetch-site": "cross-site" });
+      expect(returned.status).toBe(200);
+      expect(await returned.text()).toContain("Signed in.");
+      expect((await claim({ doc: doc.docId, nonce: fresh })).status).toBe(200);
+
+      // Two popups open at once keep two bindings, and each return finds its own.
+      const [n1, n2] = [newNonce(), newNonce()];
+      const [h1, h2] = [await sha256Hex(n1), await sha256Hex(n2)];
+      const cookies = [
+        (await popup(doc.docId, h1, { "sec-fetch-site": "same-origin" })).headers.get("set-cookie")!.split(";")[0]!,
+        (await popup(doc.docId, h2, { "sec-fetch-site": "same-origin" })).headers.get("set-cookie")!.split(";")[0]!,
+      ];
+      expect(cookies[0]!.split("=")[0]).not.toBe(cookies[1]!.split("=")[0]);
+      for (const [hash, nonceOf] of [[h1, n1], [h2, n2]] as const) {
+        const back = await popup(doc.docId, hash, { cookie: `${session}; ${cookies.join("; ")}`, "sec-fetch-site": "cross-site" });
+        expect(back.status).toBe(200);
+        expect((await claim({ doc: doc.docId, nonce: nonceOf })).status).toBe(200);
+      }
+
+      // A binding for another handshake, or another document, is no binding.
+      const stranger = newNonce();
+      const hStranger = await sha256Hex(stranger);
+      const wrong = await popup(doc.docId, hStranger, { cookie: `${session}; ${cookies[0]}`, "sec-fetch-site": "cross-site" });
+      expect(wrong.status).toBe(400);
+      const otherDoc = await privateDoc("another");
+      const wrongDoc = await popup(otherDoc.docId, h1, { cookie: `${session}; ${cookies[0]}`, "sec-fetch-site": "cross-site" });
+      expect(wrongDoc.status).toBe(400);
+      // A binding signed for a different purpose is no binding either.
+      const forged = `${bindingName(hStranger)}=${await signPayload(SECRET, "login", { d: doc.docId, h: hStranger }, Date.now() + 60_000)}`;
+      expect((await popup(doc.docId, hStranger, { cookie: `${session}; ${forged}`, "sec-fetch-site": "cross-site" })).status).toBe(400);
+
+      // Use another account: the sign-in page even with a session, and nothing stored.
+      const switching = newNonce();
+      const hSwitch = await sha256Hex(switching);
+      const asked = await popup(doc.docId, hSwitch, { cookie: session, "sec-fetch-site": "same-origin" }, "&switch=1");
+      expect(await asked.text()).toContain("Sign in to manage this document");
+      expect(await rowFor(doc.docId, hSwitch)).toBeNull();
+
+      // A malformed popup address is not a page.
+      for (const bad of [`${API}/embed/sign-in?doc=${doc.docId}&h=${h.slice(1)}`, `${API}/embed/sign-in?doc=${doc.docId}&h=${h.toUpperCase()}`, `${API}/embed/sign-in?h=${h}`, `${API}/embed/sign-in?doc=nope&h=${h}`]) {
+        expect((await getFrom(bad, { headers: { cookie: session, ...SAME_ORIGIN } }, OPEN)).status).toBe(404);
+      }
+    });
+
+    it("S5: claims only with the right nonce for the right document, within a minute, and limits the polling", async () => {
+      const doc = await privateDoc();
+      const other = await privateDoc("another");
+      const owner = await ownerAccount(doc);
+      const nonce = newNonce();
+      const h = await sha256Hex(nonce);
+      const T = Date.now();
+
+      // The row lives a minute and one use, with the time passed explicitly.
+      await putEmbedHandoff(env.DB, doc.docId, h, owner, T);
+      expect(await takeEmbedHandoff(env.DB, doc.docId, h, T + 60_001)).toBeNull();
+      await putEmbedHandoff(env.DB, doc.docId, h, owner, T);
+      expect(await takeEmbedHandoff(env.DB, doc.docId, h, T + 59_000)).toBe(owner);
+      expect(await takeEmbedHandoff(env.DB, doc.docId, h, T + 59_000)).toBeNull();
+
+      // Wrong nonce, other document, an expired row and a row nobody wrote all look alike.
+      await putEmbedHandoff(env.DB, doc.docId, h, owner, T);
+      for (const body of [
+        { doc: doc.docId, nonce: newNonce() },
+        { doc: other.docId, nonce },
+      ]) {
+        const response = await claim(body);
+        expect(response.status).toBe(404);
+        expect(((await response.json()) as { error: { code: string } }).error.code).toBe("not_found");
+      }
+      await env.DB.prepare("UPDATE device_codes SET expires_at = ? WHERE user_code = ?").bind(Date.now() - 1, `embed_${doc.docId}_${h}`).run();
+      expect((await claim({ doc: doc.docId, nonce })).status).toBe(404);
+
+      // What is not a claim at all.
+      expect((await claim("not json")).status).toBe(400);
+      expect((await claim({ doc: doc.docId, nonce: "short" })).status).toBe(400);
+      expect((await claim({ doc: "nope", nonce })).status).toBe(400);
+      expect((await claim({ doc: doc.docId, nonce, extra: 1 })).status).toBe(400);
+      expect((await claim([doc.docId, nonce])).status).toBe(400);
+      expect((await claim("x".repeat(2000))).status).toBe(400);
+      expect((await sendTo("POST", `${API}/embed/token`, { headers: { "content-type": "text/plain", ...SAME_ORIGIN }, body: JSON.stringify({ doc: doc.docId, nonce }) }, OPEN)).status).toBe(400);
+      expect((await claim({ doc: doc.docId, nonce }, OPEN, { "sec-fetch-site": "cross-site" })).status).toBe(404);
+      expect((await claim({ doc: doc.docId, nonce }, OPEN, { origin: "https://evil.example" })).status).toBe(404);
+      expect((await getFrom(`${API}/embed/token`, {}, OPEN)).status).toBe(404);
+
+      // A claim from a client that has used its allowance is told to slow down, and takes nothing.
+      await putEmbedHandoff(env.DB, doc.docId, h, owner, Date.now());
+      const refusing = { limit: async () => ({ success: false }) } as unknown as RateLimit;
+      const limited = await claim({ doc: doc.docId, nonce }, { ...OPEN, EMBED_TOKEN_LIMITER: refusing });
+      expect(limited.status).toBe(400);
+      expect(((await limited.json()) as { error: { code: string } }).error.code).toBe("slow_down");
+      expect((await claim({ doc: doc.docId, nonce })).status).toBe(200);
+
+      // The popup's own mint is limited per client too, and stores nothing when refused.
+      const n = newNonce();
+      const hMint = await sha256Hex(n);
+      const tooMany = await popup(doc.docId, hMint, { cookie: await sessionFor(owner), "sec-fetch-site": "same-origin" }, "", { ...OPEN, APPROVAL_LOOKUP_LIMITER: refusing });
+      expect(tooMany.status).toBe(429);
+      expect((await claim({ doc: doc.docId, nonce: n })).status).toBe(404);
+    });
+
+    it("S6: refuses the popover token everywhere but its own document's frame routes", async () => {
+      const a = await privateDoc("for invited eyes");
+      const b = await privateDoc("a second page");
+      const owner = await ownerAccount(a);
+      const token = await tokenFor(owner, a.docId);
+
+      expect((await embedApi(`${a.docId}/access`, token)).status).toBe(200);
+      // Another document's routes.
+      expect((await embedApi(`${b.docId}/access`, token)).status).toBe(401);
+
+      // Not an API credential: refused before the license path, never stored.
+      const api = await getFrom(`${API}/api/v1/docs/${a.docId}/access`, { headers: { authorization: `Bearer ${token}` } }, PRIVATE);
+      expect(api.status).toBe(401);
+      expect(((await api.json()) as { error: { code: string } }).error.code).toBe("unauthorized");
+      const stored = await env.DB.prepare("SELECT COUNT(*) AS n FROM publishers WHERE key_hash = ?").bind(await sha256Hex(token)).first<{ n: number }>();
+      expect(stored!.n).toBe(0);
+      expect((await getFrom(`${API}/api/v1/docs`, { headers: { authorization: `Bearer ${token}` } }, PRIVATE)).status).toBe(401);
+
+      // Not a session, not a grant.
+      const share = await getFrom(`${API}/share/${a.docId}`, { headers: { authorization: `Bearer ${token}` } }, PRIVATE);
+      expect(await share.text()).toContain("Sign in to manage this document");
+      const label = await getFrom(`${a.host}/d/${a.docId}`, { headers: { authorization: `Bearer ${token}` } }, PRIVATE);
+      expect(label.status).toBe(302);
+      expect(label.headers.get("location")).toBe(`${API}/open/${a.docId}`);
+      const open = await getFrom(`${API}/open/${a.docId}`, { headers: { authorization: `Bearer ${token}`, cookie: `__Host-oa_session=${token}` } }, PRIVATE);
+      expect(await open.text()).toContain("Sign in or create an account to open this document");
+
+      // What else is not a popover token.
+      const bare = token.slice(4);
+      const signed = (purpose: "session" | "grant-url" | "login") => signPayload(SECRET, purpose, { a: owner, d: a.docId }, Date.now() + 60_000);
+      for (const bad of [
+        bare,
+        KEY,
+        "oat_" + bare,
+        await tokenFor(owner, a.docId, Date.now() + 60_000, "session"),
+        (await signed("session")),
+        "oas_" + (await signed("session")),
+        "oas_" + (await signed("grant-url")),
+        "oas_" + (await signed("login")),
+        await tokenFor(owner, a.docId, Date.now() - 1),
+        await tokenFor(newAccountId(), a.docId),
+        await tokenFor("", a.docId),
+        token + "x",
+        "oas_",
+      ]) {
+        const response = await embedApi(`${a.docId}/access`, bad);
+        expect(response.status, bad.slice(0, 12)).toBe(401);
+        expect(((await response.json()) as { error: { code: string } }).error.code).toBe("unauthorized");
+      }
+      expect((await embedApi(`${a.docId}/access`, null)).status).toBe(401);
+      // And another secret's signature.
+      const foreign = SHARE_TOKEN_PREFIX + (await signPayload("z".repeat(32), "share-token", { a: owner, d: a.docId }, Date.now() + 60_000));
+      expect((await embedApi(`${a.docId}/access`, foreign)).status).toBe(401);
+    });
+
+    it("S7: shows an owner the controls, a reader the title, a stranger nothing, and writes through the same operations as /api/v1", async () => {
+      const { sent, over } = mailbox();
+      const config = { ...over, APPROVAL_LOOKUP_LIMITER: undefined, EMBED_TOKEN_LIMITER: undefined } as Partial<Env>;
+      const doc = await privateDoc();
+      const owner = await ownerAccount(doc);
+      const invitee = await reader("alice@acme.com", doc.docId);
+      const stranger = await reader("mallory@evil.example");
+      await env.DB.prepare("INSERT INTO doc_access_requests (doc_id, email, created_at) VALUES (?, 'bob@other.com', ?)").bind(doc.docId, Date.now()).run();
+
+      const mine = await embedApi(`${doc.docId}/access`, await tokenFor(owner, doc.docId), {}, config);
+      expect(mine.status).toBe(200);
+      expect(mine.headers.get("cache-control")).toBe("no-store");
+      expect(await mine.json()).toMatchObject({
+        viewer: "owner",
+        account: "owner@acme.com",
+        title: "Secret",
+        docId: doc.docId,
+        url: `https://openartifacts.site/d/${doc.docId}`,
+        linkAccess: "invited",
+        email: true,
+        people: [{ email: "alice@acme.com", role: "comment" }],
+        requests: [{ email: "bob@other.com" }],
+      });
+
+      const seen = await embedApi(`${doc.docId}/access`, await tokenFor(invitee, doc.docId), {}, config);
+      expect(seen.status).toBe(200);
+      expect(await seen.json()).toEqual({
+        viewer: "reader",
+        account: "alice@acme.com",
+        docId: doc.docId,
+        url: `https://openartifacts.site/d/${doc.docId}`,
+        title: "Secret",
+      });
+      const nobody = await embedApi(`${doc.docId}/access`, await tokenFor(stranger, doc.docId), {}, config);
+      expect(nobody.status).toBe(404);
+      expect(await nobody.text()).not.toContain("Secret");
+      // Writes by someone who cannot manage are the same 404, never a 403.
+      for (const [method, path] of [["PUT", "/people/x@acme.com"], ["DELETE", "/people/alice@acme.com"], ["DELETE", "/requests/bob@other.com"]] as const) {
+        const denied = await embedApi(`${doc.docId}/access${path}`, await tokenFor(invitee, doc.docId), { method }, config);
+        expect(denied.status).toBe(404);
+      }
+      expect((await embedApi(`${doc.docId}/access`, await tokenFor(invitee, doc.docId), { method: "PUT", ...json({ linkAccess: "anyone" }) }, config)).status).toBe(404);
+
+      // A deleted or unknown document is a 404 to the owner too.
+      expect((await embedApi(`${UNKNOWN_DOC_ID}/access`, await tokenFor(owner, UNKNOWN_DOC_ID), {}, config)).status).toBe(404);
+
+      // An owner on a public document: switch it private, and the API sees it.
+      const publicDoc = await privateDoc("a public page", KEY, "anyone");
+      const token = await tokenFor(owner, publicDoc.docId);
+      const switched = await embedApi(`${publicDoc.docId}/access`, token, { method: "PUT", ...json({ linkAccess: "invited" }) }, config);
+      expect(switched.status).toBe(200);
+      expect(((await switched.json()) as { linkAccess: string }).linkAccess).toBe("invited");
+      const viaApi = await getFrom(`${API}/api/v1/docs/${publicDoc.docId}/access`, { headers: { authorization: `Bearer ${KEY}` } }, PRIVATE);
+      expect(((await viaApi.json()) as { linkAccess: string }).linkAccess).toBe("invited");
+      expect((await embedApi(`${publicDoc.docId}/access`, token, { method: "PUT", ...json({ linkAccess: "sideways" }) }, config)).status).toBe(400);
+      expect((await embedApi(`${publicDoc.docId}/access`, token, { method: "PUT", ...json({}) }, config)).status).toBe(400);
+
+      // Adding a person sends the one invite; declining sends nothing.
+      const added = await embedApi(`${publicDoc.docId}/access/people/alice%40acme.com`, token, { method: "PUT" }, config);
+      expect(added.status).toBe(200);
+      expect(((await added.json()) as { people: Array<{ email: string }> }).people.map((p) => p.email)).toEqual(["alice@acme.com"]);
+      expect(sent.map((m) => m.to)).toEqual(["alice@acme.com"]);
+      await env.DB.prepare("INSERT INTO doc_access_requests (doc_id, email, created_at) VALUES (?, 'carol@other.com', ?)").bind(publicDoc.docId, Date.now()).run();
+      const declined = await embedApi(`${publicDoc.docId}/access/requests/carol@other.com`, token, { method: "DELETE" }, config);
+      expect(((await declined.json()) as { requests: unknown[] }).requests).toEqual([]);
+      expect(sent).toHaveLength(1);
+      const removed = await embedApi(`${publicDoc.docId}/access/people/alice@acme.com`, token, { method: "DELETE" }, config);
+      expect(((await removed.json()) as { people: unknown[] }).people).toEqual([]);
+      expect((await embedApi(`${publicDoc.docId}/access/people/not-an-address`, token, { method: "PUT" }, config)).status).toBe(400);
+
+      // The plan gate is the API's: a free plan cannot make a public page private.
+      const freeDoc = await privateDoc("a page of a free owner", KEY_Q, "anyone");
+      const free = await reader("free@acme.com");
+      expect(await linkExternalOwner(env.DB, freeDoc.owner, free, Date.now())).toBe("linked");
+      await env.DB.prepare("UPDATE accounts SET plan = 'free', plan_checked_at = ? WHERE id = ?").bind(Date.now(), free).run();
+      const refused = await embedApi(`${freeDoc.docId}/access`, await tokenFor(free, freeDoc.docId), { method: "PUT", ...json({ linkAccess: "invited" }) }, config);
+      expect(refused.status).toBe(402);
+      const refusal = (await refused.json()) as { error: { code: string; limit: string; upgrade_url?: string } };
+      expect(refusal.error).toMatchObject({ code: "limit_reached", limit: "privateSharing" });
+      expect(refusal.error.upgrade_url).toMatch(/^https:\/\//);
+      expect(refused.headers.get("cache-control")).toBe("no-store");
+
+      // No `/embed/` response is readable by another origin, whatever the method.
+      for (const [method, target] of [
+        ["GET", `${API}/embed/page.js`],
+        ["OPTIONS", `${API}/embed/page.js`],
+        ["GET", frameUrl(doc.docId, APEX)],
+        ["OPTIONS", `${API}/embed/token`],
+        ["POST", `${API}/embed/token`],
+        ["GET", popupUrl(doc.docId, "0".repeat(64))],
+        ["GET", `${API}/embed/api/docs/${doc.docId}/access`],
+        ["OPTIONS", `${API}/embed/api/docs/${doc.docId}/access`],
+        ["PUT", `${API}/embed/api/docs/${doc.docId}/access`],
+        ["GET", `${API}/embed/nothing`],
+      ] as const) {
+        const response = await sendTo(method, target, { headers: { origin: "https://evil.example" } }, config);
+        for (const [name] of response.headers) expect(name.startsWith("access-control-"), `${method} ${target} ${name}`).toBe(false);
+      }
+      expect((await sendTo("OPTIONS", `${API}/embed/api/docs/${doc.docId}/access`, {}, config)).status).toBe(404);
+      expect((await embedApi(`${doc.docId}/access/people`, await tokenFor(owner, doc.docId), { method: "PUT" }, config)).status).toBe(404);
+      expect((await embedApi(`${doc.docId}/access/extra/x`, await tokenFor(owner, doc.docId), {}, config)).status).toBe(404);
+    });
+
+    it("S8: is not there at all on a server with no reader sign-in", async () => {
+      const doc = await privateDoc();
+      const owner = await ownerAccount(doc);
+      const token = await tokenFor(owner, doc.docId);
+      const h = "a".repeat(64);
+      for (const over of [{ ...PRIVATE, READER_SESSION_SECRET: undefined }, { ...PRIVATE, OAUTH_GITHUB_CLIENT_ID: "", EMAIL: undefined }, { ...PRIVATE, API_HOST: "" }]) {
+        const requests: Array<Promise<Response>> = [
+          getFrom(frameUrl(doc.docId, APEX), {}, over),
+          getFrom(popupUrl(doc.docId, h), { headers: { cookie: await sessionFor(owner), ...SAME_ORIGIN } }, over),
+          claim({ doc: doc.docId, nonce: newNonce() }, over),
+          embedApi(`${doc.docId}/access`, token, {}, over),
+        ];
+        for (const response of await Promise.all(requests)) expect(response.status).toBe(404);
       }
     });
   });

@@ -114,6 +114,15 @@
       "name": "REQUEST_ACCESS_LIMITER",
       "namespace_id": "1008",
       "simple": { "limit": 10, "period": 60 }
+    },
+    // The Share popover's token claim, counted per client address. A waiting
+    // frame polls every two seconds, so twenty per ten seconds leaves room for
+    // several frames behind one address while bounding a flood of misses against
+    // the D1 read budget. Absent means no limit.
+    {
+      "name": "EMBED_TOKEN_LIMITER",
+      "namespace_id": "1010",
+      "simple": { "limit": 20, "period": 10 }
     }
   ],
 

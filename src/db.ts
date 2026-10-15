@@ -5,7 +5,7 @@
  * every row here is reconstructible from it, so a lost D1 is a rebuild rather
  * than a data loss. Queries land here as the phase that needs them arrives.
  */
-import { INVITE_WINDOW_MS, MAX_NEW_INVITES_PER_OWNER_PER_DAY } from "./config.js";
+import { EMBED_HANDOFF_TTL_MS, INVITE_WINDOW_MS, MAX_NEW_INVITES_PER_OWNER_PER_DAY } from "./config.js";
 import { PUBLISHER_USER_ID_SQL, OWNER_SCOPE_SQL } from "./owners.js";
 
 /** Publisher row, which doubles as the license-validation cache (phase 2). */
@@ -1161,6 +1161,60 @@ export async function sweepExpired(db: D1Database, nowMs: number): Promise<void>
   await db.prepare("DELETE FROM device_codes WHERE expires_at <= ?").bind(nowMs).run();
 }
 
+/**
+ * The Share popover's handoff: what the sign-in popup leaves for the frame that
+ * opened it, so the frame can collect its token without the popup ever talking
+ * to it.
+ *
+ * A third kind of row on `device_codes`, beside a terminal's device code and a
+ * reader's `reader_` handshake: `user_code` is `embed_{docId}_{h}`, where `h` is
+ * the SHA-256 of a nonce only the frame knows, `account_id` is the account the
+ * popup's session named, and `expires_at` is a minute out. Every other column is
+ * null. Nothing else can reach it: `normalizeUserCode` uppercases and its
+ * pattern has no `_`, and the device, approval and reader paths all select on
+ * columns this row leaves null (a device-code hash, a state, a confirm token).
+ * `sweepExpired` removes what is never collected.
+ *
+ * The row is not a credential. It can be taken only by presenting the nonce, and
+ * the nonce never leaves the frame's memory: the popup's url and every log
+ * carry only its hash. Use is single and atomic, in the way
+ * `collectDeviceToken` is.
+ */
+export async function putEmbedHandoff(
+  db: D1Database,
+  docId: string,
+  h: string,
+  accountId: string,
+  nowMs: number,
+): Promise<void> {
+  await db
+    .prepare(
+      `INSERT INTO device_codes (user_code, account_id, expires_at, created_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(user_code) DO UPDATE SET account_id = excluded.account_id,
+         expires_at = excluded.expires_at, created_at = excluded.created_at`,
+    )
+    .bind(`embed_${docId}_${h}`, accountId, nowMs + EMBED_HANDOFF_TTL_MS, nowMs)
+    .run();
+}
+
+/**
+ * The account a live handoff names, and the row is gone: pending, unknown, used
+ * and expired are all null, so a poller learns nothing about which.
+ */
+export async function takeEmbedHandoff(
+  db: D1Database,
+  docId: string,
+  h: string,
+  nowMs: number,
+): Promise<string | null> {
+  const row = await db
+    .prepare("DELETE FROM device_codes WHERE user_code = ? AND expires_at > ? RETURNING account_id")
+    .bind(`embed_${docId}_${h}`, nowMs)
+    .first<{ account_id: string | null }>();
+  return row?.account_id ?? null;
+}
+
 /** What a poll needs to decide what to tell the terminal. */
 export type PolledDeviceCode = Pick<
   DeviceCodeRow,
@@ -1419,6 +1473,8 @@ export async function countLiveTokens(db: D1Database, accountId: string): Promis
 export interface ReadableDoc {
   /** The document's owner id, which names its publisher's origin. */
   owner: string;
+  /** For the Share popover's reader view, shown only once a token has proved `canRead`. */
+  title: string;
   deleted_at: number | null;
   link_access: LinkAccess;
   /** The version that has bytes, or null when the request names none. */
@@ -1452,7 +1508,7 @@ export async function findReadableDoc(
   return await db
     .prepare(
       `${OWNER_SCOPE_SQL}
-       SELECT d.owner AS owner, d.deleted_at AS deleted_at, d.link_access AS link_access,
+       SELECT d.owner AS owner, d.title AS title, d.deleted_at AS deleted_at, d.link_access AS link_access,
               (SELECT MAX(v.n) FROM versions v
                 WHERE v.doc_id = d.id AND (? IS NULL OR v.n = ?)) AS version,
               ${CAN_READ_SQL} AS allowed

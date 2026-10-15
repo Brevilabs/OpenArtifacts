@@ -197,6 +197,12 @@ export interface Env {
    * Absent means no limit.
    */
   REQUEST_ACCESS_LIMITER?: RateLimit;
+  /**
+   * `POST /embed/token`, the Share popover's claim, counted per client address.
+   * A waiting frame polls it every two seconds, so this bounds a flood of
+   * misses against the D1 read budget. Absent means no limit.
+   */
+  EMBED_TOKEN_LIMITER?: RateLimit;
 }
 
 /** The part of the Email Service binding this Worker uses. */
@@ -235,6 +241,15 @@ export const MAX_INVITES_PER_DOC = 100;
  */
 export const MAX_NEW_INVITES_PER_OWNER_PER_DAY = 100;
 export const INVITE_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * How long the Share popover's sign-in popup leaves its handoff row waiting to
+ * be claimed: one minute and one use. The row exists only once the popup has a
+ * session, so this bounds the gap between the done page and the frame's next
+ * claim, not the sign-in itself. Here and not in `session.ts` because `db.ts`
+ * sets the expiry and `session.ts` already imports the serving module.
+ */
+export const EMBED_HANDOFF_TTL_MS = 60 * 1000;
 
 /**
  * Pending access requests one document holds, for the same reason. Its own

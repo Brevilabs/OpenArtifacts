@@ -348,7 +348,7 @@ export default {
           // so every response carries one opener policy.
           if (pathIsUnder(url.pathname, EMBED_PREFIX)) {
             return readerIsolate(
-              !readerSignInConfigured(env) ? READER_NOT_FOUND() : await handleEmbed(request, url),
+              !readerSignInConfigured(env) ? READER_NOT_FOUND() : await handleEmbed(request, url, env, analytics),
             );
           }
           // Likewise before `handleApi`: a terminal asking for a device code

@@ -129,3 +129,397 @@ export const PAGE_SCRIPT = String.raw`(() => {
   window.addEventListener("resize", () => { if (open) place(); });
 })();
 `;
+
+/**
+ * What the owner of a Copilot-published page sees when their license key is not
+ * linked to a browser account: they can sign in to the popover, but the account
+ * that signs in does not own the page. A constant sentence, so it says nothing
+ * about the document. The frame receives it in a `data-` attribute rather than
+ * holding its own copy.
+ */
+export const COPILOT_HINT =
+  "Published from Copilot? Open the note in Copilot and run Publish file to OpenArtifacts to manage who can open it.";
+
+/**
+ * The popup's done page script (`popupDonePage`): when the popup still has its
+ * opener, post the token to it, then close. A constant, named by its hash in
+ * the page's policy; the token and the document id come from `data-` attributes
+ * of one element, so nothing is interpolated into script.
+ *
+ * The target origin is this page's own, never `*`: the only frame that may act
+ * on the message is the Share frame, which is on the API host, and it checks
+ * the sender's window as well. Most of the time there is no opener to post to,
+ * because every API-host page sends a cross-origin opener policy (and so,
+ * probably, does Google's), which cuts the popup off from the frame. The frame
+ * collects its token from the server in that case, and this script costs
+ * nothing.
+ */
+export const POPUP_DONE_SCRIPT = String.raw`(function () {
+  var done = document.getElementById("oa-done");
+  try {
+    if (window.opener) {
+      window.opener.postMessage({ type: "openartifacts:share-token", doc: done.dataset.doc, token: done.dataset.token, expiresAt: Number(done.dataset.expires) }, location.origin);
+    }
+  } catch (error) {}
+  window.close();
+})();`;
+
+/**
+ * The popover frame's stylesheet (`src/embed.ts` puts it in the shell). The
+ * frame fills the popover's fixed height; `main` scrolls when an owner's lists
+ * are long, and `.foot` with the account line after it sits at the bottom, so
+ * the short views read as a dialog rather than a clipped list. Flex items do not
+ * collapse margins, so spacing is adjusted in the margins, not the structure.
+ */
+export const FRAME_CSS = `:root{color-scheme:light;font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:#1f1f1f;background:#fff}
+*{box-sizing:border-box}html,body{height:100%}body{margin:0}
+main{height:100%;overflow:auto;display:flex;flex-direction:column;padding:16px}
+header{display:flex;align-items:center;gap:8px;margin:0 0 8px}
+h1{flex:1;min-width:0;margin:0;font-size:15px;font-weight:600;overflow-wrap:anywhere}
+h2{margin:16px 0 6px;font-size:12px;font-weight:600;color:#666}
+p{margin:8px 0}.muted{color:#666}.err{color:#b3261e}.notice{color:#7a4b00}.err:empty{display:none}
+button{font:inherit;cursor:pointer;border:1px solid #d0d0d0;border-radius:6px;background:#fff;color:#1f1f1f;padding:6px 12px}
+button:hover{border-color:#999}button:disabled{cursor:default;opacity:.6}
+button.primary{background:#1f1f1f;border-color:#1f1f1f;color:#fff}
+button.link{border:0;padding:0;background:none;color:inherit;text-decoration:underline}
+#oa-close{border:0;padding:2px 6px;font-size:18px;line-height:1;color:#666}
+input{font:inherit;flex:1;min-width:0;padding:6px 10px;border:1px solid #d0d0d0;border-radius:6px}
+.row{display:flex;gap:8px;align-items:center}
+.seg{display:flex;border:1px solid #d0d0d0;border-radius:8px;overflow:hidden}
+.seg button{flex:1;border:0;border-radius:0}.seg button[aria-checked="true"]{background:#1f1f1f;color:#fff}
+ul{list-style:none;margin:0;padding:0}
+li{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 0;border-top:1px solid #eee}
+li span{min-width:0;overflow-wrap:anywhere}li small{display:block;color:#666}
+.foot{display:flex;justify-content:flex-end;margin-top:auto;padding-top:12px}
+`;
+
+/**
+ * The Share popover frame's script (`GET /embed/share`). The frame is on the API
+ * host, inside a page whose scripts the author writes, so it is written as the
+ * least trusting code can be: DOM built only with `createElement` and
+ * `textContent` (never `innerHTML` with data), no `<form>` elements, Enter
+ * handled in script.
+ *
+ * **What it holds.** A per-document token (`oas_…`, 24 hours) in the frame's own
+ * `localStorage`, obtained from a popup. Frames live where cookies are blocked
+ * or partitioned, so the credential is a bearer header on same-origin `fetch`
+ * with `credentials: "omit"`, accepted only by `/embed/api/docs/{docId}/access…`.
+ *
+ * **What it tells the page around it.** Only `ready`, once, before it touches
+ * storage, and `close`, only from a user action in the frame (the × button or
+ * Escape). Nothing the frame sends, and nothing it does that an embedding page
+ * can observe (a size change, a focus move), depends on what is in storage. On a
+ * public document any page on `openartifacts.site` can embed this frame for any
+ * document it knows, and the stored token lives in the partition that page
+ * shares, so anything token-dependent would tell it, with no click, whether its
+ * visitor manages that document. So there is no size report (the popover is one
+ * fixed height), no `ResizeObserver`, no `autofocus`, and no `focus()` except
+ * inside a handler for a user action.
+ *
+ * **Its one inbound channel** is a single `message` listener for the token the
+ * sign-in popup may post. It acts only on a message from the window its own
+ * `window.open` returned, from this origin, for this document; a message from
+ * the embedding page or any other window does nothing.
+ *
+ * **Signing in.** Before opening the popup it makes a random nonce only it
+ * knows and puts the nonce's SHA-256 in the popup's address. The popup, once it
+ * has a session, stores a one-minute, one-use handoff under that hash on the
+ * server. The frame claims it with the nonce itself (`POST /embed/token`), by
+ * polling, and also when its tab becomes visible again. The popup is never
+ * consulted: every API-host page sends a cross-origin opener policy, so its link
+ * to the frame may be gone.
+ */
+export const FRAME_SCRIPT = String.raw`(() => {
+  "use strict";
+  const main = document.getElementById("oa");
+  const doc = main.dataset.doc;
+  const link = main.dataset.link;
+  const parentOrigin = main.dataset.origin;
+  const hint = main.dataset.hint;
+  const KEY = "openartifacts:share-token:" + doc;
+  const SIGNIN_WINDOW_MS = 10 * 60 * 1000;
+  const SENTENCE = "Only the owner can change who can open this.";
+
+  const post = (event) => {
+    if (parentOrigin && window.parent !== window) window.parent.postMessage({ type: "openartifacts:share", event: event }, parentOrigin);
+  };
+  post("ready");
+
+  const node = (tag, attrs, kids) => {
+    const element = document.createElement(tag);
+    for (const name of Object.keys(attrs || {})) {
+      const value = attrs[name];
+      if (value === null) continue;
+      if (name.startsWith("on")) element.addEventListener(name.slice(2), value);
+      else element.setAttribute(name, value);
+    }
+    for (const kid of kids || []) element.append(kid);
+    return element;
+  };
+  const button = (label, onclick, cls) => node("button", { type: "button", class: cls || "", onclick: onclick }, [label]);
+
+  let memory = null;
+  const readToken = () => {
+    let raw;
+    try { raw = window.localStorage.getItem(KEY); } catch (error) { raw = memory; }
+    if (raw === null || raw === undefined) return null;
+    try {
+      const value = JSON.parse(raw);
+      if (value && typeof value.token === "string" && typeof value.expiresAt === "number" && value.expiresAt - Date.now() >= 60000) return value;
+    } catch (error) {}
+    return null;
+  };
+  const writeToken = (value) => {
+    memory = value === null ? null : JSON.stringify(value);
+    try {
+      if (value === null) window.localStorage.removeItem(KEY);
+      else window.localStorage.setItem(KEY, memory);
+    } catch (error) {}
+  };
+
+  const bytesToBase64Url = (bytes) => btoa(String.fromCharCode(...bytes)).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+  const bytesToHex = (bytes) => Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+
+  const copyLink = (target) => {
+    const done = () => {
+      target.textContent = "Copied";
+      window.setTimeout(() => { target.textContent = "Copy link"; }, 2000);
+    };
+    const fallback = () => {
+      const area = node("textarea", { readonly: "", style: "position:fixed;opacity:0" });
+      area.value = link;
+      document.body.append(area);
+      area.select();
+      try { if (document.execCommand("copy")) done(); } catch (error) {}
+      area.remove();
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(link).then(done, fallback);
+    else fallback();
+  };
+  const closeButton = (target) => target.addEventListener("click", () => post("close"));
+  const copyButton = (target) => target.addEventListener("click", () => copyLink(target));
+  document.addEventListener("keydown", (event) => { if (event.key === "Escape") post("close"); });
+
+  const guest = Array.from(main.children);
+  const account = document.getElementById("oa-account");
+  const signInButton = document.getElementById("oa-signin");
+  const guestMessage = document.getElementById("oa-msg");
+  closeButton(document.getElementById("oa-close"));
+  copyButton(document.getElementById("oa-copy"));
+
+  let prepared = null;
+  let opened = null;
+  let generation = 0;
+  let wake = null;
+  let writing = false;
+  let notice = false;
+  let latest = null;
+  let message = null;
+
+  const prepare = () => {
+    const nonce = bytesToBase64Url(crypto.getRandomValues(new Uint8Array(32)));
+    return crypto.subtle.digest("SHA-256", new TextEncoder().encode(nonce)).then((digest) => {
+      prepared = { nonce: nonce, h: bytesToHex(new Uint8Array(digest)) };
+      signInButton.disabled = false;
+    });
+  };
+
+  const showGuest = (text, waiting) => {
+    main.replaceChildren(...guest);
+    account.replaceChildren(...(waiting ? ["Complete sign-in in the window that opened."] : ["Is this your page? ", signInButton]));
+    signInButton.disabled = prepared === null;
+    guestMessage.replaceChildren(...(text ? [text] : []));
+  };
+
+  const accept = (token, expiresAt) => {
+    generation += 1;
+    wake = null;
+    writeToken({ token: token, expiresAt: expiresAt });
+    refresh();
+  };
+
+  const claim = async (nonce, mine) => {
+    try {
+      const response = await fetch("/embed/token", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ doc: doc, nonce: nonce }), credentials: "omit", cache: "no-store" });
+      if (mine !== generation || response.status !== 200) return false;
+      const body = await response.json();
+      if (typeof body.token !== "string" || typeof body.expiresAt !== "number") return false;
+      accept(body.token, body.expiresAt);
+      return true;
+    } catch (error) {
+      return false;
+    }
+  };
+
+  const poll = (nonce) => {
+    generation += 1;
+    const mine = generation;
+    const deadline = Date.now() + SIGNIN_WINDOW_MS;
+    let timer = 0;
+    let busy = false;
+    const tick = async () => {
+      if (busy || mine !== generation) return;
+      window.clearTimeout(timer);
+      if (Date.now() > deadline) {
+        wake = null;
+        showGuest("", false);
+        return;
+      }
+      busy = true;
+      const found = await claim(nonce, mine);
+      busy = false;
+      if (!found && mine === generation) timer = window.setTimeout(tick, 2000);
+    };
+    timer = window.setTimeout(tick, 1000);
+    wake = () => { if (mine === generation && document.visibilityState === "visible") tick(); };
+  };
+  document.addEventListener("visibilitychange", () => { if (wake) wake(); });
+  window.addEventListener("focus", () => { if (wake) wake(); });
+
+  const signIn = (fresh) => {
+    const taken = prepared;
+    if (taken === null) return;
+    prepared = null;
+    signInButton.disabled = true;
+    prepare();
+    if (fresh) writeToken(null);
+    const popup = window.open("/embed/sign-in?doc=" + doc + "&h=" + taken.h + (fresh ? "&switch=1" : ""), "_blank", "popup,width=480,height=720");
+    opened = popup;
+    if (popup === null) {
+      showGuest("", false);
+      guestMessage.replaceChildren("Your browser blocked the sign-in window. Allow pop-ups for this page, or ", node("a", { href: location.origin + "/share/" + doc, target: "_blank", rel: "noopener noreferrer" }, ["open the share page"]), ".");
+      return;
+    }
+    showGuest("", true);
+    poll(taken.nonce);
+  };
+  signInButton.addEventListener("click", () => signIn(false));
+
+  window.addEventListener("message", (event) => {
+    const data = event.data;
+    if (opened === null || event.source !== opened || event.origin !== location.origin) return;
+    if (data === null || typeof data !== "object" || data.type !== "openartifacts:share-token" || data.doc !== doc) return;
+    if (typeof data.token !== "string" || typeof data.expiresAt !== "number") return;
+    accept(data.token, data.expiresAt);
+  });
+  window.addEventListener("storage", (event) => { if (event.key === KEY) refresh(); });
+
+  const call = (method, suffix, body) => {
+    const stored = readToken();
+    if (stored === null) return Promise.resolve(null);
+    const headers = { authorization: "Bearer " + stored.token };
+    if (body) headers["content-type"] = "application/json";
+    return fetch("/embed/api/docs/" + doc + "/access" + suffix, { method: method, headers: headers, body: body ? JSON.stringify(body) : undefined, credentials: "omit", cache: "no-store" });
+  };
+
+  const header = (title) => {
+    const close = button("×", null);
+    close.id = "oa-close";
+    close.setAttribute("aria-label", "Close");
+    closeButton(close);
+    return node("header", {}, [node("h1", { id: "oa-title" }, [title]), close]);
+  };
+  const muted = (kids) => node("p", { class: "muted" }, kids);
+  const footer = () => {
+    const copy = button("Copy link", null, "primary");
+    copyButton(copy);
+    return node("div", { class: "foot" }, [copy]);
+  };
+  const anotherAccount = (lead) => muted([lead, button("Use another account", () => signIn(true), "link")]);
+  const quoted = (title) => "Share “" + title + "”";
+
+  const showReader = (body) => {
+    main.replaceChildren(header(quoted(body.title)), muted([SENTENCE]), footer(), anotherAccount("Signed in as " + body.account + ". "), muted([hint]));
+  };
+  const showNone = () => {
+    main.replaceChildren(header("Share"), muted([SENTENCE]), footer(), anotherAccount("Is this your page? "), muted([hint]));
+  };
+
+  const fail = (target, response, body) => {
+    if (response.status === 402) {
+      const kids = ["Private sharing needs a paid plan. Nothing was changed."];
+      const upgrade = body && body.error ? body.error.upgrade_url : undefined;
+      if (typeof upgrade === "string" && upgrade.startsWith("https://")) kids.push(" ", node("a", { href: upgrade, target: "_blank", rel: "noopener noreferrer" }, ["Upgrade"]));
+      target.replaceChildren(...kids);
+    } else if (response.status === 400 || response.status === 429) {
+      target.textContent = body && body.error && typeof body.error.message === "string" ? body.error.message : "Something went wrong. Nothing was changed.";
+    } else {
+      target.textContent = "Something went wrong. Nothing was changed.";
+    }
+  };
+
+  const write = async (method, suffix, body, modeAfter) => {
+    if (writing) return;
+    writing = true;
+    try {
+      const before = latest ? latest.linkAccess : null;
+      const response = await call(method, suffix, body);
+      if (response === null) { showGuest("", false); return; }
+      let parsed = null;
+      try { parsed = await response.json(); } catch (error) {}
+      if (response.status === 200 && parsed && parsed.viewer === "owner") {
+        if (modeAfter) notice = before === "anyone" && parsed.linkAccess === "invited" ? true : (parsed.linkAccess === "anyone" ? false : notice);
+        showOwner(parsed);
+      } else if (response.status === 401) {
+        writeToken(null);
+        showGuest("", false);
+      } else if (response.status === 404) {
+        showNone();
+      } else {
+        fail(message, response, parsed);
+      }
+    } catch (error) {
+      message.textContent = "Something went wrong. Nothing was changed.";
+    } finally {
+      writing = false;
+    }
+  };
+
+  const showOwner = (body) => {
+    latest = body;
+    message = node("p", { id: "oa-msg", class: "err", role: "alert" });
+    const input = node("input", { type: "email", placeholder: "Add people by email", "aria-label": "Add people by email", autocomplete: "off" });
+    const add = () => { const address = input.value.trim(); if (address) write("PUT", "/people/" + encodeURIComponent(address)); };
+    input.addEventListener("keydown", (event) => { if (event.key === "Enter") add(); });
+    const choice = (value, label) => node("button", { type: "button", role: "radio", "aria-checked": String(body.linkAccess === value), onclick: () => { if (body.linkAccess !== value) write("PUT", "", { linkAccess: value }, true); } }, [label]);
+    const person = (address, detail, buttons) => node("li", {}, [node("span", {}, [address, node("small", {}, [detail])]), node("div", { class: "row" }, buttons)]);
+    const kids = [
+      header(quoted(body.title)),
+      node("div", { class: "row" }, [input, button("Add", add)]),
+      message,
+      node("h2", {}, ["Link access"]),
+      node("div", { class: "seg", role: "radiogroup", "aria-label": "Link access" }, [choice("anyone", "Anyone with the link"), choice("invited", "Only those invited")]),
+    ];
+    if (notice) kids.push(node("p", { class: "notice" }, ["People who opened it while it was public may have kept a copy."]));
+    if (body.requests.length > 0) {
+      kids.push(node("h2", {}, ["Requests"]), node("ul", {}, body.requests.map((request) => person(request.email, "Asked to open it", [
+        button("Approve", () => write("PUT", "/people/" + encodeURIComponent(request.email))),
+        button("Decline", () => write("DELETE", "/requests/" + encodeURIComponent(request.email))),
+      ]))));
+    }
+    const sent = body.email ? "Invited · email sent" : "Invited · send them the link";
+    kids.push(node("h2", {}, ["Who has access"]), node("ul", {}, [person("You", "Owner", [])].concat(body.people.map((entry) => person(entry.email, sent, [
+      button("Remove", () => write("DELETE", "/people/" + encodeURIComponent(entry.email))),
+    ])))), footer());
+    main.replaceChildren(...kids);
+  };
+
+  const refresh = async () => {
+    const stored = readToken();
+    if (stored === null) { showGuest("", false); return; }
+    let response;
+    try { response = await call("GET", ""); } catch (error) { showGuest("Couldn’t load the sharing settings. Try again.", false); return; }
+    if (response === null) { showGuest("", false); return; }
+    let body = null;
+    try { body = await response.json(); } catch (error) {}
+    if (response.status === 200 && body && body.viewer === "owner") showOwner(body);
+    else if (response.status === 200 && body && body.viewer === "reader") showReader(body);
+    else if (response.status === 401) { writeToken(null); showGuest("", false); }
+    else if (response.status === 404) showNone();
+    else showGuest("Couldn’t load the sharing settings. Try again.", false);
+  };
+
+  try { prepare().catch(() => {}); } catch (error) {}
+  if (readToken() !== null) refresh();
+})();
+`;

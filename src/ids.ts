@@ -215,6 +215,20 @@ export function newUserCode(): string {
  */
 export const TOKEN_PREFIX = "oat_";
 
+/**
+ * The prefix on the per-document token the Share popover holds (`src/embed.ts`).
+ *
+ * It exists for the same reason `TOKEN_PREFIX` does: `resolvePublisher`
+ * identifies a credential by its prefix, and a value without one is hashed and
+ * posted to the license server as a license key. A popover token sent to
+ * `/api/v1` unprefixed would leave this deployment as a "license key" and, on a
+ * denial, be cached as a rejected `publishers` row. With the prefix it is
+ * recognised and refused before anything is hashed or sent. It also makes a
+ * leaked token recognisable to a secret scanner. The remainder is a signed
+ * value (`session.ts`), not random bytes: the token is stateless.
+ */
+export const SHARE_TOKEN_PREFIX = "oas_";
+
 /** Bytes of entropy in a token. It is a bearer credential; treat it as one. */
 export const TOKEN_BYTES = 32;
 

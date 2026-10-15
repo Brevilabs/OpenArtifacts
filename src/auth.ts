@@ -44,7 +44,7 @@ import { errorResponse, type ErrorCode } from "./errors.js";
 import { sha256Hex } from "./hash.js";
 import { accountPlan, type RefreshStatus } from "./entitlement.js";
 import { planLimits } from "./plans.js";
-import { TOKEN_PREFIX } from "./ids.js";
+import { SHARE_TOKEN_PREFIX, TOKEN_PREFIX } from "./ids.js";
 
 /** tRPC endpoint on the license server, appended to `LICENSE_API_URL`. */
 const VALIDATE_PATH = "/api/trpc/license.validateLicenseKey";
@@ -228,6 +228,14 @@ export async function resolvePublisher(
   if (token.startsWith(TOKEN_PREFIX)) {
     // `return await`: see the note on the router's catch in index.ts.
     return await resolveAccountToken(token, env, deps);
+  }
+
+  // The Share popover's per-document token is not an API credential, and it must
+  // not fall through to the license path below: that would post it to the
+  // license server as a key and cache a denial as a `publishers` row. Refused
+  // before anything is hashed, stored or sent.
+  if (token.startsWith(SHARE_TOKEN_PREFIX)) {
+    return { ok: false, reason: "invalid_token", message: "That token works only in the Share popover." };
   }
 
   const now = deps.now ?? Date.now;

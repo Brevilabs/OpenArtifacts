@@ -17,10 +17,10 @@
  *
  * All of it lives on the API host, which is the one place a reader session
  * exists. The session is a stateless signed cookie (`session.ts`), only these
- * routes and the share page read it, and `/api/v1` ignores it, so the cookie
+ * routes, the share page and the Share popover's popup read it, and `/api/v1` ignores it, so the cookie
  * adds no cross-site surface to the bearer API. The sign-in pages return only
- * to an `/open/…` or `/share/{docId}` path, so they cannot become an open
- * redirect.
+ * to an `/open/…` path, `/share/{docId}` or the Share popover's popup
+ * (`/embed/sign-in?doc=…&h=…`), so they cannot become an open redirect.
  *
  * A reader is an `accounts` row, the same principal a publisher is. Google and
  * GitHub reuse the device-code handshake and its callback. An emailed code

@@ -1,9 +1,10 @@
 /**
  * The signed values private sharing hands out, and the cookies they travel in:
- * a reader session, a read-only grant for one publisher's origin, and the
- * binding of an OAuth handshake to the browser that started it.
+ * a reader session, a read-only grant for one publisher's origin, the binding of
+ * an OAuth handshake to the browser that started it, and the Share popover's
+ * per-document token and the cookie that binds its sign-in popup.
  *
- * All three are an HMAC over a short JSON payload, keyed by
+ * All of them are an HMAC over a short JSON payload, keyed by
  * `READER_SESSION_SECRET`. Stateless on purpose: there is no session table to
  * read on a request, and signing out clears the cookie. What each one is worth
  * is decided by the code that checks it, not by anything in the value.
@@ -12,7 +13,8 @@
  * fails the MAC check for every other, so a URL grant cannot be replayed as a
  * session and a session cannot be presented as a grant.
  */
-import { SHARE_PREFIX } from "./reader-pages.js";
+import { isDocId } from "./ids.js";
+import { EMBED_SIGNIN_PATH, SHARE_PREFIX } from "./reader-pages.js";
 import { docPath, parseDocPath } from "./serve.js";
 
 export const SESSION_COOKIE = "__Host-oa_session";
@@ -27,8 +29,43 @@ export const LOGIN_COOKIE = "__Host-oa_login";
  * `signup` is the ten-minute token that carries a mailbox proved by an emailed
  * code from the code page to the Terms step, and `email-code` keys the hash an
  * emailed code is stored under, so neither can be replayed as any other value.
+ *
+ * `share-token` is the Share popover's credential, one account and one
+ * document, and `embed-signin` is the ten-minute cookie that ties the popup's
+ * return from a provider to the request that opened it. Neither is a session,
+ * and no session, grant, login or signup value verifies as either.
  */
-export type Purpose = "session" | "grant-url" | "grant-cookie" | "login" | "signup" | "email-code";
+export type Purpose =
+  | "session"
+  | "grant-url"
+  | "grant-cookie"
+  | "login"
+  | "signup"
+  | "email-code"
+  | "share-token"
+  | "embed-signin";
+
+/** How long a Share popover token is good for. One sign-in per document per day. */
+export const SHARE_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * How long the popup's binding cookie lives, and how long a frame keeps polling
+ * for its sign-in: the time a person may take to sign in, not a credential's life.
+ */
+export const EMBED_SIGNIN_TTL_MS = 10 * 60 * 1000;
+
+/**
+ * The cookie that binds a popup's return from Google or GitHub to the request
+ * that opened it (`embed.ts`). One cookie per handshake, named by the first 16
+ * hex characters of the nonce's hash, so two popovers signing in at once keep
+ * separate bindings. The value still verifies only for its own full `{d, h}`,
+ * so the short name adds no trust.
+ */
+export const EMBED_COOKIE_PREFIX = "__Host-oa_embed_";
+export const embedCookieName = (h: string): string => `${EMBED_COOKIE_PREFIX}${h.slice(0, 16)}`;
+
+/** The nonce hash in a popup url: lowercase SHA-256 hex. */
+export const EMBED_HASH = /^[0-9a-f]{64}$/;
 
 /** How long a signed-in reader stays signed in on the API host. */
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
@@ -128,18 +165,30 @@ export async function readSession(request: Request, secret: string, now: number)
 }
 
 /**
- * A return path the sign-in pages may redirect to: `/open/{docId}[/v{n}]` or
- * `/share/{docId}`, and nothing else. Rebuilt from the parsed parts rather than
- * echoed, so what a form field or a cookie carried can never become a different
- * location: no absolute url, no `//host`, no query or fragment, and not the
- * `/open/{docId}/request` route, which answers only a POST.
+ * A return path the sign-in pages may redirect to: `/open/{docId}[/v{n}]`,
+ * `/share/{docId}` or the Share popover's popup, `/embed/sign-in?doc=…&h=…`, and
+ * nothing else. Rebuilt from the parsed parts rather than echoed, so what a
+ * form field or a cookie carried can never become a different location: no
+ * absolute url, no `//host`, no fragment, no other query parameter (the popup's
+ * `switch` is dropped), and not the `/open/{docId}/request` route, which answers
+ * only a POST.
  */
 export function returnPath(candidate: string | null): string | null {
   if (candidate === null) return null;
+  if (candidate.startsWith(`${EMBED_SIGNIN_PATH}?`)) return popupPath(candidate);
   const open = parseDocPath(candidate, "/open");
   if (open !== null) return docPath("/open", open);
   const share = parseDocPath(candidate, SHARE_PREFIX);
   return share !== null && share.pinned === null ? docPath(SHARE_PREFIX, share) : null;
+}
+
+/** The popup's own address, `/embed/sign-in?doc={docId}&h={hash}`, or null if either parameter is not well formed. */
+export function popupPath(candidate: string): string | null {
+  const { pathname, searchParams, hash } = new URL(candidate, "https://x");
+  const doc = searchParams.get("doc");
+  const h = searchParams.get("h");
+  if (pathname !== EMBED_SIGNIN_PATH || hash !== "" || doc === null || h === null) return null;
+  return isDocId(doc) && EMBED_HASH.test(h) ? `${EMBED_SIGNIN_PATH}?doc=${doc}&h=${h}` : null;
 }
 
 /** Sign `accountId` in and send the browser on to `location`. */

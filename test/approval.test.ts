@@ -1608,7 +1608,7 @@ describe("reader sign-in", () => {
     expect((await post(`${API}/signin/confirm-email`, { signup_token: session, terms: "yes", next: NEXT }, over)).status).toBe(400);
   });
 
-  it("returns only to an /open or /share path, and to nothing else", async () => {
+  it("returns only to an /open, /share or popup path, and to nothing else", async () => {
     const out = (next: string, init: Record<string, string> = {}) =>
       send(`${API}/signin/out`, { method: "POST", body: new URLSearchParams({ next }), headers: init }, hosts);
 
@@ -1617,6 +1617,29 @@ describe("reader sign-in", () => {
       expect(response.status).toBe(303);
       expect(response.headers.get("location")).toBe(next.replace(/\/$/, ""));
       expect(response.headers.get("set-cookie")).toMatch(/^__Host-oa_session=; .*Max-Age=0$/);
+    }
+    // The Share popover's popup returns to itself, with its nonce hash and nothing else.
+    const H = "ab".repeat(32);
+    const popup = `/embed/sign-in?doc=${DOC_ID}&h=${H}`;
+    expect((await out(popup)).headers.get("location")).toBe(popup);
+    expect((await out(`${popup}&switch=1`)).headers.get("location")).toBe(popup);
+    expect((await out(`/embed/sign-in?h=${H}&doc=${DOC_ID}&x=1`)).headers.get("location")).toBe(popup);
+    for (const next of [
+      `/embed/sign-in?doc=${DOC_ID}&h=${H.slice(1)}`,
+      `/embed/sign-in?doc=${DOC_ID}&h=${H.toUpperCase()}`,
+      `/embed/sign-in?h=${H}`,
+      `/embed/sign-in?doc=${DOC_ID}`,
+      `/embed/sign-in?doc=nope&h=${H}`,
+      `/embed/sign-in/x?doc=${DOC_ID}&h=${H}`,
+      `/embed/sign-in?doc=${DOC_ID}&h=${H}#frag`,
+      `//evil.example/embed/sign-in?doc=${DOC_ID}&h=${H}`,
+      `https://evil.example/embed/sign-in?doc=${DOC_ID}&h=${H}`,
+      `/embed/share?doc=${DOC_ID}&h=${H}`,
+      `/embed/sign-in`,
+    ]) {
+      const response = await out(next);
+      expect(response.status, next).toBe(404);
+      expect(response.headers.get("location")).toBeNull();
     }
     for (const next of [
       `/open/${DOC_ID}/request`,

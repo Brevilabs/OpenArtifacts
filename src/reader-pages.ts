@@ -7,6 +7,8 @@
  * it enters markup.
  */
 import { PROVIDER_ICONS, PROVIDER_LABELS, type ProviderId } from "./approval/providers.js";
+import { POPUP_DONE_SCRIPT } from "./embed-scripts.js";
+import { scriptHashSource } from "./hash.js";
 import { ABOUT_LINK, brandPageHtml, escapeHtml, type BrandPage } from "./page.js";
 
 /** The door a private document opens through, on the API host. */
@@ -19,15 +21,33 @@ export const SHARE_PREFIX = "/share";
 
 /**
  * Everything the top bar's Share button needs from the API host: the page
- * script and, later, the popover frame and its routes. Not a client surface.
+ * script, the popover frame, its sign-in popup and the routes the frame calls.
+ * Not a client surface.
  */
 export const EMBED_PREFIX = "/embed";
 
 /** The script every served page loads. Permanent: pinned pages carry the tag for a year. */
 export const PAGE_SCRIPT_PATH = "/embed/page.js";
 
-/** Whether a return path is the share page, which is signed in to for a different reason. */
-const isSharePath = (next: string): boolean => next.startsWith(`${SHARE_PREFIX}/`);
+/** The Share popover's frame, `GET /embed/share?doc={docId}&origin=…`. */
+export const EMBED_SHARE_PATH = "/embed/share";
+
+/** The popover's sign-in popup, `GET /embed/sign-in?doc={docId}&h=…`. */
+export const EMBED_SIGNIN_PATH = "/embed/sign-in";
+
+/** The frame's claim of its token, `POST /embed/token`. */
+export const EMBED_TOKEN_PATH = "/embed/token";
+
+/** The frame's JSON routes: `/embed/api/docs/{docId}/access…`. */
+export const EMBED_API_PREFIX = "/embed/api";
+
+/**
+ * Whether a return path is one of the two ways an owner manages a document, the
+ * share page and the popover's popup, which are signed in to for a different
+ * reason than opening one.
+ */
+const isManagePath = (next: string): boolean =>
+  next.startsWith(`${SHARE_PREFIX}/`) || next.startsWith(`${EMBED_SIGNIN_PATH}?`);
 
 /**
  * These pages hold no script and load nothing, so the policy can be closed: no
@@ -88,7 +108,7 @@ export function signInPage(
   emailEnabled: boolean,
   note = "",
 ): Response {
-  const manage = isSharePath(next);
+  const manage = isManagePath(next);
   const buttons = providers
     .map(
       (provider) =>
@@ -150,7 +170,7 @@ export function termsPage(
   next: string,
   submit: { action: string; field: string; token: string },
 ): Response {
-  const purpose = isSharePath(next) ? "manage" : "open";
+  const purpose = isManagePath(next) ? "manage" : "open";
   return readerPage(
     {
       title: "Create your free account",
@@ -208,6 +228,48 @@ export function requestSentPage(email: string, docId: string, emailEnabled: bool
       actions: `<div class="actions">${useAnotherAccount(`${OPEN_PREFIX}/${docId}`)}</div>`,
     },
     200,
+  );
+}
+
+/**
+ * The popup refused: it was not opened by the Share frame. A person who got
+ * here from a link or a page that is not ours is sent to the share page, which
+ * does the same job at the top level. Browsers that send no Fetch Metadata land
+ * here too, and keep the share page.
+ */
+export function popupRefusedPage(docId: string): Response {
+  return readerPage(
+    {
+      title: "Sign-in didn’t start",
+      heading: "Start from the page.",
+      message: "Open this from Share on the document, or manage it on the share page.",
+      actions: `<div class="actions"><a href="${SHARE_PREFIX}/${escapeHtml(docId)}">Open the share page</a></div>`,
+    },
+    400,
+  );
+}
+
+/**
+ * The popup's last page. The handoff row is already stored, which is what the
+ * frame collects; this page also carries the token so a popup that still has its
+ * opener can post it straight to the frame (`POPUP_DONE_SCRIPT`), then closes.
+ *
+ * The token sits in `data-` attributes of one element, escaped, and the one
+ * inline script is a constant named by its hash, so the page's policy admits
+ * that script and nothing else. The page is top-level and first-party, `no-store`
+ * like every reader page, and nothing about the document decides what it says.
+ */
+export async function popupDonePage(docId: string, token: string, expiresAt: number): Promise<Response> {
+  const hash = await scriptHashSource(POPUP_DONE_SCRIPT);
+  return readerPage(
+    {
+      title: "Signed in",
+      heading: "Signed in.",
+      message: "You can close this window and go back to the document.",
+      detail: `<div id="oa-done" hidden data-doc="${escapeHtml(docId)}" data-token="${escapeHtml(token)}" data-expires="${expiresAt}"></div>\n<script>${POPUP_DONE_SCRIPT}</script>`,
+    },
+    200,
+    `${READER_CSP}; script-src ${hash}`,
   );
 }
 

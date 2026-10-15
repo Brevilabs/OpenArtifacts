@@ -74,7 +74,7 @@ const NO_STORE = { "cache-control": "no-store" };
 const MAX_ADDRESS_LENGTH = 254;
 
 /** The only values `linkAccess` takes. */
-function parseLinkAccess(value: unknown): LinkAccess | null {
+export function parseLinkAccess(value: unknown): LinkAccess | null {
   return value === "anyone" || value === "invited" ? value : null;
 }
 
@@ -292,23 +292,28 @@ async function invite(
   await sendEmail(env, email, inviteMessage(sharer, title, publicDocUrl(env, requestUrl, docId), email));
 }
 
-/** The frozen JSON for an `Access`: `url` is always the canonical link, never a grant. */
+/**
+ * The frozen `Access` object: `url` is always the canonical link, never a grant.
+ * The popover's owner view is this plus who is asking, so both surfaces name
+ * the same fields.
+ */
+export function accessBody(env: Env, requestUrl: URL, docId: string, state: AccessState) {
+  return {
+    docId,
+    url: publicDocUrl(env, requestUrl, docId),
+    linkAccess: state.link_access,
+    email: emailConfigured(env),
+    people: state.people.map((person) => ({ email: person.email, role: person.role, addedAt: person.created_at })),
+    requests: state.requests.map((request) => ({ email: request.email, requestedAt: request.created_at })),
+  };
+}
+
 function accessResponse(env: Env, requestUrl: URL, docId: string, state: AccessState): Response {
-  return Response.json(
-    {
-      docId,
-      url: publicDocUrl(env, requestUrl, docId),
-      linkAccess: state.link_access,
-      email: emailConfigured(env),
-      people: state.people.map((person) => ({ email: person.email, role: person.role, addedAt: person.created_at })),
-      requests: state.requests.map((request) => ({ email: request.email, requestedAt: request.created_at })),
-    },
-    { headers: NO_STORE },
-  );
+  return Response.json(accessBody(env, requestUrl, docId, state), { headers: NO_STORE });
 }
 
 /** `%40` or a bare `@`: both arrive here, and a malformed escape is just a bad address. */
-function decodeAddress(segment: string): string {
+export function decodeAddress(segment: string): string {
   try {
     return decodeURIComponent(segment);
   } catch {
@@ -341,8 +346,14 @@ async function roleOf(request: Request): Promise<InviteRole | undefined | null> 
 
 /** Map a refusal to the frozen JSON errors; a success to the `Access`. */
 function jsonOf(env: Env, requestUrl: URL, publisher: Publisher, docId: string, result: AccessResult): Response {
-  if (result.ok) return accessResponse(env, requestUrl, docId, result.state);
-  switch (result.refusal) {
+  return result.ok
+    ? accessResponse(env, requestUrl, docId, result.state)
+    : refusalResponse(env, publisher, docId, result.refusal);
+}
+
+/** The frozen JSON error for a refused operation. The Share popover's routes use it too. */
+export function refusalResponse(env: Env, publisher: Publisher, docId: string, refusal: AccessRefusal): Response {
+  switch (refusal) {
     case "not_found":
       return docNotFound(docId);
     case "bad_email":
