@@ -5,7 +5,7 @@ import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { browserProcess, collectToken, configDir, detectAgents, installSkills, main, npmProcess, preparePublish, presentError } from "../src/cli.js";
+import { browserProcess, collectToken, configDir, detectAgents, installSkills, main, npmProcess, prepareComments, preparePublish, prepareShare, presentError } from "../src/cli.js";
 import { APIError } from "../src/client.js";
 
 /** Point the CLI at a scratch config directory and host for one test. */
@@ -191,7 +191,7 @@ test("publish reads only HTML files and parses its options before authentication
 
 async function publishingServer() {
   const requests = [];
-  const control = { staleUpdates: false, missingDeletes: false, privateDocs: true };
+  const control = { staleUpdates: false, missingDeletes: false, privateDocs: true, comments: true };
   const server = createServer((request, response) => {
     let body = "";
     request.setEncoding("utf8");
@@ -212,6 +212,17 @@ async function publishingServer() {
           people: [{ email: "alice@acme.com", role: "comment", addedAt: 1 }],
           requests: [{ email: "bob@other.com", requestedAt: 2 }],
         }));
+        return;
+      }
+      // A Worker that predates comments has none of these routes.
+      if (!control.comments && /\/(threads|comments|settings)|^\/api\/v1\/account$/.test(request.url.split("?")[0]) && request.method !== "GET") {
+        response.statusCode = 404;
+        response.end(JSON.stringify({ error: { code: "not_found", message: "No API route." } }));
+        return;
+      }
+      if (!control.comments && request.url.includes("/threads")) {
+        response.statusCode = 404;
+        response.end(JSON.stringify({ error: { code: "not_found", message: "No API route." } }));
         return;
       }
       // A Worker that predates private sharing has no such route.
@@ -634,4 +645,170 @@ test("account output includes additive storage figures without exposing unrelate
     assert.equal(parsed.usage.storedBytes, 1234);
     assert(!result.stdout.includes("never-print-response-extra"));
   } finally { remote.server.close(); }
+});
+
+const DOC = "9f2k4mvq7t0xbz3n";
+const THREAD = "th_ABCDEFGHJKMNPQRS";
+const COMMENT = "cm_ABCDEFGHJKMNPQRS";
+
+test("comments subcommands send one request each, with the exact method, path and body", async () => {
+  const remote = await publishingServer();
+  try {
+    await withEnvironment({
+      OPENARTIFACTS_CONFIG_DIR: await mkdtemp(join(tmpdir(), "openartifacts-comments-")),
+      OPENARTIFACTS_API_HOST: remote.host,
+      OPENARTIFACTS_TOKEN: "opaque-test-token",
+    }, async (lines) => {
+      await main(["comments", "list", DOC]);
+      await main(["comments", "list", DOC, "--all", "--since", "2026-10-14T09:00:00Z"]);
+      await main(["comments", "list", DOC, "--resolved"]);
+      // A quote or a body may start with dashes; only flag positions are flags.
+      await main(["comments", "add", DOC, "--quote", "--two of three", "--body", "Soften this.", "--prefix", "says ", "--suffix", " renewed", "--section", "summary", "--version", "3"]);
+      await main(["comments", "add", DOC, "--body", "-- agreed?", "--quote", "Q3 revenue"]);
+      await main(["comments", "reply", DOC, THREAD, "--body", "Softened in v4."]);
+      await main(["comments", "resolve", DOC, THREAD, "--version", "4"]);
+      await main(["comments", "resolve", DOC, THREAD]);
+      await main(["comments", "reopen", DOC, THREAD]);
+      await main(["comments", "delete", DOC, COMMENT]);
+      await main(["comments", "on", DOC]);
+      await main(["comments", "off", DOC]);
+      await main(["comments", "name", "Logan Yang"]);
+      assert.equal(lines.length, 13);
+      // Output is the server's JSON, pretty-printed like list and share; delete prints a sentence.
+      assert.equal(JSON.parse(lines[0]).docId, DOC);
+      assert.equal(lines[9], `Deleted ${COMMENT}.`);
+    });
+  } finally {
+    remote.server.close();
+  }
+  assert.deepEqual(remote.requests.map(({ method, path, body }) => [method, path, body]), [
+    ["GET", `/api/v1/docs/${DOC}/threads?state=open`, undefined],
+    ["GET", `/api/v1/docs/${DOC}/threads?state=all&since=2026-10-14T09%3A00%3A00Z`, undefined],
+    ["GET", `/api/v1/docs/${DOC}/threads?state=resolved`, undefined],
+    ["POST", `/api/v1/docs/${DOC}/threads`, { anchor: { exact: "--two of three", prefix: "says ", suffix: " renewed", section: "summary" }, body: "Soften this.", version: 3 }],
+    ["POST", `/api/v1/docs/${DOC}/threads`, { anchor: { exact: "Q3 revenue" }, body: "-- agreed?" }],
+    ["POST", `/api/v1/docs/${DOC}/threads/${THREAD}/comments`, { body: "Softened in v4." }],
+    ["POST", `/api/v1/docs/${DOC}/threads/${THREAD}/resolve`, { version: 4 }],
+    ["POST", `/api/v1/docs/${DOC}/threads/${THREAD}/resolve`, {}],
+    ["POST", `/api/v1/docs/${DOC}/threads/${THREAD}/reopen`, undefined],
+    ["DELETE", `/api/v1/docs/${DOC}/comments/${COMMENT}`, undefined],
+    ["PUT", `/api/v1/docs/${DOC}/settings`, { comments: true }],
+    ["PUT", `/api/v1/docs/${DOC}/settings`, { comments: false }],
+    ["PUT", "/api/v1/account", { displayName: "Logan Yang" }],
+  ]);
+  assert(remote.requests.every((request) => request.authorization === "Bearer opaque-test-token"));
+});
+
+test("comments reject malformed arguments before any credential is read or request is made", async () => {
+  const remote = await publishingServer();
+  try {
+    // No token and a fresh config directory: reaching authentication would start a device login.
+    await withEnvironment({
+      OPENARTIFACTS_CONFIG_DIR: await mkdtemp(join(tmpdir(), "openartifacts-comments-bad-")),
+      OPENARTIFACTS_API_HOST: remote.host,
+    }, async () => {
+      const usage = /Usage: openartifacts/;
+      await assert.rejects(main(["comments"]), usage);
+      await assert.rejects(main(["comments", "frobnicate", DOC]), usage);
+      await assert.rejects(main(["comments", "list"]), usage);
+      await assert.rejects(main(["comments", "list", DOC, "--open", "--all"]), usage);
+      await assert.rejects(main(["comments", "list", DOC, "--since"]), usage);
+      await assert.rejects(main(["comments", "list", DOC, "--since", "yesterday"]), /--since must be a date/);
+      await assert.rejects(main(["comments", "add", DOC, "--quote", "x"]), /--body is required/);
+      await assert.rejects(main(["comments", "add", DOC, "--body", "x"]), /--quote is required/);
+      await assert.rejects(main(["comments", "add", DOC, "--quote", "x", "--body", "  "]), /--body cannot be empty/);
+      await assert.rejects(main(["comments", "add", DOC, "--quote", "x".repeat(1001), "--body", "b"]), /limit is 1000/);
+      await assert.rejects(main(["comments", "add", DOC, "--quote", "x", "--body", "b".repeat(4001)]), /limit is 4000/);
+      await assert.rejects(main(["comments", "add", DOC, "--quote", "x", "--body", "b", "--prefix", "p".repeat(33)]), /limit is 32/);
+      await assert.rejects(main(["comments", "add", DOC, "--quote", "x", "--body", "b", "--version", "0"]), /--version must be/);
+      await assert.rejects(main(["comments", "add", DOC, "--quote", "x", "--body", "b", "--quote", "y"]), usage);
+      await assert.rejects(main(["comments", "add", DOC, "--quote", "x", "--body", "b", "--owner", "me"]), usage);
+      await assert.rejects(main(["comments", "reply", DOC, "not-a-thread", "--body", "b"]), usage);
+      await assert.rejects(main(["comments", "reply", DOC, THREAD]), /--body is required/);
+      await assert.rejects(main(["comments", "resolve", DOC]), usage);
+      await assert.rejects(main(["comments", "reopen", DOC, THREAD, "extra"]), usage);
+      await assert.rejects(main(["comments", "delete", DOC, THREAD]), usage);
+      await assert.rejects(main(["comments", "on"]), usage);
+      await assert.rejects(main(["comments", "off", DOC, "extra"]), usage);
+      await assert.rejects(main(["comments", "name"]), usage);
+      await assert.rejects(main(["comments", "name", "   "]), /cannot be empty/);
+      await assert.rejects(main(["comments", "name", "n".repeat(65)]), /limit is 64/);
+    });
+  } finally {
+    remote.server.close();
+  }
+  assert.deepEqual(remote.requests, []);
+});
+
+test("prepareComments returns the request it will send", () => {
+  assert.deepEqual(prepareComments("list", [DOC]), { action: "list", docId: DOC, state: "open" });
+  assert.deepEqual(prepareComments("name", ["  Logan Yang "]), { action: "name", name: "Logan Yang" });
+  assert.deepEqual(prepareComments("add", [DOC, "--quote", "Q3", "--body", "hi"]), {
+    action: "add", docId: DOC, body: { anchor: { exact: "Q3" }, body: "hi" },
+  });
+});
+
+test("comments name a missing resource the same way whatever the reason", async () => {
+  const remote = await publishingServer();
+  remote.control.comments = false;
+  try {
+    await withEnvironment({
+      OPENARTIFACTS_CONFIG_DIR: await mkdtemp(join(tmpdir(), "openartifacts-comments-404-")),
+      OPENARTIFACTS_API_HOST: remote.host,
+      OPENARTIFACTS_TOKEN: "opaque-test-token",
+    }, async () => {
+      await assert.rejects(main(["comments", "list", DOC]), /Not found, or this server does not support comments\./);
+      await assert.rejects(main(["comments", "on", DOC]), /Not found, or this server does not support comments\./);
+    });
+  } finally {
+    remote.server.close();
+  }
+});
+
+test("share --role sets the role of the people added in the same call", async () => {
+  assert.deepEqual(prepareShare(["--add", "a@b.co", "--role", "view"]), [["add", "a@b.co", "view"]]);
+  assert.deepEqual(prepareShare(["--role", "comment", "--add", "a@b.co", "--add", "c@d.co"]), [["add", "a@b.co", "comment"], ["add", "c@d.co", "comment"]]);
+  assert.deepEqual(prepareShare(["--add", "a@b.co"]), [["add", "a@b.co"]]);
+  assert.throws(() => prepareShare(["--role", "view"]), /--role applies to a person added/);
+  assert.throws(() => prepareShare(["--link", "invited", "--role", "view"]), /--role applies to a person added/);
+  assert.throws(() => prepareShare(["--add", "a@b.co", "--role", "owner"]), /Usage: openartifacts/);
+  assert.throws(() => prepareShare(["--add", "a@b.co", "--role", "view", "--role", "comment"]), /Usage: openartifacts/);
+
+  const remote = await publishingServer();
+  try {
+    await withEnvironment({
+      OPENARTIFACTS_CONFIG_DIR: await mkdtemp(join(tmpdir(), "openartifacts-role-")),
+      OPENARTIFACTS_API_HOST: remote.host,
+      OPENARTIFACTS_TOKEN: "opaque-test-token",
+    }, async () => {
+      await main(["share", DOC, "--add", "bob@acme.com", "--role", "view"]);
+      await main(["share", DOC, "--add", "bob@acme.com"]);
+      await assert.rejects(main(["share", DOC, "--role", "view"]), /--role applies/);
+    });
+  } finally {
+    remote.server.close();
+  }
+  assert.deepEqual(remote.requests.map(({ method, path, body }) => [method, path, body]), [
+    ["PUT", `/api/v1/docs/${DOC}/access/people/bob%40acme.com`, { role: "view" }],
+    ["PUT", `/api/v1/docs/${DOC}/access/people/bob%40acme.com`, undefined],
+  ]);
+});
+
+test("presentError explains the comment error codes", () => {
+  const lines = [];
+  const previous = console.error;
+  console.error = (...parts) => lines.push(parts.join(" "));
+  try {
+    presentError(new APIError(400, { error: { code: "anchor_not_found", message: "Quote not found." } }));
+    presentError(new APIError(409, { error: { code: "comments_off", message: "Comments are off." } }));
+    presentError(new APIError(409, { error: { code: "name_required", message: "Name needed." } }));
+    presentError(new APIError(402, { error: { code: "limit_reached", message: "Comments need a plan.", limit: "comments" } }));
+  } finally {
+    console.error = previous;
+  }
+  assert(lines.some((line) => line.includes("openartifacts get <docId>")));
+  assert(lines.some((line) => line.includes("openartifacts comments on <docId>")));
+  assert(lines.some((line) => line.includes('openartifacts comments name "<name>"')));
+  assert(lines.includes("Limit: comments"));
+  assert(lines.some((line) => line.includes("paid plan")));
 });

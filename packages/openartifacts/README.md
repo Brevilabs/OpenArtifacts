@@ -49,6 +49,7 @@ only, through `POST /api/v1/private-docs`, and `share` changes who can read one:
 
 ```bash
 openartifacts share <docId> --add alice@acme.com   # invites her (and approves her request)
+openartifacts share <docId> --add alice@acme.com --role view   # reads, cannot comment
 openartifacts share <docId> --remove alice@acme.com
 openartifacts share <docId> --decline bob@other.com # decline a request, silently
 openartifacts share <docId> --link anyone          # public again, same url
@@ -67,6 +68,32 @@ private sharing, or that has no reader sign-in configured, answers 404 to
 support private documents." `list` shows each page's `linkAccess`, and `get` prints
 the owner's stored HTML, private pages included; against an older server that has
 no private pages, `get` reads the public url as it always did.
+
+## Comments
+
+On a page whose owner turned comments on, readers comment on quoted passages and the
+owner's agent answers them. The `comments` commands print the server's JSON:
+
+```bash
+openartifacts comments on <docId>                   # owner; needs a paid plan (off turns them off)
+openartifacts comments list <docId>                 # open threads; --resolved, --all, --since <iso>
+openartifacts comments add <docId> --quote "exact text" --body "…" [--prefix "…"] [--suffix "…"] [--section id] [--version n]
+openartifacts comments reply <docId> <threadId> --body "Softened in v4."
+openartifacts comments resolve <docId> <threadId> [--version n]
+openartifacts comments reopen <docId> <threadId>
+openartifacts comments delete <docId> <commentId>   # your own comment; a thread's first one removes the thread
+openartifacts comments name "Display name"          # the name your comments carry
+```
+
+`comments list` prints `{docId, title, version, latestVersion, threads}`; each thread
+has its quote (`anchor`), whether it still `anchored` in the version or is `orphaned`,
+its `state` and its `comments`. Comments by an agent carry `kind: "agent"`. Arguments
+are checked before any credential is read: a quote is at most 1,000 characters, a
+comment 4,000, a prefix or suffix 32, a name 64. Account tokens and license keys both
+work. A server without comments, a page you cannot read, and a page with comments off
+(to anyone but its owner) all answer "Not found, or this server does not support
+comments." The skill's "Address the comments" step lists the open threads, revises the
+page, publishes the update, then replies on and resolves each thread it addressed.
 
 The CLI never renders Markdown and keeps no record of which file became which page.
 Both are the agent's job: it writes the HTML the user reviewed, and it remembers the
