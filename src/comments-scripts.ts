@@ -294,7 +294,8 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
     let visible = null;
     const layout = () => {
       // Measure the page without our own margin column: its height counts toward scrollHeight and would hide an inner scroller.
-      mhost.style.display = "none";
+      // Collapse it, never hide it: a display:none host takes the frame out of rendering, and Chrome then drops the keystroke, or the focus, of a reader typing in a card.
+      mhost.style.height = "0";
       const vw = viewport().clientWidth, right = contentRight();
       const next = vw - right >= 256 && !innerScrolled() ? "margin" : "overlay";
       if (next !== mode) { mode = next; need = 0; sheetH = 0; send({ event: "mode", mode: mode }); if (button) label(); }
@@ -302,6 +303,7 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       const z = document.documentElement.currentCSSZoom || 1;
       const flat = base + (z !== 1 ? "zoom:" + 1 / z + ";" : "");
       if (!active || !shown) {
+        mhost.style.display = "none";
         if (visible !== false) { visible = false; send({ event: "visible", shown: false }); }
         return;
       }

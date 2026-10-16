@@ -1337,3 +1337,34 @@ test("a signed-in Can-view reader is never offered Comment, not even before the 
   assert.equal(await tip.isVisible(), false, "no Comment once the frame says view");
   await context.close();
 });
+
+test("typing in a card survives the page re-measuring and the frame redrawing on every few keystrokes", { timeout: 120_000 }, async () => {
+  // A page whose own script keeps moving its text (a ticker, a clock): every move re-measures the margin and sends new positions, which redraw the cards, while the reader types.
+  const docId = await publish("Ticker", REPORT, { html: page(REPORT, "<style>main.tick{padding-top:3px}</style>") });
+  await agentThread(docId, { exact: "Revenue grew 18% quarter over quarter" }, "Is 18% the right base?");
+  const context = await newContext(ALICE, { signedInTo: docId });
+  const tab = await context.newPage();
+  await tab.goto(docUrl(docId));
+  const frame = await until("the comments frame", () => commentsFrame(tab, docId));
+  await frame.getByRole("textbox", { name: "Reply…" }).waitFor();
+  await select(tab, "Staffing is unchanged");
+  const tip = tab.locator(".openartifacts-comment-tip");
+  await until("the Comment button", async () => await tip.isVisible());
+  await tip.click();
+  const draft = frame.getByRole("textbox", { name: "Add a comment…" });
+  await draft.waitFor();
+  await draft.click();
+  // Each new position the page measures redraws the cards: count the redraws.
+  await frame.evaluate(() => {
+    window.redrawn = 0;
+    new MutationObserver(() => window.redrawn++).observe(document.querySelector("main").firstElementChild, { childList: true });
+  });
+  await tab.evaluate(() => { window.ticker = setInterval(() => document.querySelector("main").classList.toggle("tick"), 30); });
+  const words = "the margin moved under me while I was typing this";
+  await tab.keyboard.type(words, { delay: 20 });
+  await tab.evaluate(() => clearInterval(window.ticker));
+  assert.ok((await frame.evaluate(() => window.redrawn)) >= 5, "the page re-measured, and the frame redrew the cards, while the reader typed");
+  assert.equal(await draft.inputValue(), words, "no keystroke was lost");
+  assert.equal(await frame.evaluate(() => document.activeElement.dataset.key), "draft", "the draft kept the focus");
+  await context.close();
+});
