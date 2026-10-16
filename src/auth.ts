@@ -93,9 +93,10 @@ export function maySharePrivately(env: Env, publisher: Publisher): boolean {
  * Whether this publisher's plan includes comments. The same shape as
  * `maySharePrivately`: an account plan opts in with `"comments": true` in
  * `PLAN_LIMITS` (`pro` and `pro_lifetime` carry it, `free` does not), and a
- * license key qualifies through `PUBLISHING_PLANS`. Asked when an owner turns
- * comments on; the write path asks the same question of the document owner's
- * stored plan (`ownerHasComments` in `src/comments/access.ts`).
+ * license key qualifies through `PUBLISHING_PLANS`. Asked through `mayGrantRole`
+ * when granting `comment` or changing a person to it; the write path asks the same
+ * question of the document owner's stored plan (`ownerHasComments` in
+ * `src/comments/access.ts`).
  */
 export function mayComment(env: Env, publisher: Publisher): boolean {
   return publisher.authKind === "account"

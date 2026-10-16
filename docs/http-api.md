@@ -768,7 +768,7 @@ request email's **Review request** and the url `share` prints.
 | --- | --- |
 | No session, a live public document | The title, "Only the owner can change who can open this.", **Copy link**, and "Is this your page? **Sign in to manage**" (`?signin` selects the sign-in page) |
 | No session, anything else, or `?signin` | The sign-in page, the same bytes for an invited-only, an unknown and a deleted id, returning to `/share/{docId}` |
-| A signed-in account that owns the document | **Link access**, **Add people** (with a role select beside each person, where the plan grants two or more roles; a plan that grants none sees a plan line instead), **Requests** with **Approve** and **Decline**, **Who has access** with **Remove**, **Copy link**, and, after a switch from public to private, the line "People who opened it while it was public may have kept a copy." |
+| A signed-in account that owns the document | **Link access**, **Add people**, **Requests** with **Approve** and **Decline**, **Who has access** with **Remove** and, where the plan grants two or more roles, a role select beside each person (a plan that grants none sees a plan line instead of **Add people**, **Approve** and the select), **Copy link**, and, after a switch from public to private, the line "People who opened it while it was public may have kept a copy." |
 | A signed-in account that may read it | The title, the same sentence, **Copy link**, **Use another account** and a line telling a Copilot owner to manage access in Copilot |
 | A signed-in account that may not, unknown, deleted | The unavailable page as `/open`, `404`, never `403` |
 
@@ -1049,9 +1049,8 @@ comments at that version, so they stay with the text on screen when a push lands
 while the page is open or cached. A pinned `/d/{docId}/v{n}` page carries neither
 attribute, since it is immutable and its path names the version. Otherwise it fetches
 `/d/{docId}/threads[?v=n]` same-origin, and does nothing more unless the answer
-lists a thread or says `commentable`, or the Share popover has told the page its
-owner is looking (after the owner adds a person, changes a role or closes the
-popover). Then it adds `💬 N` (open threads) beside **Share**,
+lists a thread or says `commentable`. The Share popover tells the page when its
+owner adds a person, changes a role or closes it, and the page then asks again. Then it adds `💬 N` (open threads) beside **Share**,
 paints highlights with `CSS.highlights` (it never changes the author's DOM), shows a
 **Comment** button over a selection, and embeds the comments frame: in the page's
 margin when at least 256 px are free beside the content, else as a bottom sheet
@@ -1073,7 +1072,7 @@ also checks the origin.
 | page → frame | `draft` | `{anchor \| null, top}`: a selection awaiting its comment |
 | page → frame | `focus` | `{threadId}` (empty clears) |
 | frame → page | `ready` | none |
-| frame → page | `viewer` | `{canComment}`, after every read of the frame's own: `false` when signed out, the server's answer when signed in |
+| frame → page | `viewer` | `{canComment}`, after every read of the frame's own: `true` when signed out (Comment is offered and asks to sign in), the server's answer when signed in |
 | frame → page | `changed` | none: refetch now |
 | frame → page | `focus` | `{threadId}` |
 | frame → page | `close` | none: hide the sheet or cancel the draft |
@@ -1094,7 +1093,7 @@ whether they may resolve a thread, whether a comment is theirs and whether they
 have set a display name. It learns nothing else about them, and no message in
 either direction carries a credential.
 
-**Signing in.** The margin's sign-in line runs the Share popover's flow
+**Signing in.** The frame's **Sign in to comment** runs the Share popover's flow
 (`/embed/sign-in`, `POST /embed/token`) and keeps the token under the same storage
 key, so one sign-in serves both frames. The Share popover's owner view draws a
 select on each person whose options are `Access.roles` (`PUT …/access/people/{email}`

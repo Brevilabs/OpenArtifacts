@@ -829,7 +829,7 @@ export const FRAME_SCRIPT = String.raw`(() => {
       roleControl(entry),
       button("Remove", () => write("DELETE", "/access/people/" + encodeURIComponent(entry.email)), "link"),
     ].filter((kid) => kid !== null))))));
-    if (body.email) kids.push(muted(["OpenArtifacts emails each invitation. If someone doesn’t get it, send them the link."]));
+    if (body.email && mayAdd) kids.push(muted(["OpenArtifacts emails each invitation. If someone doesn’t get it, send them the link."]));
     // Approve, Decline and Remove are one click on a private document, and this
     // frame is on the public origin. See exposed().
     if (narrow) kids.push(muted(["To remove people or answer requests, ", node("a", { href: location.origin + "/share/" + doc, target: "_blank", rel: "noopener noreferrer" }, ["open the share page"]), "."]));

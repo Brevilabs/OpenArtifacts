@@ -424,8 +424,8 @@ export async function insertVersion(db: D1Database, version: VersionRow): Promis
  * has been written, or a person on the list holds a role of at least `comment`.
  * Derived, never set; the owner has no switch.
  */
-const HAS_COMMENTS_SQL = `(d.has_threads = 1
-  OR EXISTS (SELECT 1 FROM doc_invites i WHERE i.doc_id = d.id AND i.role IN ${rolesAtLeastSql("comment")}))`;
+const COMMENTER_LISTED_SQL = `EXISTS (SELECT 1 FROM doc_invites i WHERE i.doc_id = d.id AND i.role IN ${rolesAtLeastSql("comment")})`;
+const HAS_COMMENTS_SQL = `(d.has_threads = 1 OR ${COMMENTER_LISTED_SQL})`;
 
 /** What the serving path needs to know about a doc, in one read. */
 export interface ServableVersion {
@@ -1634,7 +1634,7 @@ export async function findCommentableDoc(
       `${OWNER_SCOPE_SQL}
        SELECT d.owner AS owner, d.title AS title, d.deleted_at AS deleted_at, d.link_access AS link_access,
               d.has_threads AS has_threads,
-              EXISTS (SELECT 1 FROM doc_invites i WHERE i.doc_id = d.id AND i.role IN ${rolesAtLeastSql("comment")}) AS commentable,
+              ${COMMENTER_LISTED_SQL} AS commentable,
               (SELECT MAX(v.n) FROM versions v
                 WHERE v.doc_id = d.id AND (? IS NULL OR v.n = ?)) AS version,
               (SELECT MAX(v.n) FROM versions v WHERE v.doc_id = d.id) AS latest_version,

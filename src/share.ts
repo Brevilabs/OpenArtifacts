@@ -430,7 +430,7 @@ ${mayAdd ? `<section><h2>Add people</h2>${form(
     `<div class="row"><textarea id="people" name="email" rows="2" placeholder="Emails, separated by commas" aria-label="Email addresses" autocomplete="off" required></textarea><button type="submit">Add</button></div>`,
   )}${helper}</section>` : ""}
 ${requests}
-<section><h2>Who has access</h2><ul><li><span><b>You</b><small>Owner</small></span></li>${people}</ul>${emailEnabled ? "<p>OpenArtifacts emails each invitation. If someone doesn’t get it, send them the link.</p>" : ""}</section>
+<section><h2>Who has access</h2><ul><li><span><b>You</b><small>Owner</small></span></li>${people}</ul>${emailEnabled && mayAdd ? "<p>OpenArtifacts emails each invitation. If someone doesn’t get it, send them the link.</p>" : ""}</section>
 ${copyLinkSection(url)}`;
 
   return readerPage(

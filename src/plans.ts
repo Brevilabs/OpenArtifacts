@@ -9,7 +9,7 @@ export interface PlanLimits {
   storageBytes?: number;
   /** The plan may make documents invited-only and add people to them. */
   privateSharing?: boolean;
-  /** The plan may turn comments on for a document, and its documents accept comments. */
+  /** The plan may grant the Can comment role, and its documents accept comments. */
   comments?: boolean;
 }
 

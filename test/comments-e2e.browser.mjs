@@ -644,7 +644,6 @@ test("8. a stranger gets 404 from every comment route, and so does a signed-out 
     ["POST", `/threads/${threadTwo}/resolve`, {}],
     ["POST", `/threads/${threadTwo}/reopen`, {}],
     ["DELETE", `/comments/cm_nothing`],
-    ["PUT", `/settings`, { comments: false }],
     ["GET", `/html`],
   ];
   const unknown = await request("stranger", `/api/v1/docs/doc_never_existed/threads`);
@@ -792,7 +791,6 @@ test("12. unsharing answers 410 for the page and the threads, 404 for the commen
     ["owner", "POST", "/threads", { anchor, body: "after" }],
     ["owner", "POST", `/threads/${threadTwo}/comments`, { body: "after" }],
     ["owner", "POST", `/threads/${threadTwo}/resolve`, {}],
-    ["owner", "PUT", "/settings", { comments: true }],
     ["alice", "POST", `/threads/${threadTwo}/comments`, { body: "after" }],
   ]) {
     const response = await request(who, `/api/v1/docs/${DOC}${path}`, { method, ...(body ? { body: JSON.stringify(body) } : {}) });
