@@ -1008,8 +1008,9 @@ test("the popover tells the page its owner is looking only from a click inside i
   await frame.getByPlaceholder("Emails, separated by commas").waitFor();
   assert.deepEqual(await events(page), ["ready"]);
 
-  // An add is a click: it says people.
-  await frame.getByPlaceholder("Emails, separated by commas").fill("sam@example.com");
+  // An add is a click: it says people. The value is set rather than typed: fill() into this cross-site
+  // frame just after the popup closes can send its text to the top page instead.
+  await frame.getByPlaceholder("Emails, separated by commas").evaluate((input) => { input.value = "sam@example.com"; });
   await frame.getByRole("button", { name: "Add", exact: true }).click();
   await until("people after an add", async () => (await events(page)).includes("people"));
   const afterAdd = await events(page);
