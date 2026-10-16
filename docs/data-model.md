@@ -7,12 +7,15 @@ Object storage, and the small rest. Current as of migration `0015_comments.sql`.
 
 [← README](../README.md) · [Hosting](hosting.md) · [Identity](identity.md) · [Storage allowance](storage-allowance.md) · [Comments](comments.md)
 
-Conventions: timestamps are epoch milliseconds (`INTEGER`) unless stated. D1 leaves
-`PRAGMA foreign_keys` off, so a `REFERENCES` clause is documentation and the
-`ON DELETE CASCADE`s never fire (`docs` rows are never deleted anyway). Raw
-secrets are never stored; a column called `*_hash` is a SHA-256. Account ids are
-`oa_` plus 26 base32 characters; any other owner id is an app-sites `User.id`
-from the license server.
+Conventions: timestamps are epoch milliseconds (`INTEGER`) unless stated. D1
+enforces foreign keys: an orphan child insert fails and `ON DELETE CASCADE` fires.
+The only `DELETE FROM docs` is `rollbackCreate` (`src/db.ts`), which cascades into
+`versions`, `storage_usage`, `doc_invites` and `doc_access_requests`. Enforced
+references: those four to `docs(id)`, and `owner_links.account_id` and
+`account_handoffs.account_id` to `accounts(id)`. Every other `*_id` or `owner`
+column is a plain column. Raw secrets are never stored; a column called `*_hash`
+is a SHA-256. Account ids are `oa_` plus 26 base32 characters; any other owner id
+is an app-sites `User.id` from the license server.
 
 ## D1
 
@@ -93,14 +96,20 @@ decline or withdrawal.
 #### `invite_sends`
 
 Ledger for the daily cap on new invites, no key. Columns: `owner`, `created_at`.
-Index `invite_sends_by_owner (owner, created_at)`. One row per invite ever added,
-untouched by removal; pruned past the window by the next add. Outlives its document
-by design (no foreign key).
+Index `invite_sends_by_owner (owner, created_at)`. Outlives its document by design
+(no foreign key). `owner` is the doc's owner, not the caller.
+
+- Written: one row only when `insertInvite` actually inserts a `doc_invites` row (same batch, guarded by `changes()`). A refused add, a full list or a repeat address writes nothing.
+- Deleted: only by pruning. Every `insertInvite` call, refused or not, deletes the owner scope's rows older than 24 hours (`INVITE_WINDOW_MS`). Removing an invite, role changes and withdrawal never touch it.
 
 #### `email_codes`
 
 One live emailed sign-in code per address. PK `email`. Columns: `email`,
-`code_hash`, `attempts` (NOT NULL, 0), `expires_at`. A new request replaces the row.
+`code_hash`, `attempts` (NOT NULL, 0), `expires_at`.
+
+- Expired rows are swept on every code request.
+- A new request replaces a live code but keeps its `attempts`. An exhausted code cannot be replaced until it expires.
+- Each guess increments `attempts` before the comparison. A correct code deletes the row.
 
 #### `embed_handoffs`
 
@@ -156,11 +165,13 @@ Agent credentials earned by a device approval. PK `id`.
 #### `device_codes`
 
 Transient: a device code, or a browser or reader OAuth handshake. PK `user_code`.
-Rows are swept by expiry on every mint, so the table stays small.
+Expired rows are swept on every mint (device, browser sign-in, reader sign-in).
+A row is deleted when its handshake completes: the poll that collects a token, a
+browser or reader sign-in finishing, or the approval callback ending a handshake.
 
 | Column | Type | Null / default | Meaning |
 | --- | --- | --- | --- |
-| `user_code` | TEXT | PK | Uppercase code; browser and reader handshakes use a prefix plus the state |
+| `user_code` | TEXT | PK | Uppercase code; browser and reader handshakes use `browser_` and `reader_` plus the state |
 | `provider` | TEXT | NULL | Provider of the handshake in flight |
 | `state` | TEXT | NULL | OAuth `state`; identifies, never authorizes |
 | `confirm_token` | TEXT | NULL | Carried by the confirm form; set once an identity is proved |
@@ -183,8 +194,13 @@ Rows are swept by expiry on every mint, so the table stays small.
 
 Short-lived proof that sends a signed-in agent to the account page. PK `code_hash`.
 Columns: `code_hash`, `account_id`, `token_id`, `expires_at`. Index
-`account_handoffs_by_account (account_id, expires_at)`. At most five live per
-account. Written by: `POST /api/v1/account/handoffs`.
+`account_handoffs_by_account (account_id, expires_at)`.
+
+- Single use: `POST /admin/v1/handoffs/consume` deletes the row.
+- Life is 10 minutes.
+- Each create first sweeps that account's expired rows.
+- At most five live per account, counting only handoffs whose token still exists.
+- Written by: `POST /api/v1/account/handoffs` (insert), consume (delete).
 
 #### `owner_links`
 
@@ -210,7 +226,7 @@ only keys are under one prefix per doc.
 | Key | Content | Written | Deleted | Content type |
 | --- | --- | --- | --- | --- |
 | `docs/{docId}/v{n}.html` | The publisher's own bytes for version `n`, no injections | Once per push, before the `versions` row | Withdrawal (prefix scan) or a push that lost a race with it | `text/html; charset=utf-8` |
-| `docs/{docId}/threads.json` | Snapshot of the comment threads: `{ docId, schema: 1, threads }`, each with its per-version anchors | Overwritten by `DocComments` after every mutation, best effort | Withdrawal (same prefix scan) | `application/json` |
+| `docs/{docId}/threads.json` | Snapshot of the comment threads: `{ docId, schema: 1, threads }`, each thread with its comments and per-version anchors | Overwritten by `DocComments` after every mutation, best effort | Withdrawal (same prefix scan) | `application/json` |
 
 - Version objects are immutable: never rewritten, `n` is reserved atomically in D1 first. The robots meta, favicon, social card and bylines are injected on the way out by `renderServedHtml`, never stored.
 - `threads.json` is not read at runtime; it exists to rebuild the Durable Object from.
@@ -238,6 +254,7 @@ carries only `docs.comments_enabled`. Source: `src/comments/object.ts`.
 | What | Where | Notes |
 | --- | --- | --- |
 | KV | none | No KV namespace is bound |
+| Email | `send_email` binding `EMAIL` | Sends invite, request and sign-in code mail; stores nothing. Optional, absent means no email and no code sign-in |
 | Rate limiters | `ratelimits` bindings in `wrangler.jsonc` | Counters live in Cloudflare, no stored data and nothing in D1; absent means no limit |
 | Secrets | `LICENSE_API_KEY`, `ADMIN_API_KEY`, `OAUTH_GOOGLE_CLIENT_ID`, `OAUTH_GOOGLE_CLIENT_SECRET`, `OAUTH_GITHUB_CLIENT_ID`, `OAUTH_GITHUB_CLIENT_SECRET`, `READER_SESSION_SECRET`, `POSTHOG_PROJECT_API_KEY` | Names only. `READER_SESSION_SECRET` signs reader sessions and grants, so rotating it signs every reader out |
 | Cookies | reader session and publisher-origin grant | Signed and stateless, nothing stored server side; the serving apex is cookieless |
