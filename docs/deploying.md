@@ -686,8 +686,10 @@ on the free Workers plan.
    invitee of a document whose `comments_enabled` is `0`: `0014` defaulted every
    invite to `comment`, which meant nothing while comments were off, and would make
    those people commenters at the deploy. Documents whose owner switched comments
-   on keep their roles. The deploy workflow
-   refuses to ship over an unapplied migration.
+   on keep their roles. It also marks `has_threads` on every document whose
+   `comments_enabled` is `1`, the only ones a thread could have been written to.
+   Note the time just before applying `0016`, in milliseconds since the epoch, as
+   `T0`. The deploy workflow refuses to ship over an unapplied migration.
 2. Deploy. `wrangler deploy` applies the Durable Object itself: the `COMMENTS`
    binding in `durable_objects.bindings` and the
    `migrations: [{"tag": "v1", "new_sqlite_classes": ["DocComments"]}]` block in
@@ -695,8 +697,20 @@ on the free Workers plan.
    exist for a Worker that binds it to upload at all. It is not a separate command,
    and it is not part of the D1 migrations. A self-hoster adds both blocks to their
    config and nothing else. Keep the `tag` (and add later migrations with new tags);
-   never edit a tag that has been applied.
-3. The comment limiters are in the same deploy; see below.
+   never edit a tag that has been applied. Note when the new version went live, in
+   the same unit, as `T1`.
+3. Lower the invites the old Worker added between the two. It went on inviting at
+   `0014`'s default, `comment`, after `0016` ran, and the new Worker reads that as
+   a grant. Bounded by `T1`, this leaves alone every role the new Worker set:
+
+   ```bash
+   npx wrangler d1 execute symposium --remote --command "UPDATE doc_invites SET role = 'view' WHERE created_at >= T0 AND created_at < T1 AND doc_id IN (SELECT id FROM docs WHERE comments_enabled = 0)"
+   ```
+
+   A grant an owner made in the seconds before `T1` is lowered with them; the owner
+   sets it again. Skip this step on a deployment that ran `0016` and the new Worker
+   together.
+4. The comment limiters are in the same deploy; see below.
 
 **The comment limiters.** Two more optional `ratelimits` bindings, on the same
 rule as the others (absent means no limit). `namespace_id` is unique across the

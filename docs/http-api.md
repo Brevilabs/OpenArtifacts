@@ -552,7 +552,7 @@ have not been answered.
   `anyone` keeps the list and the requests, and switching back restores them.
 - `PUT …/access/people/{email}` adds one address (URL-encode the `@`; it is
   lowercased and trimmed). The body is optional: `{"role": "view" | "comment"}`,
-  default `comment`, or `view` on a plan that grants no higher role; any other body, including an unknown role, is `400
+  default `comment`, or `view` on a plan that grants no higher role and on a server without comments; any other body, including an unknown role, is `400
   bad_request`. The call that adds an address sends it an invite email where the
   server has email; a repeat does not, and a repeat that names a different role
   updates the role. At most 100 people per document; the 101st is `400`.

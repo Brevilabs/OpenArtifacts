@@ -235,9 +235,10 @@ export async function addWithoutManifest(
     return { ok: true, state: before, changed: false };
   }
   // A role-less add takes the default where the plan grants it, else the highest rung the plan does
-  // grant: `view` on a plan with private sharing but not comments.
+  // grant: `view` on a plan with private sharing but not comments. Where the server has no comments
+  // no role is drawn, and an unseen grant is `view`, so turning comments on later makes no one a commenter.
   const grantable = grantableRoles(env, principal);
-  const granted = role ?? (grantable?.includes(DEFAULT_ROLE) === false ? (grantable.at(-1) ?? DEFAULT_ROLE) : DEFAULT_ROLE);
+  const granted = role ?? (grantable?.includes(DEFAULT_ROLE) ? DEFAULT_ROLE : (grantable?.at(-1) ?? "view"));
   // The flag of the role being granted, whether the person is new or already listed: a change to a
   // lower role goes through the same check as a higher one, since "Remove" already covers a demotion.
   // Where the server has no comments no role is drawn (`grantableRoles`), so adding stays gated by private sharing alone.

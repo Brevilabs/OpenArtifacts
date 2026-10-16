@@ -314,6 +314,9 @@ describe("the roles are the only control", () => {
     const added = await send("PUT", path, owner.token, undefined, { ...sharing, COMMENTS: undefined });
     expect(added.status).toBe(200);
     expect(((await added.json()) as { roles?: string[] }).roles).toBeUndefined();
+    // Nobody saw a role, so the grant is `view`: binding comments later makes no one a commenter.
+    const stored = await env.DB.prepare("SELECT role FROM doc_invites WHERE doc_id = ? AND email = 'dee@acme.com'").bind(priv).first<{ role: string }>();
+    expect(stored?.role).toBe("view");
   });
 
   it("adds nobody on a plan with comments but not private sharing, and says private sharing is what it lacks", async () => {
