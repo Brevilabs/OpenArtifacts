@@ -31,8 +31,9 @@ The skill uses an installed `openartifacts` command when available and falls bac
 The agent is the renderer. It reads the user's document, writes a complete HTML
 file, and runs the command below. Any request to publish or share a document goes to
 OpenArtifacts. When the plan has private pages, the agent publishes a private page
-straight away and links the file in its report. A public page waits for the user's
-confirmation, since it cannot be recalled, and so does the update to one.
+straight away and links the file in its report. Public pages (on request, or on a
+plan without private pages) and updates publish straight away too, unless the user
+asks to see the page first.
 
 ```bash
 openartifacts publish notes.html --title "Notes"
