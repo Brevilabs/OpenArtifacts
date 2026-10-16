@@ -1052,7 +1052,8 @@ while the page is open or cached. A pinned `/d/{docId}/v{n}` page carries neithe
 attribute, since it is immutable and its path names the version. Otherwise it fetches
 `/d/{docId}/threads[?v=n]` same-origin, and does nothing more unless the answer
 lists a thread or says `commentable`. The Share popover tells the page when its
-owner adds a person, changes a role or closes it, and the page then asks again. Then it adds `💬 N` (open threads) beside **Share**,
+owner adds a person, changes a role or closes it, and the page then asks again and,
+from then on in that tab, treats its viewer as the owner and stays active. Then it adds `💬 N` (open threads) beside **Share**,
 paints highlights with `CSS.highlights` (it never changes the author's DOM), shows a
 **Comment** button over a selection, and embeds the comments frame: in the page's
 margin when at least 256 px are free beside the content, else as a bottom sheet
@@ -1074,7 +1075,7 @@ also checks the origin.
 | page → frame | `draft` | `{anchor \| null, top}`: a selection awaiting its comment |
 | page → frame | `focus` | `{threadId}` (empty clears) |
 | frame → page | `ready` | none |
-| frame → page | `viewer` | `{canComment}`, after every read of the frame's own: `true` when signed out (Comment is offered and asks to sign in), the server's answer when signed in |
+| frame → page | `viewer` | `{canComment}`, after every read of the frame's own: `false` when signed out, the server's answer when signed in |
 | frame → page | `changed` | none: refetch now |
 | frame → page | `focus` | `{threadId}` |
 | frame → page | `close` | none: hide the sheet or cancel the draft |
@@ -1095,7 +1096,7 @@ whether they may resolve a thread, whether a comment is theirs and whether they
 have set a display name. It learns nothing else about them, and no message in
 either direction carries a credential.
 
-**Signing in.** The frame's **Sign in to comment** runs the Share popover's flow
+**Signing in.** The margin's sign-in line runs the Share popover's flow
 (`/embed/sign-in`, `POST /embed/token`) and keeps the token under the same storage
 key, so one sign-in serves both frames. The Share popover's owner view draws a
 select on each person whose options are `Access.roles` (`PUT …/access/people/{email}`

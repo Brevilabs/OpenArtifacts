@@ -1306,7 +1306,6 @@ test("a reader with no token sees the cards read-only and one sign-in line, only
   const card = frame.locator("[data-thread]");
   await card.waitFor();
   await frame.getByRole("button", { name: "Invited to comment? Sign in." }).waitFor();
-  assert.equal(await frame.getByRole("button", { name: "Sign in to comment" }).count(), 0);
   assert.equal(await card.getByRole("textbox").count(), 0);
   // Select text: a signed-out reader is never offered Comment.
   await select(tab, "Staffing is unchanged");

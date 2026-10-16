@@ -30,7 +30,9 @@
  * `200` with a thread or `commentable: true` it adds no button, no frame and no
  * listener. The Share popover tells it when its owner adds a person, changes a
  * role or closes it (`people` event), which makes it ask again, so the margin
- * appears without a reload.
+ * appears without a reload; after that event the page treats its viewer as the
+ * owner for the rest of the tab and stays active even with no thread and
+ * `commentable: false`.
  *
  * **It paints, it never writes.** Highlights are `CSS.highlights` over Ranges,
  * styled by an adopted stylesheet, so a chart, a React island or a Pyodide cell
@@ -679,8 +681,8 @@ button.b.primary{background:#18191d;border-color:#18191d;color:#fff}
 .muted-text{font-size:11.5px;color:#6d6a62;margin:6px 0 0}
 .err{font-size:11.5px;color:#b4342b;margin:6px 0 0}.err:empty{display:none}
 .ask{font-size:12px;margin:0 0 6px}
-.signin{margin-top:6px}
-.card.topline{padding:8px 12px}.topline .muted-text,.topline .signin{margin:0}
+.signin{margin:0}
+.card.topline{padding:8px 12px}.topline .muted-text{margin:0}
 `;
 
 /**
@@ -884,10 +886,10 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     if (error && error.code === "anchor_not_found") return "That text isn’t in the document itself, perhaps because the page draws it with a script. Select text from the page’s own content. Nothing was posted.";
     return error && typeof error.message === "string" ? error.message : "Something went wrong. Nothing was posted.";
   };
-  // Always tells the page: signed out it offers Comment (pressing it asks to sign in), signed in it follows the server's word.
+  // Tells the page false until the frame's own read says the signed-in viewer may comment.
   const reportViewer = () => {
     const v = viewer();
-    const can = v ? v.canComment === true : false;
+    const can = v !== null && v.canComment === true;
     if (can !== lastViewer) {
       lastViewer = can;
       post({ event: "viewer", canComment: can });
