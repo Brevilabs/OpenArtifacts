@@ -314,6 +314,10 @@ describe("the roles are the only control", () => {
     const added = await send("PUT", path, owner.token, undefined, { ...sharing, COMMENTS: undefined });
     expect(added.status).toBe(200);
     expect(((await added.json()) as { roles?: string[] }).roles).toBeUndefined();
+    // An explicit role is still checked against its flag, which this plan lacks.
+    const named = await send("PUT", path.replace("dee", "eve"), owner.token, { role: "comment" }, { ...sharing, COMMENTS: undefined });
+    expect(named.status).toBe(402);
+    expect(((await named.json()) as { error: { limit: string } }).error.limit).toBe("comments");
     // Nobody saw a role, so the grant is `view`: binding comments later makes no one a commenter.
     const stored = await env.DB.prepare("SELECT role FROM doc_invites WHERE doc_id = ? AND email = 'dee@acme.com'").bind(priv).first<{ role: string }>();
     expect(stored?.role).toBe("view");

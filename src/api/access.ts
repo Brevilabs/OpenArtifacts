@@ -239,12 +239,13 @@ export async function addWithoutManifest(
   // no role is drawn, and an unseen grant is `view`, so turning comments on later makes no one a commenter.
   const grantable = grantableRoles(env, principal);
   const granted = role ?? (grantable?.includes(DEFAULT_ROLE) ? DEFAULT_ROLE : (grantable?.at(-1) ?? "view"));
-  // The flag of the role being granted, whether the person is new or already listed: a change to a
-  // lower role goes through the same check as a higher one, since "Remove" already covers a demotion.
-  // Where the server has no comments no role is drawn (`grantableRoles`), so adding stays gated by private sharing alone.
-  const mayAdd = env.COMMENTS === undefined ? maySharePrivately(env, principal) : mayGrantRole(env, principal, granted);
+  // The flag of the role being granted, whether the person is new or already listed, and on a server
+  // without comments too, where a stored `comment` would grant commenting once they are bound: a change
+  // to a lower role goes through the same check as a higher one, since "Remove" already covers a demotion.
   // Private sharing is what adding anyone needs, so it is the flag named unless the plan has it.
-  if (!mayAdd) return refused(env.COMMENTS !== undefined && maySharePrivately(env, principal) ? "plan_comments" : "plan_people");
+  if (!mayGrantRole(env, principal, granted)) {
+    return refused(maySharePrivately(env, principal) ? "plan_comments" : "plan_people");
+  }
 
   const added = await insertInvite(env.DB, docId, principal.owner, email, Date.now(), MAX_INVITES_PER_DOC, granted);
   const roleChanged =
