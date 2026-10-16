@@ -544,7 +544,7 @@ shares the link themselves. `role` is one of an ordered ladder, `"view"` then
 `"comment"`; a person whose role is at least `comment` may post threads, on a public or a
 private document (see [Comments](#comments)). `roles` (an added field) is the roles
 the owner may grant now, in ladder order; it is empty, with an `upgradeUrl` beside it
-when the server has one, when the plan allows none, and absent where the server has no
+when the server has one and the caller signed in with an account, when the plan allows none, and absent where the server has no
 comments. `requests` are the addresses that asked to open the document and
 have not been answered.
 
@@ -552,7 +552,7 @@ have not been answered.
   `anyone` keeps the list and the requests, and switching back restores them.
 - `PUT …/access/people/{email}` adds one address (URL-encode the `@`; it is
   lowercased and trimmed). The body is optional: `{"role": "view" | "comment"}`,
-  default `comment`; any other body, including an unknown role, is `400
+  default `comment`, or `view` on a plan that grants no higher role; any other body, including an unknown role, is `400
   bad_request`. The call that adds an address sends it an invite email where the
   server has email; a repeat does not, and a repeat that names a different role
   updates the role. At most 100 people per document; the 101st is `400`.
@@ -840,7 +840,7 @@ author's identity survives linking a license key to an account: a comment writte
 by the key stays the account's.
 
 `Access` carries `roles`, the roles the owner may grant now in ladder order, empty
-with an `upgradeUrl` when the plan allows none, and absent where the server has no
+with an `upgradeUrl` (account callers only) when the plan allows none, and absent where the server has no
 comments.
 
 **`GET …/html` is now readable by anyone who can read the document**, not only

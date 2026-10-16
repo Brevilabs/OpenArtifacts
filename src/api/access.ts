@@ -233,14 +233,17 @@ export async function addWithoutManifest(
   if (listed && (role === undefined || role === listed.role) && !before.requests.some((r) => r.email === email)) {
     return { ok: true, state: before, changed: false };
   }
+  // A role-less add takes the default where the plan grants it, else the highest rung the plan does
+  // grant: `view` on a plan with private sharing but not comments.
+  const grantable = grantableRoles(env, principal);
+  const granted = role ?? (grantable?.includes(DEFAULT_ROLE) === false ? (grantable.at(-1) ?? DEFAULT_ROLE) : DEFAULT_ROLE);
   // The flag of the role being granted, whether the person is new or already listed: a change to a
   // lower role goes through the same check as a higher one, since "Remove" already covers a demotion.
   // Where the server has no comments no role is drawn (`grantableRoles`), so adding stays gated by private sharing alone.
-  const mayAdd =
-    env.COMMENTS === undefined ? maySharePrivately(env, principal) : mayGrantRole(env, principal, role ?? DEFAULT_ROLE);
+  const mayAdd = env.COMMENTS === undefined ? maySharePrivately(env, principal) : mayGrantRole(env, principal, granted);
   if (!mayAdd) return refused("plan_people");
 
-  const added = await insertInvite(env.DB, docId, principal.owner, email, Date.now(), MAX_INVITES_PER_DOC, role);
+  const added = await insertInvite(env.DB, docId, principal.owner, email, Date.now(), MAX_INVITES_PER_DOC, granted);
   const roleChanged =
     !added && role !== undefined && (await setInviteRole(env.DB, docId, principal.owner, email, role));
 
@@ -252,7 +255,7 @@ export async function addWithoutManifest(
     return refused(state.people.length >= MAX_INVITES_PER_DOC ? "full" : "invite_quota");
   }
 
-  if (added) await invite(env, requestUrl, doc.publisher_id, docId, doc.title, email, role ?? DEFAULT_ROLE);
+  if (added) await invite(env, requestUrl, doc.publisher_id, docId, doc.title, email, granted);
   if (added || roleChanged) recordChange(analytics, docId, doc.publisher_id, state);
   return { ok: true, state, changed: added || roleChanged };
 }
@@ -366,7 +369,8 @@ export function accessBody(env: Env, requestUrl: URL, docId: string, state: Acce
     linkAccess: state.link_access,
     // The roles the caller may grant now, in ladder order; left out where the server has no comments.
     ...(roles === undefined ? {} : { roles }),
-    ...(roles?.length === 0 && upgradeLink(env) !== undefined ? { upgradeUrl: upgradeLink(env) } : {}),
+    // Only an account has a checkout to go to; a license key's plan is managed in Copilot, as in `planRefusal`.
+    ...(roles?.length === 0 && publisher.authKind === "account" && upgradeLink(env) !== undefined ? { upgradeUrl: upgradeLink(env) } : {}),
     email: emailConfigured(env),
     people: state.people.map((person) => ({ email: person.email, role: person.role, addedAt: person.created_at })),
     requests: state.requests.map((request) => ({ email: request.email, requestedAt: request.created_at })),

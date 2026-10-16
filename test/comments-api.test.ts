@@ -284,6 +284,10 @@ describe("the roles are the only control", () => {
     const refused = await send("PUT", `/api/v1/docs/${docId}/access/people/dee%40acme.com`, KEY_FREE, { role: "comment" });
     expect(refused.status).toBe(402);
     expect(await errorOf(refused)).toMatchObject({ code: "limit_reached", limit: "privateSharing" });
+    // A license key's plan is managed in Copilot, so its Access carries no checkout link.
+    const keyAccess = (await (await send("GET", `/api/v1/docs/${docId}/access`, KEY_FREE)).json()) as Record<string, unknown>;
+    expect(keyAccess.roles).toEqual([]);
+    expect(keyAccess).not.toHaveProperty("upgradeUrl");
     const added = await send("PUT", `/api/v1/docs/${docId}/access/people/dee%40acme.com`, KEY, { role: "comment" });
     expect(added.status).toBe(200);
     expect(((await added.json()) as { roles: string[] }).roles).toEqual(["view", "comment"]);
@@ -295,8 +299,15 @@ describe("the roles are the only control", () => {
       PLAN_LIMITS: JSON.stringify({ pro: { documents: 100, pushesPerDay: 100, htmlBytes: 1048576, privateSharing: true } }),
     };
     const path = `/api/v1/docs/${priv}/access/people/dee%40acme.com`;
-    // With the object bound, a plan without the comments flag cannot grant the default role.
-    expect((await send("PUT", path, owner.token, undefined, sharing)).status).toBe(402);
+    // With the object bound, a plan without the comments flag adds at the highest role it grants.
+    const viewer = await send("PUT", path, owner.token, undefined, sharing);
+    expect(viewer.status).toBe(200);
+    const listed = (await viewer.json()) as { roles?: string[]; people: { email: string; role: string }[] };
+    expect(listed.roles).toEqual(["view"]);
+    expect(listed.people.find((person) => person.email === "dee@acme.com")?.role).toBe("view");
+    // It still cannot grant a role its plan lacks.
+    expect((await send("PUT", path, owner.token, { role: "comment" }, sharing)).status).toBe(402);
+    await send("DELETE", path, owner.token, undefined, sharing);
     // Without it no role is drawn, and adding is gated as before.
     const added = await send("PUT", path, owner.token, undefined, { ...sharing, COMMENTS: undefined });
     expect(added.status).toBe(200);
