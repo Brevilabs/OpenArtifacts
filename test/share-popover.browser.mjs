@@ -1079,6 +1079,32 @@ test("a role change the server refuses puts the select back on the role the pers
   await context.close();
 });
 
+test("a role the plan no longer grants stays as its own option, so the owner can lower the person", { timeout: 120_000 }, async () => {
+  const X = await publish("Lapsed comments", "<p>Mine.</p>");
+  const invitee = "kept@example.com";
+  assert.equal((await api(`/api/v1/docs/${X}/access/people/${encodeURIComponent(invitee)}`, { method: "PUT", body: JSON.stringify({ role: "comment" }) })).status, 200);
+  const context = await newContext(OWNER_ACCOUNT);
+  const page = await context.newPage();
+  // A plan with private sharing but not comments: its Access grants only view, and the person is still at comment.
+  await page.route(`https://${API}/embed/api/docs/${X}/access`, async (route) => {
+    if (route.request().method() !== "GET" || route.request().headers().authorization === undefined) return route.continue();
+    const body = await (await api(`/api/v1/docs/${X}/access`)).json();
+    await route.fulfill({ json: { ...body, viewer: "owner", roles: ["view"] } });
+  });
+  await page.goto(docUrl(X));
+  await page.locator("a[data-openartifacts-share]").click();
+  const frame = await until("the Share frame", () => frameOf(page, X));
+  const [popup] = await Promise.all([context.waitForEvent("page"), frame.getByRole("button", { name: "Sign in to manage" }).click()]);
+  await popup.waitForEvent("close").catch(() => {});
+  const select = frame.getByLabel(`Access for ${invitee}`);
+  await select.waitFor();
+  assert.equal(await select.inputValue(), "comment");
+  assert.deepEqual(await select.locator("option").allInnerTexts(), ["Can view", "Can comment"]);
+  await select.selectOption("view");
+  await until("the role lowered", async () => (await (await api(`/api/v1/docs/${X}/access`)).json()).people.some((p) => p.email === invitee && p.role === "view"));
+  await context.close();
+});
+
 test("a role this Worker does not know is shown as its own option and is never written back", { timeout: 120_000 }, async () => {
   const X = await publish("Future role", "<p>Mine.</p>");
   const invitee = "future@example.com";

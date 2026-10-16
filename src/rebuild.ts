@@ -19,8 +19,8 @@
  * owner links, publishers, access requests and comments are not in R2.
  * `has_threads` is read from the listing: the comments object keeps a
  * `threads.json` under the prefix exactly when the document has threads.
- * `comments_enabled` is unread since the roles revision and rebuilds as its
- * default.
+ * `comments_enabled` is unread since the roles revision: the manifest still
+ * carries it for older rebuilds, and this one leaves the column at its default.
  */
 import type { DocManifest } from "./manifest.js";
 
@@ -77,6 +77,7 @@ const CLOSED: Omit<DocManifest, "schema" | "docId"> = {
   owner: "",
   title: "Untitled",
   linkAccess: "invited",
+  commentsEnabled: false,
   createdAt: 0,
   updatedAt: 0,
   deletedAt: null,

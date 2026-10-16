@@ -374,13 +374,14 @@ async function dialog(
   const roleText = (role: string) => `Can ${escapeHtml(role)}`;
   const roleForm = (person: { email: string; role: string }) => {
     if (roles === undefined) return "";
-    // A role this Worker does not offer, such as one a newer Worker stored, is shown as text: this Worker
-    // never writes it, so it offers nothing to press.
-    if (roles.length < 2 || !roles.some((role) => role === person.role)) return `<span class="role">${roleText(person.role)}</span>`;
+    // A role the plan no longer grants is kept as its own option, so the owner can lower the person to one it
+    // does. A role this Worker does not know, such as one a newer Worker stored, is text: it never writes it.
+    const offered = parseInviteRole(person.role) === null ? [] : roles.some((role) => role === person.role) ? roles : [...roles, person.role];
+    if (offered.length < 2) return `<span class="role">${roleText(person.role)}</span>`;
     return form(
       "role",
       { email: person.email },
-      `<select name="role" aria-label="Access for ${escapeHtml(person.email)}">${roles
+      `<select name="role" aria-label="Access for ${escapeHtml(person.email)}">${offered
         .map((role) => `<option value="${escapeHtml(role)}"${role === person.role ? " selected" : ""}>${roleText(role)}</option>`)
         .join("")}</select><button type="submit">Update</button>`,
       "pair",

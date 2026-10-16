@@ -97,6 +97,7 @@ async function expectedFromD1(docId: string) {
     owner: d.owner,
     title: d.title,
     linkAccess: d.link_access,
+    commentsEnabled: d.comments_enabled === 1,
     createdAt: d.created_at,
     updatedAt: d.updated_at,
     deletedAt: d.deleted_at,

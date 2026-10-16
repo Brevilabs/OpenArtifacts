@@ -2776,6 +2776,17 @@ describe("an invited-only document", () => {
       expect(html).not.toContain('aria-label="Access for alice@acme.com"');
     });
 
+    it("lets an owner whose plan no longer grants Can comment lower a person from it", async () => {
+      const doc = await privateDoc();
+      const owner = await ownerAccount(doc);
+      await env.DB.prepare("INSERT INTO doc_invites (doc_id, email, role, created_at) VALUES (?, 'alice@acme.com', 'comment', ?)").bind(doc.docId, Date.now()).run();
+      const sharing = { ...PRIVATE, PLAN_LIMITS: JSON.stringify({ pro: { documents: 100, pushesPerDay: 100, htmlBytes: 1048576, privateSharing: true } }) };
+      const html = await (await open(doc.docId, owner, sharing)).text();
+      expect(html).toContain('<option value="view">Can view</option><option value="comment" selected>Can comment</option>');
+      expect((await write(doc.docId, owner, { op: "role", email: "alice@acme.com", role: "view" }, sharing)).status).toBe(303);
+      expect((await env.DB.prepare("SELECT role FROM doc_invites WHERE doc_id = ?").bind(doc.docId).first<{ role: string }>())!.role).toBe("view");
+    });
+
     it("emails a person added at Can view that the document was shared, and a role change from the page sends nothing", async () => {
       const { sent, over } = mailbox();
       const doc = await privateDoc();

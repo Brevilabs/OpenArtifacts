@@ -791,9 +791,10 @@ export const FRAME_SCRIPT = String.raw`(() => {
     const roleLabel = (role) => "Can " + role;
     const roleControl = (entry) => {
       if (roles === null) return null;
-      if (roles.length < 2) return node("span", { class: "muted" }, [roleLabel(entry.role)]);
-      // The stored role is selected exactly. One this script does not offer stays as its own option, so it is never rewritten.
+      // The stored role is selected exactly. One this script does not offer stays as its own option, so it is never
+      // rewritten, and one the plan no longer grants can still be lowered to one it does.
       const offered = roles.includes(entry.role) ? roles : roles.concat([entry.role]);
+      if (offered.length < 2) return node("span", { class: "muted" }, [roleLabel(entry.role)]);
       const select = node("select", { "aria-label": "Access for " + entry.email }, offered.map((role) => node("option", { value: role }, [roleLabel(role)])));
       select.value = entry.role;
       // A select shows its new value before the write lands. A write that lands redraws the view with a new select; one that fails, or that another write turned away, leaves this one showing a role nobody has, so it goes back.
