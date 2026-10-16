@@ -721,8 +721,7 @@ async function ownerFrame(context, docId) {
   await page.goto(docUrl(docId));
   await page.locator("a[data-openartifacts-share]").click();
   const frame = await until("the Share frame", () => frameOf(page, docId));
-  const [popup] = await Promise.all([context.waitForEvent("page"), frame.getByRole("button", { name: "Sign in to manage" }).click()]);
-  await popup.waitForEvent("close").catch(() => {});
+  await Promise.all([context.waitForEvent("page"), frame.getByRole("button", { name: "Sign in to manage" }).click()]);
   await frame.getByRole("radio", { name: "Only those invited" }).waitFor();
   return { page, frame };
 }
@@ -910,7 +909,9 @@ test("a pasted batch stops when the document goes private part way through", { t
     await route.continue();
   });
 
-  await frame.getByPlaceholder("Emails, separated by commas").fill("ann@example.com, bob@example.com, carol@example.com");
+  // Not fill(): it focuses the field inside this cross-site frame, then sends the
+  // text through the top page, which can still hold focus and drop it.
+  await frame.getByPlaceholder("Emails, separated by commas").evaluate((input) => { input.value = "ann@example.com, bob@example.com, carol@example.com"; });
   await frame.getByRole("button", { name: "Add", exact: true }).click();
   await frame.getByText("Open Share from the document’s own page").waitFor();
 
