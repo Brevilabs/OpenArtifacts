@@ -64,6 +64,7 @@ import { normalizeEmail } from "../approval/providers.js";
 import { writeManifest } from "../manifest.js";
 import { limitReached, upgradeUrl as upgradeLink } from "../plans.js";
 import { DEFAULT_ROLE, parseInviteRole, ROLES, type InviteRole } from "../roles.js";
+import { accountPlan } from "../entitlement.js";
 import { grantUrl } from "../private.js";
 import { readBodyWithin } from "../quota.js";
 import { readerSignInConfigured } from "../reader-config.js";
@@ -358,6 +359,18 @@ async function invite(
  */
 export function grantableRoles(env: Env, publisher: Publisher): InviteRole[] | undefined {
   return env.COMMENTS === undefined ? undefined : ROLES.filter((role) => mayGrantRole(env, publisher, role));
+}
+
+/**
+ * The account owner as the Share popover and the share page show them their
+ * document: what they may grant, and so whether they see Add people, comes from
+ * their plan. A cached plan that grants nothing is checked again now, unless the
+ * license server is backing off, so an owner who has just upgraded can add people
+ * on their next open, not an hour later. A plan that grants a role keeps the cache.
+ */
+export async function withCurrentPlan(env: Env, owner: Publisher): Promise<Publisher> {
+  if (owner.authKind !== "account" || grantableRoles(env, owner)?.length !== 0) return owner;
+  return { ...owner, plan: (await accountPlan(env, owner.owner, { maxAgeMs: 0 })).plan };
 }
 
 /**

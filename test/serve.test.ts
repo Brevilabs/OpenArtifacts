@@ -1,5 +1,6 @@
 import { createExecutionContext, env, waitOnExecutionContext } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
+import { vi } from "vitest";
 import type { Env } from "../src/config.js";
 import { PAGE_SCRIPT } from "../src/embed-scripts.js";
 import { DOC_ID_LENGTH } from "../src/ids.js";
@@ -2774,6 +2775,23 @@ describe("an invited-only document", () => {
       const html = await (await open(doc.docId, owner, { ...PRIVATE, DB: newer })).text();
       expect(html).toContain('<span class="role">Can edit</span>');
       expect(html).not.toContain('aria-label="Access for alice@acme.com"');
+    });
+
+    it("rechecks a free plan when its owner opens the page, so an upgrade shows Add people at once", async () => {
+      const doc = await privateDoc();
+      const owner = await ownerAccount(doc, "free");
+      const real = globalThis.fetch;
+      vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) =>
+        String(input instanceof Request ? input.url : input).startsWith("https://license.test/")
+          ? Response.json({ result: { data: { json: { plan: "plus", expiresAt: null } } } })
+          : real(input, init));
+      try {
+        const html = await (await open(doc.docId, owner, { ...PRIVATE, LICENSE_API_URL: "https://license.test", LICENSE_API_KEY: "ours" })).text();
+        expect(html).not.toContain("Private pages and comments need a paid plan.");
+        expect(html).toContain("Can comment lets them comment too.");
+      } finally {
+        vi.unstubAllGlobals();
+      }
     });
 
     it("lets an owner whose plan no longer grants Can comment lower a person from it", async () => {

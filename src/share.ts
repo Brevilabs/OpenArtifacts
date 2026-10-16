@@ -54,6 +54,7 @@ import {
   planRefusal,
   removePerson,
   setMode,
+  withCurrentPlan,
   type AccessResult,
   type AccessState,
 } from "./api/access.js";
@@ -188,8 +189,8 @@ export async function handleShare(
 
   // The session account as a publisher: its documents are everything in its
   // owner scope. A write asks for its current plan, refreshed like a bearer
-  // write, because the gate depends on it; showing the page needs no plan, so a
-  // visit makes no call to the license server.
+  // write, because the gate depends on it; a visit reads the cached plan,
+  // rechecked only for the owner's view (`withCurrentPlan`).
   const principal: Publisher = {
     owner: accountId,
     plan: (await accountPlan(env, accountId, { skipAccountRefresh: !writing })).plan,
@@ -200,7 +201,7 @@ export async function handleShare(
   if (!writing) {
     const result = await getAccess(env, principal, docId);
     if (result.ok) {
-      return await dialog(env, url, principal, docId, result.state, {
+      return await dialog(env, url, await withCurrentPlan(env, principal), docId, result.state, {
         notice: url.searchParams.get("notice") === "private",
       });
     }

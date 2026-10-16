@@ -338,6 +338,36 @@ describe("the roles are the only control", () => {
     expect(shown.roles).toEqual([]);
   });
 
+  it("rechecks a plan that grants no role when the owner opens Share, so an upgrade shows at once", async () => {
+    const { owner, priv } = await world();
+    const license = { LICENSE_API_URL: "https://license.test", LICENSE_API_KEY: "ours" };
+    let calls = 0;
+    let answer = "default";
+    const real = globalThis.fetch;
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (!String(input instanceof Request ? input.url : input).startsWith("https://license.test/")) return real(input, init);
+      calls += 1;
+      return Response.json({ result: { data: { json: { plan: answer, expiresAt: null } } } });
+    });
+    const roles = async () =>
+      ((await (await send("GET", `/embed/api/docs/${priv}/access`, await frame(owner, priv), undefined, license)).json()) as { roles: string[] }).roles;
+    const setPlan = (plan: string, retryAfter: number | null = null) =>
+      env.DB.prepare("UPDATE accounts SET plan = ?, plan_checked_at = ?, plan_retry_after = ? WHERE id = ?").bind(plan, Date.now(), retryAfter, owner.id).run();
+
+    // Cached free a moment ago, upgraded since: the open asks the license server, and Add people is back.
+    await setPlan("free");
+    answer = "plus";
+    expect(await roles()).toEqual(["view", "comment"]);
+    expect(calls).toBe(1);
+    // A paid plan keeps its cache.
+    expect(await roles()).toEqual(["view", "comment"]);
+    expect(calls).toBe(1);
+    // A license server backing off is not asked again.
+    await setPlan("free", Date.now() + 60_000);
+    expect(await roles()).toEqual([]);
+    expect(calls).toBe(1);
+  });
+
   it("answers 404 everywhere when this deployment has no comments object", async () => {
     const { alice, priv } = await world();
     const none = { COMMENTS: undefined };

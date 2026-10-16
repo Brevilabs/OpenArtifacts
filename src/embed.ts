@@ -58,6 +58,7 @@ import {
   removePerson,
   roleOf,
   setMode,
+  withCurrentPlan,
   type AccessResult,
   type AccessState,
 } from "./api/access.js";
@@ -397,7 +398,8 @@ async function frameApi(
 
   // The session account as a publisher, as the share page builds it: its
   // documents are everything in its owner scope, and the plan gate reads its
-  // current plan. Reading needs no plan, so a GET makes no license-server call.
+  // current plan. A GET reads the cached plan, rechecked only for the owner's
+  // view (`withCurrentPlan`).
   const principal: Publisher = {
     owner: accountId,
     plan: (await accountPlan(env, accountId, { skipAccountRefresh: method === "GET" })).plan,
@@ -405,14 +407,14 @@ async function frameApi(
   };
   // `changed` says whether a write changed anything. The frame needs it to tell
   // its own switch to private from a repeat on a stale view.
-  const owner = (state: AccessState, changed = false) =>
-    Response.json({ viewer: "owner", account: email, title: state.title, changed, ...accessBody(env, url, docId, state, principal) }, { headers: NO_STORE });
+  const owner = (state: AccessState, changed = false, who = principal) =>
+    Response.json({ viewer: "owner", account: email, title: state.title, changed, ...accessBody(env, url, docId, state, who) }, { headers: NO_STORE });
   const answer = (result: AccessResult) =>
     result.ok ? owner(result.state, result.changed) : noStore(refusalResponse(env, principal, docId, result.refusal));
 
   if (method === "GET") {
     const managed = await getAccess(env, principal, docId);
-    if (managed.ok) return owner(managed.state);
+    if (managed.ok) return owner(managed.state, false, await withCurrentPlan(env, principal));
     const readable = await findReadableDoc(env.DB, docId, null, accountId);
     if (readable === null || readable.deleted_at !== null || !readable.allowed) return noStore(docNotFound(docId));
     return Response.json(
