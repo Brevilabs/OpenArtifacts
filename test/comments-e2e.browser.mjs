@@ -241,7 +241,7 @@ async function pressComment(tab, text, { touch = false } = {}) {
   else await tab.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
 }
 
-/** Press "Sign in to comment" and let the popup finish; the session cookie is already in the context. */
+/** Press a sign-in button of the margin and let the popup finish; the session cookie is already in the context. */
 async function signInThroughPopup(context, button) {
   const [popup] = await Promise.all([context.waitForEvent("page"), button.click()]);
   await popup.waitForEvent("close").catch(() => {});
@@ -456,11 +456,16 @@ test("3. Alice selects a passage, signs in to the frame, names herself once, and
   const frame = await until("the comments frame", () => commentsFrame(tab, DOC));
   const authorBefore = await tab.locator("#content").innerHTML();
 
-  await pressComment(tab, QUOTE);
-  const signIn = frame.getByRole("button", { name: "Sign in to comment" });
+  // A private page before the token: the cards the page relayed, and the one line that leads on. No Comment yet.
+  const signIn = frame.getByRole("button", { name: "Continue to see names and comment." });
   await signIn.waitFor();
-  assert.equal(await frame.locator(".quote").first().innerText(), QUOTE);
+  await select(tab, QUOTE);
+  await tab.waitForTimeout(500);
+  assert.equal(await tab.locator(".openartifacts-comment-tip").isVisible().catch(() => false), false, "no Comment before the frame has its token");
   await signInThroughPopup(alice, signIn);
+  await frame.getByText("Select text to comment.").waitFor();
+  await pressComment(tab, QUOTE);
+  assert.equal(await frame.locator(".quote").first().innerText(), QUOTE);
 
   const box = frame.getByRole("textbox", { name: "Add a comment…" });
   await box.waitFor();
@@ -608,8 +613,9 @@ test("7. Bob (Can view) sees the cards, no reply box and no Comment button, and 
   assert.equal(await frame.locator("[data-thread].resolved").count(), 1, "the resolved thread is there, collapsed");
   // The frame learns who he is when he signs in; a card offers that, and never a box to type in.
   assert.equal(await frame.getByRole("textbox").count(), 0);
-  await signInThroughPopup(context, card.getByRole("button", { name: "Sign in to comment" }));
+  await signInThroughPopup(context, frame.getByRole("button", { name: "Continue to see names and comment." }));
   await frame.getByText("You can view this page.").waitFor();
+  assert.equal(await frame.getByText("Select text to comment.").count(), 0);
   assert.equal(await frame.getByRole("textbox").count(), 0);
   assert.equal(await frame.getByRole("button", { name: "Post" }).count(), 0);
 
@@ -697,11 +703,15 @@ test("9. a signed-out reader of a public page sees read-only cards, signs in, an
   assert.match(await card.innerText(), /agent/);
   await until("its highlight", async () => (await painted(tab, "openartifacts-open")).includes(STAFFING));
   assert.equal(await card.getByRole("textbox").count(), 0);
-  const signIn = card.getByRole("button", { name: "Sign in to comment" });
+  // Erin may comment, so the margin invites her to sign in; the card itself stays read-only.
+  const signIn = frame.getByRole("button", { name: "Invited to comment? Sign in." });
   await signIn.waitFor();
+  await select(tab, STAFFING);
+  await tab.waitForTimeout(500);
+  assert.equal(await tab.locator(".openartifacts-comment-tip").isVisible().catch(() => false), false, "no Comment for a signed-out reader");
   await shoot(tab, "09-signed-out-reader-public-page");
 
-  // Signing in is the one thing the context did not have; with it the same button leads to a reply box.
+  // Signing in is the one thing the context did not have; with it the same line leads to a reply box.
   await context.addCookies([sessionCookie(PEOPLE.erin.id)]);
   await signInThroughPopup(context, signIn);
   const reply = frame.getByRole("textbox", { name: "Reply…" });
@@ -755,6 +765,9 @@ test("11. on a phone a tapped highlight opens a bottom sheet with the card, and 
   const sheet = await until("the bottom sheet", () => hostBox(tab));
   assert.ok(sheet.y + sheet.height >= 844 - 2 && sheet.height < 844 * 0.55 + 2 && sheet.width >= 388, `a bottom sheet (${JSON.stringify(sheet)})`);
   await frame.getByText("Who is staffed?").waitFor();
+  // Erin's phone has not signed in to the frame yet: the sheet carries the margin's one line, and the popup answers.
+  await signInThroughPopup(context, frame.getByRole("button", { name: "Invited to comment? Sign in." }));
+  await frame.getByText("Select text to comment.").waitFor();
   await shoot(tab, "12-phone-bottom-sheet-card");
   await frame.getByRole("button", { name: "Close" }).click();
   await until("the sheet to close", async () => (await hostBox(tab)) === null);
@@ -762,8 +775,6 @@ test("11. on a phone a tapped highlight opens a bottom sheet with the card, and 
   await tab.evaluate(() => window.scrollTo(0, 0));
   await pressComment(tab, "Revenue grew 18% quarter over quarter", { touch: true });
   await until("the sheet", async () => (await hostBox(tab)) !== null);
-  // Erin's phone has not signed in to the frame yet: the sheet asks, and the popup answers.
-  await signInThroughPopup(context, frame.getByRole("button", { name: "Sign in to comment" }));
   const area = frame.getByRole("textbox", { name: "Add a comment…" });
   await area.fill("What is the base for 18%?");
   await shoot(tab, "13-phone-new-comment-sheet");

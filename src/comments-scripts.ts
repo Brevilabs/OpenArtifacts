@@ -76,7 +76,7 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
     let data = null, active = false, shown = true, canComment = false, mode = "margin";
     let mhost = null, mframe = null, ready = false, sheet = false, button = null, tipHost = null, tip = null;
     let canon = null, dirty = true, ranges = new Map(), lost = [], draft = null, draftRange = null, focusId = "", timer = 0;
-    let need = 0, sheetH = 0, refreshSeq = 0;
+    let need = 0, sheetH = 0, refreshSeq = 0, ownerHere = false;
     const out = {};
     const flag = link.getAttribute("data-comments");
 
@@ -390,6 +390,13 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       button.className = "openartifacts-comments-button";
       button.setAttribute("style", "all:initial;flex:none;box-sizing:border-box;display:inline-flex;align-items:center;gap:6px;height:34px;padding:0 14px;margin-left:auto;border:1px solid rgba(255,255,255,0.08);border-radius:999px;color:#c9ced6;cursor:pointer;white-space:nowrap;-webkit-font-smoothing:antialiased;" + FONT.replace("13px/1.25", "14px/1"));
       button.addEventListener("click", () => {
+        // In overlay mode a page with no threads has nothing to hide: the button opens the sheet, which carries the margin's one line.
+        if (mode === "overlay" && data && data.threads.length === 0) {
+          if (sheet) closeSheet(); else { shown = true; openSheet(); }
+          label();
+          paint();
+          return;
+        }
         shown = !shown;
         if (!shown) { sheet = false; hideTip(); }
         label();
@@ -480,8 +487,8 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       if (mine !== refreshSeq) return;
       if (response.status === 404 || response.status === 410) { if (active) deactivate(); return; }
       if (!body || !Array.isArray(body.threads)) return;
-      // The resource answers 200 for every page; one with no thread and nobody who can comment has nothing to show.
-      if (body.threads.length === 0 && body.commentable !== true) { if (active) deactivate(); return; }
+      // The resource answers 200 for every page; one with no thread, nobody who can comment and no sign that its viewer is the owner has nothing to show.
+      if (body.threads.length === 0 && body.commentable !== true && !ownerHere) { if (active) deactivate(); return; }
       if (!version) version = body.version;
       data = body;
       if (!active) activate();
@@ -534,7 +541,7 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       document.addEventListener("keydown", (event) => { if (sheet && event.key === "Escape") { endDraft(); closeSheet(); } }, true);
       document.addEventListener("pointerdown", (event) => {
         // A draft is the reader's own words and the sheet covers half the page: a touch on the page above it (to scroll back to the passage) must not throw them away. Cancel, the close button, Escape and a post end it.
-        if (sheet && !draft && event.target !== mhost && event.target !== tipHost) closeSheet();
+        if (sheet && !draft && event.target !== mhost && event.target !== tipHost && event.target !== button) closeSheet();
       }, true);
       document.addEventListener("click", (event) => {
         if (!active || !shown || event.button !== 0 || ranges.size === 0) return;
@@ -608,7 +615,8 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
         } catch (error) {}
       }
     };
-    commentsSwitched = () => { refresh(); };
+    // The Share popover's click (embed-scripts accepts the event only from its own frame and the API origin): its viewer is the owner, for the rest of this tab.
+    commentsSwitched = () => { ownerHere = true; refresh(); };
     if (flag !== "off") refresh();
   })();
   } catch (error) {}
@@ -672,6 +680,7 @@ button.b.primary{background:#18191d;border-color:#18191d;color:#fff}
 .err{font-size:11.5px;color:#b4342b;margin:6px 0 0}.err:empty{display:none}
 .ask{font-size:12px;margin:0 0 6px}
 .signin{margin-top:6px}
+.card.topline{padding:8px 12px}.topline .muted-text,.topline .signin{margin:0}
 `;
 
 /**
@@ -692,13 +701,17 @@ button.b.primary{background:#18191d;border-color:#18191d;color:#fff}
  * author's name or agent badge and with a line saying to sign in for them: the
  * page is the author's, so what it relays could be invented, and must not appear
  * under real names beside our Sign in button. An own read always replaces it.
+ * The one line at the top (`topLine`) follows the same split: "Invited to comment?
+ * Sign in." only on its own anonymous read's `commentable`, "Continue to see names
+ * and comment." over relayed cards, "Select text to comment." for a viewer who
+ * may, nothing otherwise; the overlay sheet carries it too.
  * Relayed data is only ever drawn as text; the title shown above a new comment
  * is the server's whenever the frame has a token, and nothing a page sends can
  * post: every write goes to `/embed/api` for this one document.
  *
  * **What it tells the page.** `ready`, once, before it touches storage; `viewer`
- * with `{canComment}` after every read (true when signed out, so Comment is
- * offered and asks to sign in); `changed` after its own
+ * with `{canComment}` after every read (false until the server says a signed-in
+ * viewer may, so no one is offered Comment only to be refused); `changed` after its own
  * write; `focus` when a card is pressed; `close` from a user action. Nothing
  * else about the viewer.
  *
@@ -874,7 +887,7 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
   // Always tells the page: signed out it offers Comment (pressing it asks to sign in), signed in it follows the server's word.
   const reportViewer = () => {
     const v = viewer();
-    const can = v ? v.canComment === true : readToken() === null;
+    const can = v ? v.canComment === true : false;
     if (can !== lastViewer) {
       lastViewer = can;
       post({ event: "viewer", canComment: can });
@@ -969,17 +982,29 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     return node("div", { class: "who" }, kids);
   };
 
-  const signInBlock = () => {
-    const kids = [button("Sign in to comment", signIn, "b primary")];
+  const signInBlock = (label) => {
+    const kids = [button(label, signIn, "b primary")];
     kids[0].disabled = prepared === null;
     if (signState === "waiting") kids.push(muted("Complete sign-in in the window that opened."));
     if (signState === "blocked") kids.push(node("p", { class: "err" }, ["Your browser blocked the sign-in window. Allow pop-ups for this page and try again."]));
     return node("div", { class: "signin" }, kids);
   };
 
+  // The one line at the top, by state, drawn only where it can lead somewhere: an invitation to sign in when its own anonymous read says someone can comment, the way on when the cards are the page's relayed ones (a private page before the token), the instruction when this viewer may comment, and nothing otherwise.
+  const topLine = () => {
+    if (!loaded) return [];
+    if (own !== null) return viewer() && viewer().canComment ? [muted("Select text to comment.")] : [];
+    if (anon !== null) return anon.commentable === true ? [signInBlock("Invited to comment? Sign in.")] : [];
+    return relayed ? [signInBlock("Continue to see names and comment.")] : [];
+  };
+  const lineCard = () => {
+    const kids = topLine();
+    return kids.length ? node("div", { class: "card topline" }, kids) : null;
+  };
+
   // The box a person writes in: a textarea and its buttons, the name field a first comment may ask for, or the reason there is none.
   const writer = (key, placeholder, submit, cancel) => {
-    if (readToken() === null) return [signInBlock()];
+    if (readToken() === null) return [];
     const v = viewer();
     if (v === null) return [];
     if (!v.canComment) return [muted("You can view this page.")];
@@ -1066,7 +1091,6 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
       }
       if (canDelete) acts.push(button("Delete", () => { confirming = firstId; render(); }, "link"));
     }
-    if (relayedOnly()) card.append(muted("Sign in to see who wrote these comments."));
     if (acts.length) card.append(node("div", { class: "acts" }, acts));
     if (errors["t:" + id]) card.append(errorLine("t:" + id));
     if (firstId && errors["c:" + firstId]) card.append(errorLine("c:" + firstId));
@@ -1118,6 +1142,8 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
 
   const renderMargin = () => {
     const items = [];
+    const top = lineCard();
+    if (top) items.push({ el: top, want: BAR, gap: 8 });
     const threads = threadsOf();
     const lost = new Set(lostIds);
     const orphans = threads.filter((t) => t.anchorStatus !== "anchored" || lost.has(t.threadId));
@@ -1165,6 +1191,8 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     const kids = [node("div", { class: "grab" }, [node("i"), close])];
     if (draft) kids.push(draftCard());
     else {
+      const top = lineCard();
+      if (top) kids.push(top);
       const thread = threadsOf().find((t) => t.threadId === focusId);
       if (thread) kids.push(threadCard(thread, thread.anchorStatus !== "anchored", true));
     }
@@ -1181,7 +1209,7 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     sizes.disconnect();
     stacked = [];
     try {
-      if (!shown || (mode === "overlay" && !draft && !focusId)) cards.replaceChildren();
+      if (!shown || (mode === "overlay" && !draft && !focusId && threadsOf().length > 0)) cards.replaceChildren();
       else if (mode === "overlay") renderOverlay();
       else renderMargin();
     } catch (error) {
