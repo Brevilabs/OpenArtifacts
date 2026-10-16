@@ -103,7 +103,7 @@ export function rowsFromManifest(docId: string, manifest: unknown, objects: read
       id: docId,
       owner: m.owner,
       title: m.title,
-      latest_version: Math.max(m.latestVersion, ...versions.map((v) => v.n)),
+      latest_version: versions.reduce((max, v) => Math.max(max, v.n), m.latestVersion),
       created_at: m.createdAt,
       updated_at: m.updatedAt,
       deleted_at: m.deletedAt,
