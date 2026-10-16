@@ -53,7 +53,7 @@ import { PAGE_COMMENTS_SCRIPT } from "./comments-scripts.js";
  *
  * **Comments are the second half** (`PAGE_COMMENTS_SCRIPT`, `src/comments-scripts.ts`,
  * joined here so both share `api`, `docId` and `link`). It is inert when the bar says
- * the document has comments off, and otherwise unless its threads resource answers, adds a button to the bar and a margin frame
+ * the document has no comments to show, and otherwise unless its threads resource answers, adds a button to the bar and a margin frame
  * on the API host, and holds no credential either: everything above about what
  * the page script holds is true of it too. It reads the Share half's `api`,
  * `docId`, `link` and `viewport` and changes none of them, and closes its own
@@ -73,7 +73,7 @@ export const PAGE_SCRIPT = String.raw`(() => {
   link.setAttribute("aria-haspopup", "dialog");
   link.setAttribute("aria-expanded", "false");
   let host = null, frame = null, fallback = null, timer = 0, ready = false, open = false;
-  // Set by the comment half: the owner just flipped the Comments switch in the popover.
+  // Set by the comment half: the owner just clicked in the popover (added a person, changed a role, or closed it).
   let commentsSwitched = null;
   // The layout viewport, which a classic scrollbar narrows (innerWidth and 100vw
   // include it). documentElement.clientWidth is the viewport only in standards
@@ -147,7 +147,7 @@ export const PAGE_SCRIPT = String.raw`(() => {
       frame.style.display = "block";
       if (open) frame.focus();
     } else if (data.event === "close") hide(true);
-    else if (data.event === "comments" && commentsSwitched) commentsSwitched();
+    else if (data.event === "people" && commentsSwitched) commentsSwitched();
   });
   document.addEventListener("keydown", (event) => { if (open && event.key === "Escape") hide(true); }, true);
   document.addEventListener("pointerdown", (event) => { if (open && event.target !== host && !link.contains(event.target)) hide(false); }, true);
@@ -205,7 +205,7 @@ export const POPUP_DONE_SCRIPT = String.raw`(function () {
  * middle of a line) and then the link field and Copy link, so Copy link sits at
  * the same place in every view. Link access, with the notice that follows a
  * switch to private, comes next so that it is in view without any scrolling,
- * and the Comments switch (where comments are bound and the view is not limited)
+ * and the plan line (for an owner whose plan grants no role) or Add people
  * follows Link access, also in view without scrolling; the people and requests
  * follow and scroll. Flex items do
  * not collapse margins, so spacing is adjusted in the margins, not the
@@ -261,7 +261,7 @@ ul{list-style:none;margin:0;padding:0}
 li{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 0;border-top:1px solid #1a1d24}
 li span{flex:1;min-width:0;overflow-wrap:anywhere}li .row{margin-left:auto;flex:none}li small{display:block;font-size:12px;color:#8d94a0}
 li button.link{font-size:12px;color:#8d94a0}li button.link:hover{color:#e9ebee}
-.sw{justify-content:space-between;margin-top:16px}.sw .seg button{flex:none;padding:0 14px}
+
 .foot{display:flex;flex-direction:column;gap:8px;margin:16px 0 4px}header+.foot{margin-top:0}
 .field{display:flex;align-items:center;height:36px;padding:0 12px;border:1px solid #20242c;border-radius:10px;background:#07080b;color:#c9ced6;font:12.5px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
 .field span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;user-select:all}
@@ -285,8 +285,9 @@ li button.link{font-size:12px;color:#8d94a0}li button.link:hover{color:#e9ebee}
  *
  * **What it tells the page around it.** Only `ready`, once, before it touches
  * storage, `close`, only from a user action in the frame (the × button or
- * Escape), and `comments`, only after the owner's click on the Comments switch
- * (it says this visitor is the owner, but never without the owner's own click). Nothing the frame sends, and nothing it does that an embedding page
+ * Escape), and `people`, only after the owner's own click inside the owner view
+ * (an add, a role change, or × / Escape): it says this visitor is the owner, so it
+ * is never sent when a view is drawn. Nothing the frame sends, and nothing it does that an embedding page
  * can observe (a size change, a focus move), depends on what is in storage. On a
  * public document any page on `openartifacts.site` can embed this frame for any
  * document it knows, and the stored token lives in the partition that page
@@ -403,9 +404,13 @@ export const FRAME_SCRIPT = String.raw`(() => {
     if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(link).then(done, fallback);
     else fallback();
   };
-  const closeButton = (target) => target.addEventListener("click", () => post("close"));
+  // The owner view is the only one with the fade at its foot. Leaving it is a click or a key inside
+  // the frame, so it may say that this visitor is the owner (see the header comment); leaving any
+  // other view says nothing more than close.
+  const leave = () => { post("close"); if (main.querySelector(".fade")) post("people"); };
+  const closeButton = (target) => target.addEventListener("click", leave);
   const copyButton = (target) => target.addEventListener("click", () => copyLink(target));
-  document.addEventListener("keydown", (event) => { if (event.key === "Escape") post("close"); });
+  document.addEventListener("keydown", (event) => { if (event.key === "Escape") leave(); });
 
   const guest = Array.from(main.children);
   const account = document.getElementById("oa-account");
@@ -426,14 +431,10 @@ export const FRAME_SCRIPT = String.raw`(() => {
   let wake = null;
   let writing = false;
   let notice = false;
-  // The line shown after this frame turned comments on. Like notice, it lasts until the next write.
-  let commentsNote = false;
   // Whether this frame made the document private. See exposed().
   let switched = false;
   let latest = null;
   let message = null;
-  // The line under the Comments switch: its confirmation, or why it refused.
-  let commentsMsg = null;
   // Orders reads against writes. Each refresh takes a number and is applied only
   // if no later refresh or write has started, so an older GET resolving after a
   // write cannot redraw the document as it was. A refresh asked for while a write
@@ -650,7 +651,6 @@ export const FRAME_SCRIPT = String.raw`(() => {
     if (writing) return;
     writing = true;
     seq += 1;
-    commentsNote = false;
     try {
       if (!(await stillPublic())) return;
       await run();
@@ -663,35 +663,25 @@ export const FRAME_SCRIPT = String.raw`(() => {
   };
 
   const write = (method, path, body, modeAfter) => guarded(async () => {
-    const settings = path === "/settings";
-    let response = await call(method, path, body);
+    const response = await call(method, path, body);
     if (response === null) { showGuest("", false); return; }
     let parsed = null;
     try { parsed = await response.json(); } catch (error) {}
-    if (settings && response.status === 200 && parsed && typeof parsed.comments === "boolean") {
-      // The switch answers with its own two fields, not the owner view, so the
-      // view is read again, which also confirms the mode once more before it is drawn.
-      const turned = parsed.comments;
-      // The page script asks the threads resource again, so its margin appears or goes without a reload.
-      post("comments");
-      response = await call("GET", "/access");
-      if (response === null) { showGuest("", false); return; }
-      parsed = null;
-      try { parsed = await response.json(); } catch (error) {}
-      commentsNote = turned && response.status === 200;
-    }
     if (response.status === 200 && parsed && parsed.viewer === "owner") {
       // Only a write that changed the mode counts, so a repeat of "Only those
       // invited" on a stale view neither shows the notice nor vouches for the frame.
       if (modeAfter && parsed.changed && parsed.linkAccess === "invited") { notice = true; switched = true; }
       present(parsed);
+      // An add, an approval or a role change the owner just made with a click: the page may now have
+      // someone who can comment, and the owner is looking.
+      if (method === "PUT" && path.startsWith("/access/people/")) post("people");
     } else if (response.status === 401) {
       writeToken(null);
       showGuest("", false);
     } else if (response.status === 404) {
       showNone();
     } else {
-      fail(settings && commentsMsg ? commentsMsg : message, response, parsed, settings ? "Comments need a paid plan." : undefined);
+      fail(message, response, parsed, path.startsWith("/access/people/") ? "Adding people needs a paid plan." : undefined);
     }
   });
 
@@ -754,6 +744,7 @@ export const FRAME_SCRIPT = String.raw`(() => {
       if (added > 0) done.push("Added " + added + (added === 1 ? " person." : " people."));
       if (found.bad.length > 0) done.push("Not added: " + found.bad.map((entry) => entry + " (not an email address)").join(", ") + ".");
       if (last !== null) present(last);
+      if (added > 0) post("people");
       if (stop !== null) {
         fail(message, stop[0], stop[1]);
         if (done.length > 0) {
@@ -774,11 +765,11 @@ export const FRAME_SCRIPT = String.raw`(() => {
   const showOwner = (body) => {
     latest = body;
     if (body.linkAccess !== "invited") { notice = false; switched = false; }
-    if (!body.comments) commentsNote = false;
     message = node("p", { id: "oa-msg", class: "err", role: "alert" });
-    commentsMsg = node("p", { class: "err", role: "alert" });
-    // The server leaves the field out where the comments object is not bound, and then there is nothing to switch or to grant.
-    const commentable = typeof body.comments === "boolean";
+    // The roles this owner may grant now, in ladder order. Absent where the comments object is not bound
+    // (no role is drawn, and people are added as before); empty on a plan that grants none (no way to add).
+    const roles = Array.isArray(body.roles) ? body.roles : null;
+    const mayAdd = roles === null || roles.length > 0;
     const input = node("input", { type: "text", inputmode: "email", placeholder: "Emails, separated by commas", "aria-label": "Add people by email, separated by commas", autocomplete: "off" });
     const add = () => addMany(input.value);
     input.addEventListener("keydown", (event) => { if (event.key === "Enter") add(); });
@@ -793,17 +784,18 @@ export const FRAME_SCRIPT = String.raw`(() => {
     });
     const choice = (value, label) => node("button", { type: "button", role: "radio", "aria-checked": String(body.linkAccess === value), onclick: () => { if (body.linkAccess !== value) write("PUT", "/access", { linkAccess: value }, true); } }, [label]);
     const narrow = limited(body);
-    const roleSelect = (entry) => {
-      const select = node("select", { "aria-label": "Access for " + entry.email }, [
-        node("option", { value: "view" }, ["Can view"]),
-        node("option", { value: "comment" }, ["Can comment"]),
-      ]);
-      const held = entry.role === "comment" ? "comment" : "view";
-      select.value = held;
+    const roleLabel = (role) => "Can " + role;
+    const roleControl = (entry) => {
+      if (roles === null) return null;
+      if (roles.length < 2) return node("span", { class: "muted" }, [roleLabel(entry.role)]);
+      // The stored role is selected exactly. One this script does not offer stays as its own option, so it is never rewritten.
+      const offered = roles.includes(entry.role) ? roles : roles.concat([entry.role]);
+      const select = node("select", { "aria-label": "Access for " + entry.email }, offered.map((role) => node("option", { value: role }, [roleLabel(role)])));
+      select.value = entry.role;
       // A select shows its new value before the write lands. A write that lands redraws the view with a new select; one that fails, or that another write turned away, leaves this one showing a role nobody has, so it goes back.
       select.addEventListener("change", () => {
         if (select.value === entry.role) return;
-        write("PUT", "/access/people/" + encodeURIComponent(entry.email), { role: select.value }).then(() => { select.value = held; });
+        write("PUT", "/access/people/" + encodeURIComponent(entry.email), { role: select.value }).then(() => { select.value = entry.role; });
       });
       return select;
     };
@@ -815,33 +807,26 @@ export const FRAME_SCRIPT = String.raw`(() => {
       node("div", { class: "seg", role: "radiogroup", "aria-label": "Link access" }, [choice("anyone", "Anyone with the link"), choice("invited", "Only those invited")]),
     ];
     if (notice) kids.push(node("p", { class: "notice" }, ["People who opened it while it was public may have kept a copy."]));
-    // The limited view (see limited()) offers only what a switch to private needs. Neither
-    // control here is a threat to a private document alone, but a roster change or a new
-    // way in is not something to offer under a frame that may not be the owner's own page.
-    if (!narrow && commentable) {
-      const on = body.comments === true;
-      kids.push(
-        node("div", { class: "row sw" }, [
-          node("span", {}, ["Comments"]),
-          node("div", { class: "seg", role: "radiogroup", "aria-label": "Comments" }, [
-            node("button", { type: "button", role: "radio", "aria-checked": String(!on), onclick: () => { if (on) write("PUT", "/settings", { comments: false }); } }, ["Off"]),
-            node("button", { type: "button", role: "radio", "aria-checked": String(on), onclick: () => { if (!on) write("PUT", "/settings", { comments: true }); } }, ["On"]),
-          ]),
-        ]),
-        commentsMsg,
-      );
-      if (commentsNote) kids.push(muted(["People who can comment can now leave comments on this page."]));
+    if (roles !== null && roles.length === 0) {
+      const upgrade = typeof body.upgradeUrl === "string" && body.upgradeUrl.startsWith("https://") ? body.upgradeUrl : null;
+      kids.push(muted(["Private pages and comments need a paid plan."].concat(upgrade === null ? [] : [" ", node("a", { href: upgrade, target: "_blank", rel: "noopener noreferrer" }, ["Upgrade"])])));
     }
-    kids.push(node("h2", {}, ["Add people"]), node("div", { class: "row" }, [input, button("Add", add, "primary tall")]), message);
+    if (mayAdd) {
+      kids.push(node("h2", {}, ["Add people"]), node("div", { class: "row" }, [input, button("Add", add, "primary tall")]));
+      if (roles !== null && roles.includes("comment")) {
+        kids.push(muted([body.linkAccess === "anyone" ? "Anyone with the link can view. Can comment lets a person you add comment." : "Only people you add can open it. Can comment lets them comment too."]));
+      }
+    }
+    kids.push(message);
     if (body.requests.length > 0) {
       kids.push(node("h2", {}, ["Requests"]), node("ul", {}, body.requests.map((request) => person(request.email, "Asked to open it", narrow ? [] : [
-        button("Approve", () => write("PUT", "/access/people/" + encodeURIComponent(request.email)), "primary"),
+        mayAdd ? button("Approve", () => write("PUT", "/access/people/" + encodeURIComponent(request.email)), "primary") : null,
         button("Decline", () => write("DELETE", "/access/requests/" + encodeURIComponent(request.email))),
-      ]))));
+      ].filter((kid) => kid !== null)))));
     }
     const invitationLabel = body.email ? "Invited" : "Invited · send them the link";
     kids.push(node("h2", {}, ["Who has access"]), node("ul", {}, [person("You", "Owner", [])].concat(body.people.map((entry) => person(entry.email, invitationLabel, narrow ? [] : [
-      commentable ? roleSelect(entry) : null,
+      roleControl(entry),
       button("Remove", () => write("DELETE", "/access/people/" + encodeURIComponent(entry.email)), "link"),
     ].filter((kid) => kid !== null))))));
     if (body.email) kids.push(muted(["OpenArtifacts emails each invitation. If someone doesn’t get it, send them the link."]));

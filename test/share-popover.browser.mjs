@@ -33,8 +33,8 @@
  * `OA_SCREENSHOTS={dir}` saves `bar.png`, `popover-signed-out.png`,
  * `popover-owner.png`, `popover-private.png` and the `popover-pasted*.png` pair, which is how the screenshots in
  * a pull request are made.
- * It also saves `popover-comments.png` and `popover-comments-paid.png`, for the
- * Comments switch.
+ * It also saves `popover-roles.png` and `popover-plan-line.png`, for the role
+ * dropdown and the free owner's plan line.
  */
 import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
@@ -157,7 +157,7 @@ before(async () => {
     compatibilityDate: "2026-03-01",
     d1Databases: ["DB"],
     r2Buckets: ["DOCS"],
-    // The Comments switch is only useful where the comments object is bound.
+    // Roles are only offered where the comments object is bound.
     durableObjects: { COMMENTS: { className: "DocComments", useSQLite: true } },
     // The page validator reads the deploy time from this binding; wrangler.jsonc
     // declares it, but this harness does not read wrangler.jsonc.
@@ -388,7 +388,7 @@ test("a frame a hostile page embedded while the document was public shows no con
     await until("the hostile frame's owner view", () => frameOf(tab, X).getByRole("radio", { name: "Only those invited" }).isVisible());
     hostile.push(tab);
   }
-  // A fourth hostile page, for the Comments switch's stale write.
+  // A fourth hostile page, for a role's stale write.
   const tab4 = await context.newPage();
   await tab4.goto(docUrl(Y4));
   await until("the fourth hostile frame's owner view", () => frameOf(tab4, X).getByRole("radio", { name: "Only those invited" }).isVisible());
@@ -414,12 +414,13 @@ test("a frame a hostile page embedded while the document was public shows no con
   await stale2.getByText("Open Share from the document’s own page").waitFor();
   assert.deepEqual(await people(), [invitee], "a stale Remove changed nothing");
 
-  // The comments switch and a role are writes like Remove: a stale view that offers
-  // them checks the document first, and turns nothing on.
+  // A role is a write like Remove: a stale view that offers it checks the document
+  // first, and changes no one's role.
   const stale3 = frameOf(hostile[3], X);
-  await stale3.getByRole("radio", { name: "On", exact: true }).click();
+  await stale3.getByLabel(`Access for ${invitee}`).selectOption("view");
   await stale3.getByText("Open Share from the document’s own page").waitFor();
-  assert.equal((await (await api(`/api/v1/docs/${X}/access`)).json()).comments, false, "a stale switch changed nothing");
+  const roleNow = async () => (await (await api(`/api/v1/docs/${X}/access`)).json()).people.find((entry) => entry.email === invitee).role;
+  assert.equal(await roleNow(), "comment", "a stale role change changed nothing");
 
   // The second page's frame refreshes when a token is written in the shared
   // storage, and draws the same line instead of the owner view.
@@ -449,8 +450,7 @@ test("a frame a hostile page embedded while the document was public shows no con
   assert.equal(await invitedOnly.getAttribute("aria-checked"), "true");
   await frame.getByText("People who opened it while it was public may have kept a copy.").waitFor();
   assert.equal(await frame.getByRole("button", { name: "Remove" }).count(), 0);
-  // Nor the Comments switch or a role, which the limited view leaves to the share page.
-  assert.equal(await frame.getByRole("radio", { name: "On", exact: true }).count(), 0);
+  // Nor a role, which the limited view leaves to the share page.
   assert.equal(await frame.getByLabel(`Access for ${invitee}`).count(), 0);
   assert.equal(await frame.getByText(invitee).count(), 1, "the list is still shown");
   assert.equal(await frame.getByPlaceholder("Emails, separated by commas").count(), 1);
@@ -463,7 +463,7 @@ test("a frame a hostile page embedded while the document was public shows no con
   assert.equal(await frame.getByText("People who opened it while it was public may have kept a copy.").count(), 0);
   assert.equal((await (await api(`/api/v1/docs/${X}/access`)).json()).linkAccess, "anyone");
   assert.equal(await frame.getByRole("button", { name: "Remove" }).count(), 1, "the full view is back while the document is public");
-  assert.equal(await frame.getByRole("radio", { name: "On", exact: true }).count(), 1);
+  assert.equal(await frame.getByLabel(`Access for ${invitee}`).count(), 1, "and so is the role");
   await invitedOnly.click();
   await frame.getByText("People who opened it while it was public may have kept a copy.").waitFor();
 
@@ -920,7 +920,7 @@ test("a pasted batch stops when the document goes private part way through", { t
   await context.close();
 });
 
-test("the owner turns comments on and off and sets a role from the popover", { timeout: 180_000 }, async () => {
+test("the owner sets a role from the popover: no Comments switch, the options come from Access.roles, and the helper line follows the link access", { timeout: 180_000 }, async () => {
   const X = await publish("Review me", "<p>Mine.</p>");
   const invitee = "reviewer@example.com";
   assert.equal((await api(`/api/v1/docs/${X}/access/people/${encodeURIComponent(invitee)}`, { method: "PUT", body: "{}" })).status, 200);
@@ -929,38 +929,29 @@ test("the owner turns comments on and off and sets a role from the popover", { t
 
   const context = await newContext(OWNER_ACCOUNT);
   const { page, frame } = await ownerFrame(context, X);
-  const on = frame.getByRole("radio", { name: "On", exact: true });
-  const off = frame.getByRole("radio", { name: "Off", exact: true });
-  await on.waitFor();
-  assert.equal(await off.getAttribute("aria-checked"), "true");
-  assert.equal((await state()).comments, false);
-
-  // On: the switch lands, the line says who can now comment, and the view is the same owner view.
-  await on.click();
-  await frame.getByText("People who can comment can now leave comments on this page.").waitFor();
-  assert.equal(await on.getAttribute("aria-checked"), "true");
-  assert.equal((await state()).comments, true);
   await frame.getByRole("radio", { name: "Only those invited" }).waitFor();
-  await shoot(page, "popover-comments");
+  // The roles are the only control: no switch, no On or Off.
+  const body = await state();
+  assert.deepEqual(body.roles, ["view", "comment"]);
+  assert.equal("comments" in body, false);
+  assert.equal(await frame.getByText("Comments", { exact: true }).count(), 0);
+  assert.equal(await frame.getByRole("radio", { name: "On", exact: true }).count(), 0);
+  await frame.getByText("Anyone with the link can view. Can comment lets a person you add comment.").waitFor();
+  await shoot(page, "popover-roles");
 
-  // Comments is one row (label left, switch right), the role sits on the person's row, and with comments on the popover still opens on Copy link and the switch.
-  const label = await frame.getByText("Comments", { exact: true }).boundingBox();
-  const onBox = await on.boundingBox();
-  assert.ok(Math.abs(label.y + label.height / 2 - (onBox.y + onBox.height / 2)) < 12, "the label and the switch share a row");
+  // The role sits on the person's row, inside the panel, and Copy link is in view without scrolling.
   const email = await frame.getByText(invitee).boundingBox();
   const roleBox = await frame.getByLabel(`Access for ${invitee}`).boundingBox();
   assert.ok(Math.abs(email.y - roleBox.y) < 30, "the role sits beside the address");
-  // The popover is one fixed height and an owner view longer than it scrolls under
-  // the sticky header, but it opens at the top: Copy link and the Comments switch
-  // are in view above the foot's fade before any scrolling, and no person's row,
-  // with its role and Remove, is cut at the side.
   const mainBox = await frame.locator("main").boundingBox();
   assert.equal(await frame.locator("main").evaluate((el) => el.scrollTop), 0);
   const copyBox = await frame.getByRole("button", { name: "Copy link" }).boundingBox();
   assert.ok(copyBox.y + copyBox.height <= mainBox.y + mainBox.height - 28, "Copy link is in view without scrolling");
-  assert.ok(onBox.y + onBox.height <= mainBox.y + mainBox.height - 28, "the Comments switch is in view without scrolling");
   assert.equal(await frame.locator("li").evaluateAll((rows) => rows.every((row) => row.scrollWidth <= row.clientWidth + 1)), true, "no row is cut at the side");
   assert.ok(roleBox.x + roleBox.width <= mainBox.x + mainBox.width - 16, "the role select sits inside the panel's padding");
+
+  // The select's options are exactly the roles the plan grants.
+  assert.deepEqual(await frame.getByLabel(`Access for ${invitee}`).locator("option").allTextContents(), ["Can view", "Can comment"]);
 
   // The person's role: Can comment is what an invite has, and it moves both ways.
   const select = frame.getByLabel(`Access for ${invitee}`);
@@ -971,26 +962,76 @@ test("the owner turns comments on and off and sets a role from the popover", { t
   await frame.getByLabel(`Access for ${invitee}`).selectOption("comment");
   await until("the role to return", async () => (await roleOf()) === "comment");
 
-  // Off needs no plan and the line goes with it.
-  await off.click();
-  await until("comments off", async () => (await state()).comments === false);
-  assert.equal(await frame.getByText("People who can comment can now leave comments on this page.").count(), 0);
+  // The helper line follows the link access.
+  await frame.getByRole("radio", { name: "Only those invited" }).click();
+  await frame.getByText("Only people you add can open it. Can comment lets them comment too.").waitFor();
+  assert.equal(await frame.getByText("Anyone with the link can view.").count(), 0);
 
-  // On a plan without comments the switch says so, with the upgrade link, and nothing changes.
+  // On a plan with no roles: the plan line replaces Add people, and each role is plain text.
   await db.prepare("UPDATE accounts SET plan = 'free' WHERE id = ?").bind(OWNER_ACCOUNT).run();
   try {
-    await on.click();
-    await frame.getByText("Comments need a paid plan. Nothing was changed.").waitFor();
-    // The refusal is drawn right under the switch that was pressed, not up by the email box.
-    const refusal = await frame.getByText("Comments need a paid plan. Nothing was changed.").boundingBox();
-    const switchBox = await on.boundingBox();
-    assert.ok(refusal.y >= switchBox.y && refusal.y - (switchBox.y + switchBox.height) < 24, "under the switch");
-    // The Upgrade link needs an upgrade url, which this harness does not configure; serve.test.ts covers it.
-    assert.equal((await state()).comments, false);
-    await shoot(page, "popover-comments-paid");
+    await frame.getByRole("radio", { name: "Anyone with the link" }).click();
+    await until("the free owner view", async () => (await frame.getByText("Private pages and comments need a paid plan.").count()) > 0);
+    assert.equal(await frame.getByRole("heading", { name: "Add people" }).count(), 0);
+    assert.equal(await frame.getByLabel(`Access for ${invitee}`).count(), 0);
+    await frame.getByText("Can comment", { exact: true }).waitFor();
+    assert.equal(await frame.getByRole("button", { name: "Remove" }).count(), 1, "Remove stays");
+    // Pressing Only those invited is refused, with the plan's words, and nothing changes.
+    await frame.getByRole("radio", { name: "Only those invited" }).click();
+    await frame.getByText("Private sharing needs a paid plan. Nothing was changed.").waitFor();
+    assert.equal((await state()).linkAccess, "anyone");
+    await shoot(page, "popover-plan-line");
   } finally {
     await db.prepare("UPDATE accounts SET plan = 'pro' WHERE id = ?").bind(OWNER_ACCOUNT).run();
   }
+  await context.close();
+});
+
+test("the popover tells the page its owner is looking only from a click inside it: never when the view is drawn", { timeout: 180_000 }, async () => {
+  const X = await publish("Quiet owner", "<p>Mine.</p>");
+  const context = await newContext(OWNER_ACCOUNT);
+  // Every message the Share frame posts to the page around it.
+  await context.addInitScript(() => {
+    window.__shareEvents = [];
+    window.addEventListener("message", (event) => {
+      if (event.data && event.data.type === "openartifacts:share") window.__shareEvents.push(event.data.event);
+    });
+  });
+  const events = (page) => page.evaluate(() => window.__shareEvents.slice());
+  const { page, frame } = await ownerFrame(context, X);
+
+  // The owner view is drawn (after the sign-in popup): the page has been told "ready" and nothing about its viewer.
+  await frame.getByPlaceholder("Emails, separated by commas").waitFor();
+  assert.deepEqual(await events(page), ["ready"]);
+  // Reading and redrawing the view is not a click either.
+  await frame.evaluate((key) => { const v = window.localStorage.getItem(key); window.localStorage.removeItem(key); window.localStorage.setItem(key, v); }, `openartifacts:share-token:${X}`);
+  await frame.getByPlaceholder("Emails, separated by commas").waitFor();
+  assert.deepEqual(await events(page), ["ready"]);
+
+  // An add is a click: it says people.
+  await frame.getByPlaceholder("Emails, separated by commas").fill("sam@example.com");
+  await frame.getByRole("button", { name: "Add", exact: true }).click();
+  await until("people after an add", async () => (await events(page)).includes("people"));
+  const afterAdd = await events(page);
+  assert.equal(afterAdd.filter((name) => name === "people").length, 1);
+
+  // A role change is a click.
+  await frame.getByLabel("Access for sam@example.com").selectOption("view");
+  await until("people after a role change", async () => (await events(page)).filter((name) => name === "people").length === 2);
+
+  // Removing someone says nothing more, and neither does a refused write.
+  await frame.getByRole("button", { name: "Remove" }).click();
+  await until("the removal", async () => (await frame.getByText("sam@example.com").count()) === 0);
+  assert.equal((await events(page)).filter((name) => name === "people").length, 2);
+
+  // Closing the owner view with × says people after close; so does Escape.
+  await frame.getByRole("button", { name: "Close" }).click();
+  await until("people after ×", async () => (await events(page)).filter((name) => name === "people").length === 3);
+  assert.equal((await events(page)).includes("close"), true);
+  await page.locator("a[data-openartifacts-share]").click();
+  await frame.getByPlaceholder("Emails, separated by commas").waitFor();
+  await frame.locator("main").press("Escape");
+  await until("people after Escape", async () => (await events(page)).filter((name) => name === "people").length === 4);
   await context.close();
 });
 
@@ -998,7 +1039,6 @@ test("a role change the server refuses puts the select back on the role the pers
   const X = await publish("Role refused", "<p>Mine.</p>");
   const invitee = "refused@example.com";
   assert.equal((await api(`/api/v1/docs/${X}/access/people/${encodeURIComponent(invitee)}`, { method: "PUT", body: "{}" })).status, 200);
-  assert.equal((await api(`/api/v1/docs/${X}/settings`, { method: "PUT", body: JSON.stringify({ comments: true }) })).status, 200);
   const roleOf = async () => (await (await api(`/api/v1/docs/${X}/access`)).json()).people.find((entry) => entry.email === invitee).role;
   const context = await newContext(OWNER_ACCOUNT);
   const { page, frame } = await ownerFrame(context, X);

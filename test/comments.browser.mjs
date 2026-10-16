@@ -121,18 +121,27 @@ const api = (path, init = {}) =>
     headers: { authorization: `Bearer ${KEY}`, "content-type": "application/json", ...init.headers },
   });
 
-/** Publish as the owner, turn comments on, and return the doc id. */
+/** Publish as the owner, give the readers who comment in these tests a Can comment role, and return the doc id. */
 async function publish(title, body, { route = "docs", comments = true, html } = {}) {
   const response = await api(`/api/v1/${route}`, { method: "POST", body: JSON.stringify({ title, html: html ?? page(body) }) });
   assert.equal(response.status, 201, await response.clone().text());
   const { docId } = await response.json();
-  if (comments) await setComments(docId, true);
+  if (comments) await grantCommenters(docId);
   return docId;
 }
 
-async function setComments(docId, on) {
-  const response = await api(`/api/v1/docs/${docId}/settings`, { method: "PUT", body: JSON.stringify({ comments: on }) });
-  assert.equal(response.status, 200, await response.clone().text());
+/**
+ * There is no switch: a page has comments once someone holds Can comment on it.
+ * Alice, Carol and Dan are the readers these tests comment as; Bob is never given a role
+ * here, so he reads and cannot write.
+ */
+async function grantCommenters(docId) {
+  for (const email of ["alice@example.com", "carol@example.com", "dan@example.com"]) {
+    await db
+      .prepare("INSERT OR IGNORE INTO doc_invites (doc_id, email, role, created_at) VALUES (?, ?, 'comment', ?)")
+      .bind(docId, email, Date.now())
+      .run();
+  }
 }
 
 async function update(docId, body, head = "") {
@@ -654,7 +663,7 @@ test("the page finds the same text the server does: entities, decomposed accents
   await context.close();
 });
 
-test("a page whose document has comments off is untouched by the script", { timeout: 60_000 }, async () => {
+test("a page with no thread and nobody who can comment is untouched by the script", { timeout: 60_000 }, async () => {
   const docId = await publish("Quiet", REPORT, { comments: false });
   const context = await newContext(ALICE);
   const tab = await context.newPage();
@@ -673,6 +682,29 @@ test("a page whose document has comments off is untouched by the script", { time
   // The Share popover still works.
   await tab.locator("a[data-openartifacts-share]").click();
   await until("the Share frame", () => tab.frames().find((frame) => frame.url().includes("/embed/share")));
+  await context.close();
+});
+
+test("the margin appears, without a reload, after the owner adds a person who can comment in Share", { timeout: 120_000 }, async () => {
+  const docId = await publish("Nobody yet", REPORT, { comments: false });
+  const context = await newContext(OWNER_ACCOUNT, { signedInTo: docId });
+  const tab = await context.newPage();
+  await tab.goto(docUrl(docId));
+  await tab.locator("a[data-openartifacts-share]").waitFor();
+  assert.equal(await tab.locator("a[data-openartifacts-share]").getAttribute("data-comments"), "off");
+  await tab.waitForTimeout(500);
+  assert.equal(await barButton(tab).count(), 0);
+
+  await tab.locator("a[data-openartifacts-share]").click();
+  const share = await until("the Share frame", () => tab.frames().find((frame) => frame.url().includes("/embed/share")));
+  const box = share.getByPlaceholder("Emails, separated by commas");
+  await box.waitFor();
+  // Opening the popover as the owner changed nothing on the page.
+  assert.equal(await barButton(tab).count(), 0);
+  await box.fill("newcomer@example.com");
+  await share.getByRole("button", { name: "Add", exact: true }).click();
+  await barButton(tab).waitFor();
+  assert.match(await barButton(tab).innerText(), /0$/);
   await context.close();
 });
 

@@ -405,38 +405,42 @@ test("1. the owner publishes a private page with the CLI and invites Alice to co
     access.people.map((person) => [person.email, person.role]).sort(),
     [[PEOPLE.alice.email, "comment"], [PEOPLE.bob.email, "view"]],
   );
-  // Comments are off until the owner says so: nobody sees a thing yet, and the owner is told to turn them on.
-  assert.equal((await request("alice", `/api/v1/docs/${DOC}/threads`)).status, 404);
-  assert.equal((await request("owner", `/api/v1/docs/${DOC}/threads`)).status, 409);
+  // There is no switch: Alice holds Can comment, so the page has comments to show, with none written yet.
+  const aliceRead = await request("alice", `/api/v1/docs/${DOC}/threads`);
+  assert.equal(aliceRead.status, 200);
+  assert.deepEqual(await aliceRead.json(), { docId: DOC, title: "Q3 client report", version: 1, latestVersion: 1, commentable: true, threads: [], viewer: { canComment: true, canManage: false, name: null } });
+  assert.equal((await request("owner", `/api/v1/docs/${DOC}/threads`)).status, 200);
+  // Bob, who can only view, reads the same empty list and cannot write.
+  assert.equal((await request("bob", `/api/v1/docs/${DOC}/threads`)).status, 200);
 });
 
-test("2. the owner turns Comments on in the Share popover and the page gets its 💬 0 button", { timeout: 120_000 }, async () => {
+test("2. the Share popover has no Comments switch, only roles, and the page has its 💬 0 button because Alice can comment", { timeout: 120_000 }, async () => {
   const context = await newContext("owner");
   const { tab, frame } = await ownerPopover(context, DOC, { private: true });
-  // Before: no comments button, nothing of ours but the bar.
-  assert.equal(await tab.locator(".openartifacts-bar button[aria-pressed]").count(), 0);
-  const on = frame.getByRole("radio", { name: "On", exact: true });
-  await on.waitFor();
-  assert.equal(await on.getAttribute("aria-checked"), "false");
-  await on.click();
-  await frame.getByText("People who can comment can now leave comments on this page.").waitFor();
-  assert.equal((await (await request("owner", `/api/v1/docs/${DOC}/access`)).json()).comments, true);
+  // No switch anywhere: the roles are the control.
+  assert.equal(await frame.getByText("Comments", { exact: true }).count(), 0);
+  assert.equal(await frame.getByRole("radio", { name: "On", exact: true }).count(), 0);
+  const access = await (await request("owner", `/api/v1/docs/${DOC}/access`)).json();
+  assert.deepEqual(access.roles, ["view", "comment"]);
+  assert.equal("comments" in access, false);
+  await frame.getByText("Only people you add can open it. Can comment lets them comment too.").waitFor();
   // The invite list shows the roles the CLI set.
   assert.equal(await frame.getByLabel(`Access for ${PEOPLE.alice.email}`).inputValue(), "comment");
   assert.equal(await frame.getByLabel(`Access for ${PEOPLE.bob.email}`).inputValue(), "view");
-  await shoot(tab, "01-owner-share-popover-comments-on");
+  await shoot(tab, "01-owner-share-popover-roles");
 
-  // No reload: the popover tells the page, which asked nothing while the bar said off.
+  // The page already has its button: someone can comment.
   const button = barButton(tab);
   await button.waitFor();
   assert.match(await button.innerText(), /💬\s*0$/);
   await shoot(tab, "02-owner-page-comments-button");
 
-  // Turning it off hides the button again.
-  await frame.getByRole("radio", { name: "Off", exact: true }).click();
-  await until("the button to go", async () => !(await button.isVisible()));
-  await frame.getByRole("radio", { name: "On", exact: true }).click();
-  await until("the button to return", async () => await button.isVisible());
+  // The dropdown writes the role at once.
+  const roleOf = async (email) => (await (await request("owner", `/api/v1/docs/${DOC}/access`)).json()).people.find((p) => p.email === email).role;
+  await frame.getByLabel(`Access for ${PEOPLE.bob.email}`).selectOption("comment");
+  await until("Bob's new role", async () => (await roleOf(PEOPLE.bob.email)) === "comment");
+  await frame.getByLabel(`Access for ${PEOPLE.bob.email}`).selectOption("view");
+  await until("Bob's role back", async () => (await roleOf(PEOPLE.bob.email)) === "view");
   await tab.reload();
   await button.waitFor();
   await context.close();
@@ -679,7 +683,8 @@ let PUBLIC; // the public document of step 9
 test("9. a signed-out reader of a public page sees read-only cards, signs in, and posts", { timeout: 180_000 }, async () => {
   const published = await cli("owner", ["publish", htmlFile(page(V1)), "--title", "Public report", "--public"]);
   PUBLIC = published.json().docId;
-  assert.equal((await cli("owner", ["comments", "on", PUBLIC])).json().comments, true);
+  // Erin will reply: commenting is a grant from the owner, on a public page as on a private one.
+  assert.equal((await cli("owner", ["share", PUBLIC, "--add", PEOPLE.erin.email, "--role", "comment"])).error, undefined);
   const added = await cli("owner", ["comments", "add", PUBLIC, "--quote", STAFFING, "--prefix", "", "--body", "Who is staffed?", "--section", "staffing"]);
   assert.equal(added.error, undefined, added.stderr);
 
@@ -711,26 +716,27 @@ test("9. a signed-out reader of a public page sees read-only cards, signs in, an
   await context.close();
 });
 
-test("10. a Free-plan owner cannot turn comments on: the CLI prints the upgrade hint and the popover says so", { timeout: 180_000 }, async () => {
+test("10. a Free-plan owner cannot add anyone: the CLI prints the upgrade hint and the popover shows the plan line, with no Add people", { timeout: 180_000 }, async () => {
   // No flag: a Free plan has no private pages, so the CLI falls back to a public one.
   const published = await cli("free", ["publish", htmlFile(page(V1)), "--title", "Free report"]);
   assert.equal(published.error, undefined, published.stderr);
   assert.equal(published.json().linkAccess, "anyone");
   const free = published.json().docId;
-  const refused = await cli("free", ["comments", "on", free]);
+  const refused = await cli("free", ["share", free, "--add", "dee@acme.com"]);
   assert.equal(refused.error?.status, 402);
   assert.equal(refused.error.code, "limit_reached");
-  assert.equal(refused.error.detail.limit, "comments");
-  assert.match(refused.stderr, /Limit: comments/);
+  assert.equal(refused.error.detail.limit, "privateSharing");
+  assert.match(refused.stderr, /Adding people needs a paid plan/);
   assert.match(refused.stderr, /Upgrade: https?:\/\//);
-  assert.match(refused.stderr, /paid plan/i);
 
   const context = await newContext("free");
   const { tab, frame } = await ownerPopover(context, free);
-  await frame.getByRole("radio", { name: "On", exact: true }).click();
-  await frame.getByText(/Comments need a paid plan/).waitFor();
-  assert.equal((await (await request("free", `/api/v1/docs/${free}/access`)).json()).comments, false);
-  await shoot(tab, "11-free-owner-comments-need-a-paid-plan");
+  await frame.getByText(/Private pages and comments need a paid plan/).waitFor();
+  assert.equal(await frame.getByRole("heading", { name: "Add people" }).count(), 0);
+  const access = await (await request("free", `/api/v1/docs/${free}/access`)).json();
+  assert.deepEqual(access.roles, []);
+  assert.equal("comments" in access, false);
+  await shoot(tab, "11-free-owner-plan-line");
   await context.close();
 });
 
