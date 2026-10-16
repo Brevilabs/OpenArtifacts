@@ -232,6 +232,8 @@ export function d1PublisherStore(db: D1Database): PublisherStore {
  * key, and an account is not one. "No doc without a publisher we validated" is
  * therefore the auth path's invariant rather than the database's — only a
  * resolved publisher reaches this.
+ *
+ * Callers rewrite the manifest (src/manifest.ts).
  */
 export async function insertDocWithinQuota(
   db: D1Database,
@@ -370,6 +372,8 @@ export async function reserveNextVersion(
  * and a dead reservation must not veto a version that really landed.
  *
  * Batched, so a reader cannot catch the pair mid-update.
+ *
+ * Callers rewrite the manifest (src/manifest.ts).
  */
 export async function commitVersionMetadata(
   db: D1Database,
@@ -550,6 +554,8 @@ export async function canManage(db: D1Database, docId: string, principal: string
  * Ownership and liveness are predicates on the write itself rather than an
  * earlier read, so two concurrent deletes of the same doc produce exactly one
  * true — which is what makes "delete the objects" safe to run only on that one.
+ *
+ * Callers rewrite the manifest (src/manifest.ts).
  */
 export async function softDeleteDoc(
   db: D1Database,
@@ -1647,6 +1653,8 @@ export async function findCommentableDoc(
 /**
  * Set a live document's comments switch. The principal must manage the
  * document; the plan check is the caller's.
+ *
+ * Callers rewrite the manifest (src/manifest.ts).
  */
 export async function setCommentsEnabled(
   db: D1Database,
@@ -1846,6 +1854,8 @@ type DocAccessRow = { title: string; link_access: LinkAccess; comments_enabled: 
  * the document already had that mode, or the principal manages no such
  * document. A repeat is therefore not a change, which is what lets the caller
  * record an access event only for a real one.
+ *
+ * Callers rewrite the manifest (src/manifest.ts).
  */
 export async function setLinkAccess(
   db: D1Database,
@@ -1890,6 +1900,8 @@ export async function setLinkAccess(
  * in the same batch, so the list and the requests can never show one address in
  * both. The delete runs only when the address is on the list afterwards, so a
  * full list leaves the request where the owner can still see it.
+ *
+ * Callers rewrite the manifest (src/manifest.ts).
  */
 export async function insertInvite(
   db: D1Database,
@@ -2000,6 +2012,8 @@ export async function deleteAccessRequest(
 /**
  * Change the role of an address already on a live document's list. True only
  * when the role actually changed, so naming the role it already has is a repeat.
+ *
+ * Callers rewrite the manifest (src/manifest.ts).
  */
 export async function setInviteRole(
   db: D1Database,
@@ -2024,6 +2038,8 @@ export async function setInviteRole(
 /**
  * Remove an address from a live document's list. True only when this call
  * removed it; removing an absent one is fine and reports false.
+ *
+ * Callers rewrite the manifest (src/manifest.ts).
  */
 export async function deleteInvite(
   db: D1Database,

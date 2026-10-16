@@ -795,13 +795,14 @@ subdomain needs a paid certificate for `*.docs.example.net`.
   only the reader view, or the none view, in the popover and on the share page,
   which tells them to manage access in Copilot.
 
-## State owed to the manifest
+## State in the manifest
 
-`link_access`, the invite list and the pending requests live only in D1, like the
-title and the deleted flag. They belong in the per-document `manifest.json` that
-[CLAUDE.md](../CLAUDE.md) owes, with the same debt: until it exists, a rebuild
-from R2 would turn every private document public, so treat D1 as the system of
-record for them.
+`link_access` and the invite list, with the title, the owner, the comments switch
+and the deleted flag, are copied into the per-document `manifest.json` after every
+change, so a rebuild from R2 keeps a private document private and a withdrawn one
+410, and fails closed otherwise (see
+[Rebuilding D1 from R2](deploying.md#rebuilding-d1-from-r2)). Pending access
+requests are not copied: they are transient, and a requester asks again.
 
 ## Rollback floor
 

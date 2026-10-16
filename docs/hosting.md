@@ -248,19 +248,20 @@ SQLite instead of one shared database. That is where the headroom lives.
 
 Two caveats to hold onto:
 
-- **The property that makes D1 a safe choice is not true yet.** The design treats
-  it as a disposable index rebuildable from R2, which is what makes a young,
-  limited database an acceptable home for it. Today R2 holds only version
-  objects, so ownership and deletion state exist nowhere else. Until per-doc
-  manifests ship (`CLAUDE.md`), D1 is a real system of record and deserves to be
-  treated as one.
-- **This is a concentrated bet on one vendor**, and the usual reassurance does
-  not hold yet either. Documents are already portable — files behind an
-  S3-compatible API. The index is not: copy R2 and replay the schema today and
-  ownership is gone entirely, and every deleted document's url degrades from 410
-  to 404, because the tombstone exists only in D1. Manifests are what would make
-  "leaving means copying objects" true; until they ship it is the plan, not the
-  situation.
+- **The property that makes D1 a safe choice is true for document state only.**
+  The design treats it as a disposable index rebuildable from R2, which is what
+  makes a young, limited database an acceptable home for it. Each doc's
+  `manifest.json` now carries its ownership, title, privacy and deletion state
+  (`CLAUDE.md`), so those rows can be rebuilt. Accounts, sessions and owner links
+  are not in R2: for them D1 is a real system of record and deserves to be treated
+  as one, with Time Travel as the backup.
+- **This is a concentrated bet on one vendor**, and the usual reassurance holds
+  for documents only. Documents are already portable — files behind an
+  S3-compatible API. The index mostly is: copy R2, replay the schema and run the
+  rebuild (`docs/deploying.md`), and the document rows come back with their
+  ownership, privacy and deleted urls, because each doc's `manifest.json`
+  carries them. Accounts, sessions and owner links do not, so leaving still
+  means exporting those D1 tables as well.
 
 For a document-sharing service specifically, this is a strong fit, and more so
 the larger it gets. It would be the wrong stack for something transactional,

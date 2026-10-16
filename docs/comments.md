@@ -230,6 +230,6 @@ Deliberate non-goals of this version:
 - **Edit-distance anchoring.** A quote that no rung finds is orphaned.
 - **Clickable links** in bodies, and comments on the free plan.
 - **Orphaned threads in the bottom sheet.**
-- **Backfilled manifests.** `threads.json` is part of the manifest debt in
-  [CLAUDE.md](../CLAUDE.md): the per-document `manifest.json` that rebuilds D1 does
-  not exist yet, and until it does, treat D1 (and the object) as the record.
+- **Comments in the manifest.** The per-document `manifest.json` that rebuilds D1
+  ([CLAUDE.md](../CLAUDE.md)) holds the comments switch, not the threads: those
+  live in the object and its `threads.json` snapshot, and are not rebuilt into D1.

@@ -793,7 +793,11 @@ test("12. unsharing answers 410 for the page and the threads, 404 for the commen
     assert.equal(response.status, 404, `${who} ${method} ${path}`);
   }
   assert.equal(await bucket.head(`docs/${DOC}/threads.json`), null, "threads.json is gone");
-  assert.equal((await bucket.list({ prefix: `docs/${DOC}/` })).objects.length, 0, "nothing of the document is left in R2");
+  assert.deepEqual(
+    (await bucket.list({ prefix: `docs/${DOC}/` })).objects.map((o) => o.key),
+    [`docs/${DOC}/manifest.json`],
+    "nothing of the document is left in R2 but its tombstone manifest",
+  );
 
   // The Durable Object itself refuses a write now, whatever reaches it.
   const object = async (method, args) => (await mf.dispatchFetch(`https://${API}/__e2e/comments-object`, { method: "POST", body: JSON.stringify({ docId: DOC, method, args }) })).json();

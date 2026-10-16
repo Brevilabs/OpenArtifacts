@@ -466,6 +466,70 @@ merge corrects them.
 All changes ship through a pull request; never push to `main`.
 
 
+## Rebuilding D1 from R2
+
+Every document keeps a `docs/{docId}/manifest.json` beside its versions: its
+owner, title, access mode, comments switch, timestamps, version counter and
+invite list, rewritten after every change to them and left in place as the
+tombstone when the document is withdrawn (the sweep removes it if the tombstone
+put fails). It is what makes the document rows of
+D1 rebuildable from the bucket. It does **not** cover accounts, sessions, owner
+links, the publishers cache, access requests or comments (the comments object
+snapshots its own `threads.json`). For those, and for anything within 30 days,
+D1 Time Travel (`wrangler d1 time-travel restore`) is the first resort; this is
+the fallback when it cannot be used.
+
+**One-time backfill, after the first deploy that writes manifests.** Documents
+that existed before it have none. With the Worker's `ADMIN_API_KEY`, call the
+temporary route until it stops returning a `cursor`:
+
+```bash
+curl -s -X POST -H "authorization: Bearer $ADMIN_API_KEY" \
+  "https://api.openartifacts.ai/admin/v1/manifests/backfill"
+# then again with ?cursor=<the cursor it returned>, until none comes back
+```
+
+Each call writes 15 documents (sized for the 50 subrequests of a Workers Free
+invocation), so a few hundred documents is a few dozen calls. It writes a manifest
+for every row, withdrawn documents included, and is safe to repeat. Spot-check
+three, including a private one and a withdrawn one:
+`npx wrangler r2 object get symposium-docs/docs/<docId>/manifest.json --remote --pipe`.
+The route is removed in the PR after this has been run.
+
+**Rebuild.** This is for a D1 that is lost, not damaged. A partial loss is
+restored with D1 Time Travel, never with this. Recreate the database (a new
+`wrangler d1 create` gets a new `database_id`: put it in `wrangler.jsonc` and
+redeploy), restore the schema (`wrangler d1 migrations apply`), confirm it is empty
+(`npx wrangler d1 execute symposium --remote --command "SELECT count(*) FROM docs"`
+must print 0), then:
+
+```bash
+rclone copy r2:symposium-docs/docs ./mirror/docs   # any copy that keeps last-modified times
+node scripts/rebuild-d1.mjs ./mirror > rebuild.sql
+npx wrangler d1 execute symposium --remote --file rebuild.sql
+```
+
+The script reads each manifest and lists each prefix's `v{n}.html` objects (the
+version log comes from them), and writes plain `INSERT` statements for `docs`,
+`doc_invites`, `versions` and the `storage_usage` ledger, so a database that
+already holds a row fails loudly instead of having a stale snapshot merged into
+live rows (an invite removed since the manifest was written would otherwise come
+back). It fails closed: an unknown or missing
+access mode becomes `invited`, an unknown role `view`, and a prefix with no readable
+manifest becomes a private document with no owner (the script names each one).
+Assign those by hand with `UPDATE docs SET owner = …`. A rebuild can therefore hide
+a document that should be public; it cannot publish one that should be private,
+with one exception. A full R2 outage during a delete can leave the old manifest
+and the bytes in place, and a rebuild would restore that withdrawn document.
+Before applying the rebuild SQL, search the Worker logs for `delete left a stale
+manifest` and `delete left objects behind`, and set `deleted_at` by hand for
+those documents. One whose sweep succeeded left no prefix, so the rebuild has no
+row for it: insert a withdrawn row by hand (any owner, `deleted_at` set) so its
+url still answers 410 rather than 404. A withdrawn document's version rows are not recovered, since
+its bytes are gone. A delete racing a snapshot writer whose own repair then fails
+can, rarely, leave a live manifest after the tombstone; nothing records that case,
+and the rebuild accepts it.
+
 ## Private sharing
 
 The Worker that introduces private sharing needs four settings made once, before

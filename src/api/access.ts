@@ -63,6 +63,7 @@ import { sha256Hex } from "../hash.js";
 import { isDocId } from "../ids.js";
 import { withinLimit } from "../limits.js";
 import { normalizeEmail } from "../approval/providers.js";
+import { writeManifest } from "../manifest.js";
 import { limitReached } from "../plans.js";
 import { grantUrl } from "../private.js";
 import { readBodyWithin } from "../quota.js";
@@ -172,13 +173,19 @@ export async function setMode(
   if (mode === "invited" && !maySharePrivately(env, principal)) {
     const current = await readAccess(env.DB, docId);
     if (current === null) return refused("not_found");
-    return current.link_access === "invited" ? { ok: true, state: current, changed: false } : refused("plan");
+    if (current.link_access !== "invited") return refused("plan");
+    // A repeat, but also the retry of a switch whose manifest put failed before
+    // the plan lapsed: without this the manifest could keep saying `anyone`.
+    await writeManifest(env, docId);
+    return { ok: true, state: current, changed: false };
   }
 
   const changed = await setLinkAccess(env.DB, docId, principal.owner, mode);
   const state = await readAccess(env.DB, docId);
   if (state === null) return refused("not_found");
   if (changed) recordChange(analytics, docId, doc.publisher_id, state);
+  // Last, so a failed put cannot swallow the event; written even on a repeat.
+  await writeManifest(env, docId);
   return { ok: true, state, changed };
 }
 
@@ -193,6 +200,24 @@ export async function setMode(
  * A new address also counts against the owner's daily invite cap.
  */
 export async function addPerson(
+  env: Env,
+  requestUrl: URL,
+  principal: Publisher,
+  docId: string,
+  rawEmail: string,
+  role: InviteRole | undefined,
+  analytics: AnalyticsSink,
+): Promise<AccessResult> {
+  const result = await addWithoutManifest(env, requestUrl, principal, docId, rawEmail, role, analytics);
+  // After the email and the event, so a failed put cannot swallow either: the
+  // retry it invites is a pure repeat, which mails nobody. Written on a pure
+  // repeat too, since that retry is what repairs a failed manifest write.
+  if (result.ok) await writeManifest(env, docId);
+  return result;
+}
+
+/** `addPerson` without the manifest snapshot, for a caller that snapshots once after a batch. */
+export async function addWithoutManifest(
   env: Env,
   requestUrl: URL,
   principal: Publisher,
@@ -248,6 +273,7 @@ export async function removePerson(
   const state = await readAccess(env.DB, docId);
   if (state === null) return refused("not_found");
   if (removed) recordChange(analytics, docId, doc.publisher_id, state);
+  await writeManifest(env, docId);
   return { ok: true, state, changed: removed };
 }
 
