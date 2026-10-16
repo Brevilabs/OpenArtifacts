@@ -682,7 +682,11 @@ on the free Workers plan.
    `accounts.display_name`. `0016_has_threads.sql` adds `docs.has_threads`
    (default `0`; the first thread sets it). Both are additive and backward
    compatible: the Worker that is live while they apply ignores the columns. Apply
-   `0016` before the deploy that reads it. The deploy workflow
+   `0016` before the deploy that reads it. `0016` also lowers to `view` every
+   invitee of a document whose `comments_enabled` is `0`: `0014` defaulted every
+   invite to `comment`, which meant nothing while comments were off, and would make
+   those people commenters at the deploy. Documents whose owner switched comments
+   on keep their roles. The deploy workflow
    refuses to ship over an unapplied migration.
 2. Deploy. `wrangler deploy` applies the Durable Object itself: the `COMMENTS`
    binding in `durable_objects.bindings` and the
