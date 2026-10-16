@@ -44,14 +44,19 @@ export interface RebuiltRows {
 /**
  * The rows for one doc. `docId` comes from the prefix the objects were listed
  * under and is trusted over the manifest's own copy. `manifest` is what parsed
- * from `manifest.json`, or null when there is none.
+ * from `manifest.json`, or null when there is none. One in a schema this code
+ * does not know, or with a `people` that is not a list, is treated as unreadable,
+ * so a format written by a newer version rebuilds closed.
  */
 export function rowsFromManifest(
   docId: string,
   manifest: Partial<DocManifest> | null,
   objects: readonly ListedObject[],
 ): RebuiltRows {
-  const m = manifest ?? {};
+  const m: Partial<DocManifest> =
+    manifest !== null && manifest.schema === 1 && (manifest.people === undefined || Array.isArray(manifest.people))
+      ? manifest
+      : {};
 
   const versions = objects.flatMap((object) => {
     const match = /^v([1-9][0-9]*)\.html$/.exec(object.key.slice(`docs/${docId}/`.length));
@@ -71,7 +76,7 @@ export function rowsFromManifest(
       link_access: m.linkAccess === "anyone" ? "anyone" : "invited",
       comments_enabled: m.commentsEnabled === true ? 1 : 0,
     },
-    invites: (m.people ?? []).map((person) => ({
+    invites: (m.people ?? []).filter((person) => typeof person?.email === "string").map((person) => ({
       doc_id: docId,
       email: person.email,
       role: person.role === "comment" ? "comment" : "view",

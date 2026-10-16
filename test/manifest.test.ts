@@ -192,6 +192,17 @@ describe("a manifest follows every change to a document's state", () => {
     expect(await expectInSync(docId)).toMatchObject({ commentsEnabled: false });
   });
 
+  it("rewrites the manifest when the plan lapsed before the retry of a switch to invited", async () => {
+    const o = await owner();
+    const docId = await publish(o.token, "private-docs");
+    await env.DB.prepare("UPDATE accounts SET plan = 'free' WHERE id = ?").bind(o.id).run();
+    await env.DOCS.delete(manifestObjectKey(docId));
+
+    const response = await send("PUT", `/api/v1/docs/${docId}/access`, o.token, { linkAccess: "invited" });
+    expect(response.status).toBe(200);
+    await expectInSync(docId);
+  });
+
   it("is rewritten even when the write changed nothing, which is what lets a retry repair it", async () => {
     const o = await owner();
     const docId = await publish(o.token, "private-docs");
@@ -427,6 +438,16 @@ describe("rowsFromManifest", () => {
 
   it("never lets the counter fall below an object that exists", () => {
     expect(rowsFromManifest(ID, { ...manifest, latestVersion: 2 }, objects).doc.latest_version).toBe(3);
+  });
+
+  it("treats an unknown schema or a malformed people list as unreadable, and rebuilds closed", () => {
+    for (const odd of [{ ...manifest, schema: 2 }, { ...manifest, schema: undefined }, { ...manifest, people: "x@y.z" }]) {
+      const rows = rowsFromManifest(ID, odd as never, objects);
+      expect(rows.doc).toMatchObject({ link_access: "invited", owner: "" });
+      expect(rows.invites).toEqual([]);
+    }
+    const people = [{ email: "x@y.z", role: "view", createdAt: 1 }, { role: "comment" }, null];
+    expect(rowsFromManifest(ID, { ...manifest, people } as never, objects).invites.map((i) => i.email)).toEqual(["x@y.z"]);
   });
 
   it("fails closed on a missing or unknown linkAccess", () => {

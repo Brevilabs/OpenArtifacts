@@ -173,7 +173,11 @@ export async function setMode(
   if (mode === "invited" && !maySharePrivately(env, principal)) {
     const current = await readAccess(env.DB, docId);
     if (current === null) return refused("not_found");
-    return current.link_access === "invited" ? { ok: true, state: current, changed: false } : refused("plan");
+    if (current.link_access !== "invited") return refused("plan");
+    // A repeat, but also the retry of a switch whose manifest put failed before
+    // the plan lapsed: without this the manifest could keep saying `anyone`.
+    await writeManifest(env, docId);
+    return { ok: true, state: current, changed: false };
   }
 
   const changed = await setLinkAccess(env.DB, docId, principal.owner, mode);
