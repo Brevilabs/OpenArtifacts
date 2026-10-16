@@ -75,7 +75,7 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
     let data = null, active = false, shown = true, canComment = false, mode = "margin";
     let mhost = null, mframe = null, ready = false, sheet = false, button = null, tipHost = null, tip = null;
     let canon = null, dirty = true, ranges = new Map(), lost = [], draft = null, draftRange = null, focusId = "", timer = 0;
-    let need = 0, sheetH = 0;
+    let need = 0, sheetH = 0, refreshSeq = 0;
     const out = {};
     const flag = link.getAttribute("data-comments");
 
@@ -469,11 +469,14 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
 
     // ---- data ---------------------------------------------------------------
     const refresh = async () => {
+      const mine = ++refreshSeq;
       let response, body;
       try {
         response = await fetch("/d/" + docId + "/threads" + (version ? "?v=" + version : ""), { credentials: "same-origin", cache: "no-store" });
         body = response.status === 200 ? await response.json() : null;
       } catch (error) { return; }
+      // A poll that overlaps the read after a write can answer last: only the newest read may paint, as in the frame's load.
+      if (mine !== refreshSeq) return;
       if (response.status === 404 || response.status === 410) { if (active) deactivate(); return; }
       if (!body || !Array.isArray(body.threads)) return;
       if (!version) version = body.version;

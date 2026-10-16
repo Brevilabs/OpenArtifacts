@@ -1409,3 +1409,41 @@ test("a page served before a push reads and writes comments at the version on sc
   assert.equal((await at(2))[0].anchorStatus, "orphaned");
   await context.close();
 });
+
+test("a thread read that answers after a newer one does not paint over it", { timeout: 120_000 }, async () => {
+  const docId = await publish("Late answer", REPORT);
+  const context = await newContext(null);
+  const tab = await context.newPage();
+  // On the test's word, the page's next thread read is sent at once but its answer is held, as a slow poll's would be.
+  await tab.addInitScript((serving) => {
+    if (location.host !== serving) return;
+    const original = window.fetch;
+    window.__hold = () => new Promise((taken) => {
+      window.fetch = (input, init) => {
+        if (!String(input).includes("/threads")) return original(input, init);
+        window.fetch = original;
+        let release;
+        const gate = new Promise((resolve) => { release = resolve; });
+        window.__release = () => release();
+        taken();
+        return original(input, init).then((response) => gate.then(() => response));
+      };
+    });
+  }, SERVING);
+  await tab.goto(docUrl(docId));
+  const button = barButton(tab);
+  await button.waitFor();
+  assert.match(await button.innerText(), /0$/);
+
+  const ask = () => tab.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  const held = tab.evaluate(() => window.__hold());
+  await ask();
+  await held;
+  await agentThread(docId, { exact: "Staffing is unchanged" }, "Posted between the two reads.");
+  await ask();
+  await until("the newer read to count one", async () => /1$/.test(await button.innerText()));
+  await tab.evaluate(() => window.__release());
+  await tab.waitForTimeout(500);
+  assert.match(await button.innerText(), /1$/, "the older answer did not take the thread away");
+  await context.close();
+});
