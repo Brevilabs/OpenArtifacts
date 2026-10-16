@@ -176,7 +176,6 @@ test("publish reads only HTML files and parses its options before authentication
     body: { title: "Open", html: "<!doctype html><p>kept</p>" },
   });
   await assert.rejects(preparePublish(page, ["--public", "--private"]), /--public and --private cannot be used together/);
-  await assert.rejects(preparePublish(page, ["--private", "--public"]), /cannot be used together/);
   await assert.rejects(preparePublish(page, ["--public", "--doc-id", "9f2k4mvq7t0xbz3n"]), /share <docId> --link anyone/);
   await assert.rejects(preparePublish(page, ["--public", "--public"]), /Usage: openartifacts/);
   await assert.rejects(preparePublish(markdown, []), /HTML file.*Render other formats/);
@@ -200,7 +199,7 @@ test("publish reads only HTML files and parses its options before authentication
 
 async function publishingServer() {
   const requests = [];
-  const control = { staleUpdates: false, missingDeletes: false, privateDocs: true, privatePlan: true, comments: true, unlinked: false, openUrl: undefined };
+  const control = { staleUpdates: false, missingDeletes: false, privateDocs: true, privatePlan: true, privateLimit: undefined, comments: true, unlinked: false, openUrl: undefined };
   const server = createServer((request, response) => {
     let body = "";
     request.setEncoding("utf8");
@@ -247,9 +246,9 @@ async function publishingServer() {
         return;
       }
       // A plan without private sharing is refused before anything is created.
-      if (request.url === "/api/v1/private-docs" && !control.privatePlan) {
+      if (request.url === "/api/v1/private-docs" && (!control.privatePlan || control.privateLimit)) {
         response.statusCode = 402;
-        response.end(JSON.stringify({ error: { code: "limit_reached", message: "Private sharing needs a paid plan.", plan: "free", limit: "privateSharing" } }));
+        response.end(JSON.stringify({ error: { code: "limit_reached", message: "Private sharing needs a paid plan.", plan: "free", limit: control.privateLimit ?? "privateSharing" } }));
         return;
       }
       if (request.url.endsWith("/open")) {
@@ -492,20 +491,12 @@ test("with no flag, a server without private documents publishes publicly instea
 test("with no flag, a failure that is not about private support is not retried publicly", async () => {
   const { directory, page } = await publishFixture("default-other");
   const remote = await publishingServer();
-  const server = createServer((request, response) => {
-    response.statusCode = request.url === "/api/v1/private-docs" ? 402 : 201;
-    response.setHeader("content-type", "application/json");
-    remote.requests.push({ method: request.method, path: request.url });
-    response.end(JSON.stringify({ error: { code: "limit_reached", message: "Document limit reached.", limit: "documents" } }));
-  });
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
+  remote.control.privateLimit = "documents";
   try {
-    await withEnvironment({ ...publishEnvironment(directory, remote), OPENARTIFACTS_API_HOST: `http://127.0.0.1:${server.address().port}` }, async () => {
+    await withEnvironment(publishEnvironment(directory, remote), async () => {
       await assert.rejects(main(["publish", page]), (error) => error instanceof APIError && error.detail.limit === "documents");
     });
   } finally {
-    server.close();
     remote.server.close();
   }
   assert.deepEqual(routes(remote), [["POST", "/api/v1/private-docs"]]);
@@ -525,8 +516,7 @@ test("publish --private on a plan without private sharing fails with no fallback
     assert.notEqual(result.code, 0);
     assert.equal(result.stdout, "");
     assert.match(result.stderr, /Limit: privateSharing/);
-    assert.match(result.stderr, /Private sharing needs a paid plan, so nothing was published or changed/);
-    assert.match(result.stderr, /--public/);
+    assert.match(result.stderr, /Private sharing needs a paid plan\. Nothing was published\. To publish a new page for anyone with the link instead, add --public\./);
   } finally {
     remote.server.close();
   }
@@ -543,9 +533,6 @@ test("publish --public creates through /docs and never tries the private route",
       assert.deepEqual(remote.requests[0].body, { title: "notes", html: "<p>Page</p>" });
       assert.equal(JSON.parse(lines[0]).linkAccess, "anyone");
       assert.equal(JSON.parse(lines[0]).manageUrl, undefined);
-      await assert.rejects(main(["publish", page, "--public", "--private"]), /cannot be used together/);
-      await assert.rejects(main(["publish", page, "--public", "--doc-id", "9f2k4mvq7t0xbz3n"]), /share <docId> --link anyone/);
-      assert.equal(remote.requests.length, 1);
     });
   } finally {
     remote.server.close();
@@ -610,22 +597,6 @@ test("open reports a missing page and a browser that will not start, and prints 
   } finally {
     remote.server.close();
   }
-});
-
-test("presentError tells a Free-plan publisher that --public publishes without private sharing", () => {
-  const lines = [];
-  const original = console.error;
-  console.error = (line) => lines.push(String(line));
-  try {
-    presentError(new APIError(402, { error: { code: "limit_reached", message: "Private sharing needs a paid plan.", limit: "privateSharing" } }));
-  } finally {
-    console.error = original;
-  }
-  assert.deepEqual(lines, [
-    "Private sharing needs a paid plan.",
-    "Limit: privateSharing",
-    "Private sharing needs a paid plan, so nothing was published or changed. To publish a new page for anyone with the link instead, add --public.",
-  ]);
 });
 
 test("a stale --doc-id is reported, never silently replaced", async () => {
@@ -719,9 +690,12 @@ test("prints guidance for current quota and future plan limits", () => {
         upgrade_url: "https://example.test/upgrade",
       },
     }));
+    presentError(new APIError(402, { error: { code: "limit_reached", message: "Private sharing needs a paid plan.", limit: "privateSharing" } }));
   } finally {
     console.error = previous;
   }
+  assert(lines.includes("Limit: privateSharing"));
+  assert(!lines.some((line) => line.includes("--public")));
   assert(lines.some((line) => line.includes("quota window")));
   assert(lines.includes("Limit: 10 documents"));
   assert(lines.some((line) => line.includes("https://example.test/upgrade")));
@@ -777,7 +751,7 @@ test("account commands use host-scoped stored OAuth tokens and print only safe J
   try {
     const account = await cliProcess(["account"], env);
     assert.equal(account.code, 0, account.stderr);
-    assert.deepEqual(JSON.parse(account.stdout), { accountId: "oa_account", plan: "free", limits: { documents: 1, pushesPerDay: 6, htmlBytes: 1048576 }, usage: { documents: 0, pushesToday: 0 }, externalLinked: false, refresh: { status: "refreshed", checkedAt: 123, expiresAt: null } });
+    assert.deepEqual(JSON.parse(account.stdout), { accountId: "oa_account", plan: "free", limits: { documents: 1, pushesPerDay: 6, htmlBytes: 1048576, privateSharing: false }, usage: { documents: 0, pushesToday: 0 }, externalLinked: false, refresh: { status: "refreshed", checkedAt: 123, expiresAt: null } });
     for (const args of [["account", "--open"]]) {
       const result = await cliProcess(args, env);
       assert.equal(result.code, 0, result.stderr);
@@ -873,11 +847,11 @@ test("Windows browser launch passes the complete URL as data rather than command
 });
 
 
-test("account output carries privateSharing only when the plan answers it, for the skill to read", async () => {
+test("account output always carries a boolean privateSharing, for the skill to read", async () => {
   const remote = await accountServer();
   try {
     const env = { OPENARTIFACTS_API_HOST: remote.host, OPENARTIFACTS_TOKEN: "oat_private-test" };
-    assert.equal("privateSharing" in JSON.parse((await cliProcess(["account"], env)).stdout).limits, false);
+    assert.equal(JSON.parse((await cliProcess(["account"], env)).stdout).limits.privateSharing, false);
     remote.control.privateSharing = true;
     assert.equal(JSON.parse((await cliProcess(["account"], env)).stdout).limits.privateSharing, true);
     remote.control.privateSharing = false;

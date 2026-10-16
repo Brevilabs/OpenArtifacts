@@ -533,7 +533,9 @@ export async function main(args) {
       limits: { documents: result.limits.documents, pushesPerDay: result.limits.pushesPerDay, htmlBytes: result.limits.htmlBytes,
         ...(Number.isSafeInteger(result.limits.storageBytes) ? { storageBytes: result.limits.storageBytes } : {}),
         // The skill reads this to know whether to offer a private page.
-        ...(typeof result.limits.privateSharing === "boolean" ? { privateSharing: result.limits.privateSharing } : {}) },
+        // The server leaves it out for a plan without private sharing; always print a boolean so a
+        // missing key means a CLI older than the skill, not a free plan.
+        privateSharing: result.limits.privateSharing === true },
       usage: { documents: result.usage.documents, pushesToday: result.usage.pushesToday,
         ...(Number.isSafeInteger(result.usage.storedBytes) ? { storedBytes: result.usage.storedBytes } : {}) }, externalLinked: result.externalLinked,
       refresh: { status: result.refresh.status, checkedAt: result.refresh.checkedAt, expiresAt: result.refresh.expiresAt } }));
@@ -574,6 +576,9 @@ export async function main(args) {
       // both answer 404 and create nothing. There is no fallback to a public page.
       if (prepared.access === "private" && error instanceof APIError && error.status === 404) {
         throw new Error("This server does not support private documents. Nothing was published.");
+      }
+      if (prepared.access === "private" && error instanceof APIError && error.status === 402 && error.detail.limit === "privateSharing") {
+        error.message += " Nothing was published. To publish a new page for anyone with the link instead, add --public.";
       }
       throw error;
     }
@@ -736,9 +741,6 @@ export function presentError(error) {
     }
     if (error.code === "limit_reached") {
       if (error.detail.limit) console.error(`Limit: ${error.detail.limit}`);
-      if (error.detail.limit === "privateSharing") {
-        console.error("Private sharing needs a paid plan, so nothing was published or changed. To publish a new page for anyone with the link instead, add --public.");
-      }
       if (error.detail.limit === "comments") {
         console.error("Comments need a paid plan on the document owner's account, or the document has reached its thread or comment cap.");
       }

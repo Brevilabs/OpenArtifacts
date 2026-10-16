@@ -36,10 +36,16 @@ to publish, the agent runs:
 openartifacts publish notes.html --title "Notes"
 ```
 
-A new page starts private (invited people only) when the plan allows it, and public
-otherwise. Pass `--public` to publish it for anyone with the link, or `--private` to
-require a private page: `--private` fails rather than publishing publicly, and
-`--public` and `--private` cannot be combined. Neither applies to `--doc-id`.
+A page that was ever public may already have been copied by whoever opened it, and
+making it private later cannot recall those copies, so a new page starts private
+(invited people only) when the plan allows it. With no flag the CLI creates it
+through `POST /api/v1/private-docs`; if the plan has no private sharing (a free
+account), or the server has no private documents, it publishes the page through
+`POST /api/v1/docs` instead, and the `linkAccess` in the receipt says which
+happened. Pass `--public` to publish for anyone with the link (always
+`POST /api/v1/docs`), or `--private` to require a private page: `--private` fails
+rather than publishing publicly. `--public` and `--private` cannot be combined, and
+neither applies to `--doc-id`.
 
 The command prints `{"docId","url","version","linkAccess"}`, where `linkAccess` is
 `"anyone"` for a public page and `"invited"` for a private one. A private publish
@@ -49,13 +55,7 @@ also adds `manageUrl`. Updating the same page is the same command with
 `openartifacts unshare <docId>` withdraws a page. `list`, `get`, `tokens`, and
 `revoke` round out the account commands.
 
-A page that was ever public may already have been copied by whoever opened it, and
-making it private later cannot recall those copies, so a new page starts private.
-With no flag the CLI creates it through `POST /api/v1/private-docs`; if the plan has
-no private sharing (a free account), or the server has no private documents, it
-publishes the page through `POST /api/v1/docs` instead, and the `linkAccess` in the
-receipt says which happened. `--public` always uses `POST /api/v1/docs`. Republishing
-never changes who can open a page. `share` changes who can read one:
+Republishing never changes who can open a page. `share` changes who can read one:
 
 ```bash
 openartifacts share <docId> --add alice@acme.com   # invites her (and approves her request)
@@ -76,7 +76,7 @@ Invited people sign in once with the invited address (Google, GitHub or an email
 code) and open the same url. Private sharing is a paid feature. A server that predates
 private sharing, or that has no reader sign-in configured, answers 404 to
 `publish --private`: nothing is created, and the CLI says "This server does not
-support private documents." (a plain `publish` publishes publicly there). `list` shows each page's `linkAccess`, and `get` prints
+support private documents." `list` shows each page's `linkAccess`, and `get` prints
 the owner's stored HTML, private pages included; against an older server that has
 no private pages, `get` reads the public url as it always did.
 

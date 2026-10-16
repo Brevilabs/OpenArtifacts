@@ -39,14 +39,12 @@ path or a target without `file://`; those do not open. This rule overrides any d
 format for file references: the target must start with `file:///`. Say that opening it in a browser shows the page as it will be uploaded; OpenArtifacts adds a
 top bar with a Share button and a footer byline when it serves the page.
 
-A new page starts private. A page that was ever public may already have been copied
-by whoever opened it, and switching it private later cannot recall those copies, so
-the user chooses public out loud. Before the review message for a new page, run
-`openartifacts account`. It prints the plan and `limits`; `limits.privateSharing` is
-`true` when the plan has private pages. If it fails (the command needs an account
-token, so a license key makes it fail) or for any other reason, treat private as
-available: the publish step passes `--private` and fails loudly if it is not. Only a
-successful answer whose `limits` lack `privateSharing: true` removes the private
+Before the review message for a new page, run `openartifacts account`. It prints the
+plan and `limits`; `limits.privateSharing` is `true` when the plan has private pages
+and `false` when it has none. If it fails (the command needs an account token, so a
+license key makes it fail), or prints no `privateSharing` key (a CLI older than this
+skill), treat private as available: the publish step passes `--private` and fails
+loudly if it is not. Only an explicit `privateSharing: false` removes the private
 option.
 
 - Private available: the review message ends with this question, word for word: "Publish **privately** (only you, plus anyone you name) or **publicly** (anyone with the link)? Reply **publish** to publish privately, **publish for alice@acme.com** to share it privately with people, or **publish publicly**." A bare **publish** means private, only the owner.
@@ -90,9 +88,10 @@ A public page, when the user chose public or the plan has no private pages:
 openartifacts publish <file.html> --title "Page title" --public
 ```
 
-If `--public` fails as an unknown option, the CLI is older than this skill. Tell the
-user to update it with `openartifacts install` (or run `npx --yes openartifacts@latest`)
-and do not retry without the flag.
+If `--private` or `--public` is rejected with the usage text instead of publishing,
+the CLI is older than this skill. Tell the user to update it with `openartifacts
+install` (or run `npx --yes openartifacts@latest`), run `openartifacts account` again
+before going ahead, and never retry without the flag.
 
 The command prints `{"docId":"…","url":"…","version":1,"linkAccess":"anyone"}` for a
 public page. A private publish prints `"linkAccess":"invited"` and also a `manageUrl`; `share` prints

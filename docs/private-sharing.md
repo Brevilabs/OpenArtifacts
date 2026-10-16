@@ -48,20 +48,15 @@ url, headers, caching and bytes it always did, with no sign-in and no cookie. Th
 one addition to a public page is the top bar with its **Share** button, described
 below.
 
-**The CLI's default for a new page is private (2026-10-15).** This replaces
-"public stays the default" for the CLI and its skill; the server and the HTTP
-contract are untouched, and Copilot is not changed by this. A page that was ever
-public may already have been copied by whoever saw it, and switching it private
-later cannot recall those copies, so a new page starts private unless the publisher
-asks for public. `openartifacts publish` with no flag tries
-`POST /api/v1/private-docs` and falls back to `POST /api/v1/docs` only when private
-is not on offer: `402 limit_reached` with `limit: "privateSharing"` (a plan
-without private sharing, so a free account publishes public) or `404` (a server
-with no private documents). `--public` is the explicit public route and `--private`
-never falls back. The skill reads `limits.privateSharing` from `openartifacts
-account` and never offers private to a plan without it. An update never changes who
-can open a page, and the owner of a private page opens it with `openartifacts open
-<docId>`, which uses `POST …/open`.
+**The CLI's default for a new page is private (2026-10-15).** For the CLI and its
+skill, a new page now starts private; the server and the HTTP contract are
+untouched, and Copilot is not changed by this. A page that was ever public may
+already have been copied by whoever saw it, and switching it private later cannot
+recall those copies. `--public` is the explicit public route and `--private` never
+falls back to public; the CLI's package README has the flags and the fallback. The
+skill reads `limits.privateSharing` from `openartifacts account` and never offers
+private to a plan without it. The owner of a private page opens it with
+`openartifacts open <docId>`, which uses `POST …/open`.
 
 ## The constraint everything else follows from
 
