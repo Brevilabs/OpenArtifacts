@@ -688,8 +688,7 @@ on the free Workers plan.
    those people commenters at the deploy. Documents whose owner switched comments
    on keep their roles. It also marks `has_threads` on every document whose
    `comments_enabled` is `1`, the only ones a thread could have been written to.
-   Note the time just before applying `0016`, in milliseconds since the epoch, as
-   `T0`. The deploy workflow refuses to ship over an unapplied migration.
+   The deploy workflow refuses to ship over an unapplied migration.
 2. Deploy. `wrangler deploy` applies the Durable Object itself: the `COMMENTS`
    binding in `durable_objects.bindings` and the
    `migrations: [{"tag": "v1", "new_sqlite_classes": ["DocComments"]}]` block in
@@ -698,17 +697,33 @@ on the free Workers plan.
    and it is not part of the D1 migrations. A self-hoster adds both blocks to their
    config and nothing else. Keep the `tag` (and add later migrations with new tags);
    never edit a tag that has been applied. Note when the new version went live, in
-   the same unit, as `T1`.
-3. Lower the invites the old Worker added between the two. It went on inviting at
-   `0014`'s default, `comment`, after `0016` ran, and the new Worker reads that as
-   a grant. Bounded by `T1`, this leaves alone every role the new Worker set:
+   milliseconds since the epoch, as `T1`.
+3. Right after, run `0016`'s two updates again. The old Worker stayed live between
+   the migration and `T1`: it went on inviting at `0014`'s default, `comment`, and
+   an owner could switch comments on or off. The new Worker never writes
+   `comments_enabled`, so after `T1` the column is the old Worker's last word, and
+   re-running the updates against it settles everything that window changed. The
+   invite update is bounded by `T1`, so it leaves alone every person the new
+   Worker added:
 
    ```bash
-   npx wrangler d1 execute symposium --remote --command "UPDATE doc_invites SET role = 'view' WHERE created_at >= T0 AND created_at < T1 AND doc_id IN (SELECT id FROM docs WHERE comments_enabled = 0)"
+   npx wrangler d1 execute symposium --remote --command "UPDATE doc_invites SET role = 'view' WHERE created_at < T1 AND doc_id IN (SELECT id FROM docs WHERE comments_enabled = 0); UPDATE docs SET has_threads = 1 WHERE comments_enabled = 1"
    ```
 
-   A grant an owner made in the seconds before `T1` is lowered with them; the owner
-   sets it again. Skip this step on a deployment that ran `0016` and the new Worker
+   A role an owner set through the new Worker before this runs, on a document
+   whose comments were off, is lowered with the rest; the owner sets it again.
+   Then mark the documents whose comments were switched off after they had
+   threads: `comments_enabled` no longer says so, but their `threads.json` does.
+
+   ```bash
+   npx wrangler d1 execute symposium --remote --json --command "SELECT id FROM docs WHERE has_threads = 0 AND deleted_at IS NULL" \
+     | jq -r '.[0].results[].id' | while read -r id; do
+       npx wrangler r2 object get "symposium-docs/docs/$id/threads.json" --remote --pipe < /dev/null > /dev/null 2>&1 \
+         && npx wrangler d1 execute symposium --remote --command "UPDATE docs SET has_threads = 1 WHERE id = '$id'" < /dev/null
+     done
+   ```
+
+   Skip this step on a deployment that applies `0016` and starts the new Worker
    together.
 4. The comment limiters are in the same deploy; see below.
 

@@ -9,7 +9,9 @@
 -- holds one. A thread could only be written while the owner had switched comments
 -- on, so every such document is marked: a mark with no thread costs that page one
 -- threads request, and a missing one would hide its threads. One switched off
--- again after a thread keeps them hidden, as they were while off, until its next.
+-- again after a thread is found from its `threads.json` after the deploy, with
+-- these updates run again for the window the old Worker was still live
+-- (docs/deploying.md).
 ALTER TABLE docs ADD COLUMN has_threads INTEGER NOT NULL DEFAULT 0;
 UPDATE docs SET has_threads = 1 WHERE comments_enabled = 1;
 
