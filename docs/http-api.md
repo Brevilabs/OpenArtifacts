@@ -945,7 +945,10 @@ order. A write refused at steps 1 to 5 never spends the rate limit:
 A write that passes the rate limit and is then refused for its content (a malformed
 or over-long body or quote, `anchor_not_found`, a `version` that does not exist, the
 500 and 2,000 caps, or an unknown or forbidden `threadId`) has spent one unit of the
-allowance.
+allowance. A request that is not shaped like the write at all (malformed JSON, an
+unknown field, a field of the wrong type) is `400 bad_request` before step 1 and
+spends nothing: it is refused before the document or its comments are read, so
+it costs no more than a read, which the limit does not cover either.
 
 Anything else the caller may not see or do (another publisher's document, a
 `threadId` or `commentId` that is not theirs to touch, a resolve by someone who is
