@@ -235,7 +235,10 @@ export async function addWithoutManifest(
   }
   // The flag of the role being granted, whether the person is new or already listed: a change to a
   // lower role goes through the same check as a higher one, since "Remove" already covers a demotion.
-  if (!mayGrantRole(env, principal, role ?? DEFAULT_ROLE)) return refused("plan_people");
+  // Where the server has no comments no role is drawn (`grantableRoles`), so adding stays gated by private sharing alone.
+  const mayAdd =
+    env.COMMENTS === undefined ? maySharePrivately(env, principal) : mayGrantRole(env, principal, role ?? DEFAULT_ROLE);
+  if (!mayAdd) return refused("plan_people");
 
   const added = await insertInvite(env.DB, docId, principal.owner, email, Date.now(), MAX_INVITES_PER_DOC, role);
   const roleChanged =

@@ -289,6 +289,20 @@ describe("the roles are the only control", () => {
     expect(((await added.json()) as { roles: string[] }).roles).toEqual(["view", "comment"]);
   });
 
+  it("adds people on private sharing alone where this deployment has no comments object", async () => {
+    const { owner, priv } = await world();
+    const sharing = {
+      PLAN_LIMITS: JSON.stringify({ pro: { documents: 100, pushesPerDay: 100, htmlBytes: 1048576, privateSharing: true } }),
+    };
+    const path = `/api/v1/docs/${priv}/access/people/dee%40acme.com`;
+    // With the object bound, a plan without the comments flag cannot grant the default role.
+    expect((await send("PUT", path, owner.token, undefined, sharing)).status).toBe(402);
+    // Without it no role is drawn, and adding is gated as before.
+    const added = await send("PUT", path, owner.token, undefined, { ...sharing, COMMENTS: undefined });
+    expect(added.status).toBe(200);
+    expect(((await added.json()) as { roles?: string[] }).roles).toBeUndefined();
+  });
+
   it("answers 404 everywhere when this deployment has no comments object", async () => {
     const { alice, priv } = await world();
     const none = { COMMENTS: undefined };
@@ -604,14 +618,13 @@ describe("threads", () => {
     expect((await del(made.commentId, alice.token)).status).toBe(404);
   });
 
-  it("lets an author delete with comments off or the owner's plan lapsed, and a stranger not at all", async () => {
+  it("lets an author delete once her role is lowered or the owner's plan lapsed, and a stranger not at all", async () => {
     const { owner, alice, carol, priv } = await world();
     const made = await created(await thread(priv, alice.token));
     const second = await created(await thread(priv, alice.token, { exact: "twelve percent" }));
 
-    await send("PUT", `/api/v1/docs/${priv}/settings`, owner.token, { comments: false });
+    await env.DB.prepare("UPDATE doc_invites SET role = 'view' WHERE doc_id = ? AND email = ?").bind(priv, alice.email).run();
     expect((await send("DELETE", `/api/v1/docs/${priv}/comments/${made.commentId}`, alice.token)).status).toBe(204);
-    await send("PUT", `/api/v1/docs/${priv}/settings`, owner.token, { comments: true });
 
     await env.DB.prepare("UPDATE accounts SET plan = 'free' WHERE id = ?").bind(owner.id).run();
     expect((await send("DELETE", `/api/v1/docs/${priv}/comments/${second.commentId}`, alice.token)).status).toBe(204);
