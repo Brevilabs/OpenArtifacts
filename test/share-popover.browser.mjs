@@ -899,20 +899,16 @@ test("a pasted batch stops when the document goes private part way through", { t
   const X = await publish("Private mid-batch", "<p>Mine.</p>");
   const context = await newContext(OWNER_ACCOUNT);
   const { page, frame } = await ownerFrame(context, X);
+  // Another tab makes the document private while the first address is on its
+  // way, after the frame's check for it and before its check for the second.
   const puts = [];
-  page.on("request", (request) => { if (request.method() === "PUT" && request.url().includes("/access/people/")) puts.push(decodeURIComponent(request.url().split("/people/")[1])); });
-  // Another tab makes the document private once the first address has landed,
-  // just before the frame checks the document again.
-  let switched = false;
-  await page.route(`https://${API}/embed/api/docs/${X}/access`, async (route) => {
-    if (route.request().method() === "GET" && puts.length > 0 && !switched) {
-      switched = true;
+  await page.route(`https://${API}/embed/api/docs/${X}/access/people/*`, async (route) => {
+    puts.push(decodeURIComponent(route.request().url().split("/people/")[1]));
+    if (puts.length === 1) {
       assert.equal((await api(`/api/v1/docs/${X}/access`, { method: "PUT", body: JSON.stringify({ linkAccess: "invited" }) })).status, 200);
     }
     await route.continue();
   });
-  // A click in the first moments after the sign-in popup closes can be lost to the focus change.
-  await page.waitForTimeout(1500);
 
   await frame.getByPlaceholder("Emails, separated by commas").fill("ann@example.com, bob@example.com, carol@example.com");
   await frame.getByRole("button", { name: "Add", exact: true }).click();
