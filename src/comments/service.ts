@@ -30,6 +30,7 @@
  * they wrote.
  */
 import { markHasThreads, setDisplayName } from "../db.js";
+import { writeManifest } from "../manifest.js";
 import type { Env } from "../config.js";
 import { docNotFound, errorResponse } from "../errors.js";
 import { sha256Hex } from "../hash.js";
@@ -250,8 +251,9 @@ export async function createThread(
   // Before the thread, so that no thread exists while the flag says none does: the served page
   // and the threads resource both trust it. A create the object then refuses leaves it set, which
   // costs that page one threads request. Set on every create, since the service cannot cheaply
-  // tell the first, and the `WHERE` makes the rest no-ops.
-  await markHasThreads(env.DB, docId);
+  // tell the first, and the `WHERE` makes the rest no-ops. The first also goes into the manifest, so a
+  // rebuild keeps it even where the object's `threads.json` was never written.
+  if (await markHasThreads(env.DB, docId)) await writeManifest(env, docId);
 
   const result = await commentsStub(env, docId).createThread({
     docId,

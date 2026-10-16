@@ -1669,10 +1669,11 @@ export async function findCommentableDoc(
  * nothing. The `WHERE` makes every call after the first a no-op, so the service
  * can run it before each create.
  *
- * Not in the manifest: a rebuild derives `has_threads` from `threads.json` (src/rebuild.ts).
+ * True when this call set it. Callers then rewrite the manifest (src/manifest.ts).
  */
-export async function markHasThreads(db: D1Database, docId: string): Promise<void> {
-  await db.prepare("UPDATE docs SET has_threads = 1 WHERE id = ? AND has_threads = 0").bind(docId).run();
+export async function markHasThreads(db: D1Database, docId: string): Promise<boolean> {
+  const result = await db.prepare("UPDATE docs SET has_threads = 1 WHERE id = ? AND has_threads = 0").bind(docId).run();
+  return result.meta.changes > 0;
 }
 
 /**

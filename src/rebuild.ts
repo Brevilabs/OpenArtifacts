@@ -17,8 +17,8 @@
  * Scope: document state only (`docs`, `doc_invites`, `versions`, and the
  * `storage_usage` ledger rows that mirror `versions`). Accounts, sessions,
  * owner links, publishers, access requests and comments are not in R2.
- * `has_threads` is read from the listing: the comments object keeps a
- * `threads.json` under the prefix exactly when the document has threads.
+ * `has_threads` is the manifest's, or set where the listing holds the
+ * `threads.json` the comments object keeps, for a manifest written before it.
  * `comments_enabled` is unread since the roles revision: the manifest still
  * carries it for older rebuilds, and this one leaves the column at its default.
  */
@@ -59,6 +59,7 @@ export function readable(manifest: unknown): manifest is DocManifest {
     isString(m.owner) &&
     isString(m.title) &&
     isString(m.linkAccess) &&
+    (m.hasThreads === undefined || typeof m.hasThreads === "boolean") &&
     isNumber(m.createdAt) &&
     isNumber(m.updatedAt) &&
     isNumber(m.latestVersion) &&
@@ -111,7 +112,7 @@ export function rowsFromManifest(docId: string, manifest: unknown, objects: read
       updated_at: m.updatedAt,
       deleted_at: m.deletedAt,
       link_access: m.linkAccess === "anyone" ? "anyone" : "invited",
-      has_threads: objects.some((object) => object.key === `docs/${docId}/threads.json`) ? 1 : 0,
+      has_threads: m.hasThreads === true || objects.some((object) => object.key === `docs/${docId}/threads.json`) ? 1 : 0,
     },
     invites: m.people.map((person) => ({
       doc_id: docId,

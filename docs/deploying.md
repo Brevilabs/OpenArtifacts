@@ -704,10 +704,13 @@ on the free Workers plan.
    switching, and the new one never writes `comments_enabled`, so after `T1` the
    column is the owner's last word. The invite update is bounded by `T1`, so it
    leaves alone every person the new Worker added, and the `has_threads` update
-   covers a document switched on in the window:
+   covers a document switched on in the window. The last update turns every
+   switch off once both have read it, so a rollback to the previous Worker, which
+   still reads the switch, cannot let every signed-in reader comment again; it
+   shows no comments until the roll forward:
 
    ```bash
-   npx wrangler d1 execute symposium --remote --command "UPDATE doc_invites SET role = 'view' WHERE created_at < T1 AND doc_id IN (SELECT id FROM docs WHERE comments_enabled = 0); UPDATE docs SET has_threads = 1 WHERE comments_enabled = 1"
+   npx wrangler d1 execute symposium --remote --command "UPDATE doc_invites SET role = 'view' WHERE created_at < T1 AND doc_id IN (SELECT id FROM docs WHERE comments_enabled = 0); UPDATE docs SET has_threads = 1 WHERE comments_enabled = 1; UPDATE docs SET comments_enabled = 0"
    ```
 
    Until this runs, an invitee left at `0014`'s default can comment, and a role an

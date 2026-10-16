@@ -98,6 +98,7 @@ async function expectedFromD1(docId: string) {
     title: d.title,
     linkAccess: d.link_access,
     commentsEnabled: d.comments_enabled === 1,
+    hasThreads: d.has_threads === 1,
     createdAt: d.created_at,
     updatedAt: d.updated_at,
     deletedAt: d.deleted_at,
@@ -252,6 +253,15 @@ describe("a manifest follows every change to a document's state", () => {
 
       expect(await env.DOCS.get(manifestObjectKey(docId))).toBeNull();
     });
+  });
+
+  it("follows the first thread, so a rebuild keeps has_threads without the object's threads.json", async () => {
+    const o = await owner();
+    const docId = await publish(o.token, "docs");
+    expect(await expectInSync(docId)).toMatchObject({ hasThreads: false });
+    const posted = await send("POST", `/api/v1/docs/${docId}/threads`, o.token, { anchor: { exact: "hello", prefix: "", suffix: "" }, body: "Why?" });
+    expect(posted.status).toBe(201);
+    expect(await expectInSync(docId)).toMatchObject({ hasThreads: true });
   });
 
   it("rewrites the manifest when the plan lapsed before the retry of a switch to invited", async () => {
@@ -496,8 +506,11 @@ describe("rowsFromManifest", () => {
     ]);
   });
 
-  it("marks has_threads only where the prefix holds threads.json", () => {
-    expect(rowsFromManifest(ID, manifest, objects.filter((o) => !o.key.endsWith("/threads.json"))).doc.has_threads).toBe(0);
+  it("marks has_threads from the manifest, or where an older manifest's prefix holds threads.json", () => {
+    const none = objects.filter((o) => !o.key.endsWith("/threads.json"));
+    expect(rowsFromManifest(ID, manifest, none).doc.has_threads).toBe(0);
+    expect(rowsFromManifest(ID, { ...manifest, hasThreads: true }, none).doc.has_threads).toBe(1);
+    expect(rowsFromManifest(ID, { ...manifest, hasThreads: false }, objects).doc.has_threads).toBe(1);
   });
 
   it("never lets the counter fall below an object that exists", () => {
@@ -517,6 +530,7 @@ describe("rowsFromManifest", () => {
       { ...manifest, title: {} },
       { ...manifest, owner: undefined },
       { ...manifest, linkAccess: 1 },
+      { ...manifest, hasThreads: "yes" },
       { ...manifest, createdAt: "100" },
       { ...manifest, createdAt: Infinity },
       { ...manifest, latestVersion: 1.5 },
