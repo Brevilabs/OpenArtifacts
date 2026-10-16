@@ -374,14 +374,13 @@ async function dialog(
   const roleText = (role: string) => `Can ${escapeHtml(role)}`;
   const roleForm = (person: { email: string; role: string }) => {
     if (roles === undefined) return "";
-    if (roles.length < 2) return `<span class="role">${roleText(person.role)}</span>`;
-    // The person's stored role is selected exactly; one this Worker does not offer is kept as its own option, so
-    // pressing Update on it changes nothing.
-    const offered = roles.some((role) => role === person.role) ? roles : [...roles, person.role];
+    // A role this Worker does not offer, such as one a newer Worker stored, is shown as text: this Worker
+    // never writes it, so it offers nothing to press.
+    if (roles.length < 2 || !roles.some((role) => role === person.role)) return `<span class="role">${roleText(person.role)}</span>`;
     return form(
       "role",
       { email: person.email },
-      `<select name="role" aria-label="Access for ${escapeHtml(person.email)}">${offered
+      `<select name="role" aria-label="Access for ${escapeHtml(person.email)}">${roles
         .map((role) => `<option value="${escapeHtml(role)}"${role === person.role ? " selected" : ""}>${roleText(role)}</option>`)
         .join("")}</select><button type="submit">Update</button>`,
       "pair",

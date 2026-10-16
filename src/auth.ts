@@ -106,10 +106,11 @@ export function mayComment(env: Env, publisher: Publisher): boolean {
 
 /**
  * Whether this publisher's plan includes the flag `role` needs (`ROLE_PLAN_FLAG`):
- * the check for granting a role, or changing a person to it.
+ * the check for granting a role, or changing a person to it. Every role puts a
+ * person on the list, which is private sharing, so a role's own flag is on top of it.
  */
 export function mayGrantRole(env: Env, publisher: Publisher, role: InviteRole): boolean {
-  return ROLE_PLAN_FLAG[role] === "comments" ? mayComment(env, publisher) : maySharePrivately(env, publisher);
+  return maySharePrivately(env, publisher) && (ROLE_PLAN_FLAG[role] !== "comments" || mayComment(env, publisher));
 }
 
 /**

@@ -2756,6 +2756,26 @@ describe("an invited-only document", () => {
       expect(role).toBe("view");
     });
 
+    it("shows a role a newer Worker stored as text, with nothing to press", async () => {
+      const doc = await privateDoc();
+      const owner = await ownerAccount(doc);
+      await env.DB.prepare("INSERT INTO doc_invites (doc_id, email, role, created_at) VALUES (?, 'alice@acme.com', 'view', ?)").bind(doc.docId, Date.now()).run();
+      // The schema holds only the roles this Worker knows, so the newer role is read, not stored.
+      const newer = new Proxy(env.DB, {
+        get(target, prop, receiver) {
+          if (prop !== "batch") return Reflect.get(target, prop, receiver);
+          return async (statements: D1PreparedStatement[]) =>
+            (await target.batch<Record<string, unknown>>(statements)).map((result) => ({
+              ...result,
+              results: result.results.map((row) => (row.role === "view" ? { ...row, role: "edit" } : row)),
+            }));
+        },
+      });
+      const html = await (await open(doc.docId, owner, { ...PRIVATE, DB: newer })).text();
+      expect(html).toContain('<span class="role">Can edit</span>');
+      expect(html).not.toContain('aria-label="Access for alice@acme.com"');
+    });
+
     it("emails a person added at Can view that the document was shared, and a role change from the page sends nothing", async () => {
       const { sent, over } = mailbox();
       const doc = await privateDoc();

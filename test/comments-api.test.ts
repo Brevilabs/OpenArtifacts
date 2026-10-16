@@ -316,6 +316,21 @@ describe("the roles are the only control", () => {
     expect(((await added.json()) as { roles?: string[] }).roles).toBeUndefined();
   });
 
+  it("adds nobody on a plan with comments but not private sharing, and says private sharing is what it lacks", async () => {
+    const { owner, priv } = await world();
+    const commentsOnly = {
+      PLAN_LIMITS: JSON.stringify({ pro: { documents: 100, pushesPerDay: 100, htmlBytes: 1048576, comments: true } }),
+    };
+    const path = `/api/v1/docs/${priv}/access/people/dee%40acme.com`;
+    for (const body of [undefined, { role: "comment" }, { role: "view" }]) {
+      const refused = await send("PUT", path, owner.token, body, commentsOnly);
+      expect(refused.status).toBe(402);
+      expect(((await refused.json()) as { error: { limit: string } }).error.limit).toBe("privateSharing");
+    }
+    const shown = (await (await send("GET", `/api/v1/docs/${priv}/access`, owner.token, undefined, commentsOnly)).json()) as { roles?: string[] };
+    expect(shown.roles).toEqual([]);
+  });
+
   it("answers 404 everywhere when this deployment has no comments object", async () => {
     const { alice, priv } = await world();
     const none = { COMMENTS: undefined };
