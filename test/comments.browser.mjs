@@ -382,6 +382,8 @@ test("a selection offers Comment, the frame posts after sign-in, and the card si
   await button.click();
   await until("the margin to hide", async () => (await hostBox(tab)) === null);
   assert.equal(await button.getAttribute("aria-pressed"), "false");
+  // Released, it is a dark chip, not see-through: an older cached page's bar is light.
+  assert.equal(await button.evaluate((element) => getComputedStyle(element).backgroundColor), "rgb(11, 12, 16)");
   assert.deepEqual(await painted(tab, "openartifacts-open"), []);
   await button.click();
   await until("the margin to show", async () => (await hostBox(tab)) !== null);

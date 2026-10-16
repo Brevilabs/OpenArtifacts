@@ -370,8 +370,11 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       button.setAttribute("aria-label", "Comments, " + n + " open");
       button.setAttribute("aria-pressed", String(shown));
       button.title = shown ? "Hide comments" : "Show comments";
-      // Pressed is the Share popover's selected segment (#20242c), released the strip itself.
-      button.style.background = shown ? "#20242c" : "transparent";
+      // Pressed is the Share popover's selected segment (#20242c), released the strip's
+      // own colour (#0b0c10), painted rather than transparent: page.js is short-cached
+      // but a pinned /v{n} is immutable for a year, so this button also lands on bars
+      // rendered before the dark strip (light, #fbfbfa) and must read there too.
+      button.style.background = shown ? "#20242c" : "#0b0c10";
       button.style.color = shown ? "#f4f5f7" : "#c9ced6";
     };
     const makeButton = () => {
