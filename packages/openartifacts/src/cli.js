@@ -623,8 +623,8 @@ export async function main(args) {
     try {
       await runComments(client, comments);
     } catch (error) {
-      // Not yours to read, deleted, comments off for a non-owner, and a server that
-      // predates comments all answer 404, and the CLI cannot tell them apart.
+      // Not yours to read, deleted, and a server that predates comments all answer
+      // 404, and the CLI cannot tell them apart.
       if (error instanceof APIError && error.status === 404) {
         // `name` has no document: its 404 is either a missing route (a server without comments) or the
         // server's own "no account to name, sign in to link one", which the user must be told.

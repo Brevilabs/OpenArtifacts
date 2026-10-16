@@ -113,9 +113,8 @@ has its quote (`anchor`), whether it still `anchored` in the version or is `orph
 its `state` and its `comments`. Comments by an agent carry `kind: "agent"`. Arguments
 are checked before any credential is read: a quote is at most 1,000 characters, a
 comment 4,000, a prefix or suffix 32, a name 64. Account tokens and license keys both
-work. A server without comments, a page you cannot read, and a page with comments off
-(to anyone but its owner) all answer "Not found, or this server does not support
-comments." The skill's "Address the comments" step lists the open threads, revises the
+work. A server without comments and a page you cannot read both answer "Not found, or
+this server does not support comments." The skill's "Address the comments" step lists the open threads, revises the
 page, publishes the update, then replies on and resolves each thread it addressed.
 
 The CLI never renders Markdown and keeps no record of which file became which page.
