@@ -682,13 +682,10 @@ on the free Workers plan.
    `accounts.display_name`. `0016_has_threads.sql` adds `docs.has_threads`
    (default `0`; the first thread sets it). Both are additive and backward
    compatible: the Worker that is live while they apply ignores the columns. Apply
-   `0016` before the deploy that reads it. `0016` also lowers to `view` every
-   invitee of a document whose `comments_enabled` is `0`: `0014` defaulted every
-   invite to `comment`, which meant nothing while comments were off, and would make
-   those people commenters at the deploy. Documents whose owner switched comments
-   on keep their roles. It also marks `has_threads` on every document whose
-   `comments_enabled` is `1`, the only ones a thread could have been written to.
-   The deploy workflow refuses to ship over an unapplied migration.
+   `0016` before the deploy that reads it. `0016` also marks `has_threads` on
+   every document whose `comments_enabled` is `1`, the only ones a thread could
+   have been written to. It leaves the invites alone: step 3 lowers them. The
+   deploy workflow refuses to ship over an unapplied migration.
 2. Deploy. `wrangler deploy` applies the Durable Object itself: the `COMMENTS`
    binding in `durable_objects.bindings` and the
    `migrations: [{"tag": "v1", "new_sqlite_classes": ["DocComments"]}]` block in
@@ -698,20 +695,24 @@ on the free Workers plan.
    config and nothing else. Keep the `tag` (and add later migrations with new tags);
    never edit a tag that has been applied. Note when the new version went live, in
    milliseconds since the epoch, as `T1`.
-3. Right after, run `0016`'s two updates again. The old Worker stayed live between
-   the migration and `T1`: it went on inviting at `0014`'s default, `comment`, and
-   an owner could switch comments on or off. The new Worker never writes
-   `comments_enabled`, so after `T1` the column is the old Worker's last word, and
-   re-running the updates against it settles everything that window changed. The
-   invite update is bounded by `T1`, so it leaves alone every person the new
-   Worker added:
+3. Right after, on every deployment, settle what the switch meant. `0014`
+   defaulted every invite to `comment`, which meant nothing while a document's
+   comments were off; the new Worker reads it as a grant. Lower to `view` every
+   invitee of a document whose `comments_enabled` is `0`, so nobody an owner
+   never meant to allow can comment; documents whose owner switched comments on
+   keep their roles. The old Worker stayed live until `T1`, inviting and
+   switching, and the new one never writes `comments_enabled`, so after `T1` the
+   column is the owner's last word. The invite update is bounded by `T1`, so it
+   leaves alone every person the new Worker added, and the `has_threads` update
+   covers a document switched on in the window:
 
    ```bash
    npx wrangler d1 execute symposium --remote --command "UPDATE doc_invites SET role = 'view' WHERE created_at < T1 AND doc_id IN (SELECT id FROM docs WHERE comments_enabled = 0); UPDATE docs SET has_threads = 1 WHERE comments_enabled = 1"
    ```
 
-   A role an owner set through the new Worker before this runs, on a document
-   whose comments were off, is lowered with the rest; the owner sets it again.
+   Until this runs, an invitee left at `0014`'s default can comment, and a role an
+   owner raises through the new Worker before it runs, on a document whose
+   comments were off, is lowered with the rest; run it the moment `T1` is known.
    Then mark the documents whose comments were switched off after they had
    threads: `comments_enabled` no longer says so, but their `threads.json` does.
 
@@ -724,10 +725,8 @@ on the free Workers plan.
    ```
 
    Last, rewrite every manifest from D1 with `POST /admin/v1/manifests/backfill` (under
-   **One-time backfill** above), since these updates and `0016`'s change roles without
-   rewriting them, and a rebuild would otherwise bring back `comment`. Skip the
-   two D1 updates and the loop on a deployment that applies `0016` and starts the
-   new Worker together; the manifest rewrite still applies.
+   **One-time backfill** above), since these updates change roles without
+   rewriting them, and a rebuild would otherwise bring back `comment`.
 4. The comment limiters are in the same deploy; see below.
 
 **The comment limiters.** Two more optional `ratelimits` bindings, on the same
