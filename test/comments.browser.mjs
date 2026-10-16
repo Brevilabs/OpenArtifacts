@@ -1430,16 +1430,6 @@ test("the bar counts what the bottom sheet can show: orphaned threads are not co
   }
 });
 
-/** Record every height the comments frame posts to the page, so a test can wait on the frame's word instead of a clock. */
-const recordHeights = (tab) =>
-  tab.addInitScript(() => {
-    window.__heights = [];
-    window.addEventListener("message", (event) => {
-      const data = event.data;
-      if (data && typeof data === "object" && data.event === "height") window.__heights.push(data.px);
-    });
-  });
-
 test("on a phone, a signed-out invitee can still open the sheet's sign-in line after an update orphaned every thread", { timeout: 120_000 }, async () => {
   const docId = await publish("Phone, all orphaned", REPORT);
   const gone = "The budget is on the next page";
@@ -1462,14 +1452,13 @@ test("on a phone, a reader who cannot comment on a thread-less page gets no blan
   const docId = await publish("Phone, nothing to show", REPORT);
   const context = await newContext(BOB, { viewport: { width: 390, height: 844 }, signedInTo: docId });
   const tab = await context.newPage();
-  await recordHeights(tab);
   await tab.goto(docUrl(docId));
   await until("the comments frame", () => commentsFrame(tab, docId));
   const button = barButton(tab);
   await button.waitFor();
   await button.click();
-  await until("the frame to report nothing to show", () => tab.evaluate(() => window.__heights.includes(0)));
-  assert.equal(await hostBox(tab), null, "no blank sheet");
+  // The click opens the sheet at once; it closes only when the frame answers that it has nothing to show.
+  await until("the sheet to close", async () => (await hostBox(tab)) === null);
   await context.close();
 });
 

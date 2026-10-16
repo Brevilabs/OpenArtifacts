@@ -455,7 +455,7 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
     // The sheet is invisible until the frame has said how tall its card is (or 300ms have passed), so it opens at its size and does not shrink under the reader's finger.
     let unsure = false;
     const openSheet = () => {
-      if (!sheet && !sheetH) { unsure = true; window.setTimeout(() => { unsure = false; if (sheet) layout(); }, 300); }
+      if (!sheet && !sheetH) { unsure = true; window.setTimeout(() => { unsure = false; layout(); }, 300); }
       sheet = true;
       layout();
     };
@@ -472,8 +472,8 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       sheet = false;
       sheetH = 0;
       focusId = "";
-      send({ event: "focus", threadId: "" });
       layout();
+      send({ event: "focus", threadId: "" });
       paint();
     };
 
@@ -594,9 +594,9 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
         } else if (msg.event === "height" && Number.isFinite(msg.px)) {
           // A height while the sheet is closed would linger as sheetH and open the next sheet at the wrong height. Zero is a frame with nothing to show.
           if (!sheet) return;
-          if (msg.px === 0) { closeSheet(); label(); paint(); return; }
+          if (msg.px === 0) { closeSheet(); return; }
           const n = Math.max(80, Math.min(Math.round(msg.px), 4000));
-          if (n !== sheetH || unsure) { sheetH = n; unsure = false; if (sheet) layout(); }
+          if (n !== sheetH || unsure) { sheetH = n; unsure = false; layout(); }
         } else if (msg.event === "reveal" && Number.isFinite(msg.top) && Number.isFinite(msg.height)) {
           if (mode !== "margin" || !shown) return;
           const t = mhost.getBoundingClientRect().top + msg.top;
