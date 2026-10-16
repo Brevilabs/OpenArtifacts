@@ -36,11 +36,12 @@
  * (`sameOriginPost`). `GET` never writes and no query parameter changes state:
  * `?notice=private` only selects a constant line of copy.
  *
- * **Comments and roles.** Where comments exist (`env.COMMENTS`) the dialog has
- * the **Comments** On/Off switch (`op=comments`, the same `switchComments` the
- * API's `PUT …/settings` runs, so the plan gate cannot differ) and a **Can
- * view** / **Can comment** select beside each person (`op=role`, the same
- * `addPerson` with a role). A server without them draws neither.
+ * **Roles.** Each person has a role from the ladder (`roles.ts`). The dialog
+ * draws **Add people** only for an owner whose plan grants some role
+ * (`grantableRoles`, the same list `Access.roles` carries), a select with an
+ * **Update** button beside each person when it grants two or more (`op=role`,
+ * the same `addPerson` with a role), and the role as plain text when it grants
+ * none. A server without comments (`roles` undefined) draws no role at all.
  */
 import { parseAddresses } from "./addresses.js";
 import type { AnalyticsSink } from "./analytics.js";
@@ -49,6 +50,7 @@ import {
   addWithoutManifest,
   declineRequest,
   getAccess,
+  grantableRoles,
   planRefusal,
   removePerson,
   setMode,
@@ -57,8 +59,6 @@ import {
 } from "./api/access.js";
 import { readSmallForm } from "./approval/handler.js";
 import type { Publisher } from "./auth.js";
-import { commentsPlanRefusal } from "./comments/access.js";
-import { switchComments } from "./comments/service.js";
 import { MAX_INVITES_PER_DOC, MAX_NEW_INVITES_PER_OWNER_PER_DAY, type Env } from "./config.js";
 import { accountEmail, findReadableDoc } from "./db.js";
 import { COPILOT_HINT } from "./embed-scripts.js";
@@ -67,6 +67,8 @@ import { accountPlan } from "./entitlement.js";
 import { sameOriginPost } from "./limits.js";
 import { writeManifest } from "./manifest.js";
 import { escapeHtml } from "./page.js";
+import { upgradeUrl } from "./plans.js";
+import { parseInviteRole } from "./roles.js";
 import { SHARE_PREFIX, parseDocPath } from "./paths.js";
 import { readerSecret } from "./reader-config.js";
 import {
@@ -275,9 +277,6 @@ async function readerView(
   );
 }
 
-/** What a form's operation did: an access result, or the comments switch's own two outcomes. */
-type ShareResult = { ok: true; changed: boolean } | { ok: false; refusal: DialogError | "not_found" };
-
 /** Run the one operation a form names, or null when it names none. */
 async function write(
   env: Env,
@@ -286,7 +285,7 @@ async function write(
   docId: string,
   form: URLSearchParams,
   analytics: AnalyticsSink,
-): Promise<ShareResult | null> {
+): Promise<AccessResult | null> {
   const op = form.get("op");
   const raw = form.get("email") ?? "";
   // A lone address may arrive as `Name <a@x.com>`; the rest is `addMany`'s.
@@ -298,18 +297,9 @@ async function write(
   }
   if (op === "add") return await addPerson(env, url, principal, docId, address, undefined, analytics);
   if (op === "role") {
-    const role = form.get("role");
-    return role === "view" || role === "comment"
-      ? await addPerson(env, url, principal, docId, address, role, analytics)
-      : null;
-  }
-  if (op === "comments") {
-    const value = form.get("comments");
-    if (value !== "on" && value !== "off") return null;
-    const response = await switchComments(env, principal, docId, value === "on");
-    return response.status === 200
-      ? { ok: true, changed: true }
-      : { ok: false, refusal: response.status === 402 ? "comments_plan" : "not_found" };
+    // A role this Worker does not know parses to null and changes nothing: it is never rewritten.
+    const role = parseInviteRole(form.get("role"));
+    return role === null ? null : await addPerson(env, url, principal, docId, address, role, analytics);
   }
   if (op === "remove") return await removePerson(env, principal, docId, address, analytics);
   if (op === "decline") return await declineRequest(env, principal, docId, address);
@@ -317,7 +307,7 @@ async function write(
 }
 
 /** Why a write did not happen, in the words the page shows. */
-type DialogError = Exclude<Extract<AccessResult, { ok: false }>["refusal"], "not_found"> | "comments_plan";
+type DialogError = Exclude<Extract<AccessResult, { ok: false }>["refusal"], "not_found">;
 
 /**
  * Several addresses pasted at once: `addWithoutManifest` for each, in order, inside the
@@ -378,29 +368,47 @@ async function dialog(
   const mode = (value: "anyone" | "invited", label: string, hint: string) =>
     `<label class="choice"><input type="radio" name="linkAccess" value="${value}"${state.link_access === value ? " checked" : ""}><span><b>${label}</b><small>${hint}</small></span></label>`;
 
-  // Comments, and so roles, exist only where the comments object is bound.
-  const roles = env.COMMENTS !== undefined;
-  const roleForm = (person: { email: string; role: string }) =>
-    form(
+  // The roles this owner may grant now: undefined where the server has no comments (no role is drawn),
+  // empty for a free or lapsed plan (roles as text, nobody can be added), else the options.
+  const roles = grantableRoles(env, principal);
+  const roleText = (role: string) => `Can ${escapeHtml(role)}`;
+  const roleForm = (person: { email: string; role: string }) => {
+    if (roles === undefined) return "";
+    if (roles.length < 2) return `<span class="role">${roleText(person.role)}</span>`;
+    // The person's stored role is selected exactly; one this Worker does not offer is kept as its own option, so
+    // pressing Update on it changes nothing.
+    const offered = roles.some((role) => role === person.role) ? roles : [...roles, person.role];
+    return form(
       "role",
       { email: person.email },
-      `<select name="role" aria-label="Access for ${escapeHtml(person.email)}"><option value="view"${person.role === "comment" ? "" : " selected"}>Can view</option><option value="comment"${person.role === "comment" ? " selected" : ""}>Can comment</option></select><button type="submit">Update</button>`,
+      `<select name="role" aria-label="Access for ${escapeHtml(person.email)}">${offered
+        .map((role) => `<option value="${escapeHtml(role)}"${role === person.role ? " selected" : ""}>${roleText(role)}</option>`)
+        .join("")}</select><button type="submit">Update</button>`,
       "pair",
     );
-  const commentsChoice = (value: "on" | "off", label: string, hint: string) =>
-    `<label class="choice"><input type="radio" name="comments" value="${value}"${(state.comments_enabled === 1) === (value === "on") ? " checked" : ""}><span><b>${label}</b><small>${hint}</small></span></label>`;
+  };
+  const upgrade = upgradeUrl(env);
+  const planLine =
+    roles !== undefined && roles.length === 0
+      ? `<p>Private pages and comments need a paid plan.${upgrade === undefined ? "" : ` <a href="${escapeHtml(upgrade)}">Upgrade</a>`}</p>`
+      : "";
+  const helper = roles?.includes("comment")
+    ? `<p class="hint">${state.link_access === "anyone" ? "Anyone with the link can view. Can comment lets a person you add comment." : "Only people you add can open it. Can comment lets them comment too."}</p>`
+    : "";
+  // A lapsed or free owner adds nobody, and approving a request adds a person.
+  const mayAdd = roles === undefined || roles.length > 0;
 
   const people = state.people
     .map(
       (person) =>
-        `<li><span><b><bdi>${escapeHtml(person.email)}</bdi></b><small>${emailEnabled ? "Invited" : "Invited · send them the link"}</small></span><span class="pair">${roles ? roleForm(person) : ""}${form("remove", { email: person.email }, `<button type="submit">Remove</button>`)}</span></li>`,
+        `<li><span><b><bdi>${escapeHtml(person.email)}</bdi></b><small>${emailEnabled ? "Invited" : "Invited · send them the link"}</small></span><span class="pair">${roleForm(person)}${form("remove", { email: person.email }, `<button type="submit">Remove</button>`)}</span></li>`,
     )
     .join("");
   const requests = state.requests.length
     ? `<section><h2>Requests</h2><ul>${state.requests
         .map(
           (request) =>
-            `<li><span><b><bdi>${escapeHtml(request.email)}</bdi></b><small>Asked to open it</small></span><span class="pair">${form("add", { email: request.email }, `<button type="submit">Approve</button>`)}${form("decline", { email: request.email }, `<button type="submit">Decline</button>`)}</span></li>`,
+            `<li><span><b><bdi>${escapeHtml(request.email)}</bdi></b><small>Asked to open it</small></span><span class="pair">${mayAdd ? form("add", { email: request.email }, `<button type="submit">Approve</button>`) : ""}${form("decline", { email: request.email }, `<button type="submit">Decline</button>`)}</span></li>`,
         )
         .join("")}</ul></section>`
     : "";
@@ -415,16 +423,12 @@ ${shown.notice === true ? `<p>${COPY_NOTICE}</p>` : ""}
     {},
     `${mode("anyone", "Anyone with the link", "Exactly today's public page. No sign-in.")}${mode("invited", "Only those invited", "Only people you add can open it. They sign in once.")}<button type="submit">Save</button>`,
   )}</section>
-${roles ? `<section><h2>Comments</h2>${form(
-    "comments",
-    {},
-    `${commentsChoice("off", "Off", "Readers see the page and nothing else.")}${commentsChoice("on", "On", "People who can comment can leave comments on the page. Needs a paid plan.")}<button type="submit">Save</button>`,
-  )}</section>` : ""}
-<section><h2>Add people</h2>${form(
+${planLine}
+${mayAdd ? `<section><h2>Add people</h2>${form(
     "add",
     {},
     `<div class="row"><textarea id="people" name="email" rows="2" placeholder="Emails, separated by commas" aria-label="Email addresses" autocomplete="off" required></textarea><button type="submit">Add</button></div>`,
-  )}</section>
+  )}${helper}</section>` : ""}
 ${requests}
 <section><h2>Who has access</h2><ul><li><span><b>You</b><small>Owner</small></span></li>${people}</ul>${emailEnabled ? "<p>OpenArtifacts emails each invitation. If someone doesn’t get it, send them the link.</p>" : ""}</section>
 ${copyLinkSection(url)}`;
@@ -436,7 +440,7 @@ ${copyLinkSection(url)}`;
       message: "Choose who can open it. The link never changes.",
       detail,
     },
-    shown.error === undefined ? 200 : shown.error === "plan" || shown.error === "comments_plan" ? 402 : shown.error === "invite_quota" ? 429 : 400,
+    shown.error === undefined ? 200 : shown.error === "plan" || shown.error === "plan_people" ? 402 : shown.error === "invite_quota" ? 429 : 400,
     await sharePolicy(),
   );
 }
@@ -461,8 +465,8 @@ async function errorMessage(env: Env, principal: Publisher, error: DialogError |
       return `A document can be shared with at most ${MAX_INVITES_PER_DOC} people.`;
     case "invite_quota":
       return `You have added ${MAX_NEW_INVITES_PER_OWNER_PER_DAY} new people in the last 24 hours. Try again later. Nothing was changed.`;
-    case "comments_plan":
-      return upgradeSentence("Comments need a paid plan.", commentsPlanRefusal(env, principal));
+    // The page offers neither to a plan that lacks them; this is a stale form or a forged one.
+    case "plan_people":
     case "plan":
       return upgradeSentence("Private sharing needs a paid plan.", planRefusal(env, principal));
   }

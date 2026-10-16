@@ -4,18 +4,19 @@
  * The rule (docs/comments.md, "Access"):
  *
  *   canComment = canRead
- *                AND the owner turned comments on
  *                AND the document's owner still has a plan with comments
- *                AND the principal is the owner, an invited account whose role
- *                    is `comment`, or, on an `anyone` document, anyone signed in.
+ *                AND the principal is the owner, or an account on the document's
+ *                    list whose role is at least `comment` (`roles.ts`).
+ *
+ * Link access plays no part: on a public page, people who are not on the list
+ * read the threads and nothing more.
  *
  * `canRead` and `canManage` are the existing predicates (`CAN_READ_SQL`,
  * `CAN_MANAGE_SQL`), read in the same statement as the rest
  * (`findCommentableDoc`); this file only assembles them. Nothing is allowed
  * that those predicates did not allow, and everything refused is `404`, never
- * `403` — except the two answers that are only ever given to someone who manages
- * the document and so reveal nothing about it: `comments_off` and the plan's
- * `402`.
+ * `403` — except the plan's `402`, which is only ever given to someone who
+ * manages the document and so reveals nothing about it.
  *
  * **Entitlement belongs to the document's owner, not to the writer.** Readers
  * and commenters never pay; a lapsed owner keeps the threads readable and stops
@@ -25,8 +26,9 @@
 import { mayPublish, type Publisher } from "../auth.js";
 import type { Env } from "../config.js";
 import { findCommentableDoc, ownerPlans, type CommentableDoc } from "../db.js";
-import { docNotFound, errorResponse } from "../errors.js";
+import { errorResponse } from "../errors.js";
 import { isDocId } from "../ids.js";
+import { roleAtLeast } from "../roles.js";
 import { configuredPlans, effectivePlan, limitReached, planLimits } from "../plans.js";
 import type { AuthorKind } from "./object.js";
 
@@ -55,7 +57,7 @@ export interface Standing {
    */
   scope: string[];
   canManage: boolean;
-  /** The role (owner, invited `comment`, or signed in on a public page) allows writing, switch and plan aside. */
+  /** The role (the owner, or a listed account at least `comment`) allows writing, plan aside. */
   mayWrite: boolean;
 }
 
@@ -75,7 +77,7 @@ export async function standingOn(
   const doc = await findCommentableDoc(env.DB, docId, principal, pinned);
   if (doc === null || doc.deleted_at !== null || !doc.allowed) return null;
   const canManage = doc.can_manage;
-  const mayWrite = canManage || doc.invited_comment || (doc.link_access === "anyone" && principal !== "");
+  const mayWrite = canManage || roleAtLeast(doc.role, "comment");
   return { doc, scope: doc.scope_ids, canManage, mayWrite };
 }
 
@@ -95,23 +97,18 @@ export async function ownerHasComments(env: Env, owner: string, now: number): Pr
   });
 }
 
-/** `canComment` in full, including the owner's plan, for a viewer flag. */
-export async function viewerCanComment(env: Env, standing: Standing, now: number): Promise<boolean> {
-  return (
-    standing.doc.comments_enabled &&
-    standing.mayWrite &&
-    (await ownerHasComments(env, standing.doc.owner, now))
-  );
+/**
+ * "Someone other than the owner may write here now": the owner's plan includes
+ * comments and a person on the list holds a role of at least `comment`. The same
+ * for every viewer, so it reveals nothing the comments button does not.
+ */
+export async function isCommentable(env: Env, doc: CommentableDoc, now: number): Promise<boolean> {
+  return doc.commentable && (await ownerHasComments(env, doc.owner, now));
 }
 
-/**
- * The answer for a document whose comments are off: `409 comments_off` to a
- * caller who manages it (they can fix it), `404` to everyone else.
- */
-export function commentsOff(standing: Standing, docId: string): Response {
-  return standing.canManage
-    ? errorResponse("comments_off", "Comments are off for this document. Turn them on in Share.", NO_STORE)
-    : docNotFound(docId);
+/** `canComment` in full, including the owner's plan, for a viewer flag. */
+export async function viewerCanComment(env: Env, standing: Standing, now: number): Promise<boolean> {
+  return standing.mayWrite && (await ownerHasComments(env, standing.doc.owner, now));
 }
 
 /**

@@ -1588,6 +1588,35 @@ describe("an invited-only document", () => {
       expect((await getFrom(`${url}/v1`, { headers: { "if-none-match": pinnedTag } }, PRIVATE)).status).toBe(304);
     });
 
+    it("derives the comments flag from the list and has_threads: a Can view person changes nothing, a Can comment person or a thread flips it", async () => {
+      const publicDoc = await privateDoc("a public page", KEY, "anyone");
+      const url = `https://openartifacts.site/d/${publicDoc.docId}`;
+      const flag = async (response: Response) => /data-comments="(on|off)"/.exec(await response.text())?.[1] ?? null;
+      const tag = async () => (await getFrom(url, {}, PRIVATE)).headers.get("etag")!;
+      const invite = (email: string, role: string) =>
+        env.DB.prepare("INSERT INTO doc_invites (doc_id, email, role, created_at) VALUES (?, ?, ?, ?)").bind(publicDoc.docId, email, role, Date.now()).run();
+
+      const before = await tag();
+      expect(await flag(await getFrom(url, {}, PRIVATE))).toBe("off");
+      await invite("viewer@acme.com", "view");
+      expect(await flag(await getFrom(url, {}, PRIVATE))).toBe("off");
+      expect(await tag()).toBe(before);
+
+      await invite("writer@acme.com", "comment");
+      const on = await getFrom(url, { headers: { "if-none-match": before } }, PRIVATE);
+      expect(on.status).toBe(200);
+      expect(await flag(on)).toBe("on");
+      expect(on.headers.get("etag")).toMatch(/\.r\d+\.c1"$/);
+
+      // Removing the commenter turns it off again; a thread is the other way to be on, and it stays.
+      await env.DB.prepare("DELETE FROM doc_invites WHERE doc_id = ? AND email = 'writer@acme.com'").bind(publicDoc.docId).run();
+      expect(await flag(await getFrom(url, {}, PRIVATE))).toBe("off");
+      await env.DB.prepare("UPDATE docs SET has_threads = 1 WHERE id = ?").bind(publicDoc.docId).run();
+      expect(await flag(await getFrom(url, {}, PRIVATE))).toBe("on");
+      // The pinned page never carries it.
+      expect(await flag(await getFrom(`${url}/v1`, {}, PRIVATE))).toBeNull();
+    });
+
     it("S3: an invited-only page carries the switch on its latest rendering and none on a pinned one", async () => {
       const doc = await privateDoc("for invited eyes");
       const cookie = await cookieFor(doc, doc.owner);
@@ -2004,6 +2033,24 @@ describe("an invited-only document", () => {
       const unbound = (await (await embedApi(`${doc.docId}/access`, token, {}, { ...OPEN, COMMENTS: undefined })).json()) as Record<string, unknown>;
       expect("comments" in unbound).toBe(false);
       expect(unbound.viewer).toBe("owner");
+    });
+
+    it("tells the popover's owner view the roles its plan grants, and leaves them out where comments are not bound", async () => {
+      const doc = await privateDoc("for invited eyes");
+      const owner = await ownerAccount(doc);
+      const token = await tokenFor(owner, doc.docId);
+
+      const paid = (await (await embedApi(`${doc.docId}/access`, token)).json()) as Record<string, unknown>;
+      expect(paid.roles).toEqual(["view", "comment"]);
+      expect(paid).not.toHaveProperty("comments");
+      expect(paid).not.toHaveProperty("upgradeUrl");
+      const unbound = (await (await embedApi(`${doc.docId}/access`, token, {}, { ...OPEN, COMMENTS: undefined })).json()) as Record<string, unknown>;
+      expect(unbound).not.toHaveProperty("roles");
+
+      await env.DB.prepare("UPDATE accounts SET plan = 'free' WHERE id = ?").bind(owner).run();
+      const free = (await (await embedApi(`${doc.docId}/access`, token)).json()) as Record<string, unknown>;
+      expect(free.roles).toEqual([]);
+      expect(free.upgradeUrl).toEqual(expect.stringMatching(/^https:\/\//));
     });
 
     it("S6: refuses the popover token everywhere but its own document's frame routes", async () => {
@@ -2669,6 +2716,75 @@ describe("an invited-only document", () => {
       expect((await access(doc.docId)).linkAccess).toBe("anyone");
     });
 
+    it("draws Add people with its helper line by link access, and a select that holds each person's role exactly", async () => {
+      const doc = await privateDoc();
+      const owner = await ownerAccount(doc);
+      for (const [email, role] of [["alice@acme.com", "comment"], ["bob@acme.com", "view"]]) {
+        await env.DB.prepare("INSERT INTO doc_invites (doc_id, email, role, created_at) VALUES (?, ?, ?, ?)").bind(doc.docId, email, role, Date.now()).run();
+      }
+
+      const html = await (await open(doc.docId, owner)).text();
+
+      expect(html).not.toMatch(/<h2>Comments<\/h2>|name="comments"|Needs a paid plan/);
+      expect(html).toContain("Only people you add can open it. Can comment lets them comment too.");
+      expect(html).not.toContain("Private pages and comments need a paid plan.");
+      expect(html).toContain('<option value="view">Can view</option><option value="comment" selected>Can comment</option>');
+      expect(html).toContain('<option value="view" selected>Can view</option><option value="comment">Can comment</option>');
+      expect(occurrences(html, ">Update</button>")).toBe(2);
+
+      await env.DB.prepare("UPDATE docs SET link_access = 'anyone' WHERE id = ?").bind(doc.docId).run();
+      const pub = await (await open(doc.docId, owner)).text();
+      expect(pub).toContain("Anyone with the link can view. Can comment lets a person you add comment.");
+      expect(pub).not.toContain("Only people you add can open it. Can comment");
+    });
+
+    it("shows a plan that grants no role the plan line and roles as text: no Add people, no select, no Approve, and Remove and Decline still work", async () => {
+      const doc = await privateDoc();
+      const owner = await ownerAccount(doc, "free");
+      await env.DB.prepare("INSERT INTO doc_invites (doc_id, email, role, created_at) VALUES (?, 'alice@acme.com', 'comment', ?)").bind(doc.docId, Date.now()).run();
+      await env.DB.prepare("INSERT INTO doc_access_requests (doc_id, email, created_at) VALUES (?, 'bob@other.com', ?)").bind(doc.docId, Date.now()).run();
+
+      const html = await (await open(doc.docId, owner)).text();
+
+      expect(html).toContain("Private pages and comments need a paid plan.");
+      expect(html).toContain('<a href="https://openartifacts.ai/account">Upgrade</a>');
+      expect(html).not.toContain("<h2>Add people</h2>");
+      expect(html).not.toContain("name=\"role\"");
+      expect(html).toContain('<span class="role">Can comment</span>');
+      expect(html).toContain("Remove");
+      expect(html).toContain("Decline");
+      expect(html).not.toContain("Approve");
+    });
+
+    it("draws no role where comments are not bound, and still offers Add people", async () => {
+      const doc = await privateDoc();
+      const owner = await ownerAccount(doc);
+      const html = await (await open(doc.docId, owner, { ...PRIVATE, COMMENTS: undefined })).text();
+      expect(html).toContain("<h2>Add people</h2>");
+      expect(html).not.toMatch(/Can comment|Can view|name="role"|class="role"|need a paid plan/);
+    });
+
+    it("has no Comments operation any more, and refuses a role it does not know without changing the person", async () => {
+      const doc = await privateDoc();
+      const owner = await ownerAccount(doc);
+      await env.DB.prepare("INSERT INTO doc_invites (doc_id, email, role, created_at) VALUES (?, 'alice@acme.com', 'view', ?)").bind(doc.docId, Date.now()).run();
+      expect((await write(doc.docId, owner, { op: "comments", comments: "on" })).status).toBe(404);
+      expect((await write(doc.docId, owner, { op: "role", email: "alice@acme.com", role: "edit" })).status).toBe(404);
+      const role = (await env.DB.prepare("SELECT role FROM doc_invites WHERE doc_id = ?").bind(doc.docId).first<{ role: string }>())!.role;
+      expect(role).toBe("view");
+    });
+
+    it("emails a person added at Can view that the document was shared, and a role change from the page sends nothing", async () => {
+      const { sent, over } = mailbox();
+      const doc = await privateDoc();
+      const owner = await ownerAccount(doc);
+      await write(doc.docId, owner, { op: "add", email: "alice@acme.com" }, over);
+      expect(sent[0]!.text).toContain("to comment.");
+      await write(doc.docId, owner, { op: "role", email: "alice@acme.com", role: "view" }, over);
+      await write(doc.docId, owner, { op: "role", email: "alice@acme.com", role: "comment" }, over);
+      expect(sent).toHaveLength(1);
+    });
+
     it("says an address is not an address, and changes nothing", async () => {
       const doc = await privateDoc();
       const owner = await ownerAccount(doc);
@@ -2896,6 +3012,8 @@ describe("GET /d/{docId}/threads", () => {
   async function commented(mode: "anyone" | "invited" = "anyone") {
     const docId = await twoVersionDoc();
     await env.DB.prepare("UPDATE docs SET link_access = ?, comments_enabled = 1 WHERE id = ?").bind(mode, docId).run();
+    // The threads below go straight into the object, so the flag the service would set with the first one is set here.
+    await env.DB.prepare("UPDATE docs SET has_threads = 1 WHERE id = ?").bind(docId).run();
     const alice = await account("alice@acme.com", "Alice");
     const stub = env.COMMENTS!.get(env.COMMENTS!.idFromName(docId));
     const base = { docId, version: 1, at: 1_000 };

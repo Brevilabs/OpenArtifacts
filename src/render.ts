@@ -421,7 +421,8 @@ export interface TopBar {
   /** `https://{API_HOST}/embed/page.js`: the script that turns the link into a popover. */
   scriptUrl: string;
   /**
-   * The document's comments switch, set only on the shared link (`/d/{docId}`)
+   * Whether the page has comments to show: a thread exists, or a person holds a
+   * role of at least `comment`. Derived, never set by the owner. Set only on the shared link (`/d/{docId}`)
    * and left out of a pinned `/v{n}`, which is immutable and must not freeze it.
    * Rendered as `data-comments="on|off"` on the Share link; absent means "ask".
    */

@@ -12,7 +12,8 @@
  * accounts or sessions.
  */
 import type { Env } from "./config.js";
-import type { InviteRole, LinkAccess } from "./db.js";
+import type { LinkAccess } from "./db.js";
+import type { InviteRole } from "./roles.js";
 import { manifestObjectKey } from "./storage.js";
 
 /** The stored shape. `schema` is bumped only by a change an old reader cannot ignore. */

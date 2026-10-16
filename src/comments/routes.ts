@@ -8,7 +8,6 @@
  * threads/{threadId}/resolve       POST
  * threads/{threadId}/reopen        POST
  * comments/{commentId}             DELETE
- * settings                         PUT
  * ```
  *
  * Null means the segments are none of these, and the caller answers its own
@@ -27,7 +26,6 @@ import {
   deleteComment,
   listThreads,
   replyToThread,
-  setComments,
 } from "./service.js";
 
 const THREAD_ID = /^th_[0-9a-z]{1,64}$/;
@@ -51,14 +49,12 @@ export async function commentRoute(
     section === "threads" && id !== undefined && method === "POST" &&
     (action === "comments" || action === "resolve" || action === "reopen");
   const comment = section === "comments" && id !== undefined && action === undefined && method === "DELETE";
-  const settings = section === "settings" && id === undefined && method === "PUT";
-  if (!listing && !threads && !onThread && !comment && !settings) return null;
+  if (!listing && !threads && !onThread && !comment) return null;
 
   if (env.COMMENTS === undefined) return docNotFound(docId);
 
   if (listing) return await listThreads(env, url, caller, docId);
   if (threads) return await createThread(request, url, env, caller, docId);
-  if (settings) return await setComments(request, env, caller, docId);
   if (comment) {
     return COMMENT_ID.test(id!) ? await deleteComment(env, caller, docId, id!) : docNotFound(docId);
   }

@@ -9,6 +9,7 @@
  */
 import type { Env } from "./config.js";
 import { escapeHtml } from "./page.js";
+import { roleAtLeast, type InviteRole } from "./roles.js";
 
 export function emailConfigured(env: Env): boolean {
   return env.EMAIL !== undefined && Boolean(env.EMAIL_FROM?.trim());
@@ -51,15 +52,26 @@ export function codeMessage(code: string) {
  * or null for an owner the Worker has no address for, in which case the line is
  * left out rather than naming "someone". The link is always the sacrificial
  * domain's, never a grant. An approved request sends this same message, which
- * is how the requester learns the answer.
+ * is how the requester learns the answer. The wording follows the role, not the
+ * page's mode: at `comment` or above it invites the person to comment, at `view`
+ * it says the document was shared.
  */
-export function inviteMessage(sharer: string | null, title: string, url: string, recipient: string) {
+export function inviteMessage(
+  sharer: string | null,
+  title: string,
+  url: string,
+  recipient: string,
+  role: InviteRole,
+) {
   const name = oneLine(title);
+  const comments = roleAtLeast(role, "comment");
   const by = sharer === null ? [] : [`Shared by ${sharer}`];
-  const signIn = `Sign in with this address, ${recipient}, to open it.`;
+  const signIn = `Sign in with this address, ${recipient}, to ${comments ? "comment" : "open it"}.`;
   const ignore = "If you were not expecting this, ignore this email.";
   return {
-    subject: `\u201c${name}\u201d was shared with you`,
+    subject: comments
+      ? `${sharer === null ? "You were invited" : `${oneLine(sharer)} invited you`} to comment on \u201c${name}\u201d`
+      : `\u201c${name}\u201d was shared with you`,
     text: [name, ...by, `Open document: ${url}`, signIn, ignore].join("\n\n"),
     html: [
       `<p><b>${escapeHtml(name)}</b></p>`,

@@ -9,7 +9,6 @@
  * POST   …/docs/{docId}/threads/{threadId}/resolve {version?}  → 200 Thread
  * POST   …/docs/{docId}/threads/{threadId}/reopen  {version?}  → 200 Thread
  * DELETE …/docs/{docId}/comments/{commentId}          → 204
- * PUT    …/docs/{docId}/settings {comments}           → 200 {docId, comments}
  * PUT    …/account {displayName}                      → 200 {displayName}
  * ```
  *
@@ -24,28 +23,24 @@
  * enforces what it can see for itself: caps, anchors, author checks, the state
  * machines.
  *
- * **Statuses.** Everything the caller may not see or do is `404`. The two
- * exceptions are only ever given to someone who manages the document:
- * `409 comments_off` and the plan's `402`. Deleting a comment asks for nothing
- * but `canRead` and authorship, so a switch turned off or a plan lapsed never
- * costs anyone the ability to take back what they wrote.
+ * **Statuses.** Everything the caller may not see or do is `404`. The one
+ * exception is only ever given to someone who manages the document: the plan's
+ * `402`. Deleting a comment asks for nothing but `canRead` and authorship, so a
+ * plan lapsed or a role lowered never costs anyone the ability to take back what
+ * they wrote.
  */
-import { mayComment as planAllowsComments } from "../auth.js";
-import { setCommentsEnabled, setDisplayName, findManagedDoc } from "../db.js";
+import { markHasThreads, setDisplayName } from "../db.js";
 import type { Env } from "../config.js";
-import type { Publisher } from "../auth.js";
 import { docNotFound, errorResponse } from "../errors.js";
-import { isDocId } from "../ids.js";
-import { writeManifest } from "../manifest.js";
 import { sha256Hex } from "../hash.js";
 import { withinLimit } from "../limits.js";
 import { readBodyWithin } from "../quota.js";
 import { readerSignInConfigured } from "../reader-config.js";
 import {
-  commentsOff,
   commentsPlanRefusal,
   commentsStub,
   NO_STORE,
+  isCommentable,
   ownerHasComments,
   standingOn,
   viewerCanComment,
@@ -119,7 +114,6 @@ export async function listThreads(env: Env, url: URL, caller: Caller | null, doc
 
   const standing = await standingOn(env, docId, caller, pinned);
   if (standing === null) return docNotFound(docId);
-  if (!standing.doc.comments_enabled) return commentsOff(standing, docId);
   // The newest version that has bytes, or the one asked for; none means there is no such page to anchor to.
   if (standing.doc.version === null) return docNotFound(docId);
 
@@ -135,7 +129,12 @@ export async function listThreads(env: Env, url: URL, caller: Caller | null, doc
   const body = await presentThreads(
     env,
     { docId, title: standing.doc.title, ownerAccount: standing.doc.owner_account },
-    { version: listed.version, latestVersion: standing.doc.latest_version, threads: listed.threads as ThreadRecord[] },
+    {
+      version: listed.version,
+      latestVersion: standing.doc.latest_version,
+      commentable: await isCommentable(env, standing.doc, Date.now()),
+      threads: listed.threads as ThreadRecord[],
+    },
     viewer,
   );
   return Response.json(body, { headers: NO_STORE });
@@ -151,8 +150,8 @@ async function viewerOf(env: Env, standing: Standing, now: number): Promise<View
 }
 
 /**
- * Everything a write has to clear before the object is asked: readable, comments
- * on, the role allows writing, the owner's plan has comments, a person has a
+ * Everything a write has to clear before the object is asked: readable, the role
+ * allows writing, the owner's plan has comments, a person has a
  * name, and the principal is under the rate limit. The limit comes last so a
  * write refused by these gates never spends it; one refused after it, for its
  * content (see `docs/http-api.md`), has.
@@ -160,7 +159,6 @@ async function viewerOf(env: Env, standing: Standing, now: number): Promise<View
 async function authoriseWrite(env: Env, docId: string, caller: Caller, now: number): Promise<Standing | Response> {
   const standing = await standingOn(env, docId, caller);
   if (standing === null) return docNotFound(docId);
-  if (!standing.doc.comments_enabled) return commentsOff(standing, docId);
   if (!standing.mayWrite) return docNotFound(docId);
   if (!(await ownerHasComments(env, standing.doc.owner, now))) {
     return standing.canManage ? commentsPlanRefusal(env, caller.publisher) : docNotFound(docId);
@@ -257,6 +255,14 @@ export async function createThread(
     version,
   });
   if (!result.ok) return refusal(result, caller, version);
+
+  // After every create, since the service cannot cheaply tell the first: the `WHERE` makes the
+  // rest no-ops, and one whose update failed here is repaired by the next create.
+  try {
+    await markHasThreads(env.DB, docId);
+  } catch (error) {
+    console.error("has_threads update failed", { error: error instanceof Error ? error.name : "unknown" });
+  }
 
   caller.ctx.waitUntil(
     notifyComment(env, url, {
@@ -389,33 +395,6 @@ export async function deleteComment(env: Env, caller: Caller, docId: string, com
   // Someone else's comment answers exactly like a missing one.
   if (!result.ok) return errorResponse("not_found", "No such comment.", NO_STORE);
   return new Response(null, { status: 204, headers: NO_STORE });
-}
-
-/**
- * `PUT …/settings {comments}`: the owner's switch. Turning it on needs a plan
- * with comments (`402 limit_reached`, `limit: "comments"`); turning it off never
- * does, and deletes nothing. Naming the state it already has is a repeat.
- */
-export async function setComments(request: Request, env: Env, caller: Caller, docId: string): Promise<Response> {
-  const fields = await readFields(request);
-  if (fields === null || !onlyKeys(fields, ["comments"]) || typeof fields.comments !== "boolean") {
-    return bad('Expected {"comments": true | false}.');
-  }
-  return await switchComments(env, caller.publisher, docId, fields.comments);
-}
-
-/**
- * The switch itself, for a caller that has already read its request: the API
- * routes above and the share page's form, which must refuse and answer exactly
- * as they do.
- */
-export async function switchComments(env: Env, publisher: Publisher, docId: string, on: boolean): Promise<Response> {
-  if (!isDocId(docId) || env.COMMENTS === undefined) return docNotFound(docId);
-  if ((await findManagedDoc(env.DB, docId, publisher.owner)) === null) return docNotFound(docId);
-  if (on && !planAllowsComments(env, publisher)) return commentsPlanRefusal(env, publisher);
-  await setCommentsEnabled(env.DB, docId, publisher.owner, on);
-  await writeManifest(env, docId);
-  return Response.json({ docId, comments: on }, { headers: NO_STORE });
 }
 
 /**

@@ -111,9 +111,9 @@ interface World {
   alice: Person; // invited, can comment
   bob: Person; // invited, can view
   carol: Person; // signed in, invited to nothing
-  /** An invited-only document with comments on. */
+  /** An invited-only document: Alice can comment, Bob can view. */
   priv: string;
-  /** A public document with comments on. */
+  /** A public document with the same two people on its list. */
   pub: string;
 }
 
@@ -132,11 +132,9 @@ async function world(): Promise<World> {
   const carol = await person("carol@other.com", "Carol");
   const priv = await publish(owner, "Q3 client report", TEXT, "invited");
   const pub = await publish(owner, "Public notes", TEXT, "anyone");
-  await invite(priv, alice.email, "comment");
-  await invite(priv, bob.email, "view");
   for (const docId of [priv, pub]) {
-    const on = await send("PUT", `/api/v1/docs/${docId}/settings`, owner.token, { comments: true });
-    expect(on.status).toBe(200);
+    await invite(docId, alice.email, "comment");
+    await invite(docId, bob.email, "view");
   }
   sent.length = 0;
   return { owner, alice, bob, carol, priv, pub };
@@ -194,100 +192,107 @@ async function created(response: Response) {
   return (await response.json()) as { threadId: string; commentId: string; anchorStatus: string };
 }
 
-describe("turning comments on", () => {
-  it("is the owner's switch, idempotent, and shows in Access", async () => {
-    const { owner, alice, priv } = await world();
-    const path = `/api/v1/docs/${priv}/settings`;
-
-    const off = await send("PUT", path, owner.token, { comments: false });
-    expect(await off.json()).toEqual({ docId: priv, comments: false });
-    expect(await env.DB.prepare("SELECT comments_enabled FROM docs WHERE id = ?").bind(priv).first()).toEqual({
-      comments_enabled: 0,
-    });
-    const access = await send("GET", `/api/v1/docs/${priv}/access`, owner.token);
-    expect(((await access.json()) as { comments: boolean }).comments).toBe(false);
-
-    for (let i = 0; i < 2; i++) {
-      const on = await send("PUT", path, owner.token, { comments: true });
-      expect(on.status).toBe(200);
-      expect(await on.json()).toEqual({ docId: priv, comments: true });
-    }
-    const after = await send("GET", `/api/v1/docs/${priv}/access`, owner.token);
-    expect(((await after.json()) as { comments: boolean }).comments).toBe(true);
-
-    // Not the owner's, and not a document at all: both `404`.
-    expect((await send("PUT", path, alice.token, { comments: false })).status).toBe(404);
-    expect((await send("PUT", "/api/v1/docs/0123456789abcdef/settings", owner.token, { comments: true })).status).toBe(404);
-    expect((await send("PUT", path, null, { comments: true })).status).toBe(401);
-  });
-
-  it("refuses a body that is not exactly {comments: boolean}", async () => {
+describe("the roles are the only control", () => {
+  it("has no switch: the settings routes answer 404 like any unknown path, on both doors", async () => {
     const { owner, priv } = await world();
-    for (const body of [{ comments: "yes" }, {}, { comments: true, extra: 1 }, [true], "nope"]) {
-      const response = await send("PUT", `/api/v1/docs/${priv}/settings`, owner.token, body);
-      expect(response.status, JSON.stringify(body)).toBe(400);
-      expect((await errorOf(response)).code).toBe("bad_request");
+    for (const body of [{ comments: true }, { comments: false }, {}]) {
+      const api = await send("PUT", `/api/v1/docs/${priv}/settings`, owner.token, body);
+      expect(api.status).toBe(404);
+      expect((await errorOf(api)).code).toBe("not_found");
+      const embed = await send("PUT", `/embed/api/docs/${priv}/settings`, await frame(owner, priv), body);
+      expect(embed.status).toBe(404);
     }
+    expect(await errorOf(await send("PUT", `/api/v1/docs/${priv}/settings`, owner.token, { comments: true }))).toMatchObject({
+      code: "not_found",
+    });
   });
 
-  it("needs the plan to turn on and not to turn off: free is 402, a lapse still switches off", async () => {
+  it("carries roles in Access, the rungs the plan grants, and no comments field", async () => {
+    const { owner, priv } = await world();
+    const body = (await (await send("GET", `/api/v1/docs/${priv}/access`, owner.token)).json()) as Record<string, unknown>;
+    expect(body.roles).toEqual(["view", "comment"]);
+    expect(body).not.toHaveProperty("comments");
+    expect(body).not.toHaveProperty("upgradeUrl");
+
     const free = await person("free@acme.com", "Frey", "free");
     const docId = await publish(free, "Mine", TEXT, "anyone");
+    const freeBody = (await (await send("GET", `/api/v1/docs/${docId}/access`, free.token)).json()) as Record<string, unknown>;
+    expect(freeBody.roles).toEqual([]);
+    expect(freeBody).not.toHaveProperty("comments");
+    // The upgrade link rides along only when the server has one.
+    const noLink = (await (await send("GET", `/api/v1/docs/${docId}/access`, free.token, undefined, { UPGRADE_URL: "" })).json()) as Record<string, unknown>;
+    expect(noLink.roles).toEqual([]);
+    expect(noLink).not.toHaveProperty("upgradeUrl");
+    expect(freeBody.upgradeUrl).toEqual(expect.stringMatching(/^https:\/\//));
+    const withLink = (await (
+      await send("GET", `/api/v1/docs/${docId}/access`, free.token, undefined, { UPGRADE_URL: "https://upgrade.test/plans?owner=x" })
+    ).json()) as Record<string, unknown>;
+    expect(withLink.roles).toEqual([]);
+    expect(withLink.upgradeUrl).toBe("https://upgrade.test/plans");
+  });
 
-    const refused = await send("PUT", `/api/v1/docs/${docId}/settings`, free.token, { comments: true });
+  it("leaves roles out where this deployment has no comments object", async () => {
+    const { owner, priv } = await world();
+    const body = (await (await send("GET", `/api/v1/docs/${priv}/access`, owner.token, undefined, { COMMENTS: undefined })).json()) as Record<string, unknown>;
+    expect(body).not.toHaveProperty("roles");
+    expect(body).not.toHaveProperty("comments");
+  });
+
+  it("checks the plan flag of the role being granted, for a new person and for a change, and never for a removal", async () => {
+    const free = await person("free@acme.com", "Frey", "free");
+    const docId = await publish(free, "Mine", TEXT, "anyone");
+    for (const body of [undefined, { role: "comment" }, { role: "view" }]) {
+      const refused = await send("PUT", `/api/v1/docs/${docId}/access/people/dee%40acme.com`, free.token, body);
+      expect(refused.status, JSON.stringify(body)).toBe(402);
+      expect(await errorOf(refused)).toMatchObject({ code: "limit_reached", limit: "privateSharing" });
+    }
+    expect(((await (await send("GET", `/api/v1/docs/${docId}/access`, free.token)).json()) as { people: unknown[] }).people).toEqual([]);
+
+    // A lapsed owner keeps the people already on the list, cannot promote or demote them, and can remove them.
+    await invite(docId, "eve@acme.com", "view");
+    const promote = await send("PUT", `/api/v1/docs/${docId}/access/people/eve%40acme.com`, free.token, { role: "comment" });
+    expect(promote.status).toBe(402);
+    const demote = await send("PUT", `/api/v1/docs/${docId}/access/people/eve%40acme.com`, free.token, { role: "view" });
+    // Naming the role already held is a repeat, which answers on any plan.
+    expect(demote.status).toBe(200);
+    await invite(docId, "fay@acme.com", "comment");
+    const lower = await send("PUT", `/api/v1/docs/${docId}/access/people/fay%40acme.com`, free.token, { role: "view" });
+    expect(lower.status).toBe(402);
+    const removed = await send("DELETE", `/api/v1/docs/${docId}/access/people/fay%40acme.com`, free.token);
+    expect(removed.status).toBe(200);
+  });
+
+  it("refuses to add a person with the message that fits a commenter on a public page", async () => {
+    const free = await person("free@acme.com", "Frey", "free");
+    const docId = await publish(free, "Mine", TEXT, "anyone");
+    const refused = await send("PUT", `/api/v1/docs/${docId}/access/people/dee%40acme.com`, free.token, { role: "comment" });
     expect(refused.status).toBe(402);
-    expect(await errorOf(refused)).toMatchObject({ code: "limit_reached", limit: "comments" });
-    expect(await env.DB.prepare("SELECT comments_enabled FROM docs WHERE id = ?").bind(docId).first()).toEqual({
-      comments_enabled: 0,
-    });
-
-    expect((await send("PUT", `/api/v1/docs/${docId}/settings`, free.token, { comments: false })).status).toBe(200);
+    expect(((await refused.json()) as { error: { message: string } }).error.message).toContain("Adding people needs a paid plan.");
   });
 
-  it("reads the plan fresh on the switch, as it does for an access write, so a new subscriber is not turned away on a stale cache", async () => {
-    const stale = await person("stale@acme.com", "Stan", "free");
-    const docId = await publish(stale, "Mine", TEXT, "anyone");
-    await env.DB.prepare("UPDATE accounts SET plan_checked_at = 1 WHERE id = ?").bind(stale.id).run();
-    const calls: string[] = [];
-    vi.stubGlobal("fetch", async (input: unknown) => {
-      calls.push(String(input));
-      return Response.json({ result: { data: { json: { plan: "plus", expiresAt: null } } } });
-    });
-    const licensed = { LICENSE_API_URL: "https://license.test", LICENSE_API_KEY: "server-key" };
-
-    // A read never asks the license server.
-    await send("GET", `/api/v1/docs/${docId}/threads`, stale.token, undefined, licensed);
-    expect(calls).toEqual([]);
-
-    const on = await send("PUT", `/api/v1/docs/${docId}/settings`, stale.token, { comments: true }, licensed);
-    expect(on.status).toBe(200);
-    expect(calls.some((url) => url.endsWith("license.openArtifactsEntitlement"))).toBe(true);
-    expect(await env.DB.prepare("SELECT plan FROM accounts WHERE id = ?").bind(stale.id).first()).toEqual({ plan: "pro" });
-  });
-
-  it("gives a license key the plan it has: Plus or Supporter yes, a plan that may not publish no", async () => {
+  it("gives a license key the plan it has: Plus or Supporter can comment, a plan that may not publish cannot", async () => {
     const insertKey = async (key: string, owner: string, plan: string) =>
       env.DB.prepare("INSERT INTO publishers (key_hash, plan, validated_at, owner) VALUES (?, ?, ?, ?)")
         .bind(await sha256Hex(key), plan, Date.now(), owner)
         .run();
     const KEY = "cplus_live_a1b2c3d4e5f60718";
     const KEY_FREE = "cplus_live_0102030405060708";
-    // Two keys of one owner: a Supporter key and a key whose plan may not publish.
     await insertKey(KEY, "lic-1", "believer");
     await insertKey(KEY_FREE, "lic-1", "free");
     const docId = ((await (await send("POST", "/api/v1/docs", KEY, { html: page(TEXT) })).json()) as { docId: string }).docId;
 
-    const refused = await send("PUT", `/api/v1/docs/${docId}/settings`, KEY_FREE, { comments: true });
+    const refused = await send("PUT", `/api/v1/docs/${docId}/access/people/dee%40acme.com`, KEY_FREE, { role: "comment" });
     expect(refused.status).toBe(402);
-    expect(await errorOf(refused)).toMatchObject({ code: "limit_reached", limit: "comments" });
-    expect((await send("PUT", `/api/v1/docs/${docId}/settings`, KEY, { comments: true })).status).toBe(200);
+    expect(await errorOf(refused)).toMatchObject({ code: "limit_reached", limit: "privateSharing" });
+    const added = await send("PUT", `/api/v1/docs/${docId}/access/people/dee%40acme.com`, KEY, { role: "comment" });
+    expect(added.status).toBe(200);
+    expect(((await added.json()) as { roles: string[] }).roles).toEqual(["view", "comment"]);
   });
 
   it("answers 404 everywhere when this deployment has no comments object", async () => {
-    const { owner, alice, priv } = await world();
+    const { alice, priv } = await world();
     const none = { COMMENTS: undefined };
-    expect((await send("PUT", `/api/v1/docs/${priv}/settings`, owner.token, { comments: true }, none)).status).toBe(404);
-    expect((await send("GET", `/api/v1/docs/${priv}/threads`, owner.token, undefined, none)).status).toBe(404);
+    expect((await send("GET", `/api/v1/docs/${priv}/threads`, alice.token, undefined, none)).status).toBe(404);
     expect((await send("POST", `/api/v1/docs/${priv}/threads`, alice.token, { anchor: fox, body: "x" }, none)).status).toBe(404);
     const embedList = await send("GET", `/embed/api/docs/${priv}/threads`, await frame(alice, priv), undefined, none);
     expect(embedList.status).toBe(404);
@@ -302,26 +307,16 @@ describe("turning comments on", () => {
     expect((await send("POST", `/api/v1/docs/${priv}/threads`, alice.token, {}, none)).status).toBe(404);
     expect((await send("POST", `/api/v1/docs/${priv}/threads/${th}/comments`, alice.token, {}, none)).status).toBe(404);
     expect((await send("POST", `/api/v1/docs/${priv}/threads/${th}/resolve`, alice.token, { version: "x" }, none)).status).toBe(404);
-    expect((await send("PUT", `/api/v1/docs/${priv}/settings`, owner.token, { comments: "yes" }, none)).status).toBe(404);
     expect((await send("GET", `/api/v1/docs/${priv}/threads?state=bogus&since=x&v=0`, alice.token, undefined, none)).status).toBe(404);
     expect((await send("DELETE", `/api/v1/docs/${priv}/comments/cm_0000000000000000`, alice.token, undefined, none)).status).toBe(404);
     // The frame: no token, a bad body or a bad query, all 404 first.
     expect((await send("POST", `/embed/api/docs/${priv}/threads`, null, "{not json", none)).status).toBe(404);
     expect((await send("GET", `/embed/api/docs/${priv}/threads?state=bogus`, null, undefined, none)).status).toBe(404);
-    expect((await send("PUT", `/embed/api/docs/${priv}/settings`, SHARE_TOKEN_PREFIX + "junk", {}, none)).status).toBe(404);
     // The display name exists only for comments.
     expect((await send("PUT", "/api/v1/account", owner.token, { displayName: "Nope" }, none)).status).toBe(404);
     expect((await send("PUT", "/embed/api/account", await frame(owner, priv), { displayName: "Nope" }, none)).status).toBe(404);
     expect((await send("PUT", "/api/v1/account", owner.token, { displayName: "Nope" }, { READER_SESSION_SECRET: "" })).status).toBe(404);
     expect(await env.DB.prepare("SELECT display_name FROM accounts WHERE id = ?").bind(owner.id).first()).toEqual({ display_name: "Logan" });
-  });
-
-  it("serves the same switch to the owner's frame, and refuses it to anyone else's", async () => {
-    const { owner, alice, priv } = await world();
-    const mirrored = await send("PUT", `/embed/api/docs/${priv}/settings`, await frame(owner, priv), { comments: false });
-    expect(mirrored.status).toBe(200);
-    expect(await mirrored.json()).toEqual({ docId: priv, comments: false });
-    expect((await send("PUT", `/embed/api/docs/${priv}/settings`, await frame(alice, priv), { comments: true })).status).toBe(404);
   });
 });
 
@@ -335,16 +330,20 @@ describe("who can comment", () => {
     // Can view reads but cannot write; a stranger cannot even read. Both `404`, never `403`.
     expect((await thread(priv, await frame(bob, priv))).status).toBe(404);
     expect((await thread(priv, await frame(carol, priv))).status).toBe(404);
-    // On a public page any signed-in account may.
-    expect((await thread(pub, await frame(carol, pub))).status).toBe(201);
-    expect((await thread(pub, await frame(bob, pub))).status).toBe(201);
+    // A public page is the same: Link access plays no part. The person on the list at Can comment posts; a Can view
+    // invitee and a signed-in stranger get the same `404` a stranger gets on a private page.
+    expect((await thread(pub, await frame(alice, pub))).status).toBe(201);
+    expect((await thread(pub, await frame(bob, pub))).status).toBe(404);
+    expect((await thread(pub, await frame(carol, pub))).status).toBe(404);
 
     // Agents: an account token comments as its account.
     expect((await thread(priv, owner.token)).status).toBe(201);
     expect((await thread(priv, alice.token)).status).toBe(201);
     expect((await thread(priv, bob.token)).status).toBe(404);
     expect((await thread(priv, carol.token)).status).toBe(404);
-    expect((await thread(pub, carol.token)).status).toBe(201);
+    expect((await thread(pub, alice.token)).status).toBe(201);
+    expect((await thread(pub, bob.token)).status).toBe(404);
+    expect((await thread(pub, carol.token)).status).toBe(404);
 
     // No credential at all is `401`, as everywhere under /api/v1.
     expect((await thread(priv, null)).status).toBe(401);
@@ -358,7 +357,6 @@ describe("who can comment", () => {
       .run();
     expect(await linkExternalOwner(env.DB, "lic-owner", owner.id, Date.now())).toBe("linked");
     const docId = await publish(owner, "Linked", TEXT, "invited");
-    expect((await send("PUT", `/api/v1/docs/${docId}/settings`, owner.token, { comments: true })).status).toBe(200);
 
     const made = await created(await thread(docId, KEY));
     const listed = await threadsOf(await listThreads(docId, owner.token));
@@ -367,19 +365,103 @@ describe("who can comment", () => {
     expect(listed.threads[0]!.threadId).toBe(made.threadId);
   });
 
-  it("answers 404, not 409, for a reader who cannot manage the document when comments are off, and 409 to the owner", async () => {
-    const { owner, alice, bob, priv } = await world();
-    expect((await send("PUT", `/api/v1/docs/${priv}/settings`, owner.token, { comments: false })).status).toBe(200);
+  it("needs no switch: a document nobody can comment on still lists its threads, to whoever can read it", async () => {
+    const owner = await person("logan@acme.com", "Logan");
+    const carol = await person("carol@other.com", "Carol");
+    const pub = await publish(owner, "Public notes", TEXT, "anyone");
+    const priv = await publish(owner, "Private notes", TEXT, "invited");
 
-    for (const [who, expected] of [[owner, 409], [alice, 404], [bob, 404]] as const) {
-      const read = await listThreads(priv, who.token);
-      const write = await thread(priv, who.token);
-      expect([read.status, write.status], who.email).toEqual([expected, expected]);
-      if (expected === 409) expect((await errorOf(read)).code).toBe("comments_off");
+    // A new page has no comments, and says so with a 200 and an empty list, never a 409.
+    for (const who of [owner, carol]) expect((await threadsOf(await listThreads(pub, who.token))).threads, who.email).toEqual([]);
+    expect((await listThreads(priv, owner.token)).status).toBe(200);
+    expect((await listThreads(priv, carol.token)).status).toBe(404);
+    // The owner's agent comments with nobody on the list; a signed-in reader of the public page reads it and cannot write.
+    await created(await thread(pub, owner.token));
+    expect((await threadsOf(await listThreads(pub, carol.token))).threads).toHaveLength(1);
+    expect((await thread(pub, carol.token)).status).toBe(404);
+    expect((await thread(pub, await frame(carol, pub))).status).toBe(404);
+  });
+
+  it("lets a person on the list at a role of at least comment write, and nobody below it", async () => {
+    const { owner, alice, bob, priv, pub } = await world();
+    for (const docId of [priv, pub]) {
+      const asked = (who: Person) => thread(docId, who.token);
+      expect((await asked(alice)).status).toBe(201);
+      expect((await asked(bob)).status).toBe(404);
+      expect((await asked(owner)).status).toBe(201);
     }
-    // The frame sees the same.
-    expect((await listThreads(priv, await frame(alice, priv))).status).toBe(404);
-    expect((await send("GET", `/embed/api/docs/${priv}/threads`, await frame(owner, priv))).status).toBe(409);
+  });
+
+  it("derives commentable from the list and the owner's plan, and answers the same to every viewer", async () => {
+    const owner = await person("logan@acme.com", "Logan");
+    const carol = await person("carol@other.com", "Carol");
+    const docId = await publish(owner, "Public notes", TEXT, "anyone");
+    const read = async (who: Person | null) => ((await (await listThreads(docId, who?.token ?? null)).json()) as { commentable: boolean }).commentable;
+
+    expect(await read(carol)).toBe(false);
+    await invite(docId, "viewer@acme.com", "view");
+    expect(await read(carol)).toBe(false);
+    await invite(docId, "writer@acme.com", "comment");
+    expect(await read(carol)).toBe(true);
+    expect(await read(owner)).toBe(true);
+    expect((await (await send("GET", `/embed/api/docs/${docId}/threads`, null)).json() as { commentable: boolean }).commentable).toBe(true);
+
+    // A lapsed owner's page is not commentable: nobody but the owner's agent could write, and they could not either.
+    await env.DB.prepare("UPDATE accounts SET plan = 'free' WHERE id = ?").bind(owner.id).run();
+    expect(await read(carol)).toBe(false);
+  });
+
+  it("sets has_threads with the first thread, keeps it after the last is deleted, and never reads it from a switch", async () => {
+    const { owner, alice, priv } = await world();
+    const flag = async () =>
+      ((await env.DB.prepare("SELECT has_threads FROM docs WHERE id = ?").bind(priv).first()) as { has_threads: number }).has_threads;
+    expect(await flag()).toBe(0);
+    const made = await created(await thread(priv, alice.token));
+    expect(await flag()).toBe(1);
+    await created(await thread(priv, owner.token));
+    expect(await flag()).toBe(1);
+    const listed = await threadsOf(await listThreads(priv, owner.token));
+    for (const t of listed.threads) {
+      expect((await send("DELETE", `/api/v1/docs/${priv}/comments/${t.comments[0]!.commentId}`, t.threadId === made.threadId ? alice.token : owner.token)).status).toBe(204);
+    }
+    expect((await threadsOf(await listThreads(priv, owner.token))).threads).toEqual([]);
+    expect(await flag()).toBe(1);
+  });
+
+  it("emails an invitation by the role it grants: commenting at comment, sharing at view, and nothing on a role change", async () => {
+    const { owner, priv } = await world();
+    sent.length = 0;
+    const add = (email: string, role?: string) =>
+      send("PUT", `/api/v1/docs/${priv}/access/people/${encodeURIComponent(email)}`, owner.token, role === undefined ? undefined : { role });
+    expect((await add("dee@acme.com")).status).toBe(200);
+    expect((await add("eve@acme.com", "view")).status).toBe(200);
+    const [dee, eve] = sent;
+    expect(dee!.to).toBe("dee@acme.com");
+    expect(dee!.subject).toContain("invited you to comment on");
+    expect(dee!.text).toContain("to comment.");
+    expect(eve!.to).toBe("eve@acme.com");
+    expect(eve!.subject).toContain("was shared with you");
+    expect(eve!.text).toContain("to open it.");
+
+    sent.length = 0;
+    expect((await add("dee@acme.com", "view")).status).toBe(200);
+    expect((await add("eve@acme.com", "comment")).status).toBe(200);
+    expect(sent).toEqual([]);
+    const people = ((await (await send("GET", `/api/v1/docs/${priv}/access`, owner.token)).json()) as { people: Array<{ email: string; role: string }> }).people;
+    expect(people.filter((p) => p.email.endsWith("@acme.com") && ["dee", "eve"].includes(p.email.split("@")[0]!)).map((p) => [p.email, p.role])).toEqual([
+      ["dee@acme.com", "view"],
+      ["eve@acme.com", "comment"],
+    ]);
+  });
+
+  it("answers the threads resource from the row for a document with no threads, without touching the object", async () => {
+    const owner = await person("logan@acme.com", "Logan");
+    const docId = await publish(owner, "Public notes", TEXT, "anyone");
+    await invite(docId, "writer@acme.com", "comment");
+    const broken = { COMMENTS: { idFromName: () => { throw new Error("object reached"); }, get: () => { throw new Error("object reached"); } } } as unknown as Partial<Env>;
+    const response = await send("GET", `https://openartifacts.site/d/${docId}/threads`, null, undefined, broken);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ version: 1, commentable: true, threads: [] });
   });
 
   it("keeps a Can-comment invitee's comments when they become Can view, and stops their writes", async () => {
@@ -760,7 +842,7 @@ describe("display names", () => {
     const owner = await person("logan@acme.com", null);
     const stranger = await person("zed@other.com", null);
     const docId = await publish(owner, "Open", TEXT, "anyone");
-    await send("PUT", `/api/v1/docs/${docId}/settings`, owner.token, { comments: true });
+    await invite(docId, stranger.email, "comment");
 
     await thread(docId, owner.token, fox, "from the owner's agent");
     await thread(docId, stranger.token, { exact: "twelve percent" }, "from someone else's agent");
@@ -938,26 +1020,27 @@ describe("notifications", () => {
   });
 
   it("mails nobody for an unlinked license key's comments: it has no account, so no mailbox", async () => {
-    const { owner, alice, pub } = await world();
+    const { alice } = await world();
     const KEY = "cplus_live_a1b2c3d4e5f60718";
     await env.DB.prepare("INSERT INTO publishers (key_hash, plan, validated_at, owner) VALUES (?, 'believer', ?, 'lic-nomail')")
       .bind(await sha256Hex(KEY), Date.now())
       .run();
-    const made = await created(await thread(pub, KEY, fox, "from a key with no account"));
-    expect(sent.map((m) => m.to)).toEqual([owner.email]); // the new thread still reaches the owner
-    sent.length = 0;
+    // The key owns this document and has no account, so there is no mailbox for it or its threads.
+    const own = ((await (await send("POST", "/api/v1/docs", KEY, { html: page(TEXT) })).json()) as { docId: string }).docId;
+    await invite(own, alice.email, "comment");
+    const made = await created(await thread(own, KEY, fox, "from a key with no account"));
+    expect(sent).toEqual([]);
 
     // Alice replies: the thread's only other writer is the key, which cannot be mailed, and nothing throws.
-    await send("POST", `/api/v1/docs/${pub}/threads/${made.threadId}/comments`, alice.token, { body: "reply" });
+    await send("POST", `/api/v1/docs/${own}/threads/${made.threadId}/comments`, alice.token, { body: "reply" });
     expect(sent).toEqual([]);
-    // The owner resolves: Alice, who has an account, is told; the key is skipped.
-    await send("POST", `/api/v1/docs/${pub}/threads/${made.threadId}/resolve`, owner.token);
+    // The key resolves: Alice, who has an account, is told.
+    await send("POST", `/api/v1/docs/${own}/threads/${made.threadId}/resolve`, KEY);
     expect(sent.map((m) => m.to)).toEqual([alice.email]);
-    expect(sent.every((m) => m.to.includes("@acme.com"))).toBe(true);
   });
 
   it("mails only people who can read the document now, however they once took part", async () => {
-    const { owner, alice, carol, priv, pub } = await world();
+    const { owner, alice, priv, pub } = await world();
     const mine = await created(await thread(priv, alice.token));
     sent.length = 0;
     await send("POST", `/api/v1/docs/${priv}/threads/${mine.threadId}/comments`, owner.token, { body: "before removal" });
@@ -971,11 +1054,12 @@ describe("notifications", () => {
     await send("POST", `/api/v1/docs/${priv}/threads/${mine.threadId}/resolve`, owner.token);
     expect(sent).toEqual([]);
 
-    // A public page turned invited-only drops a signed-in commenter who was never invited.
-    const open = await created(await thread(pub, carol.token));
+    // A public page turned invited-only drops a commenter whose invite was removed while it was public.
+    const open = await created(await thread(pub, alice.token));
     sent.length = 0;
     await send("POST", `/api/v1/docs/${pub}/threads/${open.threadId}/comments`, owner.token, { body: "still public" });
-    expect(sent.map((m) => m.to)).toEqual([carol.email]);
+    expect(sent.map((m) => m.to)).toEqual([alice.email]);
+    await env.DB.prepare("DELETE FROM doc_invites WHERE doc_id = ? AND email = ?").bind(pub, alice.email).run();
     await env.DB.prepare("UPDATE docs SET link_access = 'invited' WHERE id = ?").bind(pub).run();
     sent.length = 0;
     await send("POST", `/api/v1/docs/${pub}/threads/${open.threadId}/comments`, owner.token, { body: "SECRET now private" });
@@ -1042,8 +1126,8 @@ describe("review fixes", () => {
       .run();
 
   it("keeps a license key's comments its own after the key is linked to an account", async () => {
-    const { pub } = await world();
     await insertKey("lic-writer");
+    const pub = ((await (await send("POST", "/api/v1/docs", KEY, { html: page(TEXT) })).json()) as { docId: string }).docId;
     const first = await created(await thread(pub, KEY, fox, "from the key"));
     const second = await created(await thread(pub, KEY, { exact: "twelve percent" }, "also from the key"));
     const mineBefore = await threadsOf(await listThreads(pub, KEY));

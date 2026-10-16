@@ -54,20 +54,23 @@ export function effectivePlan(env: Env, plan: string, expiresAt: number | null, 
   return expiresAt !== null && expiresAt <= now ? defaultPlan(env) : plan;
 }
 
-export function limitReached(env: Env, publisher: Publisher, limit: string, message: string): Response {
-  let upgradeUrl: string | undefined;
-  if (env.UPGRADE_URL?.trim()) {
-    const url = new URL(env.UPGRADE_URL);
-    if (!["https:", "http:"].includes(url.protocol) || url.username || url.password) {
-      throw new Error("UPGRADE_URL must be an absolute HTTP(S) URL without credentials.");
-    }
-    // This routes checkout, never authenticates it. Billing must prove account ownership.
-    url.searchParams.delete("owner");
-    upgradeUrl = url.toString();
+/** The checkout link to offer, or undefined where the server has none. Routes checkout, never authenticates it. */
+export function upgradeUrl(env: Env): string | undefined {
+  if (!env.UPGRADE_URL?.trim()) return undefined;
+  const url = new URL(env.UPGRADE_URL);
+  if (!["https:", "http:"].includes(url.protocol) || url.username || url.password) {
+    throw new Error("UPGRADE_URL must be an absolute HTTP(S) URL without credentials.");
   }
+  // Billing must prove account ownership.
+  url.searchParams.delete("owner");
+  return url.toString();
+}
+
+export function limitReached(env: Env, publisher: Publisher, limit: string, message: string): Response {
+  const upgrade = upgradeUrl(env);
   return errorResponse("limit_reached", env.ACCOUNT_ACTION_URL?.trim()
     ? `${message} Run openartifacts account --open to manage your plan.`
     : message, undefined, {
-    plan: publisher.plan, limit, ...(upgradeUrl ? { upgrade_url: upgradeUrl } : {}),
+    plan: publisher.plan, limit, ...(upgrade ? { upgrade_url: upgrade } : {}),
   });
 }
