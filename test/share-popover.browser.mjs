@@ -910,7 +910,9 @@ test("a pasted batch stops when the document goes private part way through", { t
     await route.continue();
   });
 
-  await frame.getByPlaceholder("Emails, separated by commas").fill("ann@example.com, bob@example.com, carol@example.com");
+  // Not fill(): it focuses the field inside this cross-site frame, then sends the
+  // text through the top page, which can still hold focus and drop it.
+  await frame.getByPlaceholder("Emails, separated by commas").evaluate((input) => { input.value = "ann@example.com, bob@example.com, carol@example.com"; });
   await frame.getByRole("button", { name: "Add", exact: true }).click();
   await frame.getByText("Open Share from the document’s own page").waitFor();
 
