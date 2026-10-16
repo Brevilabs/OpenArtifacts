@@ -40,9 +40,10 @@ A page that was ever public may already have been copied by whoever opened it, a
 making it private later cannot recall those copies, so a new page starts private
 (invited people only) when the plan allows it. With no flag the CLI creates it
 through `POST /api/v1/private-docs`; if the plan has no private sharing (a free
-account), or the server has no private documents, it publishes the page through
-`POST /api/v1/docs` instead, and the `linkAccess` in the receipt says which
-happened. Pass `--public` to publish for anyone with the link (always
+account), it publishes the page through `POST /api/v1/docs` instead, and the
+`linkAccess` in the receipt says which happened. A server with no private
+documents answers that route 404, and then nothing is published. Pass `--public`
+to publish for anyone with the link (always
 `POST /api/v1/docs`), or `--private` to require a private page: `--private` fails
 rather than publishing publicly. `--public` and `--private` cannot be combined, and
 neither applies to `--doc-id`.
@@ -75,8 +76,8 @@ does not get it, send it to them yourself. A private publish prints `{"docId","u
 Invited people sign in once with the invited address (Google, GitHub or an emailed
 code) and open the same url. Private sharing is a paid feature. A server that predates
 private sharing, or that has no reader sign-in configured, answers 404 to
-`publish --private`: nothing is created, and the CLI says "This server does not
-support private documents." `list` shows each page's `linkAccess`, and `get` prints
+`publish --private`, and to a plain `publish`: nothing is created, and the CLI says
+"This server does not support private documents." `list` shows each page's `linkAccess`, and `get` prints
 the owner's stored HTML, private pages included; against an older server that has
 no private pages, `get` reads the public url as it always did.
 

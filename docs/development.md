@@ -106,8 +106,8 @@ routes, `/open`, `/share`, `/signin` and `/embed/*` answer `404`, exactly as on 
 server that has no sign-in configured. The test suite covers the whole flow,
 including the sign-in pages, the label hosts, the share page and the Share popover's
 frame, popup and token, with the hosts set per test.
-A plain `openartifacts publish` therefore falls back to a public page locally, as it
-does on any server with no private documents, so publishing by hand works as it did.
+A plain `openartifacts publish` therefore publishes nothing locally, as on any server
+with no private documents; `openartifacts publish --public` publishes by hand.
 Trying private sharing by hand needs a deployment: see
 [Self-hosting](deploying.md#self-hosting) under Private sharing.
 

@@ -383,6 +383,9 @@ test("publish --private creates through /private-docs and reports the share page
   }
 });
 
+const PRIVATE_UNSUPPORTED = "This server does not support private documents. Nothing was published. " +
+  "To publish a new page for anyone with the link instead, add --public.";
+
 test("publish --private against a server without private documents creates nothing", async () => {
   const directory = await mkdtemp(join(tmpdir(), "openartifacts-private-old-"));
   const page = join(directory, "notes.html");
@@ -396,7 +399,7 @@ test("publish --private against a server without private documents creates nothi
       OPENARTIFACTS_TOKEN: "opaque-test-token",
     }, async (lines) => {
       await assert.rejects(main(["publish", page, "--private"]), (error) =>
-        error.message === "This server does not support private documents. Nothing was published.");
+        error.message === PRIVATE_UNSUPPORTED);
       assert.deepEqual(lines, []);
     });
     // The process exit code is the failure the agent sees.
@@ -406,7 +409,7 @@ test("publish --private against a server without private documents creates nothi
       OPENARTIFACTS_TOKEN: "opaque-test-token",
     });
     assert.notEqual(result.code, 0);
-    assert.match(result.stderr, /This server does not support private documents\. Nothing was published\./);
+    assert.match(result.stderr, /This server does not support private documents\. Nothing was published\. To publish a new page for anyone with the link instead, add --public\./);
     assert.equal(result.stdout, "");
   } finally {
     remote.server.close();
@@ -472,20 +475,19 @@ test("with no flag, a plan without private sharing publishes publicly instead", 
   }
 });
 
-test("with no flag, a server without private documents publishes publicly instead", async () => {
+test("with no flag, a server without private documents publishes nothing", async () => {
   const { directory, page } = await publishFixture("default-404");
   const remote = await publishingServer();
   remote.control.privateDocs = false;
   try {
     await withEnvironment(publishEnvironment(directory, remote), async (lines) => {
-      await main(["publish", page]);
-      assert.deepEqual(routes(remote), [["POST", "/api/v1/private-docs"], ["POST", "/api/v1/docs"]]);
-      assert.equal(JSON.parse(lines[0]).linkAccess, "anyone");
-      assert.equal(JSON.parse(lines[0]).manageUrl, undefined);
+      await assert.rejects(main(["publish", page]), (error) => error.message === PRIVATE_UNSUPPORTED);
+      assert.deepEqual(lines, []);
     });
   } finally {
     remote.server.close();
   }
+  assert.deepEqual(routes(remote), [["POST", "/api/v1/private-docs"]]);
 });
 
 test("with no flag, a failure that is not about private support is not retried publicly", async () => {

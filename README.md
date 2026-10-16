@@ -228,8 +228,9 @@ Worker becomes reachable only after Cloudflare attaches both custom domains.
 
 Documents are all public until you configure reader sign-in, and a server without
 it answers the private-sharing routes `404`, like a server that predates the
-feature. A plain `openartifacts publish` still publishes public there, because the
-CLI falls back to a public page when the server has no private documents. To turn it on you need, besides a Google or GitHub OAuth app (or Email
+feature. A plain `openartifacts publish` publishes nothing there, because the CLI
+never falls back to a public page after the private route answers `404`; pass
+`--public` to publish for anyone with the link. To turn it on you need, besides a Google or GitHub OAuth app (or Email
 Service for emailed codes):
 
 - a `READER_SESSION_SECRET` Worker secret of at least 32 characters;

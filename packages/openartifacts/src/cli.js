@@ -587,10 +587,12 @@ export async function main(args) {
       if (prepared.docId && error instanceof APIError && error.status === 404) {
         error.message += ` No document ${prepared.docId} is in this account. Publish without --doc-id to create a new document.`;
       }
-      // A Worker that predates private sharing, and one without reader sign-in,
-      // both answer 404 and create nothing. There is no fallback to a public page.
-      if (prepared.access === "private" && error instanceof APIError && error.status === 404) {
-        throw new Error("This server does not support private documents. Nothing was published.");
+      // A Worker that predates private sharing, one without reader sign-in, and a
+      // private create withdrawn by a concurrent delete all answer 404 and leave
+      // nothing public. A new page, with or without --private, never falls back to a
+      // public one; only --public publishes publicly.
+      if (!prepared.docId && prepared.access !== "public" && error instanceof APIError && error.status === 404) {
+        throw new Error("This server does not support private documents. Nothing was published. To publish a new page for anyone with the link instead, add --public.");
       }
       if (prepared.access === "private" && error instanceof APIError && error.status === 402 && error.detail.limit === "privateSharing") {
         error.message += " Nothing was published. To publish a new page for anyone with the link instead, add --public.";
@@ -668,10 +670,11 @@ export async function main(args) {
  * Create a new page. `--public` and `--private` name their route and never fall
  * back. With no flag the page starts private, because a page that was ever
  * public may already have been copied by whoever saw it and a later switch
- * cannot recall those copies; it starts public only where private is not on
- * offer: a plan without private sharing (`402 limit_reached`, `limit:
- * "privateSharing"`) or a server with no private documents (`404` from the
- * private route, after which nothing exists). Any other failure stays a failure.
+ * cannot recall those copies; it starts public only on a plan without private
+ * sharing (`402 limit_reached`, `limit: "privateSharing"`). Any other failure,
+ * including a `404` from the private route, stays a failure: that 404 can also
+ * mean a concurrent delete withdrew the page just created, and publishing the
+ * same html publicly then would expose it.
  * @param {ReturnType<typeof createClient>} client @param {"private" | "public" | "default"} access
  * @param {{title?: string, html: string}} body
  */
@@ -681,7 +684,7 @@ async function createPage(client, access, body) {
     return { published: await client.createPrivateDoc(body), viaPrivateRoute: true };
   } catch (error) {
     const unavailable = error instanceof APIError &&
-      (error.status === 404 || (error.status === 402 && error.code === "limit_reached" && error.detail.limit === "privateSharing"));
+      error.status === 402 && error.code === "limit_reached" && error.detail.limit === "privateSharing";
     if (access === "private" || !unavailable) throw error;
     return { published: await client.createDoc(body), viaPrivateRoute: false };
   }

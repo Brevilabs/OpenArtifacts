@@ -694,9 +694,9 @@ Google or GitHub (both halves of the OAuth pair) or emailed codes (the `EMAIL`
 binding and `EMAIL_FROM`). When it is not, `POST /api/v1/private-docs`, every
 `…/access` route, `…/open`, `/open/*`, `/share/*`, `/signin/*` and `/embed/*` answer
 `404` exactly as a Worker that predates private sharing does, and served pages
-carry no top bar and no page-script tag: the header byline stays as it was. Every client already knows what to do: `publish --private`
-reports that the server does not support private documents and creates nothing, and
-a plain `publish` publishes a public page instead.
+carry no top bar and no page-script tag: the header byline stays as it was. Every client already knows what to do: `publish` and `publish --private`
+report that the server does not support private documents and create nothing, and
+`publish --public` publishes a public page.
 No half-configured state exists. `GET …/html` is not part of the family and keeps
 working, and `GET /api/v1/docs` still reports each document's stored `linkAccess`.
 
