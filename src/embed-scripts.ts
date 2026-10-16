@@ -690,7 +690,15 @@ export const FRAME_SCRIPT = String.raw`(() => {
       let last = null;
       let stop = null;
       let crashed = false;
-      for (const address of found.emails) {
+      for (const [index, address] of found.emails.entries()) {
+        // A batch spans many round trips, so the check guarded() made before the
+        // first write is made again before each later one. If it drew another
+        // view (the document went private, or was deleted), that is the answer.
+        if (index > 0 && !(await stillPublic())) {
+          if (!message.isConnected) return;
+          crashed = true;
+          break;
+        }
         let response;
         let parsed = null;
         try {
