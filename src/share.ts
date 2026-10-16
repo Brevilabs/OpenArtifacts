@@ -77,8 +77,13 @@ import { publicDocUrl } from "./urls.js";
 /** The one line shown after a public document is switched to invited-only. */
 const COPY_NOTICE = "People who opened it while it was public may have kept a copy.";
 
-/** A pasted list of `MAX_INVITES_PER_DOC` addresses, form-encoded, fits with room to spare. */
-const SHARE_FORM_BYTES = 16 * 1024;
+/**
+ * Room for the longest list the page can be asked to add. At worst that is
+ * `MAX_INVITES_PER_DOC` addresses of 254 characters each, every character a
+ * three-byte one that form encoding turns into nine bytes: about 229 KB. The
+ * rest is for separators and the names a mail client copies.
+ */
+const SHARE_FORM_BYTES = 256 * 1024;
 
 /**
  * The Copy button's script and the Add people box's Enter key, small enough to

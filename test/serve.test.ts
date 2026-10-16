@@ -2464,6 +2464,21 @@ describe("an invited-only document", () => {
       expect((await access(doc.docId)).people).toHaveLength(90);
     });
 
+    it("takes the longest list a document can hold, a hundred of the longest addresses", async () => {
+      const doc = await privateDoc();
+      const owner = await ownerAccount(doc);
+      // 254 characters each, all but the digits three bytes long: nine bytes apiece once form-encoded.
+      const list = Array.from({ length: 100 }, (_, n) => `${String(n).padStart(3, "0")}${"€".repeat(197)}@${"€".repeat(53)}`).join("\n");
+      expect(list.split("\n").every((address) => address.length === 254)).toBe(true);
+      expect(new URLSearchParams({ op: "add", email: list }).toString().length).toBeGreaterThan(200 * 1024);
+
+      const response = await write(doc.docId, owner, { op: "add", email: list });
+
+      expect(response.status).toBe(200);
+      expect(await response.text()).toContain("Added 100 people.");
+      expect((await access(doc.docId)).people).toHaveLength(100);
+    });
+
     it("reads a lone pasted contact as its address", async () => {
       const doc = await privateDoc();
       const owner = await ownerAccount(doc);

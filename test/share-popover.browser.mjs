@@ -868,3 +868,33 @@ test("a read that resolves after the owner's own switch does not undo it", { tim
   assert.equal(await frame.getByText("People who opened it while it was public may have kept a copy.").count(), 1);
   await context.close();
 });
+
+test("a pasted batch stops when the document goes private part way through", { timeout: 120_000 }, async () => {
+  // The frame on a document's page is on the public origin, so each write in a
+  // batch is checked against the document first, not just the first one.
+  const X = await publish("Private mid-batch", "<p>Mine.</p>");
+  const context = await newContext(OWNER_ACCOUNT);
+  const { page, frame } = await ownerFrame(context, X);
+  const puts = [];
+  page.on("request", (request) => { if (request.method() === "PUT" && request.url().includes("/access/people/")) puts.push(decodeURIComponent(request.url().split("/people/")[1])); });
+  // Another tab makes the document private once the first address has landed,
+  // just before the frame checks the document again.
+  let switched = false;
+  await page.route(`https://${API}/embed/api/docs/${X}/access`, async (route) => {
+    if (route.request().method() === "GET" && puts.length > 0 && !switched) {
+      switched = true;
+      assert.equal((await api(`/api/v1/docs/${X}/access`, { method: "PUT", body: JSON.stringify({ linkAccess: "invited" }) })).status, 200);
+    }
+    await route.continue();
+  });
+  // A click in the first moments after the sign-in popup closes can be lost to the focus change.
+  await page.waitForTimeout(1500);
+
+  await frame.getByPlaceholder("Emails, separated by commas").fill("ann@example.com, bob@example.com, carol@example.com");
+  await frame.getByRole("button", { name: "Add", exact: true }).click();
+  await frame.getByText("Open Share from the document’s own page").waitFor();
+
+  assert.deepEqual(puts, ["ann@example.com"]);
+  assert.deepEqual((await (await api(`/api/v1/docs/${X}/access`)).json()).people.map((entry) => entry.email), ["ann@example.com"]);
+  await context.close();
+});
