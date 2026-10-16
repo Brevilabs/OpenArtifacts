@@ -440,14 +440,31 @@ describe("rowsFromManifest", () => {
     expect(rowsFromManifest(ID, { ...manifest, latestVersion: 2 }, objects).doc.latest_version).toBe(3);
   });
 
-  it("treats an unknown schema or a malformed people list as unreadable, and rebuilds closed", () => {
-    for (const odd of [{ ...manifest, schema: 2 }, { ...manifest, schema: undefined }, { ...manifest, people: "x@y.z" }]) {
-      const rows = rowsFromManifest(ID, odd as never, objects);
-      expect(rows.doc).toMatchObject({ link_access: "invited", owner: "" });
+  it("treats a manifest of any other shape as unreadable, and rebuilds closed", () => {
+    const odd: unknown[] = [
+      { ...manifest, schema: 2 },
+      { ...manifest, schema: undefined },
+      { ...manifest, people: "x@y.z" },
+      { ...manifest, people: [{ role: "comment", createdAt: 1 }] },
+      { ...manifest, people: [{ email: "x@y.z", role: "view" }] },
+      { ...manifest, people: [{ email: "x@y.z", role: 1, createdAt: 1 }] },
+      { ...manifest, people: [{ email: "x@y.z", role: "view", createdAt: 1 }, null] },
+      { ...manifest, title: {} },
+      { ...manifest, owner: undefined },
+      { ...manifest, commentsEnabled: 1 },
+      { ...manifest, createdAt: "100" },
+      { ...manifest, updatedAt: null },
+      { ...manifest, latestVersion: "5" },
+      { ...manifest, deletedAt: undefined },
+      { ...manifest, deletedAt: "now" },
+      [],
+      "manifest",
+    ];
+    for (const m of odd) {
+      const rows = rowsFromManifest(ID, m, objects);
+      expect(rows.doc).toMatchObject({ link_access: "invited", owner: "", title: "Untitled", deleted_at: null });
       expect(rows.invites).toEqual([]);
     }
-    const people = [{ email: "x@y.z", role: "view", createdAt: 1 }, { role: "comment" }, null];
-    expect(rowsFromManifest(ID, { ...manifest, people } as never, objects).invites.map((i) => i.email)).toEqual(["x@y.z"]);
   });
 
   it("fails closed on a missing or unknown linkAccess", () => {
@@ -458,17 +475,17 @@ describe("rowsFromManifest", () => {
     expect(rowsFromManifest(ID, without, objects).doc.link_access).toBe("invited");
   });
 
-  it("restores a missing or unknown role as view, and a missing manifest as private with no owner", () => {
-    const people = [{ email: "x@y.z", role: "admin", createdAt: 1 }, { email: "w@y.z", createdAt: 2 }];
+  it("restores an unknown role as view, and a missing manifest as private with no owner", () => {
+    const people = [{ email: "x@y.z", role: "admin", createdAt: 1 }, { email: "w@y.z", role: "Comment", createdAt: 2 }];
     const rows = rowsFromManifest(ID, { ...manifest, people } as never, objects);
     expect(rows.invites.map((invite) => invite.role)).toEqual(["view", "view"]);
 
     expect(rowsFromManifest(ID, null, objects).doc).toMatchObject({ link_access: "invited", owner: "", deleted_at: null });
   });
 
-  it("carries a newline in a title through D1Database.exec, which splits its input on newlines", async () => {
+  it("carries newlines and NULs in a title through D1Database.exec, which splits its input on newlines", async () => {
     const id = "newlinedoc0000000000000000000000";
-    const title = "Plan\r\nof 'record'\n\nv2\n";
+    const title = "Plan\r\nof 'record'\n\nv2\n\0end\0";
     const sql = rebuildSql([rowsFromManifest(id, { ...manifest, docId: id, title, people: [{ email: "a\nb@x.y", role: "view", createdAt: 1 }] }, [])]);
     expect(sql.trimEnd().split("\n").every((line) => line.startsWith("INSERT OR IGNORE INTO "))).toBe(true);
     await env.DB.exec(sql.trim());

@@ -87,6 +87,12 @@ async function readManifest(env: Env, docId: string): Promise<string | null> {
  * a manifest saying `anyone`. So the snapshot is re-read after each put and
  * the put repeated until it matches D1; this throws if it never settles.
  * Does nothing for a doc with no row.
+ *
+ * One residual: a writer that read a live snapshot before a concurrent delete
+ * can put it after the tombstone. Its re-read sees `deletedAt` and repairs it,
+ * unless that corrective put fails or its isolate dies first. Then only a later
+ * rebuild would restore the withdrawn doc as live, so an operator checks the
+ * deleted docs against D1 Time Travel (docs/deploying.md).
  */
 export async function writeManifest(env: Env, docId: string): Promise<void> {
   let body = await readManifest(env, docId);

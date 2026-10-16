@@ -517,7 +517,8 @@ and the bytes in place, and a rebuild would restore that withdrawn document.
 Before applying the rebuild SQL, search the Worker logs for `delete left a stale
 manifest` and `delete left objects behind`, and set `deleted_at` by hand for
 those documents. A withdrawn document's version rows are not recovered, since
-its bytes are gone.
+its bytes are gone. A delete racing a snapshot writer can, rarely, leave a live
+manifest after the tombstone, so check the deleted docs against D1 Time Travel too.
 
 ## Private sharing
 
