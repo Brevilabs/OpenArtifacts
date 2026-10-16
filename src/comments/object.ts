@@ -156,6 +156,7 @@ export type ReplyArgs = Writer & { threadId: string; body: unknown; version: num
 export type ReplyResult =
   | { ok: true; commentId: string; thread: ThreadRecord }
   | Failure<"invalid_body" | "thread_not_found" | "limit_comments">
+  | VersionFailure
   | PurgedFailure;
 
 export type TransitionArgs = Writer & { threadId: string; isOwner: boolean; scope: string[]; version: number };
@@ -392,6 +393,13 @@ export class DocComments extends DurableObject<Env> {
     if (body === null) return { ok: false, reason: "invalid_body" };
     if (!this.usable()) return { ok: false, reason: "purged" };
     if (!this.threadRow(args.threadId)) return { ok: false, reason: "thread_not_found" };
+    // Anchor first, as resolve does: a version number a failed push burned is
+    // not a page, and a reply must not record that it was written there.
+    const ready = await this.ensureAnchors(args.docId, args.version);
+    if (!ready.ok) return ready;
+    if (this.gone) return { ok: false, reason: "purged" };
+    // The thread may have been deleted while R2 was being read.
+    if (!this.threadRow(args.threadId)) return { ok: false, reason: "thread_not_found" };
     if (this.count("comments") >= MAX_COMMENTS) return { ok: false, reason: "limit_comments" };
     const commentId = newId("cm_");
     const at = this.stamp();
@@ -400,7 +408,6 @@ export class DocComments extends DurableObject<Env> {
       this.sql.exec(`UPDATE threads SET updated_at = ? WHERE id = ?`, at, args.threadId);
     });
     this.ctx.waitUntil(this.snapshot(args.docId));
-    // Anchored as far as already memoised: addressing an email needs the quote, not a fresh R2 read.
     const thread = this.readThreads(args.version, args.threadId)[0] as ThreadRecord;
     return { ok: true, commentId, thread };
   }

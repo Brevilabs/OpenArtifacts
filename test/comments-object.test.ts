@@ -392,6 +392,18 @@ describe("DocComments", () => {
     expect(listed.threads[0]?.state).toBe("open");
   });
 
+  it("replying at a version the object cannot anchor stores nothing", async () => {
+    const { docId, stub } = await start();
+    const t = mustCreate(await stub.createThread({ docId, ...alice, version: 1, anchor: { exact: "fox" }, body: "a" }));
+    expect(await stub.reply({ docId, threadId: t.threadId, version: 5, ...bob, body: "b" })).toEqual({
+      ok: false,
+      reason: "version_not_found",
+    });
+    const listed = await stub.list({ docId, version: 1 });
+    if (!listed.ok) throw new Error();
+    expect(listed.threads[0]?.comments).toHaveLength(1);
+  });
+
   it("a resolved thread still takes replies and keeps its resolution", async () => {
     const { docId, stub } = await start();
     const t = mustCreate(await stub.createThread({ docId, ...alice, version: 1, anchor: { exact: "fox" }, body: "a" }));
