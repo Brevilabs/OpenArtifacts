@@ -46,6 +46,7 @@ import { parseAddresses } from "./addresses.js";
 import type { AnalyticsSink } from "./analytics.js";
 import {
   addPerson,
+  addWithoutManifest,
   declineRequest,
   getAccess,
   planRefusal,
@@ -64,6 +65,7 @@ import { COPILOT_HINT } from "./embed-scripts.js";
 import { emailConfigured } from "./email.js";
 import { accountPlan } from "./entitlement.js";
 import { sameOriginPost } from "./limits.js";
+import { writeManifest } from "./manifest.js";
 import { escapeHtml } from "./page.js";
 import { SHARE_PREFIX, parseDocPath } from "./paths.js";
 import { readerSecret } from "./reader-config.js";
@@ -318,7 +320,7 @@ async function write(
 type DialogError = Exclude<Extract<AccessResult, { ok: false }>["refusal"], "not_found"> | "comments_plan";
 
 /**
- * Several addresses pasted at once: `addPerson` for each, in order, inside the
+ * Several addresses pasted at once: `addWithoutManifest` for each, in order, inside the
  * one POST. A refusal that applies to every address (`plan`, `invite_quota`,
  * `full`) stops the batch and those already added stay added. Answers with the
  * dialog and one report instead of a redirect, because a redirect has no room
@@ -337,8 +339,8 @@ async function addMany(
   let added = 0;
   let stop: DialogError | undefined;
   for (const address of found.emails) {
-    // Each addPerson rewrites the manifest; harmless at the caps on a list.
-    const result = await addPerson(env, url, principal, docId, address, undefined, analytics);
+    // The batch snapshots the manifest once, after the loop.
+    const result = await addWithoutManifest(env, url, principal, docId, address, undefined, analytics);
     if (result.ok) added += 1;
     else if (result.refusal === "not_found") return null;
     else {
@@ -346,6 +348,7 @@ async function addMany(
       break;
     }
   }
+  if (added > 0) await writeManifest(env, docId);
   const state = await getAccess(env, principal, docId);
   if (!state.ok) return null;
   const done = [

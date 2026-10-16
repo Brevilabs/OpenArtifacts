@@ -208,6 +208,24 @@ export async function addPerson(
   role: InviteRole | undefined,
   analytics: AnalyticsSink,
 ): Promise<AccessResult> {
+  const result = await addWithoutManifest(env, requestUrl, principal, docId, rawEmail, role, analytics);
+  // After the email and the event, so a failed put cannot swallow either: the
+  // retry it invites is a pure repeat, which mails nobody. Written on a pure
+  // repeat too, since that retry is what repairs a failed manifest write.
+  if (result.ok) await writeManifest(env, docId);
+  return result;
+}
+
+/** `addPerson` without the manifest snapshot, for a caller that snapshots once after a batch. */
+export async function addWithoutManifest(
+  env: Env,
+  requestUrl: URL,
+  principal: Publisher,
+  docId: string,
+  rawEmail: string,
+  role: InviteRole | undefined,
+  analytics: AnalyticsSink,
+): Promise<AccessResult> {
   const doc = isDocId(docId) ? await findManagedDoc(env.DB, docId, principal.owner) : null;
   if (doc === null) return refused("not_found");
   const email = inviteAddress(rawEmail);
@@ -217,8 +235,6 @@ export async function addPerson(
   const listed = before.people.find((person) => person.email === email);
   // A pure repeat: already listed, no role or the same role, and no request to approve. Like naming the mode a document already has, it answers on any plan, mails nobody and records nothing.
   if (listed && (role === undefined || role === listed.role) && !before.requests.some((r) => r.email === email)) {
-    // Rewritten even so: this is the retry of an add whose manifest write failed.
-    await writeManifest(env, docId);
     return { ok: true, state: before, changed: false };
   }
   if (!maySharePrivately(env, principal)) return refused("plan");
@@ -237,9 +253,6 @@ export async function addPerson(
 
   if (added) await invite(env, requestUrl, doc.publisher_id, docId, doc.title, email);
   if (added || roleChanged) recordChange(analytics, docId, doc.publisher_id, state);
-  // After the email and the event, so a failed put cannot swallow either: the
-  // retry it invites is a pure repeat, which mails nobody.
-  await writeManifest(env, docId);
   return { ok: true, state, changed: added || roleChanged };
 }
 

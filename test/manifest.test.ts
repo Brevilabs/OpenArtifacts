@@ -6,6 +6,7 @@ import { writeManifest } from "../src/manifest.js";
 import { newAccountId, newApiToken, newTokenId } from "../src/ids.js";
 import worker from "../src/index.js";
 import { rebuildSql, rowsFromManifest, type ListedObject } from "../src/rebuild.js";
+import { signPayload } from "../src/session.js";
 import { docObjectPrefix, manifestObjectKey, versionObjectKey } from "../src/storage.js";
 
 /**
@@ -179,6 +180,77 @@ describe("a manifest follows every change to a document's state", () => {
 
     expect((await send("DELETE", person(docId, "alice@acme.com"), o.token)).status).toBe(200);
     expect(await expectInSync(docId)).toMatchObject({ people: [{ email: "bob@acme.com" }] });
+  });
+
+  describe("a list of addresses pasted on the share page", () => {
+    /** The share page's own form post, from the owner's browser session. */
+    async function paste(over: Partial<Env>, accountId: string, docId: string, emails: string): Promise<Response> {
+      const cookie = `__Host-oa_session=${await signPayload(HOSTS.READER_SESSION_SECRET!, "session", { a: accountId }, Date.now() + 60_000)}`;
+      const ctx = createExecutionContext();
+      const response = await worker.fetch(
+        new Request(`${API}/share/${docId}`, {
+          method: "POST",
+          headers: { cookie, "sec-fetch-site": "same-origin" },
+          body: new URLSearchParams({ op: "add", email: emails }),
+        }),
+        { ...env, ...HOSTS, ...over } as Env,
+        ctx,
+      );
+      await waitOnExecutionContext(ctx);
+      return response;
+    }
+
+    it("is snapshotted once, with every address, a repeat among them", async () => {
+      const o = await owner();
+      const docId = await publish(o.token, "private-docs");
+      expect((await send("PUT", person(docId, "bob@acme.com"), o.token)).status).toBe(200);
+      const puts: string[] = [];
+      const counting = bucketWith(async (key) => void puts.push(key));
+
+      const response = await paste({ DOCS: counting }, o.id, docId, "ann@acme.com bob@acme.com carol@acme.com dave@acme.com");
+
+      expect(response.status).toBe(200);
+      expect(await response.text()).toContain("Added 4 people.");
+      expect(puts).toEqual([manifestObjectKey(docId)]);
+      const manifest = await expectInSync(docId);
+      expect((manifest.people as Array<{ email: string }>).map((p) => p.email).sort()).toEqual([
+        "ann@acme.com",
+        "bob@acme.com",
+        "carol@acme.com",
+        "dave@acme.com",
+      ]);
+    });
+
+    it("is snapshotted with the addresses added before a refusal stopped it", async () => {
+      const o = await owner();
+      const docId = await publish(o.token, "private-docs");
+      for (let n = 0; n < 98; n++) {
+        await env.DB.prepare("INSERT INTO doc_invites (doc_id, email, role, created_at) VALUES (?, ?, 'comment', ?)")
+          .bind(docId, `p${n}@acme.com`, Date.now())
+          .run();
+      }
+      await env.DOCS.delete(manifestObjectKey(docId));
+
+      const response = await paste({}, o.id, docId, "a@acme.com b@acme.com c@acme.com d@acme.com");
+
+      expect(await response.text()).toContain("Added 2 people. Stopped:");
+      const manifest = await expectInSync(docId);
+      const emails = (manifest.people as Array<{ email: string }>).map((p) => p.email);
+      expect(emails).toHaveLength(100);
+      expect(emails).toContain("b@acme.com");
+      expect(emails).not.toContain("c@acme.com");
+    });
+
+    it("writes no manifest when the document is not the session's", async () => {
+      const o = await owner();
+      const other = await owner();
+      const docId = await publish(o.token, "private-docs");
+      await env.DOCS.delete(manifestObjectKey(docId));
+
+      expect((await paste({}, other.id, docId, "ann@acme.com bob@acme.com")).status).toBe(404);
+
+      expect(await env.DOCS.get(manifestObjectKey(docId))).toBeNull();
+    });
   });
 
   it("follows the comments switch", async () => {
