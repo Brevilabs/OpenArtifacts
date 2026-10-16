@@ -24,7 +24,6 @@ export interface DocManifest {
   owner: string;
   title: string;
   linkAccess: LinkAccess;
-  commentsEnabled: boolean;
   createdAt: number;
   updatedAt: number;
   /** Epoch ms, or null while the doc is live. */
@@ -38,7 +37,6 @@ interface DocSnapshotRow {
   owner: string;
   title: string;
   link_access: LinkAccess;
-  comments_enabled: number;
   created_at: number;
   updated_at: number;
   deleted_at: number | null;
@@ -52,7 +50,7 @@ const MAX_PASSES = 4;
 async function readManifest(env: Env, docId: string): Promise<string | null> {
   const [doc, invites] = await env.DB.batch([
     env.DB.prepare(
-      `SELECT owner, title, link_access, comments_enabled, created_at, updated_at, deleted_at, latest_version
+      `SELECT owner, title, link_access, created_at, updated_at, deleted_at, latest_version
          FROM docs WHERE id = ?`,
     ).bind(docId),
     env.DB.prepare(
@@ -68,7 +66,6 @@ async function readManifest(env: Env, docId: string): Promise<string | null> {
     owner: row.owner,
     title: row.title,
     linkAccess: row.link_access,
-    commentsEnabled: row.comments_enabled === 1,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     deletedAt: row.deleted_at,

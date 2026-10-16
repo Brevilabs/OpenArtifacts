@@ -1,5 +1,6 @@
-import { createExecutionContext, env, waitOnExecutionContext } from "cloudflare:test";
+import { createExecutionContext, env, runInDurableObject, waitOnExecutionContext } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
+import type { DocComments } from "../src/comments/object.js";
 import type { Env } from "../src/config.js";
 import { sha256Hex } from "../src/hash.js";
 import { writeManifest } from "../src/manifest.js";
@@ -96,7 +97,6 @@ async function expectedFromD1(docId: string) {
     owner: d.owner,
     title: d.title,
     linkAccess: d.link_access,
-    commentsEnabled: d.comments_enabled === 1,
     createdAt: d.created_at,
     updatedAt: d.updated_at,
     deletedAt: d.deleted_at,
@@ -131,7 +131,7 @@ describe("a manifest follows every change to a document's state", () => {
     const o = await owner();
     const pub = await publish(o.token, "docs", "Public one");
     expect(await expectInSync(pub)).toMatchObject({
-      owner: o.id, title: "Public one", linkAccess: "anyone", commentsEnabled: false,
+      owner: o.id, title: "Public one", linkAccess: "anyone",
       deletedAt: null, latestVersion: 1, people: [],
     });
 
@@ -253,17 +253,6 @@ describe("a manifest follows every change to a document's state", () => {
     });
   });
 
-  it("follows the comments switch", async () => {
-    const o = await owner();
-    const docId = await publish(o.token, "docs");
-    const set = (comments: boolean) => send("PUT", `/api/v1/docs/${docId}/settings`, o.token, { comments });
-
-    expect((await set(true)).status).toBe(200);
-    expect(await expectInSync(docId)).toMatchObject({ commentsEnabled: true });
-    expect((await set(false)).status).toBe(200);
-    expect(await expectInSync(docId)).toMatchObject({ commentsEnabled: false });
-  });
-
   it("rewrites the manifest when the plan lapsed before the retry of a switch to invited", async () => {
     const o = await owner();
     const docId = await publish(o.token, "private-docs");
@@ -284,7 +273,6 @@ describe("a manifest follows every change to a document's state", () => {
       () => send("PUT", `/api/v1/docs/${docId}/access`, o.token, { linkAccess: "invited" }),
       () => send("PUT", person(docId, "alice@acme.com"), o.token, { role: "view" }),
       () => send("DELETE", person(docId, "nobody@acme.com"), o.token),
-      () => send("PUT", `/api/v1/docs/${docId}/settings`, o.token, { comments: false }),
     ]) {
       await env.DOCS.delete(manifestObjectKey(docId));
       expect((await repeat()).status).toBe(200);
@@ -435,7 +423,6 @@ describe("delete", () => {
     const docId = await publish(o.token, "private-docs");
     await send("PUT", person(docId, "alice@acme.com"), o.token, { role: "comment" });
     await send("PUT", `/api/v1/docs/${docId}`, o.token, { html: page("<p>v2</p>") });
-    await send("PUT", `/api/v1/docs/${docId}/settings`, o.token, { comments: true });
 
     const { deleteDoc } = await import("../src/api/manage.js");
     const { NO_ANALYTICS } = await import("../src/analytics.js");
@@ -490,7 +477,7 @@ describe("rowsFromManifest", () => {
     { key: `docs/${ID}/v0.html`, size: 1, uploaded: 1 },
   ];
   const manifest: Record<string, any> = {
-    schema: 1, docId: ID, owner: "o1", title: "T", linkAccess: "anyone", commentsEnabled: true,
+    schema: 1, docId: ID, owner: "o1", title: "T", linkAccess: "anyone",
     createdAt: 100, updatedAt: 200, deletedAt: null, latestVersion: 5,
     people: [{ email: "a@b.c", role: "comment", createdAt: 150 }],
   };
@@ -499,13 +486,17 @@ describe("rowsFromManifest", () => {
     const rows = rowsFromManifest(ID, manifest, objects);
     expect(rows.doc).toEqual({
       id: ID, owner: "o1", title: "T", latest_version: 5, created_at: 100, updated_at: 200,
-      deleted_at: null, link_access: "anyone", comments_enabled: 1,
+      deleted_at: null, link_access: "anyone", has_threads: 1,
     });
     expect(rows.invites).toEqual([{ doc_id: ID, email: "a@b.c", role: "comment", created_at: 150 }]);
     expect(rows.versions).toEqual([
       { doc_id: ID, n: 1, size: 10, title: null, created_at: 1000 },
       { doc_id: ID, n: 3, size: 30, title: null, created_at: 3000 },
     ]);
+  });
+
+  it("marks has_threads only where the prefix holds threads.json", () => {
+    expect(rowsFromManifest(ID, manifest, objects.filter((o) => !o.key.endsWith("/threads.json"))).doc.has_threads).toBe(0);
   });
 
   it("never lets the counter fall below an object that exists", () => {
@@ -524,7 +515,7 @@ describe("rowsFromManifest", () => {
       { ...manifest, people: [{ email: "x@y.z", role: "view", createdAt: 1 }, { email: "x@y.z", role: "comment", createdAt: 2 }] },
       { ...manifest, title: {} },
       { ...manifest, owner: undefined },
-      { ...manifest, commentsEnabled: 1 },
+      { ...manifest, linkAccess: 1 },
       { ...manifest, createdAt: "100" },
       { ...manifest, createdAt: Infinity },
       { ...manifest, latestVersion: 1.5 },
@@ -588,6 +579,7 @@ describe("the columns the manifest and the rebuild were written against", () => 
       (await env.DB.prepare(`PRAGMA table_info(${table})`).all<{ name: string }>()).results.map((column) => column.name);
     expect(await columns("docs")).toEqual([
       "id", "owner", "title", "latest_version", "created_at", "updated_at", "deleted_at", "link_access", "comments_enabled",
+      "has_threads",
     ]);
     expect(await columns("doc_invites")).toEqual(["doc_id", "email", "role", "created_at"]);
   });
@@ -600,7 +592,12 @@ describe("rebuilding D1 from R2 alone", () => {
     const priv = await publish(o.token, "private-docs", "Private");
     await send("PUT", person(priv, "alice@acme.com"), o.token, { role: "comment" });
     await send("PUT", person(priv, "bob@acme.com"), o.token, { role: "view" });
-    await send("PUT", `/api/v1/docs/${priv}/settings`, o.token, { comments: true });
+    // A thread: `has_threads` comes back from the `threads.json` its object keeps.
+    const posted = await send("POST", `/api/v1/docs/${priv}/threads`, o.token, { anchor: { exact: "hello", prefix: "", suffix: "" }, body: "Why?" });
+    expect(posted.status).toBe(201);
+    await runInDurableObject(env.COMMENTS!.get(env.COMMENTS!.idFromName(priv)), async (instance: DocComments) => {
+      await (instance as unknown as { snapshots: Promise<void> }).snapshots;
+    });
     await send("PUT", `/api/v1/docs/${priv}`, o.token, { title: "Private v2", html: page("<p>second</p>") });
     const gone = await publish(o.token, "docs", "Gone");
     expect((await send("DELETE", `/api/v1/docs/${gone}`, o.token)).status).toBe(204);
@@ -647,7 +644,7 @@ describe("rebuilding D1 from R2 alone", () => {
     expect(served.status).toBe(200);
     expect(await served.text()).toContain("hello");
 
-    // The people, their roles, the switch and the title came back; the owner still manages it.
+    // The people, their roles, the thread flag and the title came back; the owner still manages it.
     expect(await env.DB.prepare("SELECT email, role FROM doc_invites WHERE doc_id = ? ORDER BY email").bind(priv).all()).toMatchObject({
       results: [{ email: "alice@acme.com", role: "comment" }, { email: "bob@acme.com", role: "view" }],
     });
@@ -672,7 +669,7 @@ describe("rebuilding into a database that is not empty", () => {
   it("fails instead of merging a stale snapshot, and brings back no removed invite", async () => {
     const id = "livedoc00000000000000000000000000";
     const manifest = {
-      schema: 1, docId: id, owner: "o1", title: "T", linkAccess: "invited", commentsEnabled: false,
+      schema: 1, docId: id, owner: "o1", title: "T", linkAccess: "invited",
       createdAt: 100, updatedAt: 200, deletedAt: null, latestVersion: 1, people: [],
     };
     const live = rowsFromManifest(id, manifest, []);

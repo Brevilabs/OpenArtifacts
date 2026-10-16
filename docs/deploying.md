@@ -723,8 +723,11 @@ on the free Workers plan.
      done
    ```
 
-   Skip this step on a deployment that applies `0016` and starts the new Worker
-   together.
+   Last, rewrite every manifest from D1 with `POST /admin/v1/manifests/backfill` (under
+   **One-time backfill** above), since these updates and `0016`'s change roles without
+   rewriting them, and a rebuild would otherwise bring back `comment`. Skip the
+   two D1 updates and the loop on a deployment that applies `0016` and starts the
+   new Worker together; the manifest rewrite still applies.
 4. The comment limiters are in the same deploy; see below.
 
 **The comment limiters.** Two more optional `ratelimits` bindings, on the same

@@ -20,5 +20,8 @@ UPDATE docs SET has_threads = 1 WHERE comments_enabled = 1;
 -- makes `comment` mean "may comment", so a person an owner never meant to allow
 -- would start commenting at the deploy. Lower them to `view`, the role they have
 -- held in effect; documents whose owner switched comments on keep theirs.
+--
+-- Neither update rewrites the documents' manifests in R2: docs/deploying.md has
+-- the backfill that does, after the deploy.
 UPDATE doc_invites SET role = 'view'
  WHERE doc_id IN (SELECT id FROM docs WHERE comments_enabled = 0);
