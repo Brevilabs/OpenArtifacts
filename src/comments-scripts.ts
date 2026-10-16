@@ -373,21 +373,21 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       button.setAttribute("aria-label", "Comments, " + n + " open");
       button.setAttribute("aria-pressed", String(shown));
       button.title = shown ? "Hide comments" : "Show comments";
-      // Pressed is the Share popover's selected segment (#20242c), released the strip's
-      // own colour (#0b0c10), painted rather than transparent: page.js is short-cached
-      // but a pinned /v{n} is immutable for a year, so this button also lands on bars
+      // Pressed is Share's own pill (#1d2027), released the strip's own colour
+      // (#0b0c10), painted rather than transparent: page.js is short-cached but a
+      // pinned /v{n} is immutable for a year, so this button also lands on bars
       // rendered before the dark strip (light, #fbfbfa) and must read there too.
-      button.style.background = shown ? "#20242c" : "#0b0c10";
+      button.style.background = shown ? "#1d2027" : "#0b0c10";
       button.style.color = shown ? "#f4f5f7" : "#c9ced6";
     };
     const makeButton = () => {
       button = document.createElement("button");
       button.type = "button";
-      // A quiet outline control on the dark strip, beside Share's filled pill: the
-      // strip's border token (#2c313b), Share's 28px height and 8px radius. Hover and
-      // focus are OPENARTIFACTS_BAR_STYLE's (src/render.ts), keyed on the class.
+      // A pill beside Share's, in its shape and edge: 34px, fully rounded, a hairline
+      // border, Share's 14px type. Hover and focus are OPENARTIFACTS_BAR_STYLE's
+      // (src/render.ts), keyed on the class.
       button.className = "openartifacts-comments-button";
-      button.setAttribute("style", "all:initial;flex:none;box-sizing:border-box;display:inline-flex;align-items:center;gap:4px;height:28px;padding:0 10px;margin-left:auto;border:1px solid #2c313b;border-radius:8px;color:#c9ced6;cursor:pointer;white-space:nowrap;-webkit-font-smoothing:antialiased;" + FONT);
+      button.setAttribute("style", "all:initial;flex:none;box-sizing:border-box;display:inline-flex;align-items:center;gap:6px;height:34px;padding:0 14px;margin-left:auto;border:1px solid rgba(255,255,255,0.08);border-radius:999px;color:#c9ced6;cursor:pointer;white-space:nowrap;-webkit-font-smoothing:antialiased;" + FONT.replace("13px/1.25", "14px/1"));
       button.addEventListener("click", () => {
         shown = !shown;
         if (!shown) { sheet = false; hideTip(); }
@@ -769,7 +769,7 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
   const titleOf = () => { const m = model(); return m && typeof m.title === "string" ? m.title : ""; };
   const versionOf = () => { const m = model(); return m && typeof m.version === "number" ? m.version : 0; };
   const text = (value) => (typeof value === "string" ? value : "");
-  // The top bar is fixed over the first 40px of the document, so no card starts above it.
+  // The top bar is fixed over the first 48px of the document, so no card starts above it.
   const BAR = 48;
 
   // ---- the token and the sign-in handshake (the Share frame's, copied) ----
