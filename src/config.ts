@@ -12,6 +12,15 @@ export interface Env {
   DOCS: R2Bucket;
   /** D1 pointer index. Rebuildable from R2; never holds content. */
   DB: D1Database;
+  /**
+   * The Worker version that is running, declared in wrangler.jsonc as
+   * `version_metadata`. Its `timestamp` is the rendering component of every
+   * served page's validator, so a deploy moves it and no one has to remember to.
+   * Required, unlike the limiters: the page validator cannot be built without
+   * it, and a deployment that omits the binding should fail loudly on the first
+   * read rather than serve validators that never change.
+   */
+  CF_VERSION_METADATA: WorkerVersionMetadata;
 
   /**
    * Rate limiter on `POST /device/code`, declared in wrangler.jsonc.

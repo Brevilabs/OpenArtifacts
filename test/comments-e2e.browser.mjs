@@ -318,6 +318,9 @@ before(async () => {
     compatibilityDate: "2026-03-01",
     d1Databases: ["DB"],
     r2Buckets: ["DOCS"],
+    // The page validator reads the deploy time from this binding; wrangler.jsonc
+    // declares it, but this harness does not read wrangler.jsonc.
+    versionMetadata: "CF_VERSION_METADATA",
     durableObjects: { COMMENTS: { className: "DocComments", useSQLite: true } },
     serviceBindings: {
       MAILBOX: async (incoming) => {

@@ -32,34 +32,6 @@
  */
 
 /**
- * Which rendering the injections below produce. **Bump it whenever any of them
- * changes.**
- *
- * The stored object's etag cannot notice: it identifies the publisher's bytes,
- * which a byline edit does not touch. Without this in the validator, a reader
- * or a cache holding an older rendering revalidates, gets `304`, and keeps it —
- * indefinitely, since each revalidation renews its freshness. That would defeat
- * the reason for rendering at read time at all.
- *
- * It is a number and not a content hash on purpose: the injections are string
- * constants in this file, so the thing that changes them is an edit to this
- * file, and a reviewer can see whether the number moved with it.
- *
- * One injection is not a constant: the top bar's Share address and script tag
- * are built from the deployment's API host and the document id, and exist only
- * when reader sign-in is configured. So enabling or disabling sign-in, or
- * changing the API host, changes the rendering without moving this number, and a
- * reader holding a validator from before the flip keeps getting `304` for the
- * old rendering.
- * (The comments switch the bar carries on the shared link is per document and
- * changes over time, so it is not accepted drift: `serve.ts` puts it in the
- * validator.)
- * Accepted: it never mixes one publisher's or one document's rendering with
- * another's, and the next edit to the injections, or the next push, refreshes it.
- */
-export const RENDER_REVISION = 10;
-
-/**
  * Belt to the `X-Robots-Tag` header's braces (D9). The header is the
  * authoritative signal — it applies to every response including errors — but
  * the meta tag travels with the bytes, so a doc that is copied, mirrored, or

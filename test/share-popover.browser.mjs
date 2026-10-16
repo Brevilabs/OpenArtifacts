@@ -159,6 +159,9 @@ before(async () => {
     r2Buckets: ["DOCS"],
     // The Comments switch is only useful where the comments object is bound.
     durableObjects: { COMMENTS: { className: "DocComments", useSQLite: true } },
+    // The page validator reads the deploy time from this binding; wrangler.jsonc
+    // declares it, but this harness does not read wrangler.jsonc.
+    versionMetadata: "CF_VERSION_METADATA",
     https: true,
     port: 0,
     bindings: {
