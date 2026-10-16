@@ -29,8 +29,11 @@ The skill uses an installed `openartifacts` command when available and falls bac
 ## How publishing works
 
 The agent is the renderer. It reads the user's document, writes a complete HTML
-file, tells the user where the file is, and ends its turn. When the user later asks
-to publish, the agent runs:
+file, and runs the command below. Any request to publish or share a document goes to
+OpenArtifacts. When the plan has private pages, the agent publishes a private page
+straight away and links the file in its report. Public pages (on request, or on a
+plan without private pages) and updates publish straight away too, unless the user
+asks to see the page first.
 
 ```bash
 openartifacts publish notes.html --title "Notes"
@@ -113,7 +116,7 @@ comments." The skill's "Address the comments" step lists the open threads, revis
 page, publishes the update, then replies on and resolves each thread it addressed.
 
 The CLI never renders Markdown and keeps no record of which file became which page.
-Both are the agent's job: it writes the HTML the user reviewed, and it remembers the
+Both are the agent's job: it writes the HTML, and it remembers the
 docId from the url it reported or from `openartifacts list`.
 
 ## Themes
