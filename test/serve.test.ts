@@ -1576,7 +1576,7 @@ describe("an invited-only document", () => {
         expect(same.status).toBe(304);
       }
 
-      await env.DB.prepare("UPDATE docs SET comments_enabled = 1 WHERE id = ?").bind(publicDoc.docId).run();
+      await env.DB.prepare("INSERT INTO doc_invites (doc_id, email, role, created_at) VALUES (?, 'alice@acme.com', 'comment', ?)").bind(publicDoc.docId, Date.now()).run();
 
       for (const method of ["GET", "HEAD"]) {
         const flipped = await getFrom(url, { method, headers: { "if-none-match": off.headers.get("etag")! } }, PRIVATE);
