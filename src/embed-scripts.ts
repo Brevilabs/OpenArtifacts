@@ -39,7 +39,7 @@
  *   plain `target="_blank"` link the design requires.
  * - Messages are accepted only from that iframe's window and the API origin,
  *   and carry no credential in either direction.
- * - The popover is **one fixed height** (at most 336 px, less on a short
+ * - The popover is **one fixed height** (at most 480 px, less on a short
  *   viewport) and the frame scrolls inside it. The frame never reports its
  *   size: on a public document any page on `openartifacts.site` can embed the
  *   same frame for any document it knows, and the height of what the frame
@@ -82,7 +82,7 @@ export const PAGE_SCRIPT = String.raw`(() => {
     host.style.width = width + "px";
     host.style.top = top + "px";
     host.style.left = Math.round(Math.max(8, Math.min(box.right - width, view.clientWidth - width - 8))) + "px";
-    host.style.height = Math.max(120, Math.min(336, view.clientHeight - top - 8)) + "px";
+    host.style.height = Math.max(120, Math.min(480, view.clientHeight - top - 8)) + "px";
   };
   const build = () => {
     host = document.createElement("div");
@@ -185,10 +185,10 @@ export const POPUP_DONE_SCRIPT = String.raw`(function () {
  * the popover to its content. `main` scrolls when an owner's lists are long. On
  * the short views the top group (heading, sentence, link field, Copy link) sits
  * at the top and `.bottom` (the account line and the hint) is pinned to the
- * floor above a divider, so the room between them reads as layout (the popover
- * is only as tall as the fullest of those views needs, so that room is small).
- * The owner view is longer than the popover and scrolls, but it starts the same
- * way: the header (sticky, so it never scrolls away or gets cut through the
+ * floor above a divider, so the room between them reads as layout. The height
+ * is set for the owner view, which shows Link access, Add people and the first
+ * few people without scrolling; longer lists scroll. The owner view starts the
+ * same way as the others: the header (sticky, so it never scrolls away or gets cut through the
  * middle of a line) and then the link field and Copy link, so Copy link sits at
  * the same place in every view. Link access, with the notice that follows a
  * switch to private, comes next so that it is in view without any scrolling;
