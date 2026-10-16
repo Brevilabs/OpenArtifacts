@@ -721,8 +721,7 @@ async function ownerFrame(context, docId) {
   await page.goto(docUrl(docId));
   await page.locator("a[data-openartifacts-share]").click();
   const frame = await until("the Share frame", () => frameOf(page, docId));
-  const [popup] = await Promise.all([context.waitForEvent("page"), frame.getByRole("button", { name: "Sign in to manage" }).click()]);
-  await popup.waitForEvent("close").catch(() => {});
+  await Promise.all([context.waitForEvent("page"), frame.getByRole("button", { name: "Sign in to manage" }).click()]);
   await frame.getByRole("radio", { name: "Only those invited" }).waitFor();
   return { page, frame };
 }
