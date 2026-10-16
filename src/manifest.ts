@@ -88,11 +88,11 @@ async function readManifest(env: Env, docId: string): Promise<string | null> {
  * the put repeated until it matches D1; this throws if it never settles.
  * Does nothing for a doc with no row.
  *
- * One residual: a writer that read a live snapshot before a concurrent delete
- * can put it after the tombstone. Its re-read sees `deletedAt` and repairs it,
- * unless that corrective put fails or its isolate dies first. Then only a later
- * rebuild would restore the withdrawn doc as live. Accepted: closing it would
- * mean serializing every manifest write against delete.
+ * One residual: a writer that read an older snapshot can put it after a newer
+ * one, or after a delete's tombstone. Its re-read sees the change and repairs
+ * it, unless that corrective put fails or its isolate dies first (an update's
+ * best-effort write swallows the failure). Accepted: closing it would mean
+ * serializing every manifest write.
  */
 export async function writeManifest(env: Env, docId: string): Promise<void> {
   let body = await readManifest(env, docId);

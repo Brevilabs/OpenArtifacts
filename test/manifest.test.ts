@@ -521,6 +521,7 @@ describe("rowsFromManifest", () => {
       { ...manifest, people: [{ email: "x@y.z", role: "view" }] },
       { ...manifest, people: [{ email: "x@y.z", role: 1, createdAt: 1 }] },
       { ...manifest, people: [{ email: "x@y.z", role: "view", createdAt: 1 }, null] },
+      { ...manifest, people: [{ email: "x@y.z", role: "view", createdAt: 1 }, { email: "x@y.z", role: "comment", createdAt: 2 }] },
       { ...manifest, title: {} },
       { ...manifest, owner: undefined },
       { ...manifest, commentsEnabled: 1 },

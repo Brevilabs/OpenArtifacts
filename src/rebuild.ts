@@ -64,7 +64,8 @@ export function readable(manifest: unknown): manifest is DocManifest {
     m.people.every(
       (person) =>
         typeof person === "object" && person !== null && isString(person.email) && isString(person.role) && isNumber(person.createdAt),
-    )
+    ) &&
+    new Set(m.people.map((person) => person.email)).size === m.people.length
   );
 }
 
