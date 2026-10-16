@@ -81,36 +81,12 @@ async function readManifest(env: Env, docId: string): Promise<string | null> {
 
 /**
  * Snapshot `docId` from D1 into its manifest, replacing whatever was there.
+ * A snapshot, never a read-modify-write of the old JSON. Awaited by the caller.
  *
- * It is a snapshot and never a read-modify-write of the old JSON: the new object
- * is a pure function of the rows, so a lost or stale previous write heals on the
- * next one. D1 is read in one batch, so the row and its people agree.
- *
- * Call it right after the D1 write it records and **await it**. It is also
- * written unconditionally, even when the write that brought us here changed
- * nothing: that is what makes a retry repair a manifest whose first put failed,
- * since the retried D1 write is a no-op by then. (Delete is the exception: a
- * retry of a delete answers 404 before getting here, so it retries the put itself.)
- *
- * **Two writers can interleave.** Nothing orders a read of D1 against the put
- * that follows it, so a writer holding an older snapshot can land its put after
- * a newer one. After each put the snapshot is therefore read again, and the put
- * is repeated until the two agree. That converges: any D1 change after a
- * writer's last read is followed by that change's own writer's put, so the last
- * put always matches D1. If it never settles, this throws and the request fails
- * loudly rather than leaving a stale manifest behind.
- *
- * The staleness that matters is one direction: D1 says `invited` and the
- * manifest says `anyone`, which a rebuild would turn into a public page. A failed
- * put and the interleaving above are the two ways to it; both end in a retry or a
- * repeated put instead of a silent gap. The other directions fail closed in a
- * rebuild or cost an owner a re-invite.
- *
- * The same re-read covers a push whose snapshot predates a concurrent delete:
- * its put can land after the tombstone, but the re-read sees the deletion and
- * puts the tombstone back.
- *
- * Does nothing for a doc with no row (a create rolled back).
+ * Two writers can interleave, and the dangerous direction is D1 `invited` with
+ * a manifest saying `anyone`. So the snapshot is re-read after each put and
+ * the put repeated until it matches D1; this throws if it never settles.
+ * Does nothing for a doc with no row.
  */
 export async function writeManifest(env: Env, docId: string): Promise<void> {
   let body = await readManifest(env, docId);
@@ -124,4 +100,18 @@ export async function writeManifest(env: Env, docId: string): Promise<void> {
     body = current;
   }
   throw new Error(`manifest for ${docId} did not settle after ${MAX_PASSES} passes`);
+}
+
+/**
+ * For create and update, whose page is already live when this runs: failing the
+ * request would invite a retry that mints a duplicate doc or another version.
+ * Safe because a create with no manifest rebuilds closed (private, no owner) and
+ * an update never changes access or people; the next doc-state write rewrites it.
+ */
+export async function writeManifestBestEffort(env: Env, docId: string): Promise<void> {
+  try {
+    await writeManifest(env, docId);
+  } catch (error) {
+    console.error("manifest write failed", { docId, error });
+  }
 }

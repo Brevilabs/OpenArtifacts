@@ -1506,12 +1506,6 @@ A conflicting association returns `409 conflict`; invalid identities return
 `400`; a missing local account returns `404`. Associations are permanent and do
 not change plans, credential permissions, document IDs, or stored versions.
 
-`POST /admin/v1/manifests/backfill?cursor=…` is a temporary operator route, removed
-once it has been run, that writes the R2 manifest of every document (withdrawn ones
-included) from D1. It returns `200 {"written":100,"cursor":"…"}`; repeat with the
-returned `cursor` until none is returned. It is safe to repeat. See
-[deploying](deploying.md#rebuilding-d1-from-r2).
-
 ### Pulled account entitlement
 
 OAuth identity remains local. On publishing, an hour-old plan cache or an expired

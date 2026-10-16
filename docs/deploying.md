@@ -471,7 +471,8 @@ All changes ship through a pull request; never push to `main`.
 Every document keeps a `docs/{docId}/manifest.json` beside its versions: its
 owner, title, access mode, comments switch, timestamps, version counter and
 invite list, rewritten after every change to them and left in place as the
-tombstone when the document is withdrawn. It is what makes the document rows of
+tombstone when the document is withdrawn (the sweep removes it if the tombstone
+put fails). It is what makes the document rows of
 D1 rebuildable from the bucket. It does **not** cover accounts, sessions, owner
 links, the publishers cache, access requests or comments (the comments object
 snapshots its own `threads.json`). For those, and for anything within 30 days,
@@ -508,8 +509,13 @@ are never overwritten by an older snapshot. It fails closed: an unknown or missi
 access mode becomes `invited`, an unknown role `view`, and a prefix with no readable
 manifest becomes a private document with no owner (the script names each one).
 Assign those by hand with `UPDATE docs SET owner = …`. A rebuild can therefore hide
-a document that should be public; it cannot publish one that should be private. A
-withdrawn document's version rows are not recovered, since its bytes are gone.
+a document that should be public; it cannot publish one that should be private,
+with one exception. A full R2 outage during a delete can leave the old manifest
+and the bytes in place, and a rebuild would restore that withdrawn document.
+Before applying the rebuild SQL, search the Worker logs for `delete left a stale
+manifest` and `delete left objects behind`, and set `deleted_at` by hand for
+those documents. A withdrawn document's version rows are not recovered, since
+its bytes are gone.
 
 ## Private sharing
 

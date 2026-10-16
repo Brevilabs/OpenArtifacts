@@ -97,20 +97,18 @@ These are day-one decisions, not retrofits:
 D1 is the only record of who owns a doc, what it is called, whether it was
 deleted and whether it is private. Each doc therefore keeps
 `docs/{id}/manifest.json` (`src/manifest.ts`): `owner`, `title`, `linkAccess`,
-`commentsEnabled`, timestamps, `latestVersion`, and the invite list with roles. It
-is a snapshot of the D1 rows, never a read-modify-write, awaited right after every
-write that changes them (create, update, delete, access mode, invites, comments
-switch), re-read and re-put until it matches D1 (two writers can interleave), and
-written even when the write changed nothing, so a retry repairs a failed put.
-Delete is the exception to that last point: its retry answers 404 before reaching
-the write, so it retries the tombstone put itself, and a put that still fails
-costs that one doc a 404 where a rebuild promised 410. Delete leaves the manifest
-behind as the tombstone. Pending access requests are not in it.
+`commentsEnabled`, timestamps, `latestVersion`, and the invite list with roles.
+Pending access requests are not in it.
+
+It is a snapshot of the D1 rows, never a read-modify-write, written and awaited
+after every doc-state write. A failed put fails the access, invite and comments
+requests, so their retry repairs it; create and update log instead, since a
+missing manifest rebuilds closed. Delete leaves the manifest as the tombstone,
+and removes it with the bytes if the tombstone put fails.
 
 `src/rebuild.ts` turns manifests plus the listed `v{n}.html` objects back into
-`docs`, `doc_invites`, `versions` and `storage_usage` rows, and **fails closed**:
-an unknown or missing `linkAccess` becomes `invited`, and a prefix with no
-manifest becomes a private doc with no owner. Procedure: `docs/deploying.md`.
+`docs`, `doc_invites`, `versions` and `storage_usage` rows, and fails closed
+(rules and limits in `docs/deploying.md`).
 
 **This covers document state only.** Accounts, sessions, owner links, the
 publishers cache, access requests and comments (which snapshot to `threads.json`)

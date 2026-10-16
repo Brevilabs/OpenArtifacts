@@ -52,7 +52,7 @@ import {
   utf8Length,
 } from "../quota.js";
 
-import { writeManifest } from "../manifest.js";
+import { writeManifestBestEffort } from "../manifest.js";
 import { STORED_CONTENT_TYPE, versionObjectKey } from "../storage.js";
 import { reserveStorage, releaseStorage } from "../storage-quota.js";
 import { publicDocUrl } from "../urls.js";
@@ -332,10 +332,6 @@ export async function createDoc(
     return docNotFound(docId);
   }
 
-  // After the version is stored, not after the insert: a create that is rolled
-  // back must not leave a manifest for a row that no longer exists.
-  await writeManifest(env, docId);
-
   analytics.record({ name: "document_published", docId, atMs: now, ownerId: owner });
   if (linkAccess === "invited") {
     analytics.record({
@@ -347,6 +343,7 @@ export async function createDoc(
       people: 0,
     });
   }
+  await writeManifestBestEffort(env, docId);
   return pushed(env, requestUrl, docId, FIRST_VERSION, 201, linkAccess);
 }
 
@@ -409,8 +406,8 @@ export async function updateDoc(
   // Only now: the title and timestamp in "my docs" describe what the public url
   // is serving, so they move after the bytes do, never before.
   await commitVersionMetadata(env.DB, docId, version, now);
-  await writeManifest(env, docId);
 
   analytics.record({ name: "document_updated", docId, atMs: now, ownerId: reserved.owner });
+  await writeManifestBestEffort(env, docId);
   return pushed(env, requestUrl, docId, version, 200);
 }

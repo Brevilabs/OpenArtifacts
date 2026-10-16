@@ -97,12 +97,9 @@ export function rebuildSql(rebuilt: readonly RebuiltRows[]): string {
   for (const { doc, invites, versions } of rebuilt) {
     lines.push(insert("docs", Object.keys(doc), Object.values(doc)));
     for (const invite of invites) lines.push(insert("doc_invites", Object.keys(invite), Object.values(invite)));
-    for (const version of versions) {
-      lines.push(insert("versions", Object.keys(version), Object.values(version)));
-      if (version.size > 0) {
-        lines.push(insert("storage_usage", ["doc_id", "n", "size"], [version.doc_id, version.n, version.size]));
-      }
-    }
+    for (const version of versions) lines.push(insert("versions", Object.keys(version), Object.values(version)));
   }
+  // The quota ledger mirrors `versions`, as migrations/0013 builds it.
+  lines.push("INSERT OR IGNORE INTO storage_usage (doc_id, n, size) SELECT doc_id, n, size FROM versions WHERE size > 0;");
   return lines.join("\n") + "\n";
 }

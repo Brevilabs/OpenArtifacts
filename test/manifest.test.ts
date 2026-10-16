@@ -1,5 +1,5 @@
 import { createExecutionContext, env, waitOnExecutionContext } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { Env } from "../src/config.js";
 import { sha256Hex } from "../src/hash.js";
 import { writeManifest } from "../src/manifest.js";
@@ -243,17 +243,6 @@ describe("a manifest follows every change to a document's state", () => {
     await expect(writeManifest(churning, docId)).rejects.toThrow(/did not settle/);
   });
 
-  it("rewrites the manifest on a plan-gated repeat of invited", async () => {
-    const o = await owner();
-    const docId = await publish(o.token, "private-docs");
-    await env.DB.prepare("UPDATE accounts SET plan = 'free' WHERE id = ?").bind(o.id).run();
-    await env.DOCS.delete(manifestObjectKey(docId));
-
-    const response = await send("PUT", `/api/v1/docs/${docId}/access`, o.token, { linkAccess: "invited" });
-    expect(response.status).toBe(200);
-    await expectInSync(docId);
-  });
-
   it("does not swallow the invite email when the manifest put fails", async () => {
     const o = await owner();
     const docId = await publish(o.token, "private-docs");
@@ -283,19 +272,14 @@ describe("a manifest follows every change to a document's state", () => {
     expect(await expectInSync(docId)).toMatchObject({ people: [{ email: "alice@acme.com" }] });
   });
 
-  it("surfaces a failed put as a 500 the client can retry, rather than a silent gap", async () => {
+  it("fails the access request when the put fails, so the retry can repair it", async () => {
     const o = await owner();
     const docId = await publish(o.token, "docs");
     const ctx = createExecutionContext();
     const broken = {
       ...env,
       ...HOSTS,
-      DOCS: {
-        put: async () => { throw new Error("r2 down"); },
-        get: (key: string) => env.DOCS.get(key),
-        list: (options?: R2ListOptions) => env.DOCS.list(options),
-        delete: (keys: string | string[]) => env.DOCS.delete(keys),
-      },
+      DOCS: bucketWith(async () => { throw new Error("r2 down"); }),
     } as unknown as Env;
     const response = await worker.fetch(
       new Request(`${API}/api/v1/docs/${docId}/access`, {
@@ -310,10 +294,55 @@ describe("a manifest follows every change to a document's state", () => {
     // D1 flipped and the manifest still says anyone: the one dangerous direction, and it is loud.
     expect(response === null || response.status >= 500).toBe(true);
     expect(await manifestOf(docId)).toMatchObject({ linkAccess: "anyone" });
+  });
 
-    // The retry changes nothing in D1 and still repairs the manifest.
-    expect((await send("PUT", `/api/v1/docs/${docId}/access`, o.token, { linkAccess: "invited" })).status).toBe(200);
-    expect(await manifestOf(docId)).toMatchObject({ linkAccess: "invited" });
+  it("answers a create and an update normally when the manifest put fails", async () => {
+    const o = await owner();
+    const events: string[] = [];
+    vi.stubGlobal("fetch", async (_url: unknown, init: RequestInit = {}) => {
+      events.push(String(init.body));
+      return new Response("1");
+    });
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const failing = {
+      ...env,
+      ...HOSTS,
+      POSTHOG_PROJECT_API_KEY: "phc_test_ingest_key",
+      POSTHOG_HOST: "https://posthog.test",
+      ANALYTICS_ENVIRONMENT: "test",
+      DOCS: bucketWith(async (key) => {
+        if (key.endsWith("manifest.json")) throw new Error("r2 down");
+      }),
+    } as unknown as Env;
+    const call = async (method: string, path: string, body: unknown) => {
+      const ctx = createExecutionContext();
+      const response = await worker.fetch(
+        new Request(`${API}${path}`, {
+          method,
+          headers: { authorization: `Bearer ${o.token}`, "content-type": "application/json" },
+          body: JSON.stringify(body),
+        }),
+        failing,
+        ctx,
+      );
+      await waitOnExecutionContext(ctx);
+      return response;
+    };
+
+    try {
+      const created = await call("POST", "/api/v1/docs", { title: "Report", html: page("<p>hello</p>") });
+      expect(created.status).toBe(201);
+      const { docId } = (await created.json()) as { docId: string };
+      expect((await send("GET", `https://openartifacts.site/d/${docId}`, null)).status).toBe(200);
+      expect(await env.DOCS.get(manifestObjectKey(docId))).toBeNull();
+      expect(events.some((body) => body.includes("document_published"))).toBe(true);
+
+      expect((await call("PUT", `/api/v1/docs/${docId}`, { html: page("<p>v2</p>") })).status).toBe(200);
+      expect(errors).toHaveBeenCalledWith("manifest write failed", expect.objectContaining({ docId }));
+    } finally {
+      vi.unstubAllGlobals();
+      errors.mockRestore();
+    }
   });
 });
 
@@ -345,31 +374,26 @@ describe("delete", () => {
     expect(await env.DOCS.get(versionObjectKey(docId, 1))).toBeNull();
   });
 
-  it("retries a failed tombstone, and still sweeps and answers 204 if it never lands", async () => {
+  it("sweeps the manifest too when the tombstone put fails, so the doc rebuilds closed", async () => {
     const { deleteDoc } = await import("../src/api/manage.js");
     const { NO_ANALYTICS } = await import("../src/analytics.js");
     const o = await owner();
     const publisher = { owner: o.id } as Parameters<typeof deleteDoc>[1];
-
-    const retried = await publish(o.token, "docs");
-    let failures = 2;
-    const flaky = {
-      ...env,
-      ...HOSTS,
-      DOCS: bucketWith(async () => { if (failures-- > 0) throw new Error("r2 down"); }),
-    } as unknown as Env;
-    expect((await deleteDoc(flaky, publisher, retried, NO_ANALYTICS)).status).toBe(204);
-    expect((await manifestOf(retried)).deletedAt).toEqual(expect.any(Number));
-
-    const stuck = await publish(o.token, "docs");
-    const down = {
-      ...env,
-      ...HOSTS,
-      DOCS: bucketWith(async () => { throw new Error("r2 down"); }),
-    } as unknown as Env;
-    expect((await deleteDoc(down, publisher, stuck, NO_ANALYTICS)).status).toBe(204);
-    expect(await env.DOCS.get(versionObjectKey(stuck, 1))).toBeNull();
-    expect((await send("GET", `https://openartifacts.site/d/${stuck}`, null)).status).toBe(410);
+    const docId = await publish(o.token, "docs");
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const down = {
+        ...env,
+        ...HOSTS,
+        DOCS: bucketWith(async () => { throw new Error("r2 down"); }),
+      } as unknown as Env;
+      expect((await deleteDoc(down, publisher, docId, NO_ANALYTICS)).status).toBe(204);
+      expect(errors).toHaveBeenCalledWith("delete left a stale manifest", expect.objectContaining({ docId }));
+    } finally {
+      errors.mockRestore();
+    }
+    expect((await env.DOCS.list({ prefix: docObjectPrefix(docId) })).objects).toEqual([]);
+    expect((await send("GET", `https://openartifacts.site/d/${docId}`, null)).status).toBe(410);
   });
 });
 
@@ -424,7 +448,9 @@ describe("rowsFromManifest", () => {
   it("quotes values into SQL", () => {
     const sql = rebuildSql([rowsFromManifest(ID, { ...manifest, title: "Bob's 'plan'" }, objects)]);
     expect(sql).toContain("'Bob''s ''plan'''");
-    expect(sql.split("\n").filter((line) => line.startsWith("INSERT OR IGNORE INTO storage_usage"))).toHaveLength(2);
+    expect(sql.split("\n").filter((line) => line.includes("INTO storage_usage"))).toEqual([
+      "INSERT OR IGNORE INTO storage_usage (doc_id, n, size) SELECT doc_id, n, size FROM versions WHERE size > 0;",
+    ]);
   });
 });
 

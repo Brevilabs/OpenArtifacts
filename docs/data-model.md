@@ -226,13 +226,13 @@ only keys are under one prefix per doc.
 | Key | Content | Written | Deleted | Content type |
 | --- | --- | --- | --- | --- |
 | `docs/{docId}/v{n}.html` | The publisher's own bytes for version `n`, no injections | Once per push, before the `versions` row | Withdrawal (prefix scan) or a push that lost a race with it | `text/html; charset=utf-8` |
-| `docs/{docId}/manifest.json` | Snapshot of the doc's D1 state: `{ schema: 1, docId, owner, title, linkAccess, commentsEnabled, createdAt, updatedAt, deletedAt, latestVersion, people: [{ email, role, createdAt }] }` (`src/manifest.ts`) | Rewritten from D1, awaited, after every write to the doc's row or invites (create, update, delete, access mode, invites, comments switch), and re-put until it matches D1 | Never: withdrawal leaves it as the tombstone | `application/json` |
+| `docs/{docId}/manifest.json` | Snapshot of the doc's D1 state: `{ schema: 1, docId, owner, title, linkAccess, commentsEnabled, createdAt, updatedAt, deletedAt, latestVersion, people: [{ email, role, createdAt }] }` (`src/manifest.ts`) | Rewritten from D1 and awaited after access, invite and comments writes, whose request fails if the put does; best effort (logged) on create and update; the tombstone on delete | Withdrawal leaves it as the tombstone, and removes it only if the tombstone put fails | `application/json` |
 | `docs/{docId}/threads.json` | Snapshot of the comment threads: `{ docId, schema: 1, threads }`, each thread with its comments and per-version anchors | Overwritten by `DocComments` after every mutation, best effort | Withdrawal (same prefix scan) | `application/json` |
 
 - Version objects are immutable: never rewritten, `n` is reserved atomically in D1 first. The robots meta, favicon, social card and bylines are injected on the way out by `renderServedHtml`, never stored.
 - `threads.json` is not read at runtime; it exists to rebuild the Durable Object from.
 - No custom metadata on any object.
-- Withdrawal lists and deletes the whole `docs/{docId}/` prefix except `manifest.json`, not just `versions` rows.
+- Withdrawal lists and deletes the whole `docs/{docId}/` prefix, not just `versions` rows, except for the manifest tombstone.
 
 ## Durable Objects
 
@@ -265,6 +265,6 @@ carries only `docs.comments_enabled`. Source: `src/comments/object.ts`.
 
 ## What is the system of record
 
-- **Document state is rebuildable from R2**: `manifest.json` carries owner, title, timestamps, deletion, access and the invite list, and the version objects carry the version log. `src/rebuild.ts` turns them back into `docs`, `doc_invites`, `versions` and `storage_usage` rows, failing closed (unknown access becomes `invited`, an unknown role `view`). Procedure: `docs/deploying.md`.
+- **Document state is rebuildable from R2**: `manifest.json` carries owner, title, timestamps, deletion, access and the invite list, and the version objects carry the version log. `src/rebuild.ts` turns them back into `docs`, `doc_invites`, `versions` and `storage_usage` rows, and fails closed (`docs/deploying.md`).
 - **D1 is still the only record** of accounts, sessions, owner links, the publishers cache and pending access requests; D1 Time Travel (30 days) covers them. Only `publishers` (and the plan columns on `accounts`) cache something held elsewhere.
 - **The Durable Object is the only live record of comments**; `threads.json` is its backup.

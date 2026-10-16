@@ -59,14 +59,21 @@ export interface DeleteDeps {
  * can hold more than a page of versions — 100 pushes a day compounds — so this
  * pages rather than assuming one listing covers it.
  */
-async function deleteDocObjects(env: Env, docId: string, objectBatch: number): Promise<void> {
+async function deleteDocObjects(
+  env: Env,
+  docId: string,
+  objectBatch: number,
+  keepManifest: boolean,
+): Promise<void> {
   const prefix = docObjectPrefix(docId);
   let cursor: string | undefined;
 
   do {
     const listing = await env.DOCS.list({ prefix, limit: objectBatch, cursor });
     // The manifest is the tombstone: it stays so a rebuild can answer 410.
-    const objects = listing.objects.filter((object) => object.key !== manifestObjectKey(docId));
+    const objects = keepManifest
+      ? listing.objects.filter((object) => object.key !== manifestObjectKey(docId))
+      : listing.objects;
     if (objects.length > 0) {
       await env.DOCS.delete(objects.map((object) => object.key));
       const versions = objects.flatMap((object) => {
@@ -76,26 +83,10 @@ async function deleteDocObjects(env: Env, docId: string, objectBatch: number): P
       await releaseStorage(env.DB, docId, versions);
     }
     // Cursors are positions in the key order, and everything before this one is
-    // already gone (bar the manifest), so resuming from it never revisits a
+    // already gone (bar a kept manifest), so resuming from it never revisits a
     // deleted key.
     cursor = listing.truncated ? listing.cursor : undefined;
   } while (cursor !== undefined);
-}
-
-const TOMBSTONE_ATTEMPTS = 3;
-
-async function writeTombstone(env: Env, docId: string): Promise<void> {
-  for (let attempt = 1; ; attempt++) {
-    try {
-      await writeManifest(env, docId);
-      return;
-    } catch (error) {
-      if (attempt === TOMBSTONE_ATTEMPTS) {
-        console.error("delete left a stale manifest", { docId, error });
-        return;
-      }
-    }
-  }
 }
 
 /**
@@ -128,16 +119,21 @@ export async function deleteDoc(
     return docNotFound(docId);
   }
 
-  // The tombstone, written while the row is the only thing that has changed and
-  // before the sweep, which leaves it in place. Retried a few times here and not
-  // surfaced if it still fails: the retry a 500 invites answers 404 (the row is
-  // already marked), so it could never repair the manifest, and it would skip the
-  // sweep that destroys the bytes. The doc is withdrawn from every reader whatever
-  // this does. A failure that survives the retries costs one doc its 410 after a
-  // rebuild (the manifest still says live over an emptied prefix, so it answers
-  // 404), which the log makes findable; the temporary manifest backfill rewrites
-  // it from D1 only while that route exists.
-  await writeTombstone(env, docId);
+  // The tombstone, written before the sweep, which leaves it in place. A failure
+  // is not surfaced: the retry a 500 invites answers 404, so it could not repair
+  // anything. Instead the sweep also removes manifest.json, so a partial outage
+  // leaves no live manifest and a rebuild closes the doc (private, no owner)
+  // rather than reviving it. If both the put and the sweep fail (a full R2
+  // outage) the old manifest and bytes remain and a rebuild could restore the
+  // doc; the "delete left a stale manifest" and "delete left objects behind"
+  // logs identify it.
+  let keepManifest = true;
+  try {
+    await writeManifest(env, docId);
+  } catch (error) {
+    keepManifest = false;
+    console.error("delete left a stale manifest", { docId, error });
+  }
 
   // Recorded before the R2 sweep, not inside it: the doc is withdrawn once the
   // row is marked, and the handler answers 204 even if the sweep fails.
@@ -154,7 +150,7 @@ export async function deleteDoc(
   }
 
   try {
-    await deleteDocObjects(env, docId, deps.objectBatch ?? OBJECT_BATCH);
+    await deleteDocObjects(env, docId, deps.objectBatch ?? OBJECT_BATCH, keepManifest);
   } catch (error) {
     // Past this point the doc is withdrawn from every reader whatever R2 does,
     // so answering anything but 204 would be a lie in the direction that costs

@@ -800,10 +800,9 @@ subdomain needs a paid certificate for `*.docs.example.net`.
 `link_access` and the invite list, with the title, the owner, the comments switch
 and the deleted flag, are copied into the per-document `manifest.json` after every
 change, so a rebuild from R2 keeps a private document private and a withdrawn one
-410 (see [Rebuilding D1 from R2](deploying.md#rebuilding-d1-from-r2)). Pending
-access requests are not copied: they are transient, and a requester asks again.
-A document whose manifest is missing or unreadable rebuilds as private with no
-owner.
+410, and fails closed otherwise (see
+[Rebuilding D1 from R2](deploying.md#rebuilding-d1-from-r2)). Pending access
+requests are not copied: they are transient, and a requester asks again.
 
 ## Rollback floor
 

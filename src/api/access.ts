@@ -173,19 +173,15 @@ export async function setMode(
   if (mode === "invited" && !maySharePrivately(env, principal)) {
     const current = await readAccess(env.DB, docId);
     if (current === null) return refused("not_found");
-    if (current.link_access !== "invited") return refused("plan");
-    // A repeat, but still the call that repairs a manifest whose first write failed.
-    await writeManifest(env, docId);
-    return { ok: true, state: current, changed: false };
+    return current.link_access === "invited" ? { ok: true, state: current, changed: false } : refused("plan");
   }
 
   const changed = await setLinkAccess(env.DB, docId, principal.owner, mode);
   const state = await readAccess(env.DB, docId);
-  if (state !== null && changed) recordChange(analytics, docId, doc.publisher_id, state);
-  // Last, so a failed put cannot swallow the event, and unconditionally, repeat
-  // or not: see `writeManifest`.
-  await writeManifest(env, docId);
   if (state === null) return refused("not_found");
+  if (changed) recordChange(analytics, docId, doc.publisher_id, state);
+  // Last, so a failed put cannot swallow the event; written even on a repeat.
+  await writeManifest(env, docId);
   return { ok: true, state, changed };
 }
 
@@ -230,18 +226,16 @@ export async function addPerson(
   // One read after the write answers everything below: the cap check, the
   // response and the count the event carries.
   const state = await readAccess(env.DB, docId);
-  if (state !== null && !added && !state.people.some((person) => person.email === email)) {
+  if (state === null) return refused("not_found");
+  if (!added && !state.people.some((person) => person.email === email)) {
     return refused(state.people.length >= MAX_INVITES_PER_DOC ? "full" : "invite_quota");
   }
 
-  // The manifest comes after the email and the event, so a failed put cannot
-  // swallow either: the retry it invites is a pure repeat, which mails nobody.
-  if (state !== null) {
-    if (added) await invite(env, requestUrl, doc.publisher_id, docId, doc.title, email);
-    if (added || roleChanged) recordChange(analytics, docId, doc.publisher_id, state);
-  }
+  if (added) await invite(env, requestUrl, doc.publisher_id, docId, doc.title, email);
+  if (added || roleChanged) recordChange(analytics, docId, doc.publisher_id, state);
+  // After the email and the event, so a failed put cannot swallow either: the
+  // retry it invites is a pure repeat, which mails nobody.
   await writeManifest(env, docId);
-  if (state === null) return refused("not_found");
   return { ok: true, state, changed: added || roleChanged };
 }
 
@@ -260,9 +254,9 @@ export async function removePerson(
 
   const removed = await deleteInvite(env.DB, docId, principal.owner, email);
   const state = await readAccess(env.DB, docId);
-  if (state !== null && removed) recordChange(analytics, docId, doc.publisher_id, state);
-  await writeManifest(env, docId);
   if (state === null) return refused("not_found");
+  if (removed) recordChange(analytics, docId, doc.publisher_id, state);
+  await writeManifest(env, docId);
   return { ok: true, state, changed: removed };
 }
 
