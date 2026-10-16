@@ -644,7 +644,7 @@ without a flag. Nothing turns on by itself: each owner switches a document on.
 **Self-hosting.** The feature is on when the Worker has the `COMMENTS` binding and
 reader sign-in is configured ([Self-hosting](#self-hosting)). A deployment whose
 config predates the binding is not broken: every comment route and the threads
-resource answer `404`, and pages are served as before. Email is
+resource answer `404`, the frame is absent and pages are served as before. Email is
 optional; without it comments work and nobody is notified.
 
 ### Comments rollback floor

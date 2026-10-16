@@ -13,6 +13,7 @@ import { OPENARTIFACTS_BAR_SPACER, OPENARTIFACTS_BAR_STYLE } from "../src/render
 import { SHARE_TOKEN_PREFIX } from "../src/ids.js";
 import { putEmbedHandoff, takeEmbedHandoff } from "../src/db.js";
 import { FRAME_SCRIPT, POPUP_DONE_SCRIPT } from "../src/embed-scripts.js";
+import { COMMENTS_FRAME_CSS, COMMENTS_FRAME_SCRIPT, PAGE_COMMENTS_SCRIPT } from "../src/comments-scripts.js";
 import { versionObjectKey } from "../src/storage.js";
 import worker from "../src/index.js";
 
@@ -692,6 +693,7 @@ describe("HEAD and conditional requests", () => {
     expect(v1).not.toBe(v2);
     // The shared link's etag has to move with the version, or a 60s-stale
     // reader would revalidate into the old page forever.
+    // With no reader sign-in there is no bar, so no comments switch in the validator either.
     expect(latest).toBe(v2);
   });
 
@@ -1542,6 +1544,64 @@ describe("an invited-only document", () => {
       expect(await (await getFrom(`${doc.host}/d/${doc.docId}`, { headers: { cookie } }, PRIVATE)).text()).toContain("for invited eyes");
     });
 
+    // The page script asks the threads resource only when the bar does not say the
+    // document has comments off, so the switch rides on the shared link.
+    it("S2: the shared link carries the comments switch, a pinned page carries none, and a flip is a 200 on revalidation", async () => {
+      const publicDoc = await privateDoc("a public page", KEY, "anyone");
+      const url = `https://openartifacts.site/d/${publicDoc.docId}`;
+      const flag = async (response: Response) => /data-comments="(on|off)"/.exec(await response.text())?.[1] ?? null;
+
+      const off = await getFrom(url, {}, PRIVATE);
+      expect(await flag(off)).toBe("off");
+      expect(off.headers.get("etag")).toMatch(/\.r\d+\.c0"$/);
+      expect(await flag(await getFrom(`${url}/v1`, {}, PRIVATE))).toBeNull();
+      const pinnedTag = (await getFrom(`${url}/v1`, {}, PRIVATE)).headers.get("etag")!;
+      expect(pinnedTag).not.toMatch(/\.c[01]"$/);
+
+      // Unchanged, the same tag is a 304 on GET and HEAD.
+      for (const method of ["GET", "HEAD"]) {
+        const same = await getFrom(url, { method, headers: { "if-none-match": off.headers.get("etag")! } }, PRIVATE);
+        expect(same.status).toBe(304);
+      }
+
+      await env.DB.prepare("UPDATE docs SET comments_enabled = 1 WHERE id = ?").bind(publicDoc.docId).run();
+
+      for (const method of ["GET", "HEAD"]) {
+        const flipped = await getFrom(url, { method, headers: { "if-none-match": off.headers.get("etag")! } }, PRIVATE);
+        expect(flipped.status).toBe(200);
+        expect(flipped.headers.get("etag")).toMatch(/\.r\d+\.c1"$/);
+        if (method === "GET") expect(await flag(flipped)).toBe("on");
+      }
+      // The pinned page is untouched by the flip, and still answers 304.
+      expect((await getFrom(`${url}/v1`, { headers: { "if-none-match": pinnedTag } }, PRIVATE)).status).toBe(304);
+    });
+
+    it("S3: an invited-only page carries the switch on its latest rendering and none on a pinned one", async () => {
+      const doc = await privateDoc("for invited eyes");
+      const cookie = await cookieFor(doc, doc.owner);
+      const latest = await getFrom(`${doc.host}/d/${doc.docId}`, { headers: { cookie } }, PRIVATE);
+      expect(await latest.text()).toContain('data-comments="off"');
+      const pinned = await getFrom(`${doc.host}/d/${doc.docId}/v1`, { headers: { cookie } }, PRIVATE);
+      expect(await pinned.text()).not.toContain("data-comments");
+    });
+
+    // An open tab, or the shared link's 60-second cache, can show a version older
+    // than the newest, so the bar says which one it is and comments stay with it.
+    it("S3: the shared link names the version it serves, and a pinned page, whose path names it, carries none", async () => {
+      const publicDoc = await privateDoc("a public page", KEY, "anyone");
+      const url = `https://openartifacts.site/d/${publicDoc.docId}`;
+      const named = async (response: Response) => /data-version="(\d+)"/.exec(await response.text())?.[1] ?? null;
+      expect(await named(await getFrom(url, {}, PRIVATE))).toBe("1");
+
+      const second = await sendTo("PUT", `/api/v1/docs/${publicDoc.docId}`, {
+        headers: { authorization: `Bearer ${KEY}`, "content-type": "application/json" },
+        body: JSON.stringify({ title: "Secret", html: page("<p>a second version</p>") }),
+      });
+      expect(second.status).toBe(200);
+      expect(await named(await getFrom(url, {}, PRIVATE))).toBe("2");
+      expect(await named(await getFrom(`${url}/v1`, {}, PRIVATE))).toBeNull();
+    });
+
     it("S1: replaces the header byline with the bar, keeping the byline text smoke.sh looks for", async () => {
       const docId = await markedPublicDoc();
 
@@ -1557,6 +1617,9 @@ describe("an invited-only document", () => {
 
       for (const over of [{ ...PRIVATE, READER_SESSION_SECRET: undefined }, { ...PRIVATE, OAUTH_GITHUB_CLIENT_ID: "", EMAIL: undefined }, { ...PRIVATE, API_HOST: "" }]) {
         const html = await (await getFrom(`https://openartifacts.site/d/${docId}`, {}, over)).text();
+        // No bar, so the comments switch is not in the bytes and not in the validator.
+        const etag = (await getFrom(`https://openartifacts.site/d/${docId}`, {}, over)).headers.get("etag");
+        expect(etag).not.toMatch(/\.c[01]"$/);
         expect(html).toContain(OPENARTIFACTS_HEADER);
         expect(html).toContain(OPENARTIFACTS_FOOTER);
         expect(html).not.toContain("openartifacts-bar");
@@ -2140,6 +2203,130 @@ describe("an invited-only document", () => {
     });
   });
 
+  describe("the comments frame", () => {
+    const OPEN = { ...PRIVATE, APPROVAL_LOOKUP_LIMITER: undefined, EMBED_TOKEN_LIMITER: undefined } satisfies Partial<Env>;
+    const APEX = "https://openartifacts.site";
+    const frameUrl = (docId: string, origin?: string, extra = "") =>
+      `${API}/embed/comments?doc=${docId}${origin === undefined ? "" : `&origin=${encodeURIComponent(origin)}`}${extra}`;
+    const hashOf = async (script: string) =>
+      btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(script)))));
+    const inlineScript = (html: string) => /<script>([\s\S]*?)<\/script>/.exec(html)![1]!;
+    const count = (haystack: string, needle: string) => haystack.split(needle).length - 1;
+
+    it("C1: serves the same frame for every id, framed only by the document's own serving origin", async () => {
+      const publicDoc = await privateDoc("a public page", KEY, "anyone");
+      const doc = await privateDoc("for invited eyes");
+      const other = await privateDoc("text of Q", KEY_Q);
+      const gone = await privateDoc("withdrawn");
+      await softDelete(gone.docId);
+      const label = new URL(doc.host).origin;
+
+      const cases: Array<[string, string | undefined, string]> = [
+        [publicDoc.docId, APEX, APEX],
+        [publicDoc.docId, other.host, "'none'"],
+        [doc.docId, doc.host, label],
+        [doc.docId, APEX, "'none'"],
+        [doc.docId, other.host, "'none'"],
+        [doc.docId, undefined, "'none'"],
+        [doc.docId, doc.host.toUpperCase().replace("HTTPS", "https"), label],
+        [gone.docId, APEX, "'none'"],
+        [UNKNOWN_DOC_ID, APEX, "'none'"],
+      ];
+      for (const [docId, origin, ancestors] of cases) {
+        const response = await getFrom(frameUrl(docId, origin), {}, OPEN);
+        expect(response.status, `${docId} ${origin}`).toBe(200);
+        const csp = response.headers.get("content-security-policy")!;
+        expect(csp, `${docId} ${origin}`).toContain(`frame-ancestors ${ancestors}`);
+        const html = await response.text();
+        expect(csp).toBe(
+          `default-src 'none'; script-src 'sha256-${await hashOf(inlineScript(html))}'; style-src 'unsafe-inline'; img-src data:; ` +
+            `connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors ${ancestors}`,
+        );
+        expect(response.headers.get("x-frame-options")).toBeNull();
+        expect(response.headers.get("referrer-policy")).toBe("same-origin");
+        expect(response.headers.get("cross-origin-opener-policy")).toBe("same-origin");
+        expect(response.headers.get("cache-control")).toBe("no-store");
+        expect(response.headers.get("content-type")).toBe("text/html; charset=utf-8");
+        expect(response.headers.get("set-cookie")).toBeNull();
+        expect(response.headers.get("access-control-allow-origin")).toBeNull();
+        // Nothing of the document, only its id and the origin the caller named.
+        expect(html).not.toContain("for invited eyes");
+        expect(html).not.toContain("a public page");
+        expect(html).toContain(`data-doc="${docId}"`);
+      }
+
+      // The body is one shell: the id and the matched origin are the only differences.
+      const body = async (docId: string, origin?: string, mark?: string) => {
+        const html = (await (await getFrom(frameUrl(docId, origin), {}, OPEN)).text()).replaceAll(docId, "ID");
+        return mark === undefined ? html : html.replace(`data-origin="${mark}"`, 'data-origin="ORIGIN"');
+      };
+      expect(await body(publicDoc.docId, APEX, APEX)).toBe(await body(doc.docId, doc.host, label));
+      const refused = [await body(doc.docId, APEX), await body(gone.docId, APEX), await body(UNKNOWN_DOC_ID, APEX), await body(doc.docId)];
+      expect(new Set(refused).size).toBe(1);
+      expect(refused[0]).toContain('data-origin=""');
+
+      // The query beyond the id and the origin (the pinned version) changes nothing in the shell.
+      expect(await body(publicDoc.docId, APEX, APEX)).toBe(
+        (await (await getFrom(frameUrl(publicDoc.docId, APEX, "&v=3"), {}, OPEN)).text()).replaceAll(publicDoc.docId, "ID").replace(`data-origin="${APEX}"`, 'data-origin="ORIGIN"'),
+      );
+    });
+
+    it("C1: the shell is the constants, draws no id, and the script is written to the front-end rules", async () => {
+      const doc = await privateDoc("for invited eyes");
+      const html = await (await getFrom(frameUrl(doc.docId, doc.host), {}, OPEN)).text();
+      expect(inlineScript(html)).toBe(COMMENTS_FRAME_SCRIPT);
+      expect(html).toContain(`<style>${COMMENTS_FRAME_CSS}</style>`);
+      expect(count(html, "<script")).toBe(1);
+      // An element id is a fragment an embedding page can navigate the frame to: none in the shell or the script's views.
+      expect(html).not.toMatch(/\sid=/);
+      expect(COMMENTS_FRAME_SCRIPT).not.toMatch(/\bid:|"id"|getElementById/);
+      // Comments are only ever text, and the confirm is drawn in the frame.
+      expect(COMMENTS_FRAME_SCRIPT).not.toContain("innerHTML");
+      expect(COMMENTS_FRAME_SCRIPT).not.toContain("confirm(");
+      expect(COMMENTS_FRAME_SCRIPT).not.toContain("document.write");
+      expect(COMMENTS_FRAME_SCRIPT).not.toContain("autofocus");
+      // One `postMessage` call, to the parent, at the origin the shell names.
+      expect(count(COMMENTS_FRAME_SCRIPT, "postMessage(")).toBe(1);
+      expect(COMMENTS_FRAME_SCRIPT).toContain("parentOrigin");
+      expect(COMMENTS_FRAME_SCRIPT).not.toContain('"*"');
+      // Plain strings: no backtick, no interpolation, no backslash, in any script this adds.
+      for (const script of [COMMENTS_FRAME_SCRIPT, PAGE_COMMENTS_SCRIPT, PAGE_SCRIPT]) {
+        expect(script).not.toContain("`");
+        expect(script).not.toContain("${");
+        expect(script).not.toContain("\\");
+      }
+      // The page half is part of the one script every page loads.
+      expect(PAGE_SCRIPT).toContain(PAGE_COMMENTS_SCRIPT);
+    });
+
+    it("C2: the page script's comment half is credential-free", () => {
+      for (const word of ["localStorage", "sessionStorage", "document.cookie", "indexedDB", "authorization", "oas_"]) {
+        expect(PAGE_COMMENTS_SCRIPT, word).not.toContain(word);
+      }
+      // It talks to the frame at the API origin only, never `*`, and takes messages only from that frame's window.
+      expect(PAGE_COMMENTS_SCRIPT).not.toContain('"*"');
+      expect(PAGE_COMMENTS_SCRIPT).toContain("event.source !== mframe.contentWindow || event.origin !== api");
+    });
+
+    it("C3: is not there without comments, without reader sign-in, for another method or on any other host", async () => {
+      const doc = await privateDoc("for invited eyes", KEY, "anyone");
+      expect((await getFrom(frameUrl(doc.docId, APEX), {}, OPEN)).status).toBe(200);
+
+      expect((await getFrom(frameUrl(doc.docId, APEX), {}, { ...OPEN, COMMENTS: undefined })).status).toBe(404);
+      for (const over of [{ ...OPEN, READER_SESSION_SECRET: undefined }, { ...OPEN, OAUTH_GITHUB_CLIENT_ID: "", EMAIL: undefined }, { ...OPEN, API_HOST: "" }]) {
+        const response = await getFrom(frameUrl(doc.docId, APEX), {}, over);
+        expect(response.status).toBe(404);
+        expect(response.headers.get("content-security-policy") ?? "").not.toContain("script-src 'sha256-");
+      }
+      expect((await getFrom(`${API}/embed/comments`, {}, OPEN)).status).toBe(404);
+      expect((await getFrom(frameUrl("nope"), {}, OPEN)).status).toBe(404);
+      expect((await sendTo("POST", frameUrl(doc.docId, APEX), {}, OPEN)).status).toBe(404);
+      expect((await sendTo("HEAD", frameUrl(doc.docId, APEX), {}, OPEN)).status).toBe(404);
+      expect((await getFrom(`${APEX}/embed/comments?doc=${doc.docId}`, {}, OPEN)).status).toBe(404);
+      expect((await getFrom(`${new URL((await privateDoc()).host).origin}/embed/comments?doc=${doc.docId}`, {}, OPEN)).status).toBe(404);
+    });
+  });
+
   describe("the share page", () => {
     const SHARE = (docId: string) => `${API}/share/${docId}`;
     const open = async (docId: string, accountId: string | null, over: Partial<Env> = PRIVATE, query = "") =>
@@ -2300,8 +2487,68 @@ describe("an invited-only document", () => {
       expect(html).toContain("Approve");
       expect(html).toContain("Decline");
       expect(html.indexOf("Requests")).toBeLessThan(html.indexOf("Who has access"));
-      expect(html).not.toMatch(/role|Can comment|Can view/);
       expect(html).not.toContain("may have kept a copy");
+      // Comments are bound in this suite, so the switch and each person's role are drawn.
+      expect(html).toContain("<h2>Comments</h2>");
+      expect(html).toContain('name="comments" value="off" checked');
+      expect(html).toContain('<option value="comment" selected>Can comment</option>');
+    });
+
+    it("draws neither the Comments switch nor a role where comments are not bound", async () => {
+      const doc = await privateDoc();
+      const owner = await ownerAccount(doc);
+      await env.DB.prepare("INSERT INTO doc_invites (doc_id, email, created_at) VALUES (?, 'alice@acme.com', ?)")
+        .bind(doc.docId, Date.now())
+        .run();
+
+      const html = await (await open(doc.docId, owner, { ...PRIVATE, COMMENTS: undefined })).text();
+
+      expect(html).toContain("alice@acme.com");
+      expect(html).not.toMatch(/Comments|Can comment|Can view|name="role"/);
+    });
+
+    it("turns comments on and off from the page, on the plan the API's switch needs", async () => {
+      const doc = await privateDoc();
+      const owner = await ownerAccount(doc);
+      const enabled = async () =>
+        (await env.DB.prepare("SELECT comments_enabled AS c FROM docs WHERE id = ?").bind(doc.docId).first<{ c: number }>())!.c;
+
+      expect((await write(doc.docId, owner, { op: "comments", comments: "on" })).status).toBe(303);
+      expect(await enabled()).toBe(1);
+      expect(await (await open(doc.docId, owner)).text()).toContain('name="comments" value="on" checked');
+      expect((await write(doc.docId, owner, { op: "comments", comments: "off" })).status).toBe(303);
+      expect(await enabled()).toBe(0);
+      expect((await write(doc.docId, owner, { op: "comments", comments: "sideways" })).status).toBe(404);
+
+      // A free plan is refused with the upgrade link, and the page says what stayed as it was.
+      await env.DB.prepare("UPDATE accounts SET plan = 'free' WHERE id = ?").bind(owner).run();
+      const refused = await write(doc.docId, owner, { op: "comments", comments: "on" });
+      expect(refused.status).toBe(402);
+      const html = await refused.text();
+      expect(html).toContain("Comments need a paid plan. Nothing was changed.");
+      expect(html).toContain('<a href="https://openartifacts.ai/account">Upgrade</a>');
+      expect(await enabled()).toBe(0);
+
+      // Only the owner: another reader's write is the not-available page and changes nothing.
+      const bob = await reader("bob@other.com");
+      expect((await write(doc.docId, bob, { op: "comments", comments: "on" })).status).toBe(404);
+      expect(await enabled()).toBe(0);
+    });
+
+    it("changes a person's role from the page, and refuses a role that is not one", async () => {
+      const doc = await privateDoc();
+      const owner = await ownerAccount(doc);
+      await env.DB.prepare("INSERT INTO doc_invites (doc_id, email, role, created_at) VALUES (?, 'alice@acme.com', 'comment', ?)")
+        .bind(doc.docId, Date.now())
+        .run();
+      const role = async () =>
+        (await env.DB.prepare("SELECT role FROM doc_invites WHERE doc_id = ? AND email = 'alice@acme.com'").bind(doc.docId).first<{ role: string }>())!.role;
+
+      expect((await write(doc.docId, owner, { op: "role", email: "alice@acme.com", role: "view" })).status).toBe(303);
+      expect(await role()).toBe("view");
+      expect(await (await open(doc.docId, owner)).text()).toContain('<option value="view" selected>Can view</option>');
+      expect((await write(doc.docId, owner, { op: "role", email: "alice@acme.com", role: "admin" })).status).toBe(404);
+      expect(await role()).toBe("view");
     });
 
     it("hides the Requests section when nothing is pending, and says to send the link when the server sends no email", async () => {

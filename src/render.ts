@@ -51,10 +51,13 @@
  * changing the API host, changes the rendering without moving this number, and a
  * reader holding a validator from before the flip keeps getting `304` for the
  * old rendering.
+ * (The comments switch the bar carries on the shared link is per document and
+ * changes over time, so it is not accepted drift: `serve.ts` puts it in the
+ * validator.)
  * Accepted: it never mixes one publisher's or one document's rendering with
  * another's, and the next edit to the injections, or the next push, refreshes it.
  */
-export const RENDER_REVISION = 9;
+export const RENDER_REVISION = 10;
 
 /**
  * Belt to the `X-Robots-Tag` header's braces (D9). The header is the
@@ -355,7 +358,10 @@ export const OPENARTIFACTS_BAR_STYLE =
   "<style>:where(html){scroll-padding-top:48px}" +
   "@media print{.openartifacts-bar,.openartifacts-bar-spacer,.openartifacts-share-popover{display:none!important}}" +
   ":where(.openartifacts-share):hover{background:#272b33!important;border-color:rgba(255,255,255,0.14)!important}" +
-  ":where(.openartifacts-share):focus-visible,:where(.openartifacts-byline):focus-visible{" +
+  // The comments button (`src/comments-scripts.ts`): its border and ink only, never
+  // its background, which says whether the margin is shown.
+  ":where(.openartifacts-comments-button):hover{border-color:rgba(255,255,255,0.14)!important;color:#f4f5f7!important}" +
+  ":where(.openartifacts-share):focus-visible,:where(.openartifacts-comments-button):focus-visible,:where(.openartifacts-byline):focus-visible{" +
   "outline:2px solid #f6ae52!important;outline-offset:2px!important}" +
   ":where(.openartifacts-byline):is(:hover,:focus-visible) .openartifacts-byline-text{text-decoration:underline!important}" +
   "</style>";
@@ -442,6 +448,20 @@ export interface TopBar {
   shareUrl: string;
   /** `https://{API_HOST}/embed/page.js`: the script that turns the link into a popover. */
   scriptUrl: string;
+  /**
+   * The document's comments switch, set only on the shared link (`/d/{docId}`)
+   * and left out of a pinned `/v{n}`, which is immutable and must not freeze it.
+   * Rendered as `data-comments="on|off"` on the Share link; absent means "ask".
+   */
+  comments?: boolean;
+  /**
+   * The version these bytes are, set alongside `comments` on the shared link,
+   * whose bytes change on a push while a reader's copy (an open tab, a 60-second
+   * cache) does not. Rendered as `data-version`; the page script reads and writes
+   * comments at it, so they stay tied to the text on screen. A pinned `/v{n}`
+   * names its version in its path.
+   */
+  version?: number;
 }
 
 /**
@@ -477,6 +497,8 @@ function topBar(bar: TopBar, byline: boolean): string {
       : "") +
     "</span>" +
     `<a class="openartifacts-share" data-openartifacts-share href="${escapeAttribute(bar.shareUrl)}" ` +
+    (bar.comments === undefined ? "" : `data-comments="${bar.comments ? "on" : "off"}" `) +
+    (bar.version === undefined ? "" : `data-version="${bar.version}" `) +
     `target="_blank" rel="noopener noreferrer" style="${SHARE_STYLE}">${SHARE_ICON}Share</a>` +
     "</div>" +
     `<script defer src="${escapeAttribute(bar.scriptUrl)}"></script>`

@@ -421,6 +421,8 @@ export interface ServableVersion {
   /** The version that has bytes, or null when the request names none. */
   version: number | null;
   link_access: LinkAccess;
+  /** The owner's comments switch, as 0 or 1: the top bar carries it on the shared link. */
+  comments_enabled: number;
 }
 
 /**
@@ -452,6 +454,7 @@ export async function findServableVersion(
   return await db
     .prepare(
       `SELECT d.deleted_at AS deleted_at, d.link_access AS link_access,
+              d.comments_enabled AS comments_enabled,
               (SELECT MAX(v.n)
                  FROM versions v
                 WHERE v.doc_id = d.id
@@ -1495,6 +1498,8 @@ export interface ReadableDoc {
   version: number | null;
   /** `canRead` for the principal. */
   allowed: boolean;
+  /** The owner's comments switch, as 0 or 1: the top bar carries it on the shared link. */
+  comments_enabled: number;
 }
 
 /**
@@ -1523,6 +1528,7 @@ export async function findReadableDoc(
     .prepare(
       `${OWNER_SCOPE_SQL}
        SELECT d.owner AS owner, d.title AS title, d.deleted_at AS deleted_at, d.link_access AS link_access,
+              d.comments_enabled AS comments_enabled,
               (SELECT MAX(v.n) FROM versions v
                 WHERE v.doc_id = d.id AND (? IS NULL OR v.n = ?)) AS version,
               ${CAN_READ_SQL} AS allowed

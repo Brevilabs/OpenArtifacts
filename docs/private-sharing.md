@@ -260,8 +260,7 @@ for the document, and the owner's plan has them, and the principal is the owner 
 an invited account whose `role` is `comment` (on an `anyone` document, any
 signed-in reader, as [comments.md](comments.md) has it). `doc_invites.role` is
 `view` or `comment`, defaulting to `comment`; a `view` invitee reads the threads
-and cannot write. The API sets it per person (`PUT …/access/people/{email}` with
-`{role}`); the popover and the share page do not draw the control yet.
+and cannot write. Both the popover and the share page set it per person.
 There is no edit role or manage role: the owner alone updates a document, through
 the push route.
 
@@ -318,12 +317,12 @@ A reader is an `accounts` row, the same principal a publisher is. There is no
 ## Credentials by capability
 
 - The **origin grant cookie reads**: documents, and the threads JSON, on its
-  own origin. It is refused by `/api/v1`, by every sign-in page and by
-  `/embed/api`. A document's script can use it; that is why it can do nothing
+  own origin. It is refused by `/api/v1`, by every sign-in page and by the
+  comments frame. A document's script can use it; that is why it can do nothing
   but read what its own publisher already holds.
 - The **API-host session signs in and mints**: the origin grant, the owner route
-  and the Share popover's token; `/embed/api`'s comment routes accept that token, so a
-  comments frame needs no second provider sign-in.
+  and the Share popover's token; the comments frame reuses that token, with
+  no second provider sign-in.
 - The **popover token writes, for one document**. It lives in the Share frame's own
   storage on the API host, never on a document's origin, and it is a bearer header
   on the frame's same-origin `fetch`. For that document it can change access, read
@@ -412,7 +411,7 @@ does not repeat over the top of every printed page). The footer byline is as it
 was. The bar is added on the way out and stored nowhere, so the page stays a pure
 function of the stored version and the deployment's configuration, and every
 document already published picks up the bar, and any later change to it, on its
-next rendering (`RENDER_REVISION` is 7).
+next rendering (`RENDER_REVISION` is 10).
 
 **Why the owner does not simply see more.** The owner's session lives on the API
 host, and a script on the document origin cannot see it: the cookie is
@@ -469,9 +468,11 @@ that must never be on a page whose scripts the author writes.
   only what it already named). With a token, a non-reader sees what an unknown id
   shows, never `403`.
 - **It tells the page around it nothing about its viewer.** It has one fixed
-  height (at most 480 px) and scrolls inside it. It posts the page exactly two
-  messages: `ready`, once, before it reads its storage, and `close`, only after a
-  click or key press inside it. Every public page on `openartifacts.site` shares the
+  height (at most 480 px) and scrolls inside it. It posts the page exactly three
+  messages: `ready`, once, before it reads its storage; `close`, only after a
+  click or key press inside it; and `comments`, only after the owner flips the
+  Comments switch inside it, so the page asks for its threads again. That one
+  tells the page its visitor is the owner, but only on the owner's own click. Every public page on `openartifacts.site` shares the
   frame's storage partition, and any of them can embed the frame for any id it
   knows; a size report, a focus move or an early message would tell that page, with
   no click, whether its visitor holds a token.
@@ -482,8 +483,9 @@ that must never be on a page whose scripts the author writes.
   in gets **Copy link** and **Sign in to manage**. Writes call the same operations
   as `/api/v1` and the share page, so the plan check and the `402` message, both
   invite caps, the invite email and `document_access_changed` are identical on all
-  three. The role control is not shown yet: a popover invite is **Can comment**, and
-  the API's `role` sets the other (see [comments.md](comments.md)).
+  three. Where comments are available it also carries a **Comments** Off/On switch
+  under Link access and a **Can view / Can comment** select on each person (the
+  owner's view only; see [comments.md](comments.md)).
 
 **Signing in to the popover.** The frame cannot see the reader session, so
 **Sign in to manage** opens a top-level popup at `/embed/sign-in?doc={docId}&h=…`,
@@ -808,12 +810,12 @@ says where to record it and what to do instead of rolling back.
 ## What comes next
 
 Comments are built on this without moving anything here ([comments.md](comments.md)).
-They took three of the four adjustments this section used to list: every comment
-route and the threads resource call `canRead`, a private document's threads are
-served on the publisher origin behind the grant cookie, and the comment routes
-accept the Share popover's per-document token, so a reader signs in once per
-document for both. The in-page comments frame, with its own per-document
-`frame-ancestors` as the Share frame has, is not built ([comments.md](comments.md#what-is-not-built)).
+They took the four adjustments this section used to list: every comment route and
+the threads resource call `canRead`, a private document's threads are served on the
+publisher origin behind the grant cookie, the comments frame derives its
+`frame-ancestors` per document from the serving origin as the Share frame does, and
+the comment routes accept the Share popover's per-document token, so a reader signs
+in once per document for both.
 
 **Custom domains** are the same seat with a different name. `docs.acme.com`
 resolves to a publisher through a verified host-to-owner mapping (a future

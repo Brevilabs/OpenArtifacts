@@ -490,7 +490,7 @@ describe("renderServedHtml — the top bar", () => {
   const SCRIPT_TAG = `<script defer src="${BAR.scriptUrl}"></script>`;
   const marked = (html: string) =>
     html.replace(/^(<!doctype[^>]*>)?/i, '$&<style id="openartifacts-obsidian-publish-baseline"></style>');
-  const withBar = async (html: string, branding = true, bar: typeof BAR | null = BAR) =>
+  const withBar = async (html: string, branding = true, bar: (typeof BAR & { comments?: boolean }) | null = BAR) =>
     await renderServedHtml(new Response(html), branding, bar).text();
 
   /** Every piece of the bar, exactly once. */
@@ -510,7 +510,7 @@ describe("renderServedHtml — the top bar", () => {
   // with them: a reader holding a validator for the rendering without them must
   // be sent the one with them.
   it("is a new rendering revision", () => {
-    expect(RENDER_REVISION).toBe(9);
+    expect(RENDER_REVISION).toBe(10);
   });
 
   it("R1: starts the body with the spacer and carries the bar, the Share link and the script once, in place of the header byline", async () => {
@@ -528,6 +528,12 @@ describe("renderServedHtml — the top bar", () => {
     expect(html).toContain("position:fixed;top:0;left:0;right:0");
     expect(html).toContain('target="_blank" rel="noopener noreferrer"');
     expect(headOf(html)).toContain(NOINDEX_META);
+  });
+
+  it("R6: carries the comments switch on the Share link when given one, and nothing when not", async () => {
+    expect(await withBar(page("<p>x</p>"), true, { ...BAR, comments: true })).toContain('data-comments="on"');
+    expect(await withBar(page("<p>x</p>"), true, { ...BAR, comments: false })).toContain('data-comments="off"');
+    expect(await withBar(page("<p>x</p>"))).not.toContain("data-comments");
   });
 
   it("R2: carries Share and the script on an unmarked page and when branding is off, with no byline text", async () => {

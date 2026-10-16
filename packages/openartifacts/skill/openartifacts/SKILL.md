@@ -1,6 +1,6 @@
 ---
 name: openartifacts
-description: Render a document to HTML, let the user review the file, then publish it as an OpenArtifacts page, public or shared with invited people only. Update or unshare published pages, and manage who can open them (make a page private or public, add or remove people, see and answer access requests), and address the comments left on a page: read the open threads, revise, publish the update, reply and resolve.
+description: Render a document to HTML, let the user review the file, then publish it as an OpenArtifacts page, public or shared with invited people only. Update or unshare published pages, and manage who can open them (make a page private or public, add or remove people, see and answer access requests), and address the comments readers leave on a page: read the open threads, revise, publish the update, reply and resolve.
 metadata:
   hermes:
     category: productivity
@@ -128,7 +128,7 @@ openartifacts share <docId>
 
 ## 5. Address the comments
 
-On a page whose owner turned comments on, comments are left on quoted passages. Each
+On a page whose owner turned comments on, readers select text and leave comments. Each
 one is a thread on a quoted passage. Only the owner changes the page; you answer a
 thread by publishing a version that addresses it. Do this when the user asks to
 address, answer or work through the comments on a page, and before revising a page

@@ -72,7 +72,7 @@ no private pages, `get` reads the public url as it always did.
 
 ## Comments
 
-On a page whose owner turned comments on, comments sit on quoted passages and the
+On a page whose owner turned comments on, readers comment on quoted passages and the
 owner's agent answers them. The `comments` commands print the server's JSON:
 
 ```bash

@@ -1,7 +1,7 @@
 # Comments
 
-Inline comments on a published page. A reader or an agent quotes a passage,
-comments on it, and the thread stays attached to that passage
+Inline comments on a published page. A reader, or an agent acting for one,
+selects a passage, comments on it, and the thread stays attached to that passage
 across versions. The owner (or the thread's author) resolves it once a later push
 addresses it, and the resolution records which version did.
 
@@ -16,13 +16,13 @@ comment, then converge. The wire contract is in
 - **Quote-anchored threads.** A thread is anchored to a quote of the page, not to
   a position. Each thread has comments, a state (`open` or `resolved`) and, for
   every version, an anchor status (`anchored` or `orphaned`).
-- **Off until the owner turns it on**, per document, with `openartifacts comments on`
-  or `PUT /api/v1/docs/{docId}/settings`. A paid plan is required to turn it on.
-- **People and agents both write.** An agent writes through `/api/v1` with an
-  account token or a license key, or the CLI's `openartifacts comments`; agent
-  comments are labelled "Alice's agent" and carry a badge, and post immediately. A
-  person writes through `/embed/api` with the Share popover's token (no page draws
-  that yet; see [What is not built](#what-is-not-built)).
+- **Off until the owner turns it on**, per document, in the Share popover, the
+  share page or with `openartifacts comments on`. A paid plan is required to turn
+  it on.
+- **People and agents both write.** A person comments through the frame in the
+  page's margin; an agent through `/api/v1` with an account token or a license key,
+  or the CLI's `openartifacts comments`. Agent comments are labelled "Alice's agent"
+  and carry a badge. They post immediately.
 - **Works on private pages.** The same access model as the page: a private
   document's threads are as private as its bytes.
 
@@ -52,8 +52,8 @@ the failure every surveyed competitor has ([positioning.md](positioning.md)).
 The text a quote is matched in, the *canonical text*, is the concatenated text of
 `<body>` (the whole document if there is none), skipping `head`, `script`,
 `style`, `template` and `noscript`, with entities decoded, CRLF as LF and NFC.
-OpenArtifacts' own bar, spacer, bylines and script are not in the stored HTML, so a
-client that reads a rendered page must skip them to compute the same text. The
+OpenArtifacts' own bar, spacer, bylines and script are not in the stored HTML and
+the page side skips them, so the server and the browser compute the same text. The
 server builds it with `HTMLRewriter` from the stored version (`src/comments/anchor.ts`,
 `src/comments/entities.ts`) and records the nearest ancestor `id` of each text run,
 which is the `section` hint.
@@ -143,9 +143,10 @@ needs an author.
   right or its emails.
 
 Credentials: `/api/v1` takes an account token (`oat_`) or a license key and writes
-as an **agent**, named after the account it acts for. `/embed/api` takes the Share
-popover's per-document token (`oas_`) and writes as a **person**, who must have a
-display name (`name_required` otherwise; agents are exempt). See
+as an **agent**, named after the account it acts for. The comments frame uses the
+Share popover's per-document token (`oas_`) and writes as a **person**, who must
+have a display name (`name_required` otherwise; agents are exempt). One token per
+document serves both frames. See
 [private-sharing.md](private-sharing.md#credentials-by-capability).
 
 ## Serving: threads are separate from the page
@@ -159,12 +160,29 @@ function of the stored version. So comments are a **separate resource**:
   on the apex for a public document and on the publisher's origin behind the grant
   cookie for an invited-only one. Same JSON for every reader, `no-store`, no view
   counted, no cookie on the apex.
-- Nothing is composed per read: the served HTML is unchanged, so there is no
-  `RENDER_REVISION` bump and a page with comments off or unavailable is
-  byte-for-byte what it was.
+- The page script (`/embed/page.js`, already on every page for **Share**) fetches it
+  same-origin and adds the comments button, the highlights, and the frame. It does
+  not ask when the bar says the document has comments off: on the shared link the
+  Share link carries `data-comments="on|off"`, read from the `docs` row the serving
+  path already loads and folded into that rendering's etag (`.c0` / `.c1` after the
+  render revision), so a page with comments off costs no second request and a flip
+  reaches readers within the route's 60 seconds. The link also carries
+  `data-version`, the version that rendering is, and the script reads and writes
+  at it, so comments stay with the text on screen when a push lands while the page
+  is open or cached. A pinned `/v{n}` is immutable and carries neither attribute;
+  there the script asks, at the version its path names. The owner flipping the switch in the
+  Share popover makes the open page ask again, so no reload is needed.
 - Agents fetch the same resource, or `GET /api/v1/docs/{docId}/threads` with their
   credential for the viewer fields, instead of parsing threads out of a page. That
   settled the question [positioning.md](positioning.md) ended on.
+
+The reader never sees a credential on the document's origin: the frame is on the API
+host in a closed `iframe`, with the token in its own storage, and the highlights are
+painted with `CSS.highlights`, which mutates nothing in the author's DOM. A margin
+needs 256 px free beside the content; otherwise the frame is a bottom sheet, which
+shows only a focused thread or a draft and not orphaned threads. See
+[http-api.md](http-api.md#the-embed-family-not-part-of-the-client-contract) for the
+frame, its policy and the `postMessage` protocol.
 
 ## Plans, limits and abuse
 
@@ -195,26 +213,23 @@ A deployment that has the `COMMENTS` binding and reader sign-in gets the whole
 feature; a SQLite Durable Object is available on the free Workers plan. A
 deployment on an old configuration without the binding behaves as if the feature
 did not exist: every comment route and the threads resource answer `404`, the
-embed routes are absent. Documents and pages are unaffected. [deploying.md](deploying.md#inline-comments) has the steps.
+frame is absent and the page script stays inert. Documents and pages are
+unaffected. [deploying.md](deploying.md#inline-comments) has the steps.
 
 ## What is not built
 
 Deliberate non-goals of this version:
 
-- **The in-page experience.** Nothing yet draws comments on a served page: no
-  comments button or margin frame (`/embed/comments`), no highlights, and no
-  **Comments** switch or **Can view / Can comment** select in the Share popover or
-  on the share page. Until they exist an owner turns comments on and sets a role
-  through the API or the CLI (`PUT …/settings`, `PUT …/access/people/{email}` with
-  `{role}`), and every other writer is an agent or a client of `/embed/api`.
 - **Approval of agent comments.** Agent comments post immediately and are labelled
   as agents; there is no pending state.
 - **@mentions**, whole-document (anchorless) threads, a list of all comments across
   documents, and a side panel.
 - **Editing a comment**, moderating someone else's, and "ask for a change".
-- **Live sockets.** A client polls.
+- **Live sockets.** The page polls every 30 seconds and the frame refetches after
+  its own writes.
 - **Edit-distance anchoring.** A quote that no rung finds is orphaned.
 - **Clickable links** in bodies, and comments on the free plan.
+- **Orphaned threads in the bottom sheet.**
 - **Backfilled manifests.** `threads.json` is part of the manifest debt in
   [CLAUDE.md](../CLAUDE.md): the per-document `manifest.json` that rebuilds D1 does
   not exist yet, and until it does, treat D1 (and the object) as the record.
