@@ -39,6 +39,7 @@
  * There is no role control. Every person is added with the default role and the
  * page neither shows nor changes it.
  */
+import { parseAddresses } from "./addresses.js";
 import type { AnalyticsSink } from "./analytics.js";
 import {
   addPerson,
@@ -77,7 +78,8 @@ import { publicDocUrl } from "./urls.js";
 const COPY_NOTICE = "People who opened it while it was public may have kept a copy.";
 
 /**
- * The Copy button's script, small enough to read in full. The page's policy
+ * The Copy button's script and the Add people box's Enter key, small enough to
+ * read in full. The page's policy
  * names its hash instead of allowing inline script, so this exact text is the
  * only script the page can run. Without it the page still works: the link is
  * selectable in a read-only field.
@@ -87,7 +89,10 @@ const COPY_SCRIPT =
   'var field=document.getElementById("link");field.select();' +
   "var done=function(){document.getElementById(\"copy\").textContent=\"Copied\"};" +
   "if(navigator.clipboard){navigator.clipboard.writeText(field.value).then(done,function(){document.execCommand(\"copy\");done()})}" +
-  'else{document.execCommand("copy");done()}});';
+  'else{document.execCommand("copy");done()}});' +
+  // Enter submits the Add people box, as it did when that was one line; Shift+Enter breaks the line.
+  'var people=document.getElementById("people");if(people)people.addEventListener("keydown",function(e){' +
+  'if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();people.form.requestSubmit()}});';
 
 let scriptPolicy: Promise<string> | undefined;
 
@@ -114,9 +119,9 @@ section{margin-top:2rem}h2{margin:0 0 .75rem;color:#f4f5f7;font-size:1rem}
 ul{margin:0;padding:0;list-style:none}li{display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:.65rem 0;border-top:1px solid #20242c}
 li span{display:flex;flex-direction:column;min-width:0}li b{overflow-wrap:anywhere}li .pair{flex-direction:row;flex-shrink:0;gap:.5rem}small{display:block;color:#8d94a0}
 form{margin:0}.choice{display:flex;gap:.75rem;align-items:flex-start;margin:0 0 .75rem;color:#e9ebee}.choice input{margin-top:.3rem;accent-color:#f6ae52}
-button,input[type=email],input[readonly]{padding:.6rem 1rem;border:1px solid #2c313b;border-radius:.65rem;background:#07080b;color:#f4f5f7;font:inherit;cursor:pointer}
-button:hover{border-color:#f6ae52;color:#f9c47f}input[type=email],input[readonly]{flex:1;min-width:0;cursor:text}
-.row{display:flex;gap:.5rem}.hint{margin-top:1rem;font-size:.9rem}
+button,textarea,input[readonly]{padding:.6rem 1rem;border:1px solid #2c313b;border-radius:.65rem;background:#07080b;color:#f4f5f7;font:inherit;cursor:pointer}
+button:hover{border-color:#f6ae52;color:#f9c47f}textarea,input[readonly]{flex:1;min-width:0;cursor:text}textarea{resize:vertical}
+.row{display:flex;gap:.5rem;align-items:flex-start}.hint{margin-top:1rem;font-size:.9rem}
 </style>`;
 
 /**
@@ -191,6 +196,10 @@ export async function handleShare(
 
   const form = await readSmallForm(request);
   if (form === null) return READER_NOT_FOUND();
+  const found = form.get("op") === "add" ? parseAddresses(form.get("email") ?? "") : null;
+  if (found !== null && found.emails.length + found.bad.length > 1) {
+    return (await addMany(env, url, principal, docId, found, analytics)) ?? unavailable();
+  }
   const result = await write(env, url, principal, docId, form, analytics);
   if (result === null) return READER_NOT_FOUND();
   if (result.ok) {
@@ -259,7 +268,10 @@ async function write(
   analytics: AnalyticsSink,
 ): Promise<AccessResult | null> {
   const op = form.get("op");
-  const address = form.get("email") ?? "";
+  const raw = form.get("email") ?? "";
+  // A lone address may arrive as `Name <a@x.com>`; the rest is `addMany`'s.
+  const only = parseAddresses(raw);
+  const address = op === "add" ? (only.emails[0] ?? only.bad[0] ?? "") : raw;
   if (op === "link") {
     const mode = form.get("linkAccess");
     return mode === "anyone" || mode === "invited" ? await setMode(env, principal, docId, mode, analytics) : null;
@@ -273,13 +285,53 @@ async function write(
 /** Why a write did not happen, in the words the page shows. */
 type DialogError = Exclude<Extract<AccessResult, { ok: false }>["refusal"], "not_found">;
 
+/**
+ * Several addresses pasted at once: `addPerson` for each, in order, inside the
+ * one POST. A refusal that applies to every address (`plan`, `invite_quota`,
+ * `full`) stops the batch and those already added stay added. Answers with the
+ * dialog and one report instead of a redirect, because a redirect has no room
+ * to say which addresses were not added; repeating the POST repeats nothing,
+ * since an address already listed is fine. Null when the document is not the
+ * session's to manage.
+ */
+async function addMany(
+  env: Env,
+  url: URL,
+  principal: Publisher,
+  docId: string,
+  found: ReturnType<typeof parseAddresses>,
+  analytics: AnalyticsSink,
+): Promise<Response | null> {
+  let added = 0;
+  let stop: DialogError | undefined;
+  for (const address of found.emails) {
+    const result = await addPerson(env, url, principal, docId, address, undefined, analytics);
+    if (result.ok) added += 1;
+    else if (result.refusal === "not_found") return null;
+    else {
+      stop = result.refusal;
+      break;
+    }
+  }
+  const state = await getAccess(env, principal, docId);
+  if (!state.ok) return null;
+  const done = [
+    ...(added > 0 ? [`Added ${added} ${added === 1 ? "person" : "people"}.`] : []),
+    ...(found.bad.length > 0 ? [`Not added: ${found.bad.map((entry) => `${entry} (not an email address)`).join(", ")}.`] : []),
+  ].map(escapeHtml);
+  const why = stop === undefined ? null : await errorMessage(env, principal, stop);
+  // "Nothing was changed" is not true of a batch that got part way.
+  const report = [...done, ...(why === null ? [] : [done.length > 0 ? `Stopped: ${why.replace(" Nothing was changed.", "")}` : why])];
+  return await dialog(env, url, principal, docId, state.state, { error: stop, report: report.join(" "), quiet: stop === undefined && found.bad.length === 0 });
+}
+
 async function dialog(
   env: Env,
   requestUrl: URL,
   principal: Publisher,
   docId: string,
   state: AccessState,
-  shown: { notice?: boolean; error?: DialogError },
+  shown: { notice?: boolean; error?: DialogError; report?: string; quiet?: boolean },
 ): Promise<Response> {
   const action = `${SHARE_PREFIX}/${docId}`;
   const form = (op: string, fields: Record<string, string>, body: string, cls = "") =>
@@ -305,10 +357,10 @@ async function dialog(
         .join("")}</ul></section>`
     : "";
 
-  const message = await errorMessage(env, principal, shown.error);
+  const message = shown.report ?? (await errorMessage(env, principal, shown.error));
   const url = publicDocUrl(env, requestUrl, docId);
   const detail = `${SHARE_STYLE}
-${message === null ? "" : `<p class="err" role="alert">${message}</p>`}
+${message === null ? "" : `<p${shown.quiet === true ? "" : ' class="err"'} role="alert">${message}</p>`}
 ${shown.notice === true ? `<p>${COPY_NOTICE}</p>` : ""}
 <section><h2>Link access</h2>${form(
     "link",
@@ -318,7 +370,7 @@ ${shown.notice === true ? `<p>${COPY_NOTICE}</p>` : ""}
 <section><h2>Add people</h2>${form(
     "add",
     {},
-    `<div class="row"><input type="email" name="email" placeholder="Email address" aria-label="Email address" autocomplete="off" required><button type="submit">Add</button></div>`,
+    `<div class="row"><textarea id="people" name="email" rows="2" placeholder="Emails, separated by commas" aria-label="Email addresses" autocomplete="off" required></textarea><button type="submit">Add</button></div>`,
   )}</section>
 ${requests}
 <section><h2>Who has access</h2><ul><li><span><b>You</b><small>Owner</small></span></li>${people}</ul>${emailEnabled ? "<p>OpenArtifacts emails each invitation. If someone doesn’t get it, send them the link.</p>" : ""}</section>
