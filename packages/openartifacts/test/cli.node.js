@@ -540,11 +540,11 @@ test("publish --public creates through /docs and never tries the private route",
 });
 
 /** A directory whose `open` and `xdg-open` record the url they were given, so a test sees what the browser would. */
-async function fakeBrowser() {
+async function fakeBrowser(exitCode = 0) {
   const directory = await mkdtemp(join(tmpdir(), "openartifacts-browser-"));
   const record = join(directory, "opened.txt");
   for (const name of ["open", "xdg-open"]) {
-    await writeFile(join(directory, name), `#!/bin/sh\nprintf '%s' "$1" > "${record}"\n`);
+    await writeFile(join(directory, name), `#!/bin/sh\nprintf '%s' "$1" > "${record}"\nexit ${exitCode}\n`);
     await chmod(join(directory, name), 0o755);
   }
   return { directory, async opened() {
@@ -587,6 +587,16 @@ test("open reports a missing page and a browser that will not start, and prints 
     assert.notEqual(noBrowser.code, 0);
     assert.match(noBrowser.stderr, /Could not start a browser/);
     assert(!`${noBrowser.stdout}${noBrowser.stderr}`.includes("grant"));
+
+    // An opener that starts and then fails, as `xdg-open` does on a headless host.
+    if (process.platform !== "win32") {
+      const failing = await fakeBrowser(1);
+      const failed = await cliProcess(["open", "9f2k4mvq7t0xbz3n"], { ...publishEnvironment(directory, remote), PATH: failing.directory });
+      assert.notEqual(failed.code, 0);
+      assert.match(failed.stderr, /Could not start a browser/);
+      assert.equal(failed.stdout, "");
+      assert(!failed.stderr.includes("grant"));
+    }
 
     remote.control.openUrl = "javascript:alert(1)";
     const unsafe = await cliProcess(["open", "9f2k4mvq7t0xbz3n"], publishEnvironment(directory, remote));

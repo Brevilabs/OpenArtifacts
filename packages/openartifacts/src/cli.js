@@ -101,9 +101,10 @@ export function browserProcess(url, os = platform()) {
 }
 
 /**
- * Hand a url to the system browser. Resolves true once the opener started and
- * false when it could not, and never rejects: callers that only offer a url
- * ignore the answer.
+ * Hand a url to the system browser. Resolves true once the opener exits
+ * successfully and false when it could not start or exited with an error (an
+ * `xdg-open` on a headless host starts and then fails), and never rejects:
+ * callers that only offer a url ignore the answer.
  * @param {string} url @returns {Promise<boolean>}
  */
 function openBrowser(url) {
@@ -112,8 +113,8 @@ function openBrowser(url) {
     try {
       const child = spawn(opener.command, opener.args, { env: opener.env, shell: false, detached: true, stdio: "ignore" });
       child.on("error", () => resolvePromise(false));
-      child.on("spawn", () => resolvePromise(true));
-      child.unref();
+      // Not unref'd: the exit status is the answer, so the CLI waits for it.
+      child.on("exit", (code) => resolvePromise(code === 0));
     } catch {
       resolvePromise(false);
     }
