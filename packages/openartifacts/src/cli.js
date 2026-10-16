@@ -90,6 +90,9 @@ async function writePrivateJson(path, value) {
   await chmod(path, 0o600);
 }
 
+/** How long a browser opener may take to fail before it counts as launched. */
+const OPENER_WAIT_MS = 2000;
+
 /** Keep browser URLs as data, including Windows shell metacharacters.
  * @param {string} url @param {NodeJS.Platform} [os]
  */
@@ -101,9 +104,11 @@ export function browserProcess(url, os = platform()) {
 }
 
 /**
- * Hand a url to the system browser. Resolves true once the opener exits
- * successfully and false when it could not start or exited with an error (an
- * `xdg-open` on a headless host starts and then fails), and never rejects:
+ * Hand a url to the system browser. Resolves false when the opener could not
+ * start or exited with an error within `OPENER_WAIT_MS` (an `xdg-open` on a
+ * headless host starts and then fails), and true when it exited cleanly or is
+ * still running then: an `xdg-open` whose browser does not fork can run until
+ * the browser closes, so the CLI stops waiting and lets it go. Never rejects:
  * callers that only offer a url ignore the answer.
  * @param {string} url @returns {Promise<boolean>}
  */
@@ -112,9 +117,18 @@ function openBrowser(url) {
     const opener = browserProcess(url);
     try {
       const child = spawn(opener.command, opener.args, { env: opener.env, shell: false, detached: true, stdio: "ignore" });
-      child.on("error", () => resolvePromise(false));
-      // Not unref'd: the exit status is the answer, so the CLI waits for it.
-      child.on("exit", (code) => resolvePromise(code === 0));
+      const launched = setTimeout(() => {
+        child.unref();
+        resolvePromise(true);
+      }, OPENER_WAIT_MS);
+      child.on("error", () => {
+        clearTimeout(launched);
+        resolvePromise(false);
+      });
+      child.on("exit", (code) => {
+        clearTimeout(launched);
+        resolvePromise(code === 0);
+      });
     } catch {
       resolvePromise(false);
     }
