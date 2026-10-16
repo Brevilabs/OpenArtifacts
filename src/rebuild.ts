@@ -12,6 +12,8 @@
  * assigns one by hand. A rebuild can therefore hide a document that should be
  * public; it cannot publish one that should be private.
  *
+ * Apply the result to an empty database only (see `rebuildSql`).
+ *
  * Scope: document state only (`docs`, `doc_invites`, `versions`, and the
  * `storage_usage` ledger rows that mirror `versions`). Accounts, sessions,
  * owner links, publishers, access requests and comments are not in R2.
@@ -135,12 +137,15 @@ const quote = (value: string | number | null): string => {
 };
 
 const insert = (table: string, columns: string[], values: Array<string | number | null>): string =>
-  `INSERT OR IGNORE INTO ${table} (${columns.join(", ")}) VALUES (${values.map(quote).join(", ")});`;
+  `INSERT INTO ${table} (${columns.join(", ")}) VALUES (${values.map(quote).join(", ")});`;
 
 /**
- * SQL for `wrangler d1 execute --file`. `OR IGNORE`, so running it over a
- * database that still holds some rows never overwrites what D1 already says
- * with an older snapshot. Parents come before children.
+ * SQL for `wrangler d1 execute --file`. Apply it to an empty database: the
+ * rebuild is for a lost D1, and a partial loss is restored with D1 Time Travel,
+ * not with this. Plain `INSERT`, so a non-empty database fails instead of
+ * merging a stale snapshot into live rows (an invite removed since the
+ * manifest was written would come back and regain access). Parents come before
+ * children, so a row that already exists fails on the first statement.
  */
 export function rebuildSql(rebuilt: readonly RebuiltRows[]): string {
   const lines: string[] = [];
@@ -150,6 +155,6 @@ export function rebuildSql(rebuilt: readonly RebuiltRows[]): string {
     for (const version of versions) lines.push(insert("versions", Object.keys(version), Object.values(version)));
   }
   // The quota ledger mirrors `versions`, as migrations/0013 builds it.
-  lines.push("INSERT OR IGNORE INTO storage_usage (doc_id, n, size) SELECT doc_id, n, size FROM versions WHERE size > 0;");
+  lines.push("INSERT INTO storage_usage (doc_id, n, size) SELECT doc_id, n, size FROM versions WHERE size > 0;");
   return lines.join("\n") + "\n";
 }

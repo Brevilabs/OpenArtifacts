@@ -489,7 +489,7 @@ describe("rowsFromManifest", () => {
     const id = "newlinedoc0000000000000000000000";
     const title = "Plan\r\nof 'record'\n\nv2\n\0end\0";
     const sql = rebuildSql([rowsFromManifest(id, { ...manifest, docId: id, title, people: [{ email: "a\nb@x.y", role: "view", createdAt: 1 }] }, [])]);
-    expect(sql.trimEnd().split("\n").every((line) => line.startsWith("INSERT OR IGNORE INTO "))).toBe(true);
+    expect(sql.trimEnd().split("\n").every((line) => line.startsWith("INSERT INTO "))).toBe(true);
     await env.DB.exec(sql.trim());
     const row = await env.DB.prepare("SELECT title FROM docs WHERE id = ?").bind(id).first<{ title: string }>();
     expect(row!.title).toBe(title);
@@ -501,7 +501,7 @@ describe("rowsFromManifest", () => {
     const sql = rebuildSql([rowsFromManifest(ID, { ...manifest, title: "Bob's 'plan'" }, objects)]);
     expect(sql).toContain("'Bob''s ''plan'''");
     expect(sql.split("\n").filter((line) => line.includes("INTO storage_usage"))).toEqual([
-      "INSERT OR IGNORE INTO storage_usage (doc_id, n, size) SELECT doc_id, n, size FROM versions WHERE size > 0;",
+      "INSERT INTO storage_usage (doc_id, n, size) SELECT doc_id, n, size FROM versions WHERE size > 0;",
     ]);
   });
 });
@@ -592,6 +592,23 @@ describe("rebuilding D1 from R2 alone", () => {
     // The storage ledger came back too, so the quota still counts the retained bytes.
     const ledger = await env.DB.prepare("SELECT COUNT(*) AS n FROM storage_usage").first<{ n: number }>();
     expect(ledger!.n).toBe(after.versions.length);
+  });
+});
+
+describe("rebuilding into a database that is not empty", () => {
+  it("fails instead of merging a stale snapshot, and brings back no removed invite", async () => {
+    const id = "livedoc00000000000000000000000000";
+    const manifest = {
+      schema: 1, docId: id, owner: "o1", title: "T", linkAccess: "invited", commentsEnabled: false,
+      createdAt: 100, updatedAt: 200, deletedAt: null, latestVersion: 1, people: [],
+    };
+    const live = rowsFromManifest(id, manifest, []);
+    await env.DB.exec(rebuildSql([live]).trim());
+    // A manifest mirrored before the invite was removed.
+    const stale = rowsFromManifest(id, { ...manifest, people: [{ email: "gone@acme.com", role: "view", createdAt: 1 }] }, []);
+    await expect(env.DB.exec(rebuildSql([stale]).trim())).rejects.toThrow();
+    const invites = await env.DB.prepare("SELECT email FROM doc_invites WHERE doc_id = ?").bind(id).all();
+    expect(invites.results).toEqual([]);
   });
 });
 

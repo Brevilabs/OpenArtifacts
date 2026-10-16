@@ -496,7 +496,11 @@ three, including a private one and a withdrawn one:
 `npx wrangler r2 object get symposium-docs/docs/<docId>/manifest.json --remote --pipe`.
 The route is removed in the PR after this has been run.
 
-**Rebuild.** Restore the schema first (`wrangler d1 migrations apply`), then:
+**Rebuild.** This is for a D1 that is lost, not damaged. A partial loss is
+restored with D1 Time Travel, never with this. Recreate the database and restore
+the schema first (`wrangler d1 migrations apply`), confirm the target is empty
+(`npx wrangler d1 execute symposium --remote --command "SELECT count(*) FROM docs"`
+must print 0), then:
 
 ```bash
 rclone copy r2:symposium-docs/docs ./mirror/docs   # any copy that keeps last-modified times
@@ -505,9 +509,11 @@ npx wrangler d1 execute symposium --remote --file rebuild.sql
 ```
 
 The script reads each manifest and lists each prefix's `v{n}.html` objects (the
-version log comes from them), and writes `INSERT OR IGNORE` statements for `docs`,
-`doc_invites`, `versions` and the `storage_usage` ledger, so rows D1 still holds
-are never overwritten by an older snapshot. It fails closed: an unknown or missing
+version log comes from them), and writes plain `INSERT` statements for `docs`,
+`doc_invites`, `versions` and the `storage_usage` ledger, so a database that
+already holds a row fails loudly instead of having a stale snapshot merged into
+live rows (an invite removed since the manifest was written would otherwise come
+back). It fails closed: an unknown or missing
 access mode becomes `invited`, an unknown role `view`, and a prefix with no readable
 manifest becomes a private document with no owner (the script names each one).
 Assign those by hand with `UPDATE docs SET owner = …`. A rebuild can therefore hide
