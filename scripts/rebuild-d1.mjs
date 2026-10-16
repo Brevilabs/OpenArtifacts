@@ -9,7 +9,7 @@
 // which strips the types from src/rebuild.ts itself. See docs/deploying.md.
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { rebuildSql, rowsFromManifest } from "../src/rebuild.ts";
+import { readable, rebuildSql, rowsFromManifest } from "../src/rebuild.ts";
 
 const root = process.argv[2];
 if (!root) {
@@ -28,11 +28,12 @@ for (const docId of readdirSync(join(root, "docs")).sort()) {
   let manifest = null;
   try {
     manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
-  } catch {
+  } catch {}
+  if (!readable(manifest)) {
     unreadable++;
     console.error(`no readable manifest for ${docId}: it will be private with no owner`);
   }
   rebuilt.push(rowsFromManifest(docId, manifest, objects));
 }
-console.error(`${rebuilt.length} documents, ${unreadable} without a manifest`);
+console.error(`${rebuilt.length} documents, ${unreadable} without a readable manifest`);
 process.stdout.write(rebuildSql(rebuilt));

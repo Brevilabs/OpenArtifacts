@@ -453,6 +453,8 @@ describe("rowsFromManifest", () => {
       { ...manifest, owner: undefined },
       { ...manifest, commentsEnabled: 1 },
       { ...manifest, createdAt: "100" },
+      { ...manifest, createdAt: Infinity },
+      { ...manifest, latestVersion: 1.5 },
       { ...manifest, updatedAt: null },
       { ...manifest, latestVersion: "5" },
       { ...manifest, deletedAt: undefined },

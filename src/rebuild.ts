@@ -42,10 +42,10 @@ export interface RebuiltRows {
 }
 
 const isString = (value: unknown): value is string => typeof value === "string";
-const isNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
+const isNumber = (value: unknown): value is number => Number.isSafeInteger(value);
 
 /** Exactly the shape `writeManifest` emits; `docId` is ignored, the prefix is trusted. */
-function readable(manifest: unknown): manifest is DocManifest {
+export function readable(manifest: unknown): manifest is DocManifest {
   if (typeof manifest !== "object" || manifest === null) return false;
   const m = manifest as Record<string, unknown>;
   return (
