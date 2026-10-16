@@ -97,8 +97,9 @@ The Worker authorises and the object enforces:
   caps, the anchor ladder, who may delete a comment, who may resolve (the Worker
   passes whether the caller manages the document), the state machines and the
   snapshot.
-- **D1 holds two flags and a name.** `docs.has_threads` (migration `0016`) is set by
-  the first thread and never cleared; it is rebuildable from `threads.json`. With
+- **D1 holds two flags and a name.** `docs.has_threads` (migration `0016`) is set
+  before the first thread is written, so no thread exists while it is unset, and is
+  never cleared; it is rebuildable from `threads.json`. With
   the people list it answers "does this page have comments" without asking the
   object. `accounts.display_name` is the name (migration `0015`, which also added
   `docs.comments_enabled`: unread since the roles revision, dropped later). No

@@ -39,7 +39,7 @@ doc keeps its row so its url answers 410.
 | `deleted_at` | INTEGER | NULL | Set on withdrawal; tombstone, serves 410 |
 | `link_access` | TEXT | NOT NULL, `'anyone'` | CHECK in (`anyone`, `invited`); `invited` means sign in and be on `doc_invites` or own it |
 | `comments_enabled` | INTEGER | NOT NULL, 0 | Unread since the roles revision (the owner's switch is gone); dropped in a later cleanup |
-| `has_threads` | INTEGER | NOT NULL, 0 | Set once by the first thread, never cleared; rebuildable from `threads.json`. With a person at role `comment` or above it is "this page has comments" |
+| `has_threads` | INTEGER | NOT NULL, 0 | Set before the first thread is written, never cleared; rebuildable from `threads.json`. With a person at role `comment` or above it is "this page has comments" |
 
 - Indexes: `docs_by_owner_live (owner, created_at DESC, id DESC) WHERE deleted_at IS NULL` (list and live-doc quota), `docs_by_owner (owner)` (storage quota counts tombstones).
 - Written by: push (insert, version bump, title, `updated_at`), withdrawal (`deleted_at`), the Share toggles and the first thread (`has_threads`). The only `DELETE` is the rollback of an empty create.

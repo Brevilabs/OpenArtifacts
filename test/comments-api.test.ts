@@ -453,6 +453,23 @@ describe("who can comment", () => {
     expect(await flag()).toBe(1);
   });
 
+  it("writes no thread when has_threads cannot be set, so no thread hides behind the flag", async () => {
+    const { alice, priv } = await world();
+    const failing = new Proxy(env.DB, {
+      get(target, prop, receiver) {
+        if (prop !== "prepare") return Reflect.get(target, prop, receiver);
+        return (sql: string) => {
+          if (sql.includes("SET has_threads")) throw new Error("D1 unavailable");
+          return target.prepare(sql);
+        };
+      },
+    });
+    const refused = await send("POST", `${base(alice.token)}/docs/${priv}/threads`, alice.token, { anchor: fox, body: "Why brown?" }, { DB: failing });
+    expect(refused.status).toBe(500);
+    await created(await thread(priv, alice.token));
+    expect((await threadsOf(await listThreads(priv, alice.token))).threads).toHaveLength(1);
+  });
+
   it("emails an invitation by the role it grants: commenting at comment, sharing at view, and nothing on a role change", async () => {
     const { owner, priv } = await world();
     sent.length = 0;

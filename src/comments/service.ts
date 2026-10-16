@@ -247,6 +247,12 @@ export async function createThread(
   const version = writeVersion(requested, standing);
   if (version === null) return docNotFound(docId);
 
+  // Before the thread, so that no thread exists while the flag says none does: the served page
+  // and the threads resource both trust it. A create the object then refuses leaves it set, which
+  // costs that page one threads request. Set on every create, since the service cannot cheaply
+  // tell the first, and the `WHERE` makes the rest no-ops.
+  await markHasThreads(env.DB, docId);
+
   const result = await commentsStub(env, docId).createThread({
     docId,
     ...writer(standing, caller),
@@ -255,14 +261,6 @@ export async function createThread(
     version,
   });
   if (!result.ok) return refusal(result, caller, version);
-
-  // After every create, since the service cannot cheaply tell the first: the `WHERE` makes the
-  // rest no-ops, and one whose update failed here is repaired by the next create.
-  try {
-    await markHasThreads(env.DB, docId);
-  } catch (error) {
-    console.error("has_threads update failed", { error: error instanceof Error ? error.name : "unknown" });
-  }
 
   caller.ctx.waitUntil(
     notifyComment(env, url, {

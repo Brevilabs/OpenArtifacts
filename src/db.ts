@@ -1664,10 +1664,10 @@ export async function findCommentableDoc(
 }
 
 /**
- * Record that the document has a thread, once. `has_threads` is never cleared:
- * deleting the last thread leaves it set and the page then shows nothing. The
- * `WHERE` makes every call after the first a no-op, so the service can run it
- * after each create; one whose update failed is repaired by the next.
+ * Record that the document may have a thread, once. `has_threads` is never
+ * cleared: deleting the last thread leaves it set and the page then shows
+ * nothing. The `WHERE` makes every call after the first a no-op, so the service
+ * can run it before each create.
  *
  * Not in the manifest: a rebuild derives `has_threads` from `threads.json` (src/rebuild.ts).
  */
