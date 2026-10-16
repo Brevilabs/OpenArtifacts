@@ -151,6 +151,13 @@
   // code sign-in, and Google and GitHub still work.
   "send_email": [{ "name": "EMAIL", "allowed_sender_addresses": ["share@mail.openartifacts.ai"] }],
 
+  // The Worker version that is running. A served page's validator carries its
+  // deploy time (see `renderingSuffix` in src/serve.ts), so every deploy counts
+  // as a new rendering of every page and a reader's next revalidation fetches
+  // it instead of getting a 304 for bylines or a bar the new code has changed.
+  // Required: without it every page request fails.
+  "version_metadata": { "binding": "CF_VERSION_METADATA" },
+
   // R2 is the system of record: every served byte lives here.
   "r2_buckets": [{ "binding": "DOCS", "bucket_name": "symposium-docs" }],
 

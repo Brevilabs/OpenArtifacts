@@ -445,6 +445,8 @@ worth knowing:
   and it will change again. What is stable is the behaviour — the same document
   and the same rendering always produce the same tag, and `If-None-Match` with
   it returns `304`.
+  Every deploy counts as a new rendering, so the first revalidation after a
+  deploy gets a `200`, not a `304`.
 
 Every Worker-controlled reader outcome where no document can be displayed is a
 self-contained HTML page:

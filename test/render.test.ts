@@ -10,7 +10,6 @@ import {
   OPENARTIFACTS_BAR_STYLE,
   OPENARTIFACTS_FOOTER,
   OPENARTIFACTS_HEADER,
-  RENDER_REVISION,
 } from "../src/render.js";
 
 const bake = async (html: string, branding = true): Promise<string> =>
@@ -505,13 +504,6 @@ describe("renderServedHtml — the top bar", () => {
       expect(occurrences(html, piece)).toBe(1);
     }
   };
-
-  // The bar and its tag are how the rendering changed, so the revision moved
-  // with them: a reader holding a validator for the rendering without them must
-  // be sent the one with them.
-  it("is a new rendering revision", () => {
-    expect(RENDER_REVISION).toBe(10);
-  });
 
   it("R1: starts the body with the spacer and carries the bar, the Share link and the script once, in place of the header byline", async () => {
     const html = await withBar(marked(page("<p>hello</p>")));

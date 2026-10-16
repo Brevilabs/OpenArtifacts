@@ -24,7 +24,7 @@ import { findServableVersion } from "./db.js";
 import { ABOUT_LINK, brandPageHtml } from "./page.js";
 import { PAGE_SCRIPT_PATH, SHARE_PREFIX, docPath, parseDocPath, parseThreadsPath, type DocRoute } from "./paths.js";
 import { readerSignInConfigured } from "./reader-config.js";
-import { RENDER_REVISION, renderServedHtml, type TopBar } from "./render.js";
+import { renderServedHtml, type TopBar } from "./render.js";
 import { STORED_CONTENT_TYPE, versionObjectKey } from "./storage.js";
 
 /**
@@ -266,10 +266,10 @@ function notModifiedConditions(from: Headers, suffix: string): Headers {
   const conditions = new Headers();
 
   // `If-None-Match` arrives naming a *rendering*; R2 only knows about objects,
-  // so the suffix comes off before the tag is handed on. A tag carrying some
-  // other revision names a rendering this deploy no longer produces, and is
+  // so the suffix comes off before the tag is handed on. A tag carrying
+  // another deploy's time names a rendering this deploy does not produce, and is
   // dropped rather than translated — which is exactly what makes that reader
-  // get a 200 with the current bylines instead of a 304 with the old ones.
+  // get a 200 with the current bar and bylines instead of a 304 with the old ones.
   const ifNoneMatch = from.get("if-none-match");
   if (ifNoneMatch !== null) {
     const stored =
@@ -284,10 +284,10 @@ function notModifiedConditions(from: Headers, suffix: string): Headers {
 
     // RFC 9110: a recipient ignores `If-Modified-Since` when `If-None-Match` is
     // present, and that holds when *none* of the tags survived translation —
-    // which is the case that matters here. Those tags name an older rendering,
-    // so the reader must be sent the current one; forwarding the date instead
-    // would let a document older than it answer 304 and hand back exactly the
-    // stale bylines the revision suffix exists to refuse.
+    // which is the case that matters here. Those tags name another deploy's
+    // rendering, so the reader must be sent the current one; forwarding the date
+    // instead would let a document older than it answer 304 and hand back
+    // exactly the stale rendering the deploy time exists to refuse.
     return conditions;
   }
 
@@ -298,18 +298,40 @@ function notModifiedConditions(from: Headers, suffix: string): Headers {
 }
 
 /**
- * The suffix that turns an object's validator into a rendering's: the render
- * revision, then on the shared link the comments switch (`.c0` or `.c1`), which
- * the top bar carries. A flip changes the validator, so a revalidation after it
- * is a `200` with the new bar rather than a `304` for the old one.
+ * The suffix that turns an object's validator into a rendering's: when the
+ * running Worker version was deployed, in milliseconds, as `.r{ms}`, then on
+ * the shared link the comments switch (`.c0` or `.c1`), which the top bar
+ * carries. A flip changes the validator, so a revalidation after it is a `200`
+ * with the new bar rather than a `304` for the old one.
+ *
+ * The stored object's etag cannot notice a change to what is injected around
+ * it, because it identifies the publisher's bytes and a byline or bar edit does
+ * not touch them. Without a rendering component in the validator, a reader or a
+ * cache holding an older rendering revalidates, gets `304`, and keeps it —
+ * indefinitely, since each revalidation renews its freshness. That would defeat
+ * the reason for rendering at read time at all.
+ *
+ * The deploy time is that component because every change to the rendering
+ * ships as a deploy, so nothing has to be remembered: a new version moves every
+ * page's validator on its own. The injections are string constants in
+ * render.ts, but the top bar also depends on configuration (the API host and
+ * whether reader sign-in is set), and a config change is a deploy too. The time
+ * and not the version's id because it keeps the validator's `.r{number}` shape,
+ * and a rollback to an older version brings back that version's own time, which
+ * names its own rendering.
+ *
+ * The cost, accepted: a deploy that changes nothing a reader can see still
+ * gives each reader's next revalidation one full `200` instead of a `304`.
+ * It never mixes one publisher's or one document's rendering with another's.
  */
-function renderingSuffix(comments: boolean | null): string {
-  return `.r${RENDER_REVISION}${comments === null ? "" : comments ? ".c1" : ".c0"}`;
+function renderingSuffix(env: Env, comments: boolean | null): string {
+  const deployed = Date.parse(env.CF_VERSION_METADATA.timestamp);
+  return `.r${deployed}${comments === null ? "" : comments ? ".c1" : ".c0"}`;
 }
 
 /**
  * The validator for what a reader actually receives: the stored object's etag
- * plus the revision of the rendering applied to it.
+ * plus the deploy time of the rendering applied to it.
  *
  * Weak, because the bytes are no longer the object's own and this service does
  * not promise them octet-for-octet across deploys — which is all a strong
@@ -420,7 +442,7 @@ async function serveObject(
   // the flag off the bar, so it moves only when the bytes do: no bar (no reader
   // sign-in) means no flag in either.
   const bar = topBarFor(env, route, version, route.pinned === null ? commentsEnabled : null);
-  const suffix = renderingSuffix(bar?.comments ?? null);
+  const suffix = renderingSuffix(env, bar?.comments ?? null);
   const key = versionObjectKey(route.docId, version);
   const headers = servingHeaders(
     invitedOnly
@@ -467,15 +489,14 @@ async function serveObject(
   // Serving at read time makes the change possible; it does not make it instant.
   //
   // When a plan can remove the bylines there will be two renderings of the same
-  // object at the same instant, which a revision alone cannot separate: the
+  // object at the same instant, which a deploy time alone cannot separate: the
   // variant has to enter this validator too, or a shared cache will hand one
   // publisher's branding to another's reader.
   //
   // The top bar adds one more input: the API host and whether reader
   // sign-in is configured. That is deployment configuration, the same for every
-  // document and viewer, so it cannot mix renderings between publishers; a
-  // config flip without a revision bump leaves 304s on the old rendering until
-  // the next edit to the injections (see `RENDER_REVISION`).
+  // document and viewer, so it cannot mix renderings between publishers, and a
+  // change to it is a deploy, which moves the deploy time (see `renderingSuffix`).
   //
   // And one input that does change per document and over time: on the shared
   // link, the owner's comments switch, which the bar carries for the page

@@ -774,6 +774,18 @@ describe("HEAD and conditional requests", () => {
 
     expect(response.status).toBe(304);
   });
+
+  // The rendering component of the validator is when this Worker version was
+  // deployed, so a deploy moves every page's tag without anyone bumping a number.
+  it("carries the deploy time in the etag", async () => {
+    const docId = await twoVersionDoc();
+
+    const etag = (await get(`/d/${docId}`)).headers.get("etag")!;
+
+    const deployed = Date.parse(env.CF_VERSION_METADATA.timestamp);
+    expect(Number.isSafeInteger(deployed)).toBe(true);
+    expect(etag).toMatch(new RegExp(`\\.r${deployed}(\\.c[01])?"$`));
+  });
 });
 
 /**
