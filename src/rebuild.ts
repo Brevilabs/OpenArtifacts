@@ -81,8 +81,21 @@ export function rowsFromManifest(
   };
 }
 
-const quote = (value: string | number | null): string =>
-  value === null ? "NULL" : typeof value === "number" ? String(value) : `'${value.replaceAll("'", "''")}'`;
+/**
+ * A SQL literal. A raw newline never appears in it: `D1Database.exec` splits
+ * its input on newlines, so a title with one in it would be cut in half. They
+ * are spliced in as `char(10)` / `char(13)` instead, which round-trips the
+ * value exactly and reads the same through `wrangler d1 execute --file`.
+ */
+const quote = (value: string | number | null): string => {
+  if (value === null) return "NULL";
+  if (typeof value === "number") return String(value);
+  return value
+    .split(/(\r|\n)/)
+    .filter((part) => part !== "")
+    .map((part) => (part === "\n" ? "char(10)" : part === "\r" ? "char(13)" : `'${part.replaceAll("'", "''")}'`))
+    .join(" || ") || "''";
+};
 
 const insert = (table: string, columns: string[], values: Array<string | number | null>): string =>
   `INSERT OR IGNORE INTO ${table} (${columns.join(", ")}) VALUES (${values.map(quote).join(", ")});`;

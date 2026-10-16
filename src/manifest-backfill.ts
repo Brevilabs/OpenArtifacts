@@ -12,8 +12,12 @@
 import type { Env } from "./config.js";
 import { writeManifest } from "./manifest.js";
 
-/** Three subrequests per doc (a D1 batch, the put and the batch that checks it), well inside one invocation's budget. */
-const PAGE = 100;
+/**
+ * Three subrequests per doc (a D1 batch, the put and the batch that checks it)
+ * plus the one that lists the page: 15 docs is 46, under the 50 a Workers Free
+ * invocation allows.
+ */
+const PAGE = 15;
 
 export async function backfillManifests(url: URL, env: Env): Promise<Response> {
   const cursor = url.searchParams.get("cursor") ?? "";

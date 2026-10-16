@@ -445,12 +445,38 @@ describe("rowsFromManifest", () => {
     expect(rowsFromManifest(ID, null, objects).doc).toMatchObject({ link_access: "invited", owner: "", deleted_at: null });
   });
 
+  it("carries a newline in a title through D1Database.exec, which splits its input on newlines", async () => {
+    const id = "newlinedoc0000000000000000000000";
+    const title = "Plan\r\nof 'record'\n\nv2\n";
+    const sql = rebuildSql([rowsFromManifest(id, { ...manifest, docId: id, title, people: [{ email: "a\nb@x.y", role: "view", createdAt: 1 }] }, [])]);
+    expect(sql.trimEnd().split("\n").every((line) => line.startsWith("INSERT OR IGNORE INTO "))).toBe(true);
+    await env.DB.exec(sql.trim());
+    const row = await env.DB.prepare("SELECT title FROM docs WHERE id = ?").bind(id).first<{ title: string }>();
+    expect(row!.title).toBe(title);
+    const invite = await env.DB.prepare("SELECT email FROM doc_invites WHERE doc_id = ?").bind(id).first<{ email: string }>();
+    expect(invite!.email).toBe("a\nb@x.y");
+  });
+
   it("quotes values into SQL", () => {
     const sql = rebuildSql([rowsFromManifest(ID, { ...manifest, title: "Bob's 'plan'" }, objects)]);
     expect(sql).toContain("'Bob''s ''plan'''");
     expect(sql.split("\n").filter((line) => line.includes("INTO storage_usage"))).toEqual([
       "INSERT OR IGNORE INTO storage_usage (doc_id, n, size) SELECT doc_id, n, size FROM versions WHERE size > 0;",
     ]);
+  });
+});
+
+describe("the columns the manifest and the rebuild were written against", () => {
+  // A new column on `docs` or `doc_invites` must be added here, with a decision
+  // whether it belongs in the manifest (src/manifest.ts) and in the rebuild
+  // (src/rebuild.ts). A column that is neither is state a rebuild silently loses.
+  it("has not gained a column nobody decided about", async () => {
+    const columns = async (table: string) =>
+      (await env.DB.prepare(`PRAGMA table_info(${table})`).all<{ name: string }>()).results.map((column) => column.name);
+    expect(await columns("docs")).toEqual([
+      "id", "owner", "title", "latest_version", "created_at", "updated_at", "deleted_at", "link_access", "comments_enabled",
+    ]);
+    expect(await columns("doc_invites")).toEqual(["doc_id", "email", "role", "created_at"]);
   });
 });
 

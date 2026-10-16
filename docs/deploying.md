@@ -489,8 +489,10 @@ curl -s -X POST -H "authorization: Bearer $ADMIN_API_KEY" \
 # then again with ?cursor=<the cursor it returned>, until none comes back
 ```
 
-It writes a manifest for every row, withdrawn documents included, and is safe to
-repeat. Spot-check three, including a private one and a withdrawn one:
+Each call writes 15 documents (sized for the 50 subrequests of a Workers Free
+invocation), so a few hundred documents is a few dozen calls. It writes a manifest
+for every row, withdrawn documents included, and is safe to repeat. Spot-check
+three, including a private one and a withdrawn one:
 `npx wrangler r2 object get symposium-docs/docs/<docId>/manifest.json --remote --pipe`.
 The route is removed in the PR after this has been run.
 

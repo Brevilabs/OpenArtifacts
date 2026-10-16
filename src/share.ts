@@ -337,6 +337,7 @@ async function addMany(
   let added = 0;
   let stop: DialogError | undefined;
   for (const address of found.emails) {
+    // Each addPerson rewrites the manifest; harmless at the caps on a list.
     const result = await addPerson(env, url, principal, docId, address, undefined, analytics);
     if (result.ok) added += 1;
     else if (result.refusal === "not_found") return null;
