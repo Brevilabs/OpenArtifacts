@@ -1,0 +1,34 @@
+/**
+ * TEMPORARY. The one-time backfill that gives every document that existed
+ * before manifests a manifest: `POST /admin/v1/manifests/backfill?cursor=`.
+ * Delete this file, its route in `src/admin.ts` and its tests in the PR after
+ * the backfill has been run; from then on every change writes its own.
+ *
+ * Pages over every `docs` row, deleted ones included (a tombstone is the point),
+ * in id order, and snapshots each with `writeManifest`. Safe to run while live
+ * and to repeat: a manifest is a pure function of D1, so a second pass writes
+ * the same bytes. Call it again with the returned `cursor` until none is returned.
+ */
+import type { Env } from "./config.js";
+import { errorResponse } from "./errors.js";
+import { isDocId } from "./ids.js";
+import { writeManifest } from "./manifest.js";
+
+/** Three subrequests per doc (two D1 reads and the put), well inside one invocation's budget. */
+const PAGE = 100;
+
+export async function backfillManifests(url: URL, env: Env): Promise<Response> {
+  const cursor = url.searchParams.get("cursor") ?? "";
+  if (cursor !== "" && !isDocId(cursor)) return errorResponse("bad_request", "Invalid cursor.");
+
+  const { results } = await env.DB.prepare("SELECT id FROM docs WHERE id > ? ORDER BY id LIMIT ?")
+    .bind(cursor, PAGE)
+    .all<{ id: string }>();
+  for (const { id } of results) await writeManifest(env, id);
+
+  const next = results.length === PAGE ? results[PAGE - 1]!.id : undefined;
+  return Response.json(
+    { written: results.length, ...(next === undefined ? {} : { cursor: next }) },
+    { headers: { "cache-control": "no-store" } },
+  );
+}

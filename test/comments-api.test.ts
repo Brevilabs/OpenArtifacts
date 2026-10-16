@@ -870,7 +870,7 @@ describe("what comments change elsewhere", () => {
     } as unknown as DurableObjectNamespace<DocComments>;
     expect((await send("DELETE", `/api/v1/docs/${priv}`, owner.token, undefined, { COMMENTS: broken })).status).toBe(204);
     // The sweep still ran after the purge failed.
-    expect((await env.DOCS.list({ prefix: `docs/${priv}/` })).objects).toEqual([]);
+    expect((await env.DOCS.list({ prefix: `docs/${priv}/` })).objects.map((o) => o.key)).toEqual([`docs/${priv}/manifest.json`]);
   });
 
   it("still refuses oas_ on /api/v1, with the unchanged message", async () => {

@@ -293,7 +293,7 @@ describe("free account document limit", () => {
     const replies = await Promise.all([create(first.token), create(second.token)]);
     expect(replies.map((response) => response.status).sort()).toEqual([201, 402]);
     expect(await tokensSeeDoc(first.token)).toHaveLength(3);
-    expect((await env.DOCS.list()).objects).toHaveLength(3);
+    expect((await env.DOCS.list()).objects.filter((o) => o.key.endsWith(".html"))).toHaveLength(3);
     expect((await storage()).pushes).toMatchObject([{ pushes: 3 }]);
   });
 

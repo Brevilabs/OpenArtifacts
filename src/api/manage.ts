@@ -22,7 +22,8 @@ import { listPublisherDocs, softDeleteDoc, type DocListCursor, type DocListRow }
 import { docNotFound, errorResponse } from "../errors.js";
 import { isDocId } from "../ids.js";
 import { releaseStorage } from "../storage-quota.js";
-import { docObjectPrefix } from "../storage.js";
+import { writeManifest } from "../manifest.js";
+import { docObjectPrefix, manifestObjectKey } from "../storage.js";
 import { publicDocUrl } from "../urls.js";
 
 /** Docs per page when the caller names no `limit`. */
@@ -64,16 +65,19 @@ async function deleteDocObjects(env: Env, docId: string, objectBatch: number): P
 
   do {
     const listing = await env.DOCS.list({ prefix, limit: objectBatch, cursor });
-    if (listing.objects.length > 0) {
-      await env.DOCS.delete(listing.objects.map((object) => object.key));
-      const versions = listing.objects.flatMap((object) => {
+    // The manifest is the tombstone: it stays so a rebuild can answer 410.
+    const objects = listing.objects.filter((object) => object.key !== manifestObjectKey(docId));
+    if (objects.length > 0) {
+      await env.DOCS.delete(objects.map((object) => object.key));
+      const versions = objects.flatMap((object) => {
         const match = /^v([1-9][0-9]*)\.html$/.exec(object.key.slice(prefix.length));
         return match ? [Number(match[1])] : [];
       });
       await releaseStorage(env.DB, docId, versions);
     }
     // Cursors are positions in the key order, and everything before this one is
-    // already gone, so resuming from it never revisits a deleted key.
+    // already gone (bar the manifest), so resuming from it never revisits a
+    // deleted key.
     cursor = listing.truncated ? listing.cursor : undefined;
   } while (cursor !== undefined);
 }
@@ -106,6 +110,19 @@ export async function deleteDoc(
   const owner = await softDeleteDoc(env.DB, docId, publisher.owner, now);
   if (owner === null) {
     return docNotFound(docId);
+  }
+
+  // The tombstone, written while the row is the only thing that has changed and
+  // before the sweep, which leaves it in place. Awaited, but unlike the other
+  // write points a failure here is logged and not surfaced: the retry a 500
+  // invites answers 404 (the row is already marked), so it could never repair
+  // the manifest, and it would skip the sweep that destroys the bytes. The doc
+  // is withdrawn from every reader whatever this does; what a failure costs is
+  // a manifest still saying live, which the backfill rewrites from D1.
+  try {
+    await writeManifest(env, docId);
+  } catch (error) {
+    console.error("delete left a stale manifest", { docId, error });
   }
 
   // Recorded before the R2 sweep, not inside it: the doc is withdrawn once the

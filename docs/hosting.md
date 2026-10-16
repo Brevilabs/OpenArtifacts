@@ -248,12 +248,13 @@ SQLite instead of one shared database. That is where the headroom lives.
 
 Two caveats to hold onto:
 
-- **The property that makes D1 a safe choice is not true yet.** The design treats
-  it as a disposable index rebuildable from R2, which is what makes a young,
-  limited database an acceptable home for it. Today R2 holds only version
-  objects, so ownership and deletion state exist nowhere else. Until per-doc
-  manifests ship (`CLAUDE.md`), D1 is a real system of record and deserves to be
-  treated as one.
+- **The property that makes D1 a safe choice is true for document state only.**
+  The design treats it as a disposable index rebuildable from R2, which is what
+  makes a young, limited database an acceptable home for it. Each doc's
+  `manifest.json` now carries its ownership, title, privacy and deletion state
+  (`CLAUDE.md`), so those rows can be rebuilt. Accounts, sessions and owner links
+  are not in R2: for them D1 is a real system of record and deserves to be treated
+  as one, with Time Travel as the backup.
 - **This is a concentrated bet on one vendor**, and the usual reassurance does
   not hold yet either. Documents are already portable — files behind an
   S3-compatible API. The index is not: copy R2 and replay the schema today and

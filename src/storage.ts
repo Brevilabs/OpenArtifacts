@@ -42,6 +42,16 @@ export function threadsObjectKey(docId: string): string {
 }
 
 /**
+ * The snapshot of a document's state, at `docs/{docId}/manifest.json`. Written
+ * after every change to the doc's row or its invite list (`src/manifest.ts`),
+ * and the one object a delete leaves behind: it is the tombstone a rebuild reads
+ * to answer 410 rather than 404.
+ */
+export function manifestObjectKey(docId: string): string {
+  return `${docObjectPrefix(docId)}manifest.json`;
+}
+
+/**
  * Content type of every stored object, and of every served page. Injection
  * happens on the way out, so the two are not the same bytes — but the transform
  * only adds HTML to HTML, so it is the same type either way.

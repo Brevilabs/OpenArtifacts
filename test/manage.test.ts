@@ -171,10 +171,15 @@ async function listed(response: Response): Promise<ListResponse> {
 const docRow = (docId: string) =>
   env.DB.prepare("SELECT * FROM docs WHERE id = ?").bind(docId).first<DocRow>();
 
-const objectKeys = async (docId: string) =>
-  (await env.DOCS.list({ prefix: docObjectPrefix(docId) })).objects.map((o) => o.key);
+// Version bytes only. A doc's `manifest.json` is deliberately not counted: these
+// tests are about what delete destroys, and the manifest is what it keeps
+// (test/manifest.test.ts covers it).
+const isVersionKey = (key: string) => !key.endsWith("/manifest.json");
 
-const allObjectKeys = async () => (await env.DOCS.list()).objects.map((o) => o.key);
+const objectKeys = async (docId: string) =>
+  (await env.DOCS.list({ prefix: docObjectPrefix(docId) })).objects.map((o) => o.key).filter(isVersionKey);
+
+const allObjectKeys = async () => (await env.DOCS.list()).objects.map((o) => o.key).filter(isVersionKey);
 
 /**
  * A doc row without going through push, so a test can control `created_at` to

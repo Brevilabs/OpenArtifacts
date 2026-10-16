@@ -63,6 +63,7 @@ import { sha256Hex } from "../hash.js";
 import { isDocId } from "../ids.js";
 import { withinLimit } from "../limits.js";
 import { normalizeEmail } from "../approval/providers.js";
+import { writeManifest } from "../manifest.js";
 import { limitReached } from "../plans.js";
 import { grantUrl } from "../private.js";
 import { readBodyWithin } from "../quota.js";
@@ -172,10 +173,15 @@ export async function setMode(
   if (mode === "invited" && !maySharePrivately(env, principal)) {
     const current = await readAccess(env.DB, docId);
     if (current === null) return refused("not_found");
-    return current.link_access === "invited" ? { ok: true, state: current, changed: false } : refused("plan");
+    if (current.link_access !== "invited") return refused("plan");
+    // A repeat, but still the call that repairs a manifest whose first write failed.
+    await writeManifest(env, docId);
+    return { ok: true, state: current, changed: false };
   }
 
   const changed = await setLinkAccess(env.DB, docId, principal.owner, mode);
+  // Unconditionally, repeat or not: see `writeManifest`.
+  await writeManifest(env, docId);
   const state = await readAccess(env.DB, docId);
   if (state === null) return refused("not_found");
   if (changed) recordChange(analytics, docId, doc.publisher_id, state);
@@ -210,6 +216,8 @@ export async function addPerson(
   const listed = before.people.find((person) => person.email === email);
   // A pure repeat: already listed, no role or the same role, and no request to approve. Like naming the mode a document already has, it answers on any plan, mails nobody and records nothing.
   if (listed && (role === undefined || role === listed.role) && !before.requests.some((r) => r.email === email)) {
+    // Rewritten even so: this is the retry of an add whose manifest write failed.
+    await writeManifest(env, docId);
     return { ok: true, state: before, changed: false };
   }
   if (!maySharePrivately(env, principal)) return refused("plan");
@@ -217,6 +225,7 @@ export async function addPerson(
   const added = await insertInvite(env.DB, docId, principal.owner, email, Date.now(), MAX_INVITES_PER_DOC, role);
   const roleChanged =
     !added && role !== undefined && (await setInviteRole(env.DB, docId, principal.owner, email, role));
+  await writeManifest(env, docId);
 
   // One read after the write answers everything below: the cap check, the
   // response and the count the event carries.
@@ -245,6 +254,7 @@ export async function removePerson(
   if (email === null) return refused("bad_email");
 
   const removed = await deleteInvite(env.DB, docId, principal.owner, email);
+  await writeManifest(env, docId);
   const state = await readAccess(env.DB, docId);
   if (state === null) return refused("not_found");
   if (removed) recordChange(analytics, docId, doc.publisher_id, state);

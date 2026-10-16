@@ -115,6 +115,8 @@ it("deletion cannot release an in-flight reservation before that upload finishes
   const pending = new Promise<void>((resolve) => { resume = resolve; });
   const original = env.DOCS.put.bind(env.DOCS);
   const pause = vi.spyOn(env.DOCS, "put").mockImplementation(async (...args) => {
+    // Only the upload is held; the delete's manifest write goes straight through.
+    if (String(args[0]).endsWith("/manifest.json")) return original(...args);
     entered(); await pending; return original(...args);
   });
   const upload = request("PUT", `/api/v1/docs/${doc.docId}`, "123456789");
@@ -127,7 +129,8 @@ it("deletion cannot release an in-flight reservation before that upload finishes
   } finally { resume(); pause.mockRestore(); }
   expect((await upload).status).toBe(404);
   expect(await storedBytes(env.DB, OWNER)).toBe(0);
-  expect((await env.DOCS.list({ prefix: `docs/${doc.docId}/` })).objects).toHaveLength(0);
+  // The tombstone manifest is the only object left.
+  expect((await env.DOCS.list({ prefix: `docs/${doc.docId}/` })).objects.map((o) => o.key)).toEqual([`docs/${doc.docId}/manifest.json`]);
 });
 
 it("failed metadata commit leaves the actual object charged until successful withdrawal", async () => {
@@ -156,7 +159,8 @@ it("partial cleanup with an uncertain response conservatively retains all unconf
   try { expect((await request("DELETE", `/api/v1/docs/${doc.docId}`)).status).toBe(204); }
   finally { failure.mockRestore(); }
   expect(await storedBytes(env.DB, OWNER)).toBe(10);
-  expect((await env.DOCS.list({ prefix: `docs/${doc.docId}/` })).objects).toHaveLength(1);
+  // One version survives the partial cleanup, beside the manifest.
+  expect((await env.DOCS.list({ prefix: `docs/${doc.docId}/` })).objects.filter((o) => !o.key.endsWith("/manifest.json"))).toHaveLength(1);
   expect((await request("POST", "/api/v1/docs", "x")).status).toBe(402);
 });
 

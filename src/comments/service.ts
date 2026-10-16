@@ -36,6 +36,7 @@ import type { Env } from "../config.js";
 import type { Publisher } from "../auth.js";
 import { docNotFound, errorResponse } from "../errors.js";
 import { isDocId } from "../ids.js";
+import { writeManifest } from "../manifest.js";
 import { sha256Hex } from "../hash.js";
 import { withinLimit } from "../limits.js";
 import { readBodyWithin } from "../quota.js";
@@ -413,6 +414,7 @@ export async function switchComments(env: Env, publisher: Publisher, docId: stri
   if ((await findManagedDoc(env.DB, docId, publisher.owner)) === null) return docNotFound(docId);
   if (on && !planAllowsComments(env, publisher)) return commentsPlanRefusal(env, publisher);
   await setCommentsEnabled(env.DB, docId, publisher.owner, on);
+  await writeManifest(env, docId);
   return Response.json({ docId, comments: on }, { headers: NO_STORE });
 }
 

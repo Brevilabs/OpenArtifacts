@@ -74,8 +74,10 @@ These are day-one decisions, not retrofits:
   into a password, and would not look like a security change when written.
   `docs/identity.md` is the whole model.
 - **R2 is the system of record**, and the stored format is HTML. D1 holds pointer
-  rows only — never content — and must be rebuildable by scanning R2 manifests.
-  **This does not hold yet — see below. Do not rely on it.**
+  rows only, never content, and the document rows are rebuildable from R2: each
+  doc's `manifest.json` carries its state, and the version objects carry the version
+  log. Accounts, sessions, owner links and the publishers cache are not in R2; see
+  "Document state in R2" below for what is and is not covered.
   Comment bodies are the one exception to "D1 holds pointer rows": they live in the
   per-document Durable Object `DocComments`, snapshotted to `docs/{id}/threads.json`
   in R2 after every change, and never in D1.
@@ -91,30 +93,33 @@ These are day-one decisions, not retrofits:
 - **No per-MAU or per-seat priced dependency** anywhere in the serving path.
 - Quotas and per-key rate limits ship with the feature they protect, not later.
 
-## Owed before there is much data
+## Document state in R2
 
-**D1 is currently the only record of who owns a doc, what it is called, and
-whether it was deleted.** R2 holds `docs/{id}/v{n}.html` and nothing else, so the
-rebuildability the constraint above claims is not true today:
+D1 is the only record of who owns a doc, what it is called, whether it was
+deleted and whether it is private. Each doc therefore keeps
+`docs/{id}/manifest.json` (`src/manifest.ts`): `owner`, `title`, `linkAccess`,
+`commentsEnabled`, timestamps, `latestVersion`, and the invite list with roles. It
+is a snapshot of the D1 rows, never a read-modify-write, awaited right after every
+write that changes them (create, update, delete, access mode, invites, comments
+switch) and written even when the write changed nothing, so a retry repairs a
+failed put. Delete leaves it behind as the tombstone, so a rebuild answers 410 and
+not 404. Pending access requests are not in it.
 
-- publisher, title and timestamps exist only in D1;
-- a deleted doc leaves an empty R2 prefix, so a rebuild could not tell a
-  withdrawn url from one that never existed, and it would answer 404 where it
-  promised 410;
-- `link_access`, the invite list and the pending access requests exist only in D1.
-  A rebuild from R2 alone would turn every private document public, so they belong
-  in the manifest snapshot too.
+`src/rebuild.ts` turns manifests plus the listed `v{n}.html` objects back into
+`docs`, `doc_invites`, `versions` and `storage_usage` rows, and **fails closed**:
+an unknown or missing `linkAccess` becomes `invited`, and a prefix with no
+manifest becomes a private doc with no owner. Procedure: `docs/deploying.md`.
 
-The fix is the per-doc `manifest.json` from `docs/cost-at-scale.md` §6: written
-after each push as a snapshot of the doc's D1 state, and left behind as a
-tombstone on delete rather than swept with the version objects. Snapshot it, do
-not read-modify-write it.
+**This covers document state only.** Accounts, sessions, owner links, the
+publishers cache, access requests and comments (which snapshot to `threads.json`)
+are not in R2; D1 Time Travel (30 days) is what covers them, so D1 stays a
+system of record for those. One race is accepted: a push can write a live-looking
+manifest just after a concurrent delete's tombstone, and a rebuild would then
+answer 404 for that one doc.
 
-**Not a deploy blocker.** Backfilling manifests needs the D1 they insure
-against, which sounds urgent but isn't while a rebuild would be a handful of
-rows — and D1 has a 30-day Time Travel window underneath. Do it well before
-there is enough data that reconstructing it by hand would hurt. Until then,
-treat D1 as a system of record, not as a cache.
+The one-time backfill route (`POST /admin/v1/manifests/backfill`) is temporary:
+remove it, with `src/manifest-backfill.ts` and its tests, in the PR after it has
+been run.
 
 ## Owed now that the serving domain has landed
 
@@ -167,9 +172,11 @@ safe pre-floor emergency rollback: roll forward. Record the version id beside th
 cutover's, and treat the newer of the two as the floor (`docs/deploying.md`).
 
 The comments deploy adds a third: the first version carrying the `DocComments`
-Durable Object migration. Cloudflare refuses any rollback across it, so it is the
-effective floor once shipped, and the pre-floor emergency rollback above can no
-longer be carried out (`docs/deploying.md`).
+Durable Object migration. Cloudflare enforces it for every rollback path
+(`wrangler rollback`, `wrangler versions deploy`, the dashboard), so it is the
+effective floor, and the pre-floor emergency rollback above can no longer be
+carried out (`docs/deploying.md`). Its version id is
+`11148574-004d-4692-bdb2-f2a2be94f65d`.
 
 ## Git hygiene
 

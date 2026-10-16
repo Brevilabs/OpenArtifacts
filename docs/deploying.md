@@ -466,6 +466,51 @@ merge corrects them.
 All changes ship through a pull request; never push to `main`.
 
 
+## Rebuilding D1 from R2
+
+Every document keeps a `docs/{docId}/manifest.json` beside its versions: its
+owner, title, access mode, comments switch, timestamps, version counter and
+invite list, rewritten after every change to them and left in place as the
+tombstone when the document is withdrawn. It is what makes the document rows of
+D1 rebuildable from the bucket. It does **not** cover accounts, sessions, owner
+links, the publishers cache, access requests or comments (the comments object
+snapshots its own `threads.json`). For those, and for anything within 30 days,
+D1 Time Travel (`wrangler d1 time-travel restore`) is the first resort; this is
+the fallback when it cannot be used.
+
+**One-time backfill, after the first deploy that writes manifests.** Documents
+that existed before it have none. With the Worker's `ADMIN_API_KEY`, call the
+temporary route until it stops returning a `cursor`:
+
+```bash
+curl -s -X POST -H "authorization: Bearer $ADMIN_API_KEY" \
+  "https://api.openartifacts.ai/admin/v1/manifests/backfill"
+# then again with ?cursor=<the cursor it returned>, until none comes back
+```
+
+It writes a manifest for every row, withdrawn documents included, and is safe to
+repeat. Spot-check three, including a private one and a withdrawn one:
+`npx wrangler r2 object get symposium-docs/docs/<docId>/manifest.json --remote --pipe`.
+The route is removed in the PR after this has been run.
+
+**Rebuild.** Restore the schema first (`wrangler d1 migrations apply`), then:
+
+```bash
+rclone copy r2:symposium-docs/docs ./mirror/docs   # any copy that keeps last-modified times
+node scripts/rebuild-d1.mjs ./mirror > rebuild.sql
+npx wrangler d1 execute symposium --remote --file rebuild.sql
+```
+
+The script reads each manifest and lists each prefix's `v{n}.html` objects (the
+version log comes from them), and writes `INSERT OR IGNORE` statements for `docs`,
+`doc_invites`, `versions` and the `storage_usage` ledger, so rows D1 still holds
+are never overwritten by an older snapshot. It fails closed: an unknown or missing
+access mode becomes `invited`, an unknown role `view`, and a prefix with no readable
+manifest becomes a private document with no owner (the script names each one).
+Assign those by hand with `UPDATE docs SET owner = …`. A rebuild can therefore hide
+a document that should be public; it cannot publish one that should be private. A
+withdrawn document's version rows are not recovered, since its bytes are gone.
+
 ## Private sharing
 
 The Worker that introduces private sharing needs four settings made once, before
