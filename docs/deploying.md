@@ -677,9 +677,12 @@ on the free Workers plan.
 
 1. Apply the D1 migration **before** the deploy:
    `npx wrangler d1 migrations apply symposium --remote`. `0015_comments.sql` adds
-   `docs.comments_enabled` (default `0`, so nothing turns on) and
-   `accounts.display_name`. It is additive and backward compatible: the Worker
-   that is live while it applies ignores both columns. The deploy workflow
+   `docs.comments_enabled` (no longer read since the roles revision: the roles
+   are the only control, and the column is dropped in a later cleanup) and
+   `accounts.display_name`. `0016_has_threads.sql` adds `docs.has_threads`
+   (default `0`; the first thread sets it). Both are additive and backward
+   compatible: the Worker that is live while they apply ignores the columns. Apply
+   `0016` before the deploy that reads it. The deploy workflow
    refuses to ship over an unapplied migration.
 2. Deploy. `wrangler deploy` applies the Durable Object itself: the `COMMENTS`
    binding in `durable_objects.bindings` and the
@@ -703,7 +706,8 @@ whole account:
 **Plans.** Comments are a plan feature: add `"comments": true` to the plans that
 should have them in your `PLAN_LIMITS` (Brevilabs: `pro` and `pro_lifetime`, not
 `free`). License keys whose plan may publish (`PLUS`, `BELIEVER`) have them
-without a flag. Nothing turns on by itself: each owner switches a document on.
+without a flag. Nothing turns on by itself: a page has comments once its owner
+gives a person **Can comment** or their agent comments.
 
 **Self-hosting.** The feature is on when the Worker has the `COMMENTS` binding and
 reader sign-in is configured ([Self-hosting](#self-hosting)). A deployment whose

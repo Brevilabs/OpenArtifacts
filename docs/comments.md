@@ -16,9 +16,12 @@ comment, then converge. The wire contract is in
 - **Quote-anchored threads.** A thread is anchored to a quote of the page, not to
   a position. Each thread has comments, a state (`open` or `resolved`) and, for
   every version, an anchor status (`anchored` or `orphaned`).
-- **Off until the owner turns it on**, per document, in the Share popover, the
-  share page or with `openartifacts comments on`. A paid plan is required to turn
-  it on.
+- **The roles are the only control.** There is no per-document switch. Each person
+  the owner adds has a role, **Can view** or **Can comment**, in the Share popover,
+  the share page or with `openartifacts share <docId> --add <email> --role …`, on
+  public and private pages alike. A page has comments when the owner's agent has
+  commented or some person holds **Can comment**. A paid plan is required to add
+  anyone; a free owner's pages are view-only.
 - **People and agents both write.** A person comments through the frame in the
   page's margin; an agent through `/api/v1` with an account token or a license key,
   or the CLI's `openartifacts comments`. Agent comments are labelled "Alice's agent"
@@ -86,16 +89,20 @@ comments are the feature that earns.
 The Worker authorises and the object enforces:
 
 - **The Worker** (`src/comments/access.ts`, `service.ts`) decides from D1 whether
-  the caller can read, can comment and can manage, whether comments are on, whether
-  the owner's plan has them and whether the rate limit allows, and derives who the
+  the caller can read, can comment and can manage, whether
+  the owner's plan has comments and whether the rate limit allows, and derives who the
   author is from the credential. It never takes an author from the request. It then
   calls the object with `{principal, kind, onBehalfOf}`.
 - **The object** (`src/comments/object.ts`) enforces what it can see itself: the
   caps, the anchor ladder, who may delete a comment, who may resolve (the Worker
   passes whether the caller manages the document), the state machines and the
   snapshot.
-- **D1 holds only the owner's switch** (`docs.comments_enabled`) and the display name
-  (`accounts.display_name`), migration `0015`. No comment body is ever in D1.
+- **D1 holds two flags and a name.** `docs.has_threads` (migration `0016`) is set by
+  the first thread and never cleared; it is rebuildable from `threads.json`. With
+  the people list it answers "does this page have comments" without asking the
+  object. `accounts.display_name` is the name (migration `0015`, which also added
+  `docs.comments_enabled`: unread since the roles revision, dropped later). No
+  comment body is ever in D1.
 
 The object is the system of record for threads. After every mutation it writes a
 full snapshot, `docs/{docId}/threads.json`, to R2: an overwrite, never a
@@ -113,31 +120,31 @@ the rules for the page itself.
 
 ```
 canComment = canRead
-             AND the owner turned comments on for the document
              AND the owner's plan includes comments
-             AND the caller is the owner, OR an invited account whose role is `comment`,
-                 OR (linkAccess is `anyone` AND the caller is signed in)
+             AND the caller is the owner, OR an account on the document's list whose
+                 role is at least `comment`
 ```
+
+The roles are an ordered ladder, `view` < `comment` (a later `edit` is one more
+rung), declared once in `src/roles.ts` with `roleAtLeast` and `ROLE_PLAN_FLAG`.
+Link access plays no part: a public link never confers commenting.
 
 `canRead` and `canManage` are the existing predicates; the rest is assembled in
 `src/comments/access.ts` from one D1 read (`findCommentableDoc`). A reader invited
-as **Can view** reads the threads and cannot write. On a public document an
-anonymous reader can read the threads and must sign in to write, since a comment
-needs an author.
+as **Can view** reads the threads and cannot write, and so does a signed-in
+account that is not on the list, on a public page.
 
-- **Everything refused is `404`, never `403`.** Two exceptions are given only to
-  someone who manages the document, and so reveal nothing: `409 comments_off`
-  and the plan's `402`.
+- **Everything refused is `404`, never `403`.** The one exception is given only to
+  someone who manages the document, and so reveals nothing: the plan's `402`.
 - **Entitlement belongs to the document's owner.** Readers and commenters never
   pay. A lapsed owner keeps the threads readable and stops accepting writes, and
-  turning comments off never needs a plan. The plan is read from what D1 stores, so
+  the people on the list keep their roles. The plan is read from what D1 stores, so
   a comment write costs no license-server call. Accepted for v1: those rows are as
   fresh as the owner's last publish or account refresh, so a lapsed license key
   keeps accepting comments until its owner next publishes.
 - **Resolve and reopen**: the owner, or the thread's author while they can still
   comment. There is no moderation of other people's comments; a commenter deletes
-  only their own words, and an owner who wants a thread gone resolves it or turns
-  comments off.
+  only their own words, and an owner who wants a thread gone resolves it.
 - **Authorship is the account.** A license key linked to an account is one author
   with it, so linking after the fact does not orphan a comment's `mine`, its delete
   right or its emails.
@@ -162,15 +169,17 @@ function of the stored version. So comments are a **separate resource**:
   counted, no cookie on the apex.
 - The page script (`/embed/page.js`, already on every page for **Share**) fetches it
   same-origin and adds the comments button, the highlights, and the frame. It does
-  not ask when the bar says the document has comments off: on the shared link the
-  Share link carries `data-comments="on|off"`, read from the `docs` row the serving
-  path already loads and folded into that rendering's etag (`.c0` / `.c1` after the
-  render revision), so a page with comments off costs no second request and a flip
-  reaches readers within the route's 60 seconds. The link also carries
+  not ask when the bar says the document has no comments: on the shared link the
+  Share link carries `data-comments="on|off"`, derived in the `docs` read the serving
+  path already makes (`has_threads`, or a person at `comment` or above) and folded
+  into that rendering's etag (`.c0` / `.c1` after the deploy time), so a page with no
+  comments costs no second request and a flip reaches readers within the route's
+  60 seconds. A document that has never had a thread answers the resource from its
+  row alone, without reaching the object. The link also carries
   `data-version`, the version that rendering is, and the script reads and writes
   at it, so comments stay with the text on screen when a push lands while the page
   is open or cached. A pinned `/v{n}` is immutable and carries neither attribute;
-  there the script asks, at the version its path names. The owner flipping the switch in the
+  there the script asks, at the version its path names. The owner adding a person, changing a role or closing the
   Share popover makes the open page ask again, so no reload is needed.
 - Agents fetch the same resource, or `GET /api/v1/docs/{docId}/threads` with their
   credential for the viewer fields, instead of parsing threads out of a page. That
@@ -188,7 +197,7 @@ frame, its policy and the `postMessage` protocol.
 
 | | |
 | --- | --- |
-| Plans | `PlanLimits.comments` on `pro` and `pro_lifetime`; the license plans that may publish (`PLUS`, `BELIEVER`) have it. Free owners cannot turn comments on. |
+| Plans | `PlanLimits.comments` on `pro` and `pro_lifetime`; the license plans that may publish (`PLUS`, `BELIEVER`) have it. Free owners cannot add anyone, so their pages are never commentable. |
 | Per document | 500 threads, 2,000 comments, bodies 4,000 characters, quotes 1,000. |
 | Per principal | 30 writes per minute (`COMMENT_WRITE_LIMITER`, namespace `1011`). |
 | Per document | 20 notification emails per minute (`COMMENT_EMAIL_LIMITER`, namespace `1012`). |

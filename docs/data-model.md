@@ -1,7 +1,7 @@
 # Data model
 
 Every place this Worker keeps state, on one page: D1 tables, R2 keys, Durable
-Object storage, and the small rest. Current as of migration `0015_comments.sql`.
+Object storage, and the small rest. Current as of migration `0016_has_threads.sql`.
 
 > **Update this file in the same PR as any migration or storage-key change.**
 
@@ -38,10 +38,11 @@ doc keeps its row so its url answers 410.
 | `updated_at` | INTEGER | NOT NULL | Last landed push |
 | `deleted_at` | INTEGER | NULL | Set on withdrawal; tombstone, serves 410 |
 | `link_access` | TEXT | NOT NULL, `'anyone'` | CHECK in (`anyone`, `invited`); `invited` means sign in and be on `doc_invites` or own it |
-| `comments_enabled` | INTEGER | NOT NULL, 0 | Owner's switch for inline comments |
+| `comments_enabled` | INTEGER | NOT NULL, 0 | Unread since the roles revision (the owner's switch is gone); dropped in a later cleanup |
+| `has_threads` | INTEGER | NOT NULL, 0 | Set once by the first thread, never cleared; rebuildable from `threads.json`. With a person at role `comment` or above it is "this page has comments" |
 
 - Indexes: `docs_by_owner_live (owner, created_at DESC, id DESC) WHERE deleted_at IS NULL` (list and live-doc quota), `docs_by_owner (owner)` (storage quota counts tombstones).
-- Written by: push (insert, version bump, title, `updated_at`), withdrawal (`deleted_at`), the Share and comments toggles. The only `DELETE` is the rollback of an empty create.
+- Written by: push (insert, version bump, title, `updated_at`), withdrawal (`deleted_at`), the Share toggles and the first thread (`has_threads`). The only `DELETE` is the rollback of an empty create.
 
 #### `versions`
 
@@ -238,7 +239,7 @@ only keys are under one prefix per doc.
 
 One class, `DocComments`, bound as `COMMENTS`, SQLite-backed (migration tag `v1`).
 Keyed by `idFromName(docId)`, so one object per document. It keeps threads, so D1
-carries only `docs.comments_enabled`. Source: `src/comments/object.ts`.
+carries only `docs.has_threads`. Source: `src/comments/object.ts`.
 
 | Table | Key | Columns |
 | --- | --- | --- |
