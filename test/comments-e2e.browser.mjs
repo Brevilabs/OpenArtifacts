@@ -677,7 +677,7 @@ test("8. a stranger gets 404 from every comment route, and so does a signed-out 
 
 let PUBLIC; // the public document of step 9
 test("9. a signed-out reader of a public page sees read-only cards, signs in, and posts", { timeout: 180_000 }, async () => {
-  const published = await cli("owner", ["publish", htmlFile(page(V1)), "--title", "Public report"]);
+  const published = await cli("owner", ["publish", htmlFile(page(V1)), "--title", "Public report", "--public"]);
   PUBLIC = published.json().docId;
   assert.equal((await cli("owner", ["comments", "on", PUBLIC])).json().comments, true);
   const added = await cli("owner", ["comments", "add", PUBLIC, "--quote", STAFFING, "--prefix", "", "--body", "Who is staffed?", "--section", "staffing"]);
@@ -712,8 +712,10 @@ test("9. a signed-out reader of a public page sees read-only cards, signs in, an
 });
 
 test("10. a Free-plan owner cannot turn comments on: the CLI prints the upgrade hint and the popover says so", { timeout: 180_000 }, async () => {
+  // No flag: a Free plan has no private pages, so the CLI falls back to a public one.
   const published = await cli("free", ["publish", htmlFile(page(V1)), "--title", "Free report"]);
   assert.equal(published.error, undefined, published.stderr);
+  assert.equal(published.json().linkAccess, "anyone");
   const free = published.json().docId;
   const refused = await cli("free", ["comments", "on", free]);
   assert.equal(refused.error?.status, 402);

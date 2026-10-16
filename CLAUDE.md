@@ -62,7 +62,8 @@ These are day-one decisions, not retrofits:
   substitute. There is no migration path once links are in the wild.
 - Shared docs are **`noindex` + `nofollow` by default**.
 - **Publisher-gated, reader-open**: publishing requires a key; reading a public
-  document requires nothing. An invited-only document is the exception, and it
+  document requires nothing. New pages from the CLI start invited-only when the
+  plan allows it (`--public` opts out). An invited-only document is the exception, and it
   is never served from `openartifacts.site`: **no origin that runs more than one
   publisher's scripts may ever hold a credential**, and a label host serves one
   publisher only (`docs/private-sharing.md`).

@@ -42,10 +42,21 @@ so Bob gets the ordinary invite email. **Decline** removes the request and tells
 Bob nothing. Removing Alice takes effect on her next request. Switching back to
 **Anyone with the link** makes the same url public for everyone, with no sign-in.
 
-**Public documents did not change.** `link_access` defaults to `anyone` for every
-document, old and new, and the public path serves the same url, headers, caching
-and bytes it always did, with no sign-in and no cookie. The one addition to a
-public page is the top bar with its **Share** button, described below.
+**Public documents did not change.** `link_access` is `anyone` for every document
+made through `POST /api/v1/docs`, old and new, and the public path serves the same
+url, headers, caching and bytes it always did, with no sign-in and no cookie. The
+one addition to a public page is the top bar with its **Share** button, described
+below.
+
+**The CLI's default for a new page is private (2026-10-15).** For the CLI and its
+skill, a new page now starts private; the server and the HTTP contract are
+untouched, and Copilot is not changed by this. A page that was ever public may
+already have been copied by whoever saw it, and switching it private later cannot
+recall those copies. `--public` is the explicit public route and `--private` never
+falls back to public; the CLI's package README has the flags and the fallback. The
+skill reads `limits.privateSharing` from `openartifacts account` and never offers
+private to a plan without it. The owner of a private page opens it with
+`openartifacts open <docId>`, which uses `POST …/open`.
 
 ## The constraint everything else follows from
 
@@ -683,8 +694,9 @@ Google or GitHub (both halves of the OAuth pair) or emailed codes (the `EMAIL`
 binding and `EMAIL_FROM`). When it is not, `POST /api/v1/private-docs`, every
 `…/access` route, `…/open`, `/open/*`, `/share/*`, `/signin/*` and `/embed/*` answer
 `404` exactly as a Worker that predates private sharing does, and served pages
-carry no top bar and no page-script tag: the header byline stays as it was. Every client already knows what to do: `publish --private`
-reports that the server does not support private documents and creates nothing.
+carry no top bar and no page-script tag: the header byline stays as it was. Every client already knows what to do: `publish` and `publish --private`
+report that the server does not support private documents and create nothing, and
+`publish --public` publishes a public page.
 No half-configured state exists. `GET …/html` is not part of the family and keeps
 working, and `GET /api/v1/docs` still reports each document's stored `linkAccess`.
 

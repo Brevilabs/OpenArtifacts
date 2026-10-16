@@ -36,6 +36,18 @@ to publish, the agent runs:
 openartifacts publish notes.html --title "Notes"
 ```
 
+A page that was ever public may already have been copied by whoever opened it, and
+making it private later cannot recall those copies, so a new page starts private
+(invited people only) when the plan allows it. With no flag the CLI creates it
+through `POST /api/v1/private-docs`; if the plan has no private sharing (a free
+account), it publishes the page through `POST /api/v1/docs` instead, and the
+`linkAccess` in the receipt says which happened. A server with no private
+documents answers that route 404, and then nothing is published. Pass `--public`
+to publish for anyone with the link (always
+`POST /api/v1/docs`), or `--private` to require a private page: `--private` fails
+rather than publishing publicly. `--public` and `--private` cannot be combined, and
+neither applies to `--doc-id`.
+
 The command prints `{"docId","url","version","linkAccess"}`, where `linkAccess` is
 `"anyone"` for a public page and `"invited"` for a private one. A private publish
 also adds `manageUrl`. Updating the same page is the same command with
@@ -44,8 +56,7 @@ also adds `manageUrl`. Updating the same page is the same command with
 `openartifacts unshare <docId>` withdraws a page. `list`, `get`, `tokens`, and
 `revoke` round out the account commands.
 
-Pages are public by default. `publish --private` creates a page for invited people
-only, through `POST /api/v1/private-docs`, and `share` changes who can read one:
+Republishing never changes who can open a page. `share` changes who can read one:
 
 ```bash
 openartifacts share <docId> --add alice@acme.com   # invites her (and approves her request)
@@ -61,14 +72,19 @@ requests, whether the server can send invitation emails (`email`), and a `manage
 page where the owner manages access in a browser. `--add` also approves a pending
 request. Where the server sends email, an added person is emailed the link, though a
 per-publisher limit or the mail service can drop one; otherwise, or if the invitee
-does not get it, send it to them yourself. `publish --private` prints `{"docId","url","version","linkAccess","manageUrl"}`.
+does not get it, send it to them yourself. A private publish prints `{"docId","url","version","linkAccess","manageUrl"}`.
 Invited people sign in once with the invited address (Google, GitHub or an emailed
 code) and open the same url. Private sharing is a paid feature. A server that predates
 private sharing, or that has no reader sign-in configured, answers 404 to
-`publish --private`: nothing is created, and the CLI says "This server does not
-support private documents." `list` shows each page's `linkAccess`, and `get` prints
+`publish --private`, and to a plain `publish`: nothing is created, and the CLI says
+"This server does not support private documents." `list` shows each page's `linkAccess`, and `get` prints
 the owner's stored HTML, private pages included; against an older server that has
 no private pages, `get` reads the public url as it always did.
+
+`openartifacts open <docId>` opens your own page in the browser already signed in as
+you, so a private page needs no sign-in step. It prints only
+`{"opened":true,"docId":"…"}`: the link it opens is a 60-second grant, so it is never
+printed.
 
 ## Comments
 

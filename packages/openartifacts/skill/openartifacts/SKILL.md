@@ -1,6 +1,6 @@
 ---
 name: openartifacts
-description: Render a document to HTML, let the user review the file, then publish it as an OpenArtifacts page, public or shared with invited people only. Update or unshare published pages, and manage who can open them (make a page private or public, add or remove people, see and answer access requests), and address the comments readers leave on a page: read the open threads, revise, publish the update, reply and resolve.
+description: Render a document to HTML, let the user review the file, then publish it as an OpenArtifacts page that is private to the user and the people they name, or public on request (free plans publish public pages). Update or unshare published pages, and manage who can open them (make a page private or public, add or remove people, see and answer access requests), and address the comments readers leave on a page: read the open threads, revise, publish the update, reply and resolve.
 metadata:
   hermes:
     category: productivity
@@ -9,7 +9,7 @@ metadata:
 
 # OpenArtifacts
 
-Turn a document into a web page that anyone with the link can open, or that only the people the user names can open. You render the HTML; OpenArtifacts hosts it.
+Turn a document into a web page that only the user and the people they name can open, or, when the user asks for it or their plan has no private pages, that anyone with the link can open. You render the HTML; OpenArtifacts hosts it.
 The CLI is `openartifacts` when installed, otherwise `npx --yes openartifacts@latest`.
 It only sends the HTML file you give it. Never run Node scripts of your own against
 the API.
@@ -39,8 +39,18 @@ path or a target without `file://`; those do not open. This rule overrides any d
 format for file references: the target must start with `file:///`. Say that opening it in a browser shows the page as it will be uploaded; OpenArtifacts adds a
 top bar with a Share button and a footer byline when it serves the page.
 
-For a new page, the review message ends with this line, word for word: "Who should be able to open it? Reply **publish** for anyone with the link, or name people, for example **publish for alice@acme.com**, to share it only with them."
-If the user's request already said who (for example "publish this privately for Alice" or
+Before the review message for a new page, run `openartifacts account`. It prints the
+plan and `limits`; `limits.privateSharing` is `true` when the plan has private pages
+and `false` when it has none. If it fails (the command needs an account token, so a
+license key makes it fail), or prints no `privateSharing` key (a CLI older than this
+skill), treat private as available: the publish step passes `--private` and fails
+loudly if it is not. Only an explicit `privateSharing: false` removes the private
+option.
+
+- Private available: the review message ends with this question, word for word: "Publish **privately** (only you, plus anyone you name) or **publicly** (anyone with the link)? Reply **publish** to publish privately, **publish for alice@acme.com** to share it privately with people, or **publish publicly**." A bare **publish** means private, only the owner.
+- Private unavailable (a free plan): never offer or mention private. The review message ends: "Reply **publish** to publish it. Anyone with the link will be able to open it."
+
+If the user's request already said who or how (for example "publish this privately for Alice" or
 "publish this publicly"), confirm that choice instead of asking: "It will be published
 privately for {emails}. Reply publish to go ahead." or "It will be published for anyone
 with the link. Reply publish to go ahead." Never guess an address: if the user names a
@@ -49,38 +59,54 @@ and keeps who can open it. Then end your turn.
 
 Never publish in the same turn that produced the HTML. Publish only when a later
 message from the user clearly asks to publish this page. A reply of "publish" approves
-what the review message offered: a public page after the question, or the confirmed
-choice (private for the confirmed addresses, or public) after a confirmation.
+what the review message offered: a private page for only the user when private was
+offered, a public page when it was not, or the confirmed choice after a confirmation.
 "publish for alice@acme.com" (several addresses may follow, separated by commas) or a
-request for a private page approves a private one. Treat anything else as
+request for a private page approves a private one, and "publish publicly" or a request
+for a public page approves a public one. Treat anything else as
 feedback (revise the same file and repeat this step) or as a cancellation. When
 unsure whether a message is an approval, ask once. Never simulate the user's
 approval.
 
 ## 3. Publish
 
-If the user named people or asked for a private page, create it private and add each
-person, one call per address:
+For a new page, always pass an explicit flag, never a bare `publish`: `--private` or
+`--public`. An older CLI treats a bare `publish` as public, and an older CLI rejects an
+unknown flag instead of publishing, so an explicit flag fails closed.
+
+A private page, with each person the user named added one call per address:
 
 ```
 openartifacts publish <file.html> --title "Page title" --private
 openartifacts share <docId> --add alice@acme.com
+openartifacts open <docId>
 ```
 
-Otherwise publish exactly as before, with no flag:
+A public page, when the user chose public or the plan has no private pages:
 
 ```
-openartifacts publish <file.html> --title "Page title"
+openartifacts publish <file.html> --title "Page title" --public
 ```
 
-The command prints `{"docId":"…","url":"…","version":1,"linkAccess":"anyone"}`. A
-private publish prints `"linkAccess":"invited"` and also a `manageUrl`; `share` prints
+If `--private` or `--public` is rejected with the usage text instead of publishing,
+the CLI is older than this skill. Tell the user to update it with `openartifacts
+install` (or run `npx --yes openartifacts@latest`), run `openartifacts account` again
+before going ahead, and never retry without the flag.
+
+The command prints `{"docId":"…","url":"…","version":1,"linkAccess":"anyone"}` for a
+public page. A private publish prints `"linkAccess":"invited"` and also a `manageUrl`; `share` prints
 `manageUrl` too, and `email`, which says whether the server can send invitation emails. It does not say one was delivered: the server's per-publisher limit or its mail service may still drop one. Give the user the url
-and say who can open it.
+and say who can open it. Word the report from the receipt's `linkAccess`, never from the flag you passed.
 
 - Private: "Published privately: {url}. Only you and {addresses} can open it. OpenArtifacts emails {Name} an invitation, and they sign in with that address. If they do not get it, send them the link." Say "Only you can open it." when nobody was named. When `email` is false, say the server sends no email, that the user should send the link to the invitee, and that the invitee signs in with that address. Never claim an invitation was delivered, even when `email` is true: say only that OpenArtifacts emails one, and that the user can send the link if the invitee does not get it.
 - Public: "Published: {url}. Anyone with the link can open it."
 - End a private report with "Manage who can open it: {manageUrl}", using the URL the CLI printed.
+
+After a private publish, run `openartifacts open <docId>` so the page opens in the user's
+browser already signed in, and say it opened. It prints only `{"opened":true,…}`: the
+link it opens signs the user in, so it is never printed, and you must not try to
+recover it. If `open` fails (an older CLI, or no browser), skip it silently; the report
+still has the url and the `manageUrl`.
 
 If an `--add` fails after a successful private publish, the page is private. Report the
 url, who can open it, and the failed address with the CLI message.
@@ -88,8 +114,8 @@ url, who can open it, and the failed address with the CLI message.
 If `publish --private` says "This server does not support private documents. Nothing
 was published.", relay it. Do not publish publicly unless the user asks. On
 `limit_reached` with `privateSharing`, say private sharing needs a paid plan and that
-nothing was published, and that replying **publish** publishes it for anyone with the
-link. Never do that automatically.
+nothing was published, and that replying **publish publicly** publishes it for anyone
+with the link. Never do that automatically.
 
 To update a page the user already published, pass its id so the same url gets the
 next version. An update keeps who can open the page:

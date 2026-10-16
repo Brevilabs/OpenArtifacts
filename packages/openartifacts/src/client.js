@@ -83,6 +83,12 @@ export function createClient({ host, token, fetcher = fetch }) {
       }),
     listDocs,
     /**
+     * A url that opens the owner's own page with no sign-in step: for a private
+     * page, a grant that lasts 60 seconds. It is for the browser, never for output.
+     * @param {string} docId
+     */
+    openDoc: (docId) => request(`/api/v1/docs/${encodeURIComponent(docId)}/open`, { method: "POST" }),
+    /**
      * The owner's latest HTML. A Worker that predates private sharing has no …/html and serves every document publicly, so there `get` reads the public url, as it always did, without the token.
      * @param {string} docId
      */
