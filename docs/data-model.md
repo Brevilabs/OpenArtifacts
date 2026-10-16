@@ -226,12 +226,13 @@ only keys are under one prefix per doc.
 | Key | Content | Written | Deleted | Content type |
 | --- | --- | --- | --- | --- |
 | `docs/{docId}/v{n}.html` | The publisher's own bytes for version `n`, no injections | Once per push, before the `versions` row | Withdrawal (prefix scan) or a push that lost a race with it | `text/html; charset=utf-8` |
+| `docs/{docId}/manifest.json` | Snapshot of the doc's D1 state: `{ schema: 1, docId, owner, title, linkAccess, commentsEnabled, createdAt, updatedAt, deletedAt, latestVersion, people: [{ email, role, createdAt }] }` (`src/manifest.ts`) | Rewritten from D1, awaited, after every write to the doc's row or invites (create, update, delete, access mode, invites, comments switch), and re-put until it matches D1 | Never: withdrawal leaves it as the tombstone | `application/json` |
 | `docs/{docId}/threads.json` | Snapshot of the comment threads: `{ docId, schema: 1, threads }`, each thread with its comments and per-version anchors | Overwritten by `DocComments` after every mutation, best effort | Withdrawal (same prefix scan) | `application/json` |
 
 - Version objects are immutable: never rewritten, `n` is reserved atomically in D1 first. The robots meta, favicon, social card and bylines are injected on the way out by `renderServedHtml`, never stored.
 - `threads.json` is not read at runtime; it exists to rebuild the Durable Object from.
-- No custom metadata on any object. No manifest yet (see below).
-- Withdrawal lists and deletes the whole `docs/{docId}/` prefix, not just `versions` rows.
+- No custom metadata on any object.
+- Withdrawal lists and deletes the whole `docs/{docId}/` prefix except `manifest.json`, not just `versions` rows.
 
 ## Durable Objects
 
@@ -264,7 +265,6 @@ carries only `docs.comments_enabled`. Source: `src/comments/object.ts`.
 
 ## What is the system of record
 
-- **D1 is the only record** of who owns a doc, its title, whether it was withdrawn, and who may read it. Treat it as a system of record, not a cache. Only `publishers` (and the plan columns on `accounts`) cache something held elsewhere.
-- **R2 holds bytes only**: the publisher's HTML per version, plus the `threads.json` snapshot. A rebuild from R2 could not recover owner, title, timestamps or access, and could not tell a withdrawn url (410) from one that never existed (404).
+- **Document state is rebuildable from R2**: `manifest.json` carries owner, title, timestamps, deletion, access and the invite list, and the version objects carry the version log. `src/rebuild.ts` turns them back into `docs`, `doc_invites`, `versions` and `storage_usage` rows, failing closed (unknown access becomes `invited`, an unknown role `view`). Procedure: `docs/deploying.md`.
+- **D1 is still the only record** of accounts, sessions, owner links, the publishers cache and pending access requests; D1 Time Travel (30 days) covers them. Only `publishers` (and the plan columns on `accounts`) cache something held elsewhere.
 - **The Durable Object is the only live record of comments**; `threads.json` is its backup.
-- The planned fix, a per-doc `manifest.json` snapshot written after each push and left as a tombstone on delete, is in CLAUDE.md under "Owed before there is much data" and `docs/cost-at-scale.md` section 6. The rebuildability claims in older comments and `wrangler.jsonc` do not hold until it ships.
