@@ -510,7 +510,7 @@ describe("renderServedHtml — the top bar", () => {
   // with them: a reader holding a validator for the rendering without them must
   // be sent the one with them.
   it("is a new rendering revision", () => {
-    expect(RENDER_REVISION).toBe(8);
+    expect(RENDER_REVISION).toBe(9);
   });
 
   it("R1: starts the body with the spacer and carries the bar, the Share link and the script once, in place of the header byline", async () => {
@@ -518,7 +518,7 @@ describe("renderServedHtml — the top bar", () => {
 
     expectBarOnce(html);
     expect(html).toContain(`<body>${OPENARTIFACTS_BAR_SPACER}`);
-    expect(html).toContain("<style>:where(html){scroll-padding-top:40px}@media print{");
+    expect(html).toContain("<style>:where(html){scroll-padding-top:48px}@media print{");
     expect(OPENARTIFACTS_BAR_STYLE).not.toContain("media=");
     expect(html).not.toContain(OPENARTIFACTS_HEADER);
     expect(html).not.toContain("openartifacts-header");

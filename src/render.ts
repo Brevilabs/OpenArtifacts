@@ -54,7 +54,7 @@
  * Accepted: it never mixes one publisher's or one document's rendering with
  * another's, and the next edit to the injections, or the next push, refreshes it.
  */
-export const RENDER_REVISION = 8;
+export const RENDER_REVISION = 9;
 
 /**
  * Belt to the `X-Robots-Tag` header's braces (D9). The header is the
@@ -328,7 +328,7 @@ const BAR_FONT = `font:500 13px/1.25 ${BAR_FONT_FAMILY}`;
  * already concedes).
  */
 export const OPENARTIFACTS_BAR_SPACER =
-  '<div class="openartifacts-bar-spacer" aria-hidden="true" style="all:initial;display:block;flex:none;height:40px"></div>';
+  '<div class="openartifacts-bar-spacer" aria-hidden="true" style="all:initial;display:block;flex:none;height:48px"></div>';
 
 /**
  * The one stylesheet the bar adds: a scroll offset the size of the strip, so an
@@ -352,9 +352,9 @@ export const OPENARTIFACTS_BAR_SPACER =
  * has one injection site.
  */
 export const OPENARTIFACTS_BAR_STYLE =
-  "<style>:where(html){scroll-padding-top:40px}" +
+  "<style>:where(html){scroll-padding-top:48px}" +
   "@media print{.openartifacts-bar,.openartifacts-bar-spacer,.openartifacts-share-popover{display:none!important}}" +
-  ":where(.openartifacts-share):hover{background:#ffffff!important}" +
+  ":where(.openartifacts-share):hover{background:#272b33!important;border-color:rgba(255,255,255,0.14)!important}" +
   ":where(.openartifacts-share):focus-visible,:where(.openartifacts-byline):focus-visible{" +
   "outline:2px solid #f6ae52!important;outline-offset:2px!important}" +
   ":where(.openartifacts-byline):is(:hover,:focus-visible) .openartifacts-byline-text{text-decoration:underline!important}" +
@@ -378,8 +378,8 @@ export const OPENARTIFACTS_BAR_STYLE =
  */
 const BAR_STYLE =
   "all:initial;direction:ltr;position:fixed;top:0;left:0;right:0;z-index:2147483647;box-sizing:border-box;" +
-  "height:40px;display:flex;align-items:center;justify-content:space-between;gap:12px;" +
-  "padding:0 16px;background:#0b0c10;border-bottom:1px solid rgba(255,255,255,0.08);color:#8d94a0;" +
+  "height:48px;display:flex;align-items:center;justify-content:space-between;gap:12px;" +
+  "padding:0 12px 0 16px;background:#0b0c10;border-bottom:1px solid rgba(255,255,255,0.08);color:#8d94a0;" +
   "-webkit-font-smoothing:antialiased;" +
   BAR_FONT;
 
@@ -402,9 +402,9 @@ const BAR_COPILOT_MARK = copilotMark("#c9ced6");
 
 /**
  * Share's glyph, an arrow leaving a box, painted by a mask in the pill's own
- * ink (`#0b0c10`). Not `currentColor`: the span's `all:initial` resets `color`
- * to `CanvasText`, which is white on a document that declares a dark
- * `color-scheme`, and a white glyph on the near-white pill would vanish.
+ * ink (`#f4f5f7`). Not `currentColor`: the span's `all:initial` resets `color`
+ * to `CanvasText`, which is black on a light document, and a black glyph on the
+ * dark pill would vanish.
  * A data-URI background on an empty span, not an inline `<svg>`, for the reason
  * `copilotMarkSrc` gives: the bar is near the top of the body, and an `<svg>`
  * there is the first one a document's `querySelector("svg")` finds.
@@ -417,20 +417,20 @@ const SHARE_ICON_SRC =
       '<path d="M4 12v7a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7M16 6l-4-4-4 4M12 2v13"/></svg>',
   );
 const SHARE_ICON =
-  `<span aria-hidden="true" style="all:initial;display:block;flex:none;width:14px;height:14px;` +
-  `background-color:#0b0c10;-webkit-mask:url(${SHARE_ICON_SRC}) center/contain no-repeat;` +
+  `<span aria-hidden="true" style="all:initial;display:block;flex:none;width:16px;height:16px;` +
+  `background-color:#f4f5f7;-webkit-mask:url(${SHARE_ICON_SRC}) center/contain no-repeat;` +
   `mask:url(${SHARE_ICON_SRC}) center/contain no-repeat"></span>`;
 
 /**
- * Share is the one action on the strip, so it is the one filled control: the
- * reader pages' primary button (`#f4f5f7` on `#0b0c10`, 17:1). Its hover and
- * focus ring are in `OPENARTIFACTS_BAR_STYLE`. It never wraps.
+ * Share is the one action on the strip: a raised dark pill, a step lighter
+ * than the strip, with a hairline edge (`#f4f5f7` on `#1d2027`, 15:1). Its
+ * hover and focus ring are in `OPENARTIFACTS_BAR_STYLE`. It never wraps.
  */
 const SHARE_STYLE =
-  "all:initial;flex:none;box-sizing:border-box;display:inline-flex;align-items:center;gap:6px;height:28px;" +
-  "padding:0 12px 0 10px;border-radius:8px;background:#f4f5f7;color:#0b0c10;cursor:pointer;" +
-  "white-space:nowrap;text-decoration:none;letter-spacing:-0.005em;-webkit-font-smoothing:antialiased;" +
-  `font:600 13px/1 ${BAR_FONT_FAMILY}`;
+  "all:initial;flex:none;box-sizing:border-box;display:inline-flex;align-items:center;gap:8px;height:34px;" +
+  "padding:0 16px 0 14px;border:1px solid rgba(255,255,255,0.08);border-radius:999px;background:#1d2027;" +
+  "color:#f4f5f7;cursor:pointer;white-space:nowrap;text-decoration:none;-webkit-font-smoothing:antialiased;" +
+  `font:500 14px/1 ${BAR_FONT_FAMILY}`;
 
 /**
  * Where a served page's Share link leads and which script upgrades it. Both are
@@ -473,7 +473,7 @@ function topBar(bar: TopBar, byline: boolean): string {
     `<span style="${SPAN_RESET}display:flex;align-items:center;gap:0.4em;flex:1 1 auto;min-width:0;white-space:nowrap">` +
     (byline
       ? `Shared from <a href="https://obsidiancopilot.com" ${BAR_BYLINE_LINK}>${BAR_COPILOT_MARK}` +
-        `<span class="openartifacts-byline-text" style="${SPAN_RESET}display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;padding:3px 0;text-decoration:none;text-underline-offset:3px">Copilot for Obsidian</span></a>`
+        `<span class="openartifacts-byline-text" style="${SPAN_RESET}display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:3px 0;text-decoration:none;text-underline-offset:3px">Copilot for Obsidian</span></a>`
       : "") +
     "</span>" +
     `<a class="openartifacts-share" data-openartifacts-share href="${escapeAttribute(bar.shareUrl)}" ` +
