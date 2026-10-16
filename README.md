@@ -252,6 +252,7 @@ configuration.
 | [Private sharing](docs/private-sharing.md) | Invite-only documents: reader sign-in, per-publisher origins, request access, and how access is checked. |
 | [Product analytics](docs/analytics.md) | What the five document events carry, and what they deliberately never carry. |
 | [Comments](docs/comments.md) | Inline comments: quote anchors across versions, the per-document Durable Object, access, plans and limits. |
+| [Data model](docs/data-model.md) | Every D1 table, R2 key and Durable Object table, and which of them is the system of record. |
 
 ## Maintainer npm release
 
