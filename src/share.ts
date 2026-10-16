@@ -440,7 +440,7 @@ ${copyLinkSection(url)}`;
       message: "Choose who can open it. The link never changes.",
       detail,
     },
-    shown.error === undefined ? 200 : shown.error === "plan" || shown.error === "plan_people" ? 402 : shown.error === "invite_quota" ? 429 : 400,
+    shown.error === undefined ? 200 : shown.error === "plan" || shown.error === "plan_people" || shown.error === "plan_comments" ? 402 : shown.error === "invite_quota" ? 429 : 400,
     await sharePolicy(),
   );
 }
@@ -469,5 +469,7 @@ async function errorMessage(env: Env, principal: Publisher, error: DialogError |
     case "plan_people":
     case "plan":
       return upgradeSentence("Private sharing needs a paid plan.", planRefusal(env, principal));
+    case "plan_comments":
+      return upgradeSentence("Letting people comment needs a paid plan.", planRefusal(env, principal, "Letting people comment", "comments"));
   }
 }

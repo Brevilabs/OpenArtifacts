@@ -305,8 +305,10 @@ describe("the roles are the only control", () => {
     const listed = (await viewer.json()) as { roles?: string[]; people: { email: string; role: string }[] };
     expect(listed.roles).toEqual(["view"]);
     expect(listed.people.find((person) => person.email === "dee@acme.com")?.role).toBe("view");
-    // It still cannot grant a role its plan lacks.
-    expect((await send("PUT", path, owner.token, { role: "comment" }, sharing)).status).toBe(402);
+    // It still cannot grant a role its plan lacks, and the refusal names the flag it lacks.
+    const refused = await send("PUT", path, owner.token, { role: "comment" }, sharing);
+    expect(refused.status).toBe(402);
+    expect(((await refused.json()) as { error: { limit: string } }).error.limit).toBe("comments");
     await send("DELETE", path, owner.token, undefined, sharing);
     // Without it no role is drawn, and adding is gated as before.
     const added = await send("PUT", path, owner.token, undefined, { ...sharing, COMMENTS: undefined });

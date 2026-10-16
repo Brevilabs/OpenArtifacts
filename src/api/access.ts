@@ -101,11 +101,11 @@ function inviteAddress(raw: string): string | null {
  * their plan in Copilot, so they get a Copilot-specific message with no
  * OpenArtifacts command to run and no checkout to sell.
  */
-export function planRefusal(env: Env, publisher: Publisher, what = "Private sharing"): Response {
+export function planRefusal(env: Env, publisher: Publisher, what = "Private sharing", limit = "privateSharing"): Response {
   return publisher.authKind === "account"
-    ? limitReached(env, publisher, "privateSharing", `${what} needs a paid plan.`)
+    ? limitReached(env, publisher, limit, `${what} needs a paid plan.`)
     : errorResponse("limit_reached", `Your Copilot plan does not include ${what.toLowerCase()}.`, undefined, {
-      plan: publisher.plan, limit: "privateSharing",
+      plan: publisher.plan, limit,
     });
 }
 
@@ -116,10 +116,11 @@ export type AccessState = NonNullable<Awaited<ReturnType<typeof readAccess>>>;
  * Why an operation did nothing. `not_found` covers a missing, deleted and
  * someone else's document alike; `full` is the 101st person; `invite_quota` is
  * the owner's daily cap on new invites; `plan` is a switch to private the plan
- * lacks and `plan_people` an add or role change whose role the plan lacks (the
- * same `402`, worded for the operation).
+ * lacks, `plan_people` an add or role change on a plan without private sharing,
+ * and `plan_comments` one at `comment` on a plan with private sharing but not
+ * comments (the same `402`, worded for the operation and naming the flag).
  */
-export type AccessRefusal = "not_found" | "bad_email" | "full" | "plan" | "plan_people" | "invite_quota";
+export type AccessRefusal = "not_found" | "bad_email" | "full" | "plan" | "plan_people" | "plan_comments" | "invite_quota";
 
 /**
  * What an operation did. `state` is read after the write, and `changed` says
@@ -241,7 +242,8 @@ export async function addWithoutManifest(
   // lower role goes through the same check as a higher one, since "Remove" already covers a demotion.
   // Where the server has no comments no role is drawn (`grantableRoles`), so adding stays gated by private sharing alone.
   const mayAdd = env.COMMENTS === undefined ? maySharePrivately(env, principal) : mayGrantRole(env, principal, granted);
-  if (!mayAdd) return refused("plan_people");
+  // Private sharing is what adding anyone needs, so it is the flag named unless the plan has it.
+  if (!mayAdd) return refused(env.COMMENTS !== undefined && maySharePrivately(env, principal) ? "plan_comments" : "plan_people");
 
   const added = await insertInvite(env.DB, docId, principal.owner, email, Date.now(), MAX_INVITES_PER_DOC, granted);
   const roleChanged =
@@ -433,6 +435,8 @@ export function refusalResponse(env: Env, publisher: Publisher, docId: string, r
       return planRefusal(env, publisher);
     case "plan_people":
       return planRefusal(env, publisher, "Adding people");
+    case "plan_comments":
+      return planRefusal(env, publisher, "Letting people comment", "comments");
     case "invite_quota":
       return errorResponse("quota_exceeded", `You have added ${MAX_NEW_INVITES_PER_OWNER_PER_DAY} new people in the last 24 hours. Try again later.`);
   }

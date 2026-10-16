@@ -596,6 +596,8 @@ making a document invited-only that is public now (`PUT …/access` from `anyone
 to `invited`), and adding a person or changing a person's role, which includes
 approving a request: the plan must include the flag of the role granted (`view`
 needs `privateSharing`, `comment` needs `comments`; every paid plan has both).
+The `402` names the flag the plan lacks: `privateSharing` when it lacks private sharing,
+which adding anyone needs, otherwise `comments` for a person at `comment`.
 Naming
 the mode a document already has is a repeat and never checks. So is adding an
 address that is already on the list with no role or the role it already has: it
