@@ -55,7 +55,7 @@ describe("configured account plans", () => {
 
   it("loads the agreed hosted values from wrangler, not a separate test copy", () => {
     expect(planLimits(local(), "free")).toEqual({ documents: 3, pushesPerDay: 6, htmlBytes: 1048576 });
-    expect(planLimits(local(), "pro")).toEqual({ documents: 500, pushesPerDay: 100, htmlBytes: 10485760, privateSharing: true });
+    expect(planLimits(local(), "pro")).toEqual({ documents: 500, pushesPerDay: 100, htmlBytes: 10485760, privateSharing: true, comments: true });
     for (const PLAN_LIMITS of [undefined, ""]) {
       expect(planLimits(local({ PLAN_LIMITS }), "free")).toEqual(planLimits(local(), "free"));
     }

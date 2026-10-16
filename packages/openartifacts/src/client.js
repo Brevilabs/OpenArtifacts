@@ -104,10 +104,11 @@ export function createClient({ host, token, fetcher = fetch }) {
         method: "PUT",
         body: JSON.stringify({ linkAccess }),
       }),
-    /** @param {string} docId @param {string} email */
-    addPerson: (docId, email) =>
+    /** The body is sent only for an explicit role, so a plain add stays the request older servers expect. @param {string} docId @param {string} email @param {"view" | "comment"} [role] */
+    addPerson: (docId, email, role) =>
       request(`/api/v1/docs/${encodeURIComponent(docId)}/access/people/${encodeURIComponent(email)}`, {
         method: "PUT",
+        ...(role === undefined ? {} : { body: JSON.stringify({ role }) }),
       }),
     /** @param {string} docId @param {string} email */
     removePerson: (docId, email) =>
@@ -119,6 +120,45 @@ export function createClient({ host, token, fetcher = fetch }) {
       request(`/api/v1/docs/${encodeURIComponent(docId)}/access/requests/${encodeURIComponent(email)}`, {
         method: "DELETE",
       }),
+    /**
+     * The document's comment threads. `since` is an ISO time; the server answers
+     * 404 for a reader who cannot see the document and for a server without comments.
+     * @param {string} docId @param {{state?: "open" | "resolved" | "all", since?: string}} [options]
+     */
+    listThreads: (docId, { state, since } = {}) => {
+      const query = new URLSearchParams();
+      if (state) query.set("state", state);
+      if (since) query.set("since", since);
+      const suffix = query.toString() ? `?${query}` : "";
+      return request(`/api/v1/docs/${encodeURIComponent(docId)}/threads${suffix}`);
+    },
+    /** Start a thread on quoted text. @param {string} docId @param {{anchor: {exact: string, prefix?: string, suffix?: string, section?: string}, body: string, version?: number}} body */
+    addThread: (docId, body) =>
+      request(`/api/v1/docs/${encodeURIComponent(docId)}/threads`, { method: "POST", body: JSON.stringify(body) }),
+    /** @param {string} docId @param {string} threadId @param {string} body */
+    replyToThread: (docId, threadId, body) =>
+      request(`/api/v1/docs/${encodeURIComponent(docId)}/threads/${encodeURIComponent(threadId)}/comments`, {
+        method: "POST",
+        body: JSON.stringify({ body }),
+      }),
+    /** @param {string} docId @param {string} threadId @param {number} [version] the version that addressed it */
+    resolveThread: (docId, threadId, version) =>
+      request(`/api/v1/docs/${encodeURIComponent(docId)}/threads/${encodeURIComponent(threadId)}/resolve`, {
+        method: "POST",
+        body: JSON.stringify(version === undefined ? {} : { version }),
+      }),
+    /** @param {string} docId @param {string} threadId */
+    reopenThread: (docId, threadId) =>
+      request(`/api/v1/docs/${encodeURIComponent(docId)}/threads/${encodeURIComponent(threadId)}/reopen`, { method: "POST" }),
+    /** Delete the caller's own comment; a thread's first comment takes the thread with it. @param {string} docId @param {string} commentId */
+    deleteComment: (docId, commentId) =>
+      request(`/api/v1/docs/${encodeURIComponent(docId)}/comments/${encodeURIComponent(commentId)}`, { method: "DELETE" }),
+    /** Turn comments on or off for a document. @param {string} docId @param {boolean} comments */
+    setComments: (docId, comments) =>
+      request(`/api/v1/docs/${encodeURIComponent(docId)}/settings`, { method: "PUT", body: JSON.stringify({ comments }) }),
+    /** The name the caller's comments carry. @param {string} displayName */
+    setDisplayName: (displayName) =>
+      request("/api/v1/account", { method: "PUT", body: JSON.stringify({ displayName }) }),
     /** @param {string} docId */
     unshare: (docId) =>
       request(`/api/v1/docs/${encodeURIComponent(docId)}`, { method: "DELETE" }, [404]),

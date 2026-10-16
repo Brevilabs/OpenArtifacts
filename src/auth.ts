@@ -89,6 +89,20 @@ export function maySharePrivately(env: Env, publisher: Publisher): boolean {
 }
 
 /**
+ * Whether this publisher's plan includes comments. The same shape as
+ * `maySharePrivately`: an account plan opts in with `"comments": true` in
+ * `PLAN_LIMITS` (`pro` and `pro_lifetime` carry it, `free` does not), and a
+ * license key qualifies through `PUBLISHING_PLANS`. Asked when an owner turns
+ * comments on; the write path asks the same question of the document owner's
+ * stored plan (`ownerHasComments` in `src/comments/access.ts`).
+ */
+export function mayComment(env: Env, publisher: Publisher): boolean {
+  return publisher.authKind === "account"
+    ? planLimits(env, publisher.plan).comments === true
+    : PUBLISHING_PLANS.has(publisher.plan);
+}
+
+/**
  * Entitlement is per *operation*, not per identity, so this is deliberately not
  * consulted here. A valid key identifies a publisher and that is all
  * authentication decides; only `POST` and `PUT` ask whether the plan may
@@ -187,13 +201,15 @@ export function isPublishingRequest(request: Request): boolean {
 }
 
 /**
- * `PUT /api/v1/docs/{docId}/access` and `…/access/people/{email}`: the writes
- * that need `privateSharing`. Like publishing, they read the plan fresh.
+ * `PUT /api/v1/docs/{docId}/access`, `…/access/people/{email}` and
+ * `…/settings`: the writes that need `privateSharing` or `comments`. Like
+ * publishing, they read the plan fresh.
  */
 function isAccessWrite(request: Request): boolean {
   const [collection, , section, ...extra] = new URL(request.url).pathname
     .slice("/api/v1".length).split("/").filter(Boolean);
-  return request.method === "PUT" && collection === "docs" && section === "access" && extra.length <= 2;
+  return request.method === "PUT" && collection === "docs" &&
+    ((section === "access" && extra.length <= 2) || (section === "settings" && extra.length === 0));
 }
 
 export async function authenticateRequest(

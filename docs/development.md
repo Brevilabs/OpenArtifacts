@@ -13,7 +13,10 @@ npm run dev        # wrangler dev — local R2 and D1, no Cloudflare account nee
 
 Tests need no credentials and no deployment: `@cloudflare/vitest-pool-workers`
 runs them in the real runtime with the migrations in `migrations/` applied to a
-per-test D1. CI runs `npm run typecheck` and `npm test`, and nothing else.
+per-test D1. Use Node 22 (the repo's `engines` and CI both do). CI runs the
+account-routing check, `npm run typecheck`, the release-permission test, `npm test`
+and `npm run test:browser`, in that order; the deploy workflow repeats typecheck
+and the unit tests.
 
 `wrangler dev` needs a wrangler whose bundled runtime is new enough for the
 `compatibility_date` in `wrangler.jsonc`; if it refuses to start, `npm install
@@ -137,3 +140,14 @@ frame learns nothing and that the frame says the same about every id a viewer
 cannot read. The browser's own policy decides every request (Fetch Metadata,
 cookies, CSP, `frame-ancestors`, the opener policy), so the test never uses
 `context.route`, which would bypass it. It needs no license server and no network.
+
+## Comments locally
+
+Like private sharing, comments need reader sign-in, so `npm run dev` does not
+expose them: the document routes and the threads resource answer `404`
+(and so does the account route `PUT /api/v1/account`, since a display name exists only for comments). The Durable Object
+itself runs under `wrangler dev` and in the tests, which hold the real
+`DocComments` class: `test/comments-anchor.test.ts` (pure anchoring),
+`test/comments-object.test.ts` (the object, over RPC), `test/comments-api.test.ts`
+(every route, both doors) and the threads resource in `test/serve.test.ts`.
+`test/cli-client.test.ts` round-trips the CLI client through the Worker.

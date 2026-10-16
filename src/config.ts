@@ -203,6 +203,28 @@ export interface Env {
    * misses against the D1 read budget. Absent means no limit.
    */
   EMBED_TOKEN_LIMITER?: RateLimit;
+  /**
+   * Comment writes (a thread, a reply, a resolve, a reopen), counted per
+   * principal. Over the limit the write answers `429 quota_exceeded` with a
+   * `Retry-After`. Absent means no limit.
+   */
+  COMMENT_WRITE_LIMITER?: RateLimit;
+  /**
+   * Comment notification emails, counted per document. Over the limit the
+   * comment still posts and only the email is skipped. Absent means no limit.
+   */
+  COMMENT_EMAIL_LIMITER?: RateLimit;
+
+  /**
+   * One SQLite Durable Object per document, holding its comment threads
+   * (`COMMENTS.idFromName(docId)`, src/comments/object.ts).
+   *
+   * Required by a current deployment but typed optional on purpose: a
+   * self-hoster on an older `wrangler.jsonc` has no binding, and the answer is
+   * "comments unavailable" (every comment route 404s, the page script stays
+   * inert) rather than a Worker that throws on every request.
+   */
+  COMMENTS?: DurableObjectNamespace<import("./comments/object.js").DocComments>;
 }
 
 /** The part of the Email Service binding this Worker uses. */

@@ -1146,6 +1146,7 @@ describe("access requests", () => {
       docId,
       url: `https://openartifacts.site/d/${docId}`,
       linkAccess: "invited",
+      comments: false,
       email: true,
       people: [{ email: "alice@acme.com", role: "comment", addedAt: people.created_at }],
       requests: [{ email: "bob@other.com", requestedAt: 2000 }],

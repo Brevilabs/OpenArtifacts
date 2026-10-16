@@ -249,17 +249,19 @@ Two predicates, named once, so every surface asks the same question. They live i
   it, through `findReadableDoc`. If any of them used a different rule, a reader
   could be sent from one to the other forever.
 - **`canManage(principal, doc)`**: the principal is in the owner scope. Access
-  changes, the share page, and later comment moderation.
+  changes, the share page, turning comments on, and resolving any thread.
 
 **Every surface answers "not `canRead`" as `404`, never `403`**, and the label
 hosts, `/open`, `/share` and the request route all keep the convention that a
 document you may not see is indistinguishable from one that never existed.
 
-`canComment` is not built; nothing calls it. When comments ship it is `canRead`,
-and comments are on for the document, and the principal is the owner or an
-invited account whose `role` is `comment` (on an `anyone` document, any signed-in
-reader, as [comments.md](comments.md) has it). `doc_invites.role` is written now
-for it: `view` or `comment`, defaulting to `comment`, with no effect until then.
+`canComment` is built (`src/comments/access.ts`): `canRead`, and comments are on
+for the document, and the owner's plan has them, and the principal is the owner or
+an invited account whose `role` is `comment` (on an `anyone` document, any
+signed-in reader, as [comments.md](comments.md) has it). `doc_invites.role` is
+`view` or `comment`, defaulting to `comment`; a `view` invitee reads the threads
+and cannot write. The API sets it per person (`PUT …/access/people/{email}` with
+`{role}`); the popover and the share page do not draw the control yet.
 There is no edit role or manage role: the owner alone updates a document, through
 the push route.
 
@@ -315,18 +317,20 @@ A reader is an `accounts` row, the same principal a publisher is. There is no
 
 ## Credentials by capability
 
-- The **origin grant cookie reads**: documents, and later the threads JSON, on its
-  own origin. It is refused by `/api/v1`, by every sign-in page and by the future
-  comments sidebar. A document's script can use it; that is why it can do nothing
+- The **origin grant cookie reads**: documents, and the threads JSON, on its
+  own origin. It is refused by `/api/v1`, by every sign-in page and by
+  `/embed/api`. A document's script can use it; that is why it can do nothing
   but read what its own publisher already holds.
 - The **API-host session signs in and mints**: the origin grant, the owner route
-  and the Share popover's token; later the comments sidebar reuses that token, with
-  no second provider sign-in.
+  and the Share popover's token; `/embed/api`'s comment routes accept that token, so a
+  comments frame needs no second provider sign-in.
 - The **popover token writes, for one document**. It lives in the Share frame's own
   storage on the API host, never on a document's origin, and it is a bearer header
-  on the frame's same-origin `fetch`. It can change that document's access from the
-  popover and read its title; it cannot publish, list, delete or touch another
-  document. `/api/v1` refuses its `oas_` prefix, the share page, `/open` and
+  on the frame's same-origin `fetch`. For that document it can change access, read
+  the title, and post, resolve, reopen and delete comments and flip the comments
+  switch, as each route's own checks allow. It can also set the account's display
+  name (`PUT /embed/api/account`), which is account-wide, so a token for any
+  document serves. It cannot publish, list, delete or touch another document. `/api/v1` refuses its `oas_` prefix, the share page, `/open` and
   `/signin` read only the session cookie, and a label host reads only the grant
   cookie.
 - **Writes never ride a cookie a document can use.** Approving, declining and
@@ -478,8 +482,8 @@ that must never be on a page whose scripts the author writes.
   in gets **Copy link** and **Sign in to manage**. Writes call the same operations
   as `/api/v1` and the share page, so the plan check and the `402` message, both
   invite caps, the invite email and `document_access_changed` are identical on all
-  three. The role control is not shown: until comments exist every invite is
-  **Can comment** and the control would change nothing.
+  three. The role control is not shown yet: a popover invite is **Can comment**, and
+  the API's `role` sets the other (see [comments.md](comments.md)).
 
 **Signing in to the popover.** The frame cannot see the reader session, so
 **Sign in to manage** opens a top-level popup at `/embed/sign-in?doc={docId}&h=…`,
@@ -527,7 +531,7 @@ embedding page or any other window does nothing.
 account and the document, valid for 24 hours, kept in the frame's `localStorage`
 (with an in-memory copy where storage is blocked). The frame sends it as a bearer
 header on same-origin `fetch` with `credentials: "omit"`, and only
-`/embed/api/docs/{docId}/access…` accepts it, for that document, checking the
+`/embed/api/docs/{docId}/…` (the access and comment routes) accepts it, for that document, plus `PUT /embed/api/account` for the display name, checking the
 token before the path's document is read. Because the account must still exist and
 each call is authorised live, a token carries no more than the account's own
 current rights.
@@ -797,28 +801,19 @@ says where to record it and what to do instead of rolling back.
 - Domain rules ("anyone at acme.com"), which would be one more `link_access` value.
 - Spaces, and folding of address variants.
 - Edge caching, which [#33](https://github.com/Brevilabs/OpenArtifacts/issues/33) owns.
-- Single-use URL grants, and `canComment`, which has no caller yet.
-- The comments button the bar will carry, and the role control the popover hides
-  until comments exist.
+- Single-use URL grants.
+- Moderation of other people's comments, and approval of agent comments; see
+  [What is not built](comments.md#what-is-not-built) in comments.md.
 
 ## What comes next
 
-[comments.md](comments.md) builds on this without moving anything here. Four
-small adjustments, none changing its shape:
-
-1. Call `canRead` from the threads resource and every comment route, so a private
-   document's discussion is as private as its page.
-2. Serve a private document's threads resource on the publisher origin, behind the
-   grant cookie: the grant check slots in front of it.
-3. Derive the sidebar's `frame-ancestors` per document from the document's serving
-   origin (`openartifacts.site` for public, the publisher origin for private)
-   instead of the fixed `https://openartifacts.site`. The Share frame already does
-   this (the embedder's origin is echoed only when it is the document's serving
-   origin, `src/embed.ts`), and the sidebar follows the same rule.
-4. Accept the Share popover's per-document token in the comment routes. The
-   sidebar runs in a third-party iframe where cookies are unreliable, so it keeps
-   a bearer token, and the popup on the API host that already mints it sees the
-   session, so a reader signs in once per document for both.
+Comments are built on this without moving anything here ([comments.md](comments.md)).
+They took three of the four adjustments this section used to list: every comment
+route and the threads resource call `canRead`, a private document's threads are
+served on the publisher origin behind the grant cookie, and the comment routes
+accept the Share popover's per-document token, so a reader signs in once per
+document for both. The in-page comments frame, with its own per-document
+`frame-ancestors` as the Share frame has, is not built ([comments.md](comments.md#what-is-not-built)).
 
 **Custom domains** are the same seat with a different name. `docs.acme.com`
 resolves to a publisher through a verified host-to-owner mapping (a future

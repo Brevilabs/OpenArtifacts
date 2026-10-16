@@ -69,6 +69,98 @@ describe("the CLI client against the local Worker", () => {
   });
 });
 
+describe("the comments client against the local Worker", () => {
+  // Comments ride on the private-sharing family, so the server needs reader sign-in configured.
+  const COMMENTS_HOST = "https://api.openartifacts.ai";
+  const withReaders = (): Env => ({
+    ...env,
+    SERVING_HOST: "openartifacts.site",
+    API_HOST: "api.openartifacts.ai",
+    LEGACY_SERVING_HOST: "",
+    RETIRED_API_HOST: "",
+    READER_SESSION_SECRET: "k".repeat(32),
+    OAUTH_GITHUB_CLIENT_ID: "github-client",
+    OAUTH_GITHUB_CLIENT_SECRET: "github-secret",
+  }) as Env;
+  const readerFetch: typeof fetch = async (input, init) => {
+    const context = createExecutionContext();
+    const response = await worker.fetch(new Request(input, init), withReaders(), context);
+    await waitOnExecutionContext(context);
+    return response;
+  };
+
+  // A paid account: comments are a plan feature, and turning them on is checked against the owner's plan.
+  async function paidToken(): Promise<string> {
+    const issued = await issueToken();
+    await env.DB.prepare("UPDATE accounts SET plan = 'pro', plan_checked_at = ? WHERE id = ?")
+      .bind(Date.now(), "oa_cli_test_account000000000").run();
+    return issued.token;
+  }
+
+  it("turns comments on, then adds, lists, replies, resolves, reopens and deletes", async () => {
+    const client = createClient({ host: COMMENTS_HOST, token: await paidToken(), fetcher: readerFetch });
+    const doc = await client.createDoc({
+      title: "Review",
+      html: "<!doctype html><html><head><title>Review</title></head><body><p>The quick brown fox jumps.</p></body></html>",
+    });
+
+    // Off by default: the owner is told so, rather than given a 404.
+    await expect(client.listThreads(doc.docId)).rejects.toMatchObject({
+      status: 409,
+      code: "comments_off",
+    } satisfies Partial<APIError>);
+    expect(await client.setComments(doc.docId, true)).toEqual({ docId: doc.docId, comments: true });
+    expect(await client.setDisplayName("Cli Tester")).toEqual({ displayName: "Cli Tester" });
+
+    const added = await client.addThread(doc.docId, { anchor: { exact: "quick brown fox" }, body: "Which fox?" });
+    expect(added).toMatchObject({ anchorStatus: "anchored" });
+
+    const listed = await client.listThreads(doc.docId, { state: "open" });
+    expect(listed).toMatchObject({ docId: doc.docId, version: 1, latestVersion: 1 });
+    expect(listed.threads).toHaveLength(1);
+    expect(listed.threads[0]).toMatchObject({
+      threadId: added.threadId,
+      state: "open",
+      anchor: { exact: "quick brown fox" },
+      comments: [{ commentId: added.commentId, body: "Which fox?", author: { name: "Cli Tester's agent", kind: "agent" } }],
+    });
+
+    const replied = await client.replyToThread(doc.docId, added.threadId, "The red one.");
+    expect(replied.commentId).toMatch(/^cm_/);
+
+    const resolved = await client.resolveThread(doc.docId, added.threadId, 1);
+    expect(resolved).toMatchObject({ threadId: added.threadId, state: "resolved", resolution: { atVersion: 1 } });
+    expect((await client.listThreads(doc.docId, { state: "open" })).threads).toEqual([]);
+    expect((await client.listThreads(doc.docId, { state: "resolved" })).threads).toHaveLength(1);
+
+    expect(await client.reopenThread(doc.docId, added.threadId)).toMatchObject({ state: "open", resolution: null });
+
+    // The reply goes first; the first comment takes the whole thread with it.
+    await client.deleteComment(doc.docId, replied.commentId);
+    expect((await client.listThreads(doc.docId)).threads[0].comments).toHaveLength(1);
+    await client.deleteComment(doc.docId, added.commentId);
+    expect((await client.listThreads(doc.docId)).threads).toEqual([]);
+
+    // Switching off keeps the owner's own answer on later reads.
+    expect(await client.setComments(doc.docId, false)).toEqual({ docId: doc.docId, comments: false });
+    await expect(client.addThread(doc.docId, { anchor: { exact: "quick" }, body: "x" })).rejects.toMatchObject({
+      status: 409,
+      code: "comments_off",
+    } satisfies Partial<APIError>);
+  });
+
+  it("reports a quote the version does not contain as anchor_not_found", async () => {
+    const client = createClient({ host: COMMENTS_HOST, token: await paidToken(), fetcher: readerFetch });
+    const doc = await client.createDoc({ title: "Review", html: "<!doctype html><body><p>Hello world</p></body>" });
+    await client.setComments(doc.docId, true);
+    await client.setDisplayName("Cli Tester");
+    await expect(client.addThread(doc.docId, { anchor: { exact: "absent text" }, body: "x" })).rejects.toMatchObject({
+      status: 400,
+      code: "anchor_not_found",
+    } satisfies Partial<APIError>);
+  });
+});
+
 describe("get against a Worker that predates private sharing", () => {
   const olderWorker = () => {
     const requests: Request[] = [];

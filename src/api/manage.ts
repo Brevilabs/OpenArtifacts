@@ -16,6 +16,7 @@
  */
 import type { AnalyticsSink } from "../analytics.js";
 import type { Publisher } from "../auth.js";
+import { commentsStub } from "../comments/access.js";
 import type { Env } from "../config.js";
 import { listPublisherDocs, softDeleteDoc, type DocListCursor, type DocListRow } from "../db.js";
 import { docNotFound, errorResponse } from "../errors.js";
@@ -110,6 +111,16 @@ export async function deleteDoc(
   // Recorded before the R2 sweep, not inside it: the doc is withdrawn once the
   // row is marked, and the handler answers 204 even if the sweep fails.
   analytics.record({ name: "document_unshared", docId, atMs: now, ownerId: owner });
+
+  // The comments object goes before the sweep, which removes the snapshot the
+  // object wrote (`threads.json`) along with the versions. Best effort, like the
+  // sweep: once the row says deleted nothing can reach the threads, so a failure
+  // here costs storage and not exposure, and the log makes it findable.
+  try {
+    if (env.COMMENTS !== undefined) await commentsStub(env, docId).purge();
+  } catch (error) {
+    console.error("delete left comments behind", { docId, error });
+  }
 
   try {
     await deleteDocObjects(env, docId, deps.objectBatch ?? OBJECT_BATCH);

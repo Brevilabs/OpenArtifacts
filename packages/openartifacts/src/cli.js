@@ -226,9 +226,25 @@ Commands:
                      Publish an HTML file; pass --doc-id to update an existing document,
                      or --private to create it for invited people only (on a server
                      that supports private documents; otherwise nothing is created)
-  share <docId> [--add <email>] [--remove <email>] [--decline <email>] [--link anyone|invited]
+  share <docId> [--add <email> [--role view|comment]] [--remove <email>] [--decline <email>]
+        [--link anyone|invited]
                      Show who can open a document, pending requests and its share page,
-                     or change it; --add also approves a request
+                     or change it; --add also approves a request, and --role sets whether
+                     the added person can comment (the default) or only view
+  comments list <docId> [--open|--resolved|--all] [--since <iso>]
+                     Print a document's comment threads as JSON (open ones by default)
+  comments add <docId> --quote <text> --body <text> [--prefix <text>] [--suffix <text>]
+        [--section <id>] [--version <n>]
+                     Start a thread on text quoted from the page
+  comments reply <docId> <threadId> --body <text>
+  comments resolve <docId> <threadId> [--version <n>]
+  comments reopen <docId> <threadId>
+  comments delete <docId> <commentId>
+                     Delete your own comment; deleting a thread's first comment deletes the thread
+  comments on <docId>, comments off <docId>
+                     Turn comments on or off for a document you own
+  comments name <name>
+                     Set the display name your comments carry
   list               List published documents and their link access
   get <docId>        Print a document's current HTML
   unshare <docId>    Withdraw a document
@@ -287,13 +303,16 @@ function manageUrl(host, docId) {
  * authentication. Each flag changes one thing: one address added (which also
  * approves its request), one removed, one request declined, or the link
  * setting. There is no way to send a whole list, so a retry or a mistake cannot
- * remove everyone.
+ * remove everyone. `--role` is not a change of its own: it sets the role of the
+ * address each `--add` in the same call adds, and means nothing without one.
  * @param {string[]} options
- * @returns {Array<["link" | "add" | "remove" | "decline", string]>}
+ * @returns {Array<["link" | "add" | "remove" | "decline", string, ("view" | "comment")?]>}
  */
 export function prepareShare(options) {
-  /** @type {Array<["link" | "add" | "remove" | "decline", string]>} */
+  /** @type {Array<["link" | "add" | "remove" | "decline", string, ("view" | "comment")?]>} */
   const changes = [];
+  /** @type {"view" | "comment" | undefined} */
+  let role;
   for (let index = 0; index < options.length; index += 2) {
     const [flag, value] = [options[index], options[index + 1]];
     if (!value || value.startsWith("--")) throw new Error(HELP);
@@ -301,9 +320,155 @@ export function prepareShare(options) {
     else if (flag === "--remove") changes.push(["remove", value]);
     else if (flag === "--decline") changes.push(["decline", value]);
     else if (flag === "--link" && (value === "anyone" || value === "invited")) changes.push(["link", value]);
+    else if (flag === "--role" && role === undefined && (value === "view" || value === "comment")) role = value;
     else throw new Error(HELP);
   }
+  if (role !== undefined) {
+    const adds = changes.filter(([change]) => change === "add");
+    if (!adds.length) throw new Error("--role applies to a person added in the same call. Use `openartifacts share <docId> --add <email> --role view|comment`.");
+    for (const change of adds) change[2] = role;
+  }
   return changes;
+}
+
+const THREAD_ID = /^th_[A-Za-z0-9_-]{1,64}$/;
+const COMMENT_ID = /^cm_[A-Za-z0-9_-]{1,64}$/;
+const VERSION = /^[1-9][0-9]{0,8}$/;
+/**
+ * The text limits the server enforces, checked here so a mistake costs no credential or request.
+ * Measured the way the server measures: UTF-16 length (`.length`, so an emoji is 2) after the
+ * same normalising, in `text()` below.
+ */
+const COMMENT_LIMITS = { body: 4000, quote: 1000, context: 32, section: 128, name: 64 };
+
+/** @typedef {{action: "list", docId: string, state: "open" | "resolved" | "all", since?: string}
+ *   | {action: "add", docId: string, body: {anchor: {exact: string, prefix?: string, suffix?: string, section?: string}, body: string, version?: number}}
+ *   | {action: "reply", docId: string, threadId: string, body: string}
+ *   | {action: "resolve", docId: string, threadId: string, version?: number}
+ *   | {action: "reopen", docId: string, threadId: string}
+ *   | {action: "delete", docId: string, commentId: string}
+ *   | {action: "on" | "off", docId: string}
+ *   | {action: "name", name: string}} CommentsRequest */
+
+/**
+ * Read a `comments` subcommand's arguments before any authentication, so a
+ * malformed one fails without a credential being read or a login started. Text
+ * values may begin with `--` (a quote or a comment can), so a value is whatever
+ * follows its flag; only the flag positions are matched against the known flags.
+ * Ids are never guessed here, only checked for shape.
+ * @param {string | undefined} action the subcommand @param {string[]} extra the rest
+ * @returns {CommentsRequest}
+ */
+export function prepareComments(action, extra) {
+  /** Parse `--flag value` pairs (and the listed bare flags) after `skip` positionals.
+   * @param {number} skip @param {string[]} valued @param {string[]} [bare]
+   * @returns {{positional: string[], flags: Map<string, string>}} */
+  const parse = (skip, valued, bare = []) => {
+    const positional = extra.slice(0, skip);
+    if (positional.length < skip || positional.some((item) => !item || item.startsWith("--"))) throw new Error(HELP);
+    /** @type {Map<string, string>} */
+    const flags = new Map();
+    for (let index = skip; index < extra.length; index += 1) {
+      const flag = extra[index] ?? "";
+      if (flags.has(flag)) throw new Error(HELP);
+      if (bare.includes(flag)) {
+        flags.set(flag, "");
+      } else if (valued.includes(flag) && index + 1 < extra.length) {
+        flags.set(flag, extra[++index] ?? "");
+      } else {
+        throw new Error(HELP);
+      }
+    }
+    return { positional, flags };
+  };
+  /** @param {string} label @param {string | undefined} value @param {number} max @param {boolean} required
+   * @param {(value: string) => string} measured the text as the server reads it before counting */
+  const text = (label, value, max, required, measured) => {
+    if (value === undefined) {
+      if (required) throw new Error(`${label} is required.`);
+      return undefined;
+    }
+    const length = measured(value).length;
+    if (required && !value.trim()) throw new Error(`${label} cannot be empty.`);
+    if (length > max) throw new Error(`${label} is ${length} characters; the limit is ${max}.`);
+    return value;
+  };
+  /** A comment body: trimmed. */
+  const trimmed = (/** @type {string} */ value) => value.trim();
+  /** A quote, its context and a section: NFC. */
+  const normalised = (/** @type {string} */ value) => value.normalize("NFC");
+  /** A display name: NFC, then trimmed. */
+  const named = (/** @type {string} */ value) => value.normalize("NFC").trim();
+  /** @param {string | undefined} value */
+  const version = (value) => {
+    if (value === undefined) return undefined;
+    if (!VERSION.test(value)) throw new Error("--version must be a version number such as 3.");
+    return Number(value);
+  };
+  /** @param {string} value @param {RegExp} shape */
+  const identifier = (value, shape) => {
+    if (!shape.test(value)) throw new Error(HELP);
+    return value;
+  };
+
+  if (action === "list") {
+    const { positional: [docId = ""], flags } = parse(1, ["--since"], ["--open", "--resolved", "--all"]);
+    const states = ["--open", "--resolved", "--all"].filter((flag) => flags.has(flag));
+    if (states.length > 1) throw new Error(HELP);
+    const since = flags.get("--since");
+    if (since !== undefined && (!/^\d{4}-\d{2}-\d{2}/.test(since) || Number.isNaN(Date.parse(since)))) {
+      throw new Error("--since must be a date such as 2026-10-14T09:00:00Z.");
+    }
+    // The CLI names the state it wants rather than leaning on the server's default.
+    const state = states[0] === "--resolved" ? "resolved" : states[0] === "--all" ? "all" : "open";
+    return { action, docId, state, ...(since === undefined ? {} : { since }) };
+  }
+  if (action === "add") {
+    const { positional: [docId = ""], flags } = parse(1, ["--quote", "--body", "--prefix", "--suffix", "--section", "--version"]);
+    const exact = text("--quote", flags.get("--quote"), COMMENT_LIMITS.quote, true, normalised) ?? "";
+    const body = text("--body", flags.get("--body"), COMMENT_LIMITS.body, true, trimmed) ?? "";
+    const prefix = text("--prefix", flags.get("--prefix"), COMMENT_LIMITS.context, false, normalised);
+    const suffix = text("--suffix", flags.get("--suffix"), COMMENT_LIMITS.context, false, normalised);
+    const section = text("--section", flags.get("--section"), COMMENT_LIMITS.section, false, normalised);
+    const atVersion = version(flags.get("--version"));
+    return {
+      action, docId,
+      body: {
+        anchor: { exact, ...(prefix ? { prefix } : {}), ...(suffix ? { suffix } : {}), ...(section ? { section } : {}) },
+        body,
+        ...(atVersion === undefined ? {} : { version: atVersion }),
+      },
+    };
+  }
+  if (action === "reply") {
+    const { positional: [docId = "", threadId = ""], flags } = parse(2, ["--body"]);
+    return { action, docId, threadId: identifier(threadId, THREAD_ID), body: text("--body", flags.get("--body"), COMMENT_LIMITS.body, true, trimmed) ?? "" };
+  }
+  if (action === "resolve") {
+    const { positional: [docId = "", threadId = ""], flags } = parse(2, ["--version"]);
+    const atVersion = version(flags.get("--version"));
+    return { action, docId, threadId: identifier(threadId, THREAD_ID), ...(atVersion === undefined ? {} : { version: atVersion }) };
+  }
+  if (action === "reopen") {
+    const { positional: [docId = "", threadId = ""] } = parse(2, []);
+    return { action, docId, threadId: identifier(threadId, THREAD_ID) };
+  }
+  if (action === "delete") {
+    const { positional: [docId = "", commentId = ""] } = parse(2, []);
+    return { action, docId, commentId: identifier(commentId, COMMENT_ID) };
+  }
+  if (action === "on" || action === "off") {
+    const { positional: [docId = ""] } = parse(1, []);
+    return { action, docId };
+  }
+  if (action === "name") {
+    // The name is a positional that may contain spaces and any characters, so it
+    // is read whole rather than by the flag parser.
+    if (extra.length !== 1) throw new Error(HELP);
+    const name = (extra[0] ?? "").trim();
+    return { action, name: text("The display name", name, COMMENT_LIMITS.name, true, named) ?? "" };
+  }
+  throw new Error(HELP);
 }
 
 /** CLI entry point. */
@@ -314,17 +479,18 @@ export async function main(args) {
     console.log(HELP);
     return;
   }
-  if (!["install", "login", "account", "publish", "share", "list", "get", "unshare", "tokens", "revoke"].includes(command)) {
+  if (!["install", "login", "account", "publish", "share", "comments", "list", "get", "unshare", "tokens", "revoke"].includes(command)) {
     throw new Error(HELP);
   }
-  const needsArgument = ["publish", "share", "get", "unshare", "revoke"].includes(command);
-  if ((extra.length && command !== "publish" && command !== "share") || (needsArgument && !argument) || (!needsArgument && argument && !(command === "account" && argument === "--open"))) {
+  const needsArgument = ["publish", "share", "comments", "get", "unshare", "revoke"].includes(command);
+  if ((extra.length && command !== "publish" && command !== "share" && command !== "comments") || (needsArgument && !argument) || (!needsArgument && argument && !(command === "account" && argument === "--open"))) {
     throw new Error(HELP);
   }
   const value = argument ?? "";
   if (command === "install") return install();
   const prepared = command === "publish" ? await preparePublish(value, extra) : undefined;
   const changes = command === "share" ? prepareShare(extra) : [];
+  const comments = command === "comments" ? prepareComments(argument, extra) : undefined;
 
   const host = (process.env.OPENARTIFACTS_API_HOST ?? DEFAULT_HOST).replace(/\/$/, "");
   const directory = configDir();
@@ -389,10 +555,10 @@ export async function main(args) {
   } else if (command === "share") {
     try {
       let access;
-      for (const [change, target] of changes) {
+      for (const [change, target, role] of changes) {
         access = change === "link"
           ? await client.setLinkAccess(value, /** @type {"anyone" | "invited"} */ (target))
-          : change === "add" ? await client.addPerson(value, target)
+          : change === "add" ? await client.addPerson(value, target, role)
             : change === "remove" ? await client.removePerson(value, target)
               : await client.declineRequest(value, target);
       }
@@ -403,6 +569,20 @@ export async function main(args) {
       // answer 404, and the CLI cannot tell them apart.
       if (error instanceof APIError && error.status === 404) {
         error.message = "Not found, or this server does not support private documents.";
+      }
+      throw error;
+    }
+  } else if (comments) {
+    try {
+      await runComments(client, comments);
+    } catch (error) {
+      // Not yours to read, deleted, comments off for a non-owner, and a server that
+      // predates comments all answer 404, and the CLI cannot tell them apart.
+      if (error instanceof APIError && error.status === 404) {
+        // `name` has no document: its 404 is either a missing route (a server without comments) or the
+        // server's own "no account to name, sign in to link one", which the user must be told.
+        if (comments.action !== "name") error.message = "Not found, or this server does not support comments.";
+        else if (!/Sign in to link/.test(error.message)) error.message = "This server does not support comments.";
       }
       throw error;
     }
@@ -439,6 +619,33 @@ export async function main(args) {
   }
 }
 
+/**
+ * Run one prepared `comments` request and print its result: the server's JSON
+ * for everything that returns a body, a sentence for the delete that returns none.
+ * @param {ReturnType<typeof createClient>} client @param {CommentsRequest} request
+ */
+async function runComments(client, request) {
+  const print = (/** @type {unknown} */ result) => console.log(JSON.stringify(result, null, 2));
+  if (request.action === "list") {
+    print(await client.listThreads(request.docId, { state: request.state, since: request.since }));
+  } else if (request.action === "add") {
+    print(await client.addThread(request.docId, request.body));
+  } else if (request.action === "reply") {
+    print(await client.replyToThread(request.docId, request.threadId, request.body));
+  } else if (request.action === "resolve") {
+    print(await client.resolveThread(request.docId, request.threadId, request.version));
+  } else if (request.action === "reopen") {
+    print(await client.reopenThread(request.docId, request.threadId));
+  } else if (request.action === "delete") {
+    await client.deleteComment(request.docId, request.commentId);
+    console.log(`Deleted ${request.commentId}.`);
+  } else if (request.action === "name") {
+    print(await client.setDisplayName(request.name));
+  } else {
+    print(await client.setComments(request.docId, request.action === "on"));
+  }
+}
+
 /** Print API errors without ever exposing a credential. */
 /** @param {unknown} error */
 export function presentError(error) {
@@ -450,7 +657,19 @@ export function presentError(error) {
     }
     if (error.code === "limit_reached") {
       if (error.detail.limit) console.error(`Limit: ${error.detail.limit}`);
+      if (error.detail.limit === "comments") {
+        console.error("Comments need a paid plan on the document owner's account, or the document has reached its thread or comment cap.");
+      }
       if (error.detail.upgrade_url) console.error(`Upgrade: ${error.detail.upgrade_url}`);
+    }
+    if (error.code === "anchor_not_found") {
+      console.error("The quote is not in that version of the page. Copy it exactly from `openartifacts get <docId>`, as visible text without tags, and add --prefix or --suffix if it is ambiguous.");
+    }
+    if (error.code === "comments_off") {
+      console.error("Comments are off for this document. Turn them on with `openartifacts comments on <docId>`.");
+    }
+    if (error.code === "name_required") {
+      console.error("Set a display name first with `openartifacts comments name \"<name>\"`.");
     }
   } else {
     console.error(error instanceof Error ? error.message : String(error));

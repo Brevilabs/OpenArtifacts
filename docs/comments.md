@@ -1,130 +1,220 @@
-# Comments — design sketch
+# Comments
 
-**Status: not designed, not planned, not built.** This is a sketch of the
-smallest thing that could work, written down so the shape is not re-derived from
-scratch later. It has not been through a design review, and the open questions
-at the bottom are genuinely open. Do not treat it as decided.
+Inline comments on a published page. A reader or an agent quotes a passage,
+comments on it, and the thread stays attached to that passage
+across versions. The owner (or the thread's author) resolves it once a later push
+addresses it, and the resolution records which version did.
 
-Comments are step 2 of the wedge in [positioning.md](positioning.md): share,
-then comment, then converge. Humans and agents both post; agent-drafted comments
-wait for the human they act for to approve them.
+This is step 2 of the wedge in [positioning.md](positioning.md): share, then
+comment, then converge. The wire contract is in
+[http-api.md](http-api.md#comments); this page is the design and the reasons.
 
-[← README](../README.md) · [Hosting](hosting.md) · [Positioning](positioning.md)
+[← README](../README.md) · [Hosting](hosting.md) · [Positioning](positioning.md) · [Private sharing](private-sharing.md)
+
+## What it is
+
+- **Quote-anchored threads.** A thread is anchored to a quote of the page, not to
+  a position. Each thread has comments, a state (`open` or `resolved`) and, for
+  every version, an anchor status (`anchored` or `orphaned`).
+- **Off until the owner turns it on**, per document, with `openartifacts comments on`
+  or `PUT /api/v1/docs/{docId}/settings`. A paid plan is required to turn it on.
+- **People and agents both write.** An agent writes through `/api/v1` with an
+  account token or a license key, or the CLI's `openartifacts comments`; agent
+  comments are labelled "Alice's agent" and carry a badge, and post immediately. A
+  person writes through `/embed/api` with the Share popover's token (no page draws
+  that yet; see [What is not built](#what-is-not-built)).
+- **Works on private pages.** The same access model as the page: a private
+  document's threads are as private as its bytes.
 
 ## Three state machines
 
 | | States | Belongs to |
 | --- | --- | --- |
-| **Comment** | `pending` → `posted`, or `discarded` | one author |
-| **Thread** | `open` → `resolved` (cites the version that addressed it) | one anchor |
-| **Anchor** | `anchored` ⇄ `orphaned` | one quote |
+| **Thread** | `open` ⇄ `resolved` (resolving cites a version) | one anchor |
+| **Anchor** | `anchored` ⇄ `orphaned`, per version | one quote |
+| **Comment** | exists, or is deleted | one author |
 
-Three machines, and none of them interacts with the others. That is deliberate:
-anchor status has to be orthogonal to thread state, because a resolved thread
-whose quoted text disappears in a later push is still resolved and still cites
-the version that addressed it — collapsing the two would destroy exactly the
-resolve-provenance the design exists for. An open orphan is equally ordinary.
-The reverse transition is real too: a fuzzy match can find the quote again if the
-text comes back.
+They do not interact. A resolved thread whose text disappears in a later push is
+still resolved and still cites the version that addressed it, and an open orphan
+is ordinary. Collapsing the two would destroy the resolve provenance the design
+exists for. Reopening is real and clears the resolution; text that returns in a
+later version re-anchors by itself.
 
-Human-authored comments start `posted`. Agent-authored ones start `pending` and
-become visible to others when the human they act for approves — that gate is the
-whole agent-identity feature, and approval needs to be batchable or the friction
-removed from writing comes back as moderation.
-
-Note this splits states differently from [cost-at-scale.md](cost-at-scale.md)
-§6, which puts `pending|posted|resolved` together on the comment. Resolution is a
-property of a conversation reaching a conclusion, not of a single reply — a
-"resolved reply" means nothing. Approval is per-comment because every utterance
-needs attribution; resolution is per-thread. Keeping them apart is what lets the
-machines stay independent, which is most of what keeps this small.
-
-Every comment carries `author` and a nullable `on_behalf_of`. That one column is
-delegated identity: a human wrote this, or an agent proposed it and a human let
-it through.
+A comment is immutable: there is no editing, only deleting. Deleting a thread's
+first comment deletes the thread. Replies to a resolved thread are allowed.
 
 ## Anchors are quotes
 
-A thread anchors to `{exact, prefix, suffix}` — the quoted text and enough
-context to disambiguate it — in the style of W3C TextQuoteSelector. **Never
-offsets.** Offsets do not survive the next push, and that is precisely the
-failure every surveyed competitor has (see [positioning.md](positioning.md)).
+A thread anchors to `{exact, prefix?, suffix?, section?}`, in the style of the W3C
+TextQuoteSelector. **Never offsets**: offsets do not survive the next push, which is
+the failure every surveyed competitor has ([positioning.md](positioning.md)).
 
-On each push, every anchor re-resolves: search the new version for the exact
-quote, fall back to fuzzy matching, and mark the anchor `orphaned` if nothing
-matches. The thread's own state is untouched. Orphaning is shown, not hidden — a
-comment about text that no longer exists is information.
+The text a quote is matched in, the *canonical text*, is the concatenated text of
+`<body>` (the whole document if there is none), skipping `head`, `script`,
+`style`, `template` and `noscript`, with entities decoded, CRLF as LF and NFC.
+OpenArtifacts' own bar, spacer, bylines and script are not in the stored HTML, so a
+client that reads a rendered page must skip them to compute the same text. The
+server builds it with `HTMLRewriter` from the stored version (`src/comments/anchor.ts`,
+`src/comments/entities.ts`) and records the nearest ancestor `id` of each text run,
+which is the `section` hint.
 
-This is pure string work with no I/O: a few milliseconds for a 200 KB document
-with 50 threads, against a Worker's 30-second CPU budget.
+For version *n*, a thread that has no anchor row for *n* is resolved by a ladder:
 
-## Where it would live
+1. **Exact.** One occurrence anchors. Several are scored by how much of the
+   `prefix` and `suffix` agree on each side; a unique best wins; a tie falls to the
+   candidates inside `section`; still tied is orphaned.
+2. **Whitespace-insensitive**, only when rung 1 finds nothing: the same over text
+   with runs of whitespace collapsed. A unique winner anchors *and* rewrites the
+   thread's stored quote to the matched original text.
+3. Otherwise **orphaned** for *n*. There is no edit-distance matching, and no guess.
 
-One **Durable Object per document**, its embedded SQLite holding that document's
-threads and comments. Every write to a document — post, approve, resolve,
-re-anchor — serializes through it. This is the coordinator that v0 deliberately
-does without (`CLAUDE.md`), and comments are the feature that earns it.
+Posting uses the same ladder against the version the client rendered, and a quote
+that does not resolve to one place is `400 anchor_not_found`. The result is stored
+as `(thread, version, status, matched text)`, so each version is resolved once, then
+remembered. Orphaning is shown, not hidden: a comment about text that no longer
+exists is information.
 
-The DO is the system of record. [cost-at-scale.md](cost-at-scale.md) §6 instead
-makes R2 thread fragments canonical; the deviation is deliberate, because the
-fragment would be regenerated from DO state on every write anyway, and two
-authoritative copies of the same thing is a category of bug rather than a
-feature. Treat any R2 fragment as a render cache.
+## Where it lives
 
-D1 keeps its current job as the cross-document index. It only needs a new table
-for "everything awaiting my approval" *across* documents — which per-document
-DOs cannot answer — and even that can wait if approval happens on the document
-page itself.
+**One SQLite Durable Object per document** (`DocComments`, bound as `COMMENTS`,
+addressed `idFromName(docId)`), holding that document's threads, comments and
+anchor rows. Every write to a document serialises through it, which is what makes
+the 500-thread and 2,000-comment caps hold under concurrent posts, and it is the
+coordinator that v0 deliberately did without ([CLAUDE.md](../CLAUDE.md)) and
+comments are the feature that earns.
 
-## What this breaks
+The Worker authorises and the object enforces:
 
-**Serving starts to depend on state.** Today a read is a lookup, a stream, and a
-fixed set of additions that are a pure function of the stored version — cheap,
-and cacheable because the answer never varies between readers. (Only `/d/{docId}/v{n}` is
-immutable; the shared `/d/{docId}` link is a mutable pointer with a 60-second
-lifetime. See [http-api.md](http-api.md).) Threads make the page vary with state
-between pushes. Three ways out, and this is a real decision, not a detail:
+- **The Worker** (`src/comments/access.ts`, `service.ts`) decides from D1 whether
+  the caller can read, can comment and can manage, whether comments are on, whether
+  the owner's plan has them and whether the rate limit allows, and derives who the
+  author is from the credential. It never takes an author from the request. It then
+  calls the object with `{principal, kind, onBehalfOf}`.
+- **The object** (`src/comments/object.ts`) enforces what it can see itself: the
+  caps, the anchor ladder, who may delete a comment, who may resolve (the Worker
+  passes whether the caller manages the document), the state machines and the
+  snapshot.
+- **D1 holds only the owner's switch** (`docs.comments_enabled`) and the display name
+  (`accounts.display_name`), migration `0015`. No comment body is ever in D1.
 
-1. Serve the stored document as now and fetch threads separately — keeps the
-   additions a pure function of the version and both cache lifetimes intact,
-   costs an agent a second request.
-2. Compose the page per read — kills caching.
-3. Re-render and store on every comment — write amplification, reads stay static.
+The object is the system of record for threads. After every mutation it writes a
+full snapshot, `docs/{docId}/threads.json`, to R2: an overwrite, never a
+read-modify-write, queued so an older snapshot cannot land after a newer one, and
+best-effort (a failure is logged and never fails the mutation). It is what a rebuild
+and an export read. The snapshot carries internal ids and is never served.
 
-(1) looks right, and it also settles the open question
-[positioning.md](positioning.md) ends on: agents fetch one predictable threads
-resource instead of parsing them out of the page.
+**Delete.** Unsharing a document (`deleteDoc`) marks it deleted, then purges the
+object, then sweeps R2 (which removes `threads.json`), in that order, each
+best-effort after the D1 row is safe. A deleted document's object refuses writes
+forever, and every comment route and the threads resource answer `404` or `410` by
+the rules for the page itself.
 
-**Comments need reader identity, and it now exists for private documents.** On a
-public document an anonymous reader still cannot be attributed, so commenting
-there needs a signed-in reader. Access control was the hard prerequisite, not a
-parallel track, and it is built: [private-sharing.md](private-sharing.md) has
-readers sign in on the API host (one account, one session), and a private
-document is served from its publisher's origin, `{label}.openartifacts.site`,
-not from `openartifacts.site`. Comments are the next step on top of it, and
-take four adjustments from it, none of which changes the shape of this sketch:
+## Access
 
-1. Call `canRead` from the threads resource and every comment route, so a private
-   document's discussion is as private as its page.
-2. Serve a private document's threads resource on the publisher's origin, behind
-   the grant cookie, which is how the grant check slots in front of it.
-3. Derive the comments sidebar's `frame-ancestors` per document from the document's serving
-   origin (`openartifacts.site` for public, the publisher's origin for private)
-   instead of the fixed `https://openartifacts.site`. The Share popover's frame
-   already follows this rule (the embedder's origin is echoed only when it is the
-   document's serving origin, `src/embed.ts`), and the sidebar follows the same one.
-4. Accept the Share popover's per-document token in the comment routes. The
-   sidebar runs in a third-party iframe where cookies are unreliable, so it carries
-   a bearer token, and the popup on the API host that mints it sees the reader
-   session, so a reader signs in once per document for both.
+```
+canComment = canRead
+             AND the owner turned comments on for the document
+             AND the owner's plan includes comments
+             AND the caller is the owner, OR an invited account whose role is `comment`,
+                 OR (linkAccess is `anyone` AND the caller is signed in)
+```
 
-`doc_invites.role` (`view` or `comment`) and the `canComment` predicate are
-reserved for it; nothing calls them yet.
+`canRead` and `canManage` are the existing predicates; the rest is assembled in
+`src/comments/access.ts` from one D1 read (`findCommentableDoc`). A reader invited
+as **Can view** reads the threads and cannot write. On a public document an
+anonymous reader can read the threads and must sign in to write, since a comment
+needs an author.
 
-## Open questions
+- **Everything refused is `404`, never `403`.** Two exceptions are given only to
+  someone who manages the document, and so reveal nothing: `409 comments_off`
+  and the plan's `402`.
+- **Entitlement belongs to the document's owner.** Readers and commenters never
+  pay. A lapsed owner keeps the threads readable and stops accepting writes, and
+  turning comments off never needs a plan. The plan is read from what D1 stores, so
+  a comment write costs no license-server call. Accepted for v1: those rows are as
+  fresh as the owner's last publish or account refresh, so a lapsed license key
+  keeps accepting comments until its owner next publishes.
+- **Resolve and reopen**: the owner, or the thread's author while they can still
+  comment. There is no moderation of other people's comments; a commenter deletes
+  only their own words, and an owner who wants a thread gone resolves it or turns
+  comments off.
+- **Authorship is the account.** A license key linked to an account is one author
+  with it, so linking after the fact does not orphan a comment's `mine`, its delete
+  right or its emails.
 
-- Where threads render (the three options above), which decides whether the
-  cheap-serving story survives comments.
-- Whether approval batches per agent, per document, or per session. Batching is
-  the stated mitigation for approval fatigue, and the shape of it is not obvious.
-- Whether resolve may be reopened, and what that does to `resolved_by_version`.
+Credentials: `/api/v1` takes an account token (`oat_`) or a license key and writes
+as an **agent**, named after the account it acts for. `/embed/api` takes the Share
+popover's per-document token (`oas_`) and writes as a **person**, who must have a
+display name (`name_required` otherwise; agents are exempt). See
+[private-sharing.md](private-sharing.md#credentials-by-capability).
+
+## Serving: threads are separate from the page
+
+The stored document is served exactly as before. Threads would make a page vary
+with state between pushes, which would end its cacheability (an immutable `/v{n}`
+page; the mutable `/d/{docId}` pointer's 60-second lifetime) and its being a pure
+function of the stored version. So comments are a **separate resource**:
+
+- `GET /d/{docId}/threads[?v=n]` on the serving origin, public and unauthenticated,
+  on the apex for a public document and on the publisher's origin behind the grant
+  cookie for an invited-only one. Same JSON for every reader, `no-store`, no view
+  counted, no cookie on the apex.
+- Nothing is composed per read: the served HTML is unchanged, so there is no
+  `RENDER_REVISION` bump and a page with comments off or unavailable is
+  byte-for-byte what it was.
+- Agents fetch the same resource, or `GET /api/v1/docs/{docId}/threads` with their
+  credential for the viewer fields, instead of parsing threads out of a page. That
+  settled the question [positioning.md](positioning.md) ended on.
+
+## Plans, limits and abuse
+
+| | |
+| --- | --- |
+| Plans | `PlanLimits.comments` on `pro` and `pro_lifetime`; the license plans that may publish (`PLUS`, `BELIEVER`) have it. Free owners cannot turn comments on. |
+| Per document | 500 threads, 2,000 comments, bodies 4,000 characters, quotes 1,000. |
+| Per principal | 30 writes per minute (`COMMENT_WRITE_LIMITER`, namespace `1011`). |
+| Per document | 20 notification emails per minute (`COMMENT_EMAIL_LIMITER`, namespace `1012`). |
+
+Both limiters are optional bindings: absent means no limit. A comment body is
+plain text, rendered with `textContent` and never HTML, with no links. Bodies and
+quotes are bounded before an object is asked. Quotas and limits ship with the
+feature they protect, as [CLAUDE.md](../CLAUDE.md) requires.
+
+## Email
+
+A new thread mails the owner (unless they wrote it); a reply or a resolve mails
+everyone who wrote in the thread, an agent's comments to the account it acts for,
+minus the actor. Reopening mails nobody. Only people who can still read the
+document are mailed. The message uses display names only, never another person's
+address. It is sent after the response, best effort, only where Email Service is
+configured, and never changes what the caller sees.
+
+## Self-hosting
+
+A deployment that has the `COMMENTS` binding and reader sign-in gets the whole
+feature; a SQLite Durable Object is available on the free Workers plan. A
+deployment on an old configuration without the binding behaves as if the feature
+did not exist: every comment route and the threads resource answer `404`, the
+embed routes are absent. Documents and pages are unaffected. [deploying.md](deploying.md#inline-comments) has the steps.
+
+## What is not built
+
+Deliberate non-goals of this version:
+
+- **The in-page experience.** Nothing yet draws comments on a served page: no
+  comments button or margin frame (`/embed/comments`), no highlights, and no
+  **Comments** switch or **Can view / Can comment** select in the Share popover or
+  on the share page. Until they exist an owner turns comments on and sets a role
+  through the API or the CLI (`PUT …/settings`, `PUT …/access/people/{email}` with
+  `{role}`), and every other writer is an agent or a client of `/embed/api`.
+- **Approval of agent comments.** Agent comments post immediately and are labelled
+  as agents; there is no pending state.
+- **@mentions**, whole-document (anchorless) threads, a list of all comments across
+  documents, and a side panel.
+- **Editing a comment**, moderating someone else's, and "ask for a change".
+- **Live sockets.** A client polls.
+- **Edit-distance anchoring.** A quote that no rung finds is orphaned.
+- **Clickable links** in bodies, and comments on the free plan.
+- **Backfilled manifests.** `threads.json` is part of the manifest debt in
+  [CLAUDE.md](../CLAUDE.md): the per-document `manifest.json` that rebuilds D1 does
+  not exist yet, and until it does, treat D1 (and the object) as the record.
