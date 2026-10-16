@@ -1080,7 +1080,7 @@ also checks the origin.
 | frame → page | `focus` | `{threadId}` |
 | frame → page | `close` | none: hide the sheet or cancel the draft |
 | frame → page | `size` | `{height}`: how tall the margin's stacked cards need the column to be (margin mode) |
-| frame → page | `height` | `{px}`: the height of the overlay sheet's content (overlay mode) |
+| frame → page | `height` | `{px}`: the height of the overlay sheet's content (overlay mode); `0` means the frame has nothing to show and the page closes the sheet |
 | frame → page | `reveal` | `{top, height}`: where the focused card sits in the margin, so the page can scroll it into view |
 
 The frame prefers its own read (its token's, else the anonymous one a public

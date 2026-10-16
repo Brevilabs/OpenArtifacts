@@ -392,9 +392,9 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       button.className = "openartifacts-comments-button";
       button.setAttribute("style", "all:initial;flex:none;box-sizing:border-box;display:inline-flex;align-items:center;gap:6px;height:34px;padding:0 14px;margin-left:auto;border:1px solid rgba(255,255,255,0.08);border-radius:999px;color:#c9ced6;cursor:pointer;white-space:nowrap;-webkit-font-smoothing:antialiased;" + FONT.replace("13px/1.25", "14px/1"));
       button.addEventListener("click", () => {
-        // In overlay mode a page with no threads has nothing to hide: the button opens the sheet, which carries the margin's one line.
-        if (mode === "overlay" && data && data.threads.length === 0) {
-          if (sheet) closeSheet(); else { shown = true; openSheet(); }
+        // In overlay mode a page with no thread to tap has nothing to hide, whether it has none or an update orphaned them all: the button opens the sheet, which carries the margin's one line. The focus message makes the frame redraw and report its height, and a frame with nothing to show reports 0 and the page closes the sheet again.
+        if (mode === "overlay" && data && ranges.size === 0) {
+          if (sheet) closeSheet(); else { shown = true; openSheet(); send({ event: "focus", threadId: "" }); }
           label();
           paint();
           return;
@@ -592,6 +592,9 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
           const n = Math.max(0, Math.min(Math.round(msg.height), 1000000));
           if (mode === "margin" && n !== need) { need = n; schedule(); }
         } else if (msg.event === "height" && Number.isFinite(msg.px)) {
+          // A height while the sheet is closed would linger as sheetH and open the next sheet at the wrong height. Zero is a frame with nothing to show.
+          if (!sheet) return;
+          if (msg.px === 0) { closeSheet(); label(); paint(); return; }
           const n = Math.max(80, Math.min(Math.round(msg.px), 4000));
           if (n !== sheetH || unsure) { sheetH = n; unsure = false; if (sheet) layout(); }
         } else if (msg.event === "reveal" && Number.isFinite(msg.top) && Number.isFinite(msg.height)) {
@@ -1188,7 +1191,7 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
   const renderOverlay = () => {
     const close = button("×", () => { if (draft) cancelDraft(); else post({ event: "close" }); }, "x");
     close.setAttribute("aria-label", "Close");
-    const kids = [node("div", { class: "grab" }, [node("i"), close])];
+    const kids = [];
     if (draft) kids.push(draftCard());
     else {
       const top = lineCard();
@@ -1196,7 +1199,13 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
       const thread = threadsOf().find((t) => t.threadId === focusId);
       if (thread) kids.push(threadCard(thread, thread.anchorStatus !== "anchored", true));
     }
-    cards.replaceChildren(...kids);
+    // Nothing to show, so no sheet: the page closes it on a height of 0. Before the first read the page's own fallback covers the wait.
+    if (!kids.length) {
+      cards.replaceChildren();
+      if (loaded) post({ event: "height", px: 0 });
+      return;
+    }
+    cards.replaceChildren(node("div", { class: "grab" }, [node("i"), close]), ...kids);
     cards.style.height = "";
   };
 
@@ -1209,7 +1218,7 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     sizes.disconnect();
     stacked = [];
     try {
-      if (!shown || (mode === "overlay" && !draft && !focusId && threadsOf().length > 0)) cards.replaceChildren();
+      if (!shown) cards.replaceChildren();
       else if (mode === "overlay") renderOverlay();
       else renderMargin();
     } catch (error) {
