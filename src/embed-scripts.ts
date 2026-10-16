@@ -204,8 +204,10 @@ export const POPUP_DONE_SCRIPT = String.raw`(function () {
  * same way as the others: the header (sticky, so it never scrolls away or gets cut through the
  * middle of a line) and then the link field and Copy link, so Copy link sits at
  * the same place in every view. Link access, with the notice that follows a
- * switch to private, comes next so that it is in view without any scrolling;
- * the people and requests follow and scroll. Flex items do
+ * switch to private, comes next so that it is in view without any scrolling,
+ * and the Comments switch (where comments are bound and the view is not limited)
+ * follows Link access, also in view without scrolling; the people and requests
+ * follow and scroll. Flex items do
  * not collapse margins, so spacing is adjusted in the margins, not the
  * structure. Children of `main` never shrink: an item with its own overflow rule
  * has no content minimum, so it would squash to a line and the footer would be

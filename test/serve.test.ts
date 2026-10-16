@@ -692,8 +692,8 @@ describe("HEAD and conditional requests", () => {
 
     expect(v1).not.toBe(v2);
     // The shared link's etag has to move with the version, or a 60s-stale
-    // reader would revalidate into the old page forever. With no reader sign-in
-    // there is no bar, so no comments switch in the validator either.
+    // reader would revalidate into the old page forever.
+    // With no reader sign-in there is no bar, so no comments switch in the validator either.
     expect(latest).toBe(v2);
   });
 
@@ -1599,10 +1599,10 @@ describe("an invited-only document", () => {
       const docId = await markedPublicDoc();
 
       for (const over of [{ ...PRIVATE, READER_SESSION_SECRET: undefined }, { ...PRIVATE, OAUTH_GITHUB_CLIENT_ID: "", EMAIL: undefined }, { ...PRIVATE, API_HOST: "" }]) {
-        const response = await getFrom(`https://openartifacts.site/d/${docId}`, {}, over);
+        const html = await (await getFrom(`https://openartifacts.site/d/${docId}`, {}, over)).text();
         // No bar, so the comments switch is not in the bytes and not in the validator.
-        expect(response.headers.get("etag")).not.toMatch(/\.c[01]"$/);
-        const html = await response.text();
+        const etag = (await getFrom(`https://openartifacts.site/d/${docId}`, {}, over)).headers.get("etag");
+        expect(etag).not.toMatch(/\.c[01]"$/);
         expect(html).toContain(OPENARTIFACTS_HEADER);
         expect(html).toContain(OPENARTIFACTS_FOOTER);
         expect(html).not.toContain("openartifacts-bar");

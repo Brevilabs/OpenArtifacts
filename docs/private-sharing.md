@@ -468,7 +468,7 @@ that must never be on a page whose scripts the author writes.
   only what it already named). With a token, a non-reader sees what an unknown id
   shows, never `403`.
 - **It tells the page around it nothing about its viewer.** It has one fixed
-  height (at most 336 px) and scrolls inside it. It posts the page exactly three
+  height (at most 480 px) and scrolls inside it. It posts the page exactly three
   messages: `ready`, once, before it reads its storage; `close`, only after a
   click or key press inside it; and `comments`, only after the owner flips the
   Comments switch inside it, so the page asks for its threads again. That one

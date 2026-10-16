@@ -32,7 +32,9 @@
  * Needs Node 22 and a Google Chrome. `OA_HEADED=1` shows the browser, and
  * `OA_SCREENSHOTS={dir}` saves `bar.png`, `popover-signed-out.png`,
  * `popover-owner.png`, `popover-private.png` and the `popover-pasted*.png` pair, which is how the screenshots in
- * a pull request are made. `popover-comments.png` is saved the same way.
+ * a pull request are made.
+ * It also saves `popover-comments.png` and `popover-comments-paid.png`, for the
+ * Comments switch.
  */
 import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
@@ -377,12 +379,17 @@ test("a frame a hostile page embedded while the document was public shows no con
 
   // The hostile pages hold a frame with the owner view, drawn while X is public.
   const hostile = [];
-  for (const id of [Y1, Y2, Y3, Y4]) {
+  for (const id of [Y1, Y2, Y3]) {
     const tab = await context.newPage();
     await tab.goto(docUrl(id));
     await until("the hostile frame's owner view", () => frameOf(tab, X).getByRole("radio", { name: "Only those invited" }).isVisible());
     hostile.push(tab);
   }
+  // A fourth hostile page, for the Comments switch's stale write.
+  const tab4 = await context.newPage();
+  await tab4.goto(docUrl(Y4));
+  await until("the fourth hostile frame's owner view", () => frameOf(tab4, X).getByRole("radio", { name: "Only those invited" }).isVisible());
+  hostile.push(tab4);
 
   // The owner makes X private from X's own page, whose frame made the switch.
   await invitedOnly.click();
