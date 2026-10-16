@@ -936,15 +936,24 @@ test("the owner turns comments on and off and sets a role from the popover", { t
   await frame.getByRole("radio", { name: "Only those invited" }).waitFor();
   await shoot(page, "popover-comments");
 
-  // Comments is one row (label left, switch right), the role sits on the person's row, and with comments on the popover still reaches Copy link without scrolling.
+  // Comments is one row (label left, switch right), the role sits on the person's row, and with comments on the popover still opens on Copy link and the switch.
   const label = await frame.getByText("Comments", { exact: true }).boundingBox();
   const onBox = await on.boundingBox();
   assert.ok(Math.abs(label.y + label.height / 2 - (onBox.y + onBox.height / 2)) < 12, "the label and the switch share a row");
   const email = await frame.getByText(invitee).boundingBox();
   const roleBox = await frame.getByLabel(`Access for ${invitee}`).boundingBox();
   assert.ok(Math.abs(email.y - roleBox.y) < 30, "the role sits beside the address");
-  assert.equal(await frame.locator("main").evaluate((el) => el.scrollHeight <= el.clientHeight + 1), true, "nothing to scroll to");
-  await frame.getByRole("button", { name: "Copy link" }).waitFor();
+  // The popover is one fixed height and an owner view longer than it scrolls under
+  // the sticky header, but it opens at the top: Copy link and the Comments switch
+  // are in view above the foot's fade before any scrolling, and no person's row,
+  // with its role and Remove, is cut at the side.
+  const mainBox = await frame.locator("main").boundingBox();
+  assert.equal(await frame.locator("main").evaluate((el) => el.scrollTop), 0);
+  const copyBox = await frame.getByRole("button", { name: "Copy link" }).boundingBox();
+  assert.ok(copyBox.y + copyBox.height <= mainBox.y + mainBox.height - 28, "Copy link is in view without scrolling");
+  assert.ok(onBox.y + onBox.height <= mainBox.y + mainBox.height - 28, "the Comments switch is in view without scrolling");
+  assert.equal(await frame.locator("li").evaluateAll((rows) => rows.every((row) => row.scrollWidth <= row.clientWidth + 1)), true, "no row is cut at the side");
+  assert.ok(roleBox.x + roleBox.width <= mainBox.x + mainBox.width - 16, "the role select sits inside the panel's padding");
 
   // The person's role: Can comment is what an invite has, and it moves both ways.
   const select = frame.getByLabel(`Access for ${invitee}`);

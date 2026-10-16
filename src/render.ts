@@ -358,7 +358,10 @@ export const OPENARTIFACTS_BAR_STYLE =
   "<style>:where(html){scroll-padding-top:48px}" +
   "@media print{.openartifacts-bar,.openartifacts-bar-spacer,.openartifacts-share-popover{display:none!important}}" +
   ":where(.openartifacts-share):hover{background:#272b33!important;border-color:rgba(255,255,255,0.14)!important}" +
-  ":where(.openartifacts-share):focus-visible,:where(.openartifacts-byline):focus-visible{" +
+  // The comments button (`src/comments-scripts.ts`): its border and ink only, never
+  // its background, which says whether the margin is shown.
+  ":where(.openartifacts-comments-button):hover{border-color:#3a404b!important;color:#f4f5f7!important}" +
+  ":where(.openartifacts-share):focus-visible,:where(.openartifacts-comments-button):focus-visible,:where(.openartifacts-byline):focus-visible{" +
   "outline:2px solid #f6ae52!important;outline-offset:2px!important}" +
   ":where(.openartifacts-byline):is(:hover,:focus-visible) .openartifacts-byline-text{text-decoration:underline!important}" +
   "</style>";

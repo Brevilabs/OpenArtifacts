@@ -370,12 +370,18 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       button.setAttribute("aria-label", "Comments, " + n + " open");
       button.setAttribute("aria-pressed", String(shown));
       button.title = shown ? "Hide comments" : "Show comments";
-      button.style.background = shown ? "#eaf5f1" : "#fff";
+      // Pressed is the Share popover's selected segment (#20242c), released the strip itself.
+      button.style.background = shown ? "#20242c" : "transparent";
+      button.style.color = shown ? "#f4f5f7" : "#c9ced6";
     };
     const makeButton = () => {
       button = document.createElement("button");
       button.type = "button";
-      button.setAttribute("style", "all:initial;flex:none;box-sizing:border-box;display:inline-flex;align-items:center;height:28px;padding:0 10px;margin-left:auto;border:1px solid rgba(0,0,0,0.18);border-radius:6px;color:#1f1f1f;cursor:pointer;" + FONT);
+      // A quiet outline control on the dark strip, beside Share's filled pill: the
+      // strip's border token (#2c313b), Share's 28px height and 8px radius. Hover and
+      // focus are OPENARTIFACTS_BAR_STYLE's (src/render.ts), keyed on the class.
+      button.className = "openartifacts-comments-button";
+      button.setAttribute("style", "all:initial;flex:none;box-sizing:border-box;display:inline-flex;align-items:center;gap:4px;height:28px;padding:0 10px;margin-left:auto;border:1px solid #2c313b;border-radius:8px;color:#c9ced6;cursor:pointer;white-space:nowrap;-webkit-font-smoothing:antialiased;" + FONT);
       button.addEventListener("click", () => {
         shown = !shown;
         if (!shown) { sheet = false; hideTip(); }
