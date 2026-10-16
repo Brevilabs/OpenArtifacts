@@ -110,7 +110,7 @@ export function createClient({ host, token, fetcher = fetch }) {
         method: "PUT",
         body: JSON.stringify({ linkAccess }),
       }),
-    /** The body is sent only for an explicit role, so a plain add stays the request older servers expect. @param {string} docId @param {string} email @param {"view" | "comment"} [role] */
+    /** The body is sent only for an explicit role, so a plain add stays the request older servers expect. @param {string} docId @param {string} email @param {string} [role] */
     addPerson: (docId, email, role) =>
       request(`/api/v1/docs/${encodeURIComponent(docId)}/access/people/${encodeURIComponent(email)}`, {
         method: "PUT",
@@ -159,9 +159,6 @@ export function createClient({ host, token, fetcher = fetch }) {
     /** Delete the caller's own comment; a thread's first comment takes the thread with it. @param {string} docId @param {string} commentId */
     deleteComment: (docId, commentId) =>
       request(`/api/v1/docs/${encodeURIComponent(docId)}/comments/${encodeURIComponent(commentId)}`, { method: "DELETE" }),
-    /** Turn comments on or off for a document. @param {string} docId @param {boolean} comments */
-    setComments: (docId, comments) =>
-      request(`/api/v1/docs/${encodeURIComponent(docId)}/settings`, { method: "PUT", body: JSON.stringify({ comments }) }),
     /** The name the caller's comments carry. @param {string} displayName */
     setDisplayName: (displayName) =>
       request("/api/v1/account", { method: "PUT", body: JSON.stringify({ displayName }) }),

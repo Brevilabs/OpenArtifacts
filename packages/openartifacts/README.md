@@ -91,11 +91,14 @@ printed.
 
 ## Comments
 
-On a page whose owner turned comments on, readers comment on quoted passages and the
-owner's agent answers them. The `comments` commands print the server's JSON:
+Each person the owner adds to a page has a role, `comment` (the default) or `view`, and
+people who can comment, with the owner's agent, comment on quoted passages. Adding
+people needs a paid plan; the people you add are named by the owner, and a public link
+never lets a stranger comment. `openartifacts share <docId> --add <email> [--role view|comment]`
+adds a person, or sets the role of one already listed. The `comments` commands print
+the server's JSON:
 
 ```bash
-openartifacts comments on <docId>                   # owner; needs a paid plan (off turns them off)
 openartifacts comments list <docId>                 # open threads; --resolved, --all, --since <iso>
 openartifacts comments add <docId> --quote "exact text" --body "…" [--prefix "…"] [--suffix "…"] [--section id] [--version n]
 openartifacts comments reply <docId> <threadId> --body "Softened in v4."

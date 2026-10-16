@@ -918,10 +918,8 @@ test("comments subcommands send one request each, with the exact method, path an
       await main(["comments", "resolve", DOC, THREAD]);
       await main(["comments", "reopen", DOC, THREAD]);
       await main(["comments", "delete", DOC, COMMENT]);
-      await main(["comments", "on", DOC]);
-      await main(["comments", "off", DOC]);
       await main(["comments", "name", "Logan Yang"]);
-      assert.equal(lines.length, 13);
+      assert.equal(lines.length, 11);
       // Output is the server's JSON, pretty-printed like list and share; delete prints a sentence.
       assert.equal(JSON.parse(lines[0]).docId, DOC);
       assert.equal(lines[9], `Deleted ${COMMENT}.`);
@@ -940,8 +938,6 @@ test("comments subcommands send one request each, with the exact method, path an
     ["POST", `/api/v1/docs/${DOC}/threads/${THREAD}/resolve`, {}],
     ["POST", `/api/v1/docs/${DOC}/threads/${THREAD}/reopen`, undefined],
     ["DELETE", `/api/v1/docs/${DOC}/comments/${COMMENT}`, undefined],
-    ["PUT", `/api/v1/docs/${DOC}/settings`, { comments: true }],
-    ["PUT", `/api/v1/docs/${DOC}/settings`, { comments: false }],
     ["PUT", "/api/v1/account", { displayName: "Logan Yang" }],
   ]);
   assert(remote.requests.every((request) => request.authorization === "Bearer opaque-test-token"));
@@ -983,8 +979,9 @@ test("comments reject malformed arguments before any credential is read or reque
       await assert.rejects(main(["comments", "resolve", DOC]), usage);
       await assert.rejects(main(["comments", "reopen", DOC, THREAD, "extra"]), usage);
       await assert.rejects(main(["comments", "delete", DOC, THREAD]), usage);
-      await assert.rejects(main(["comments", "on"]), usage);
-      await assert.rejects(main(["comments", "off", DOC, "extra"]), usage);
+      // The owner's switch is gone: the roles are the control.
+      await assert.rejects(main(["comments", "on", DOC]), usage);
+      await assert.rejects(main(["comments", "off", DOC]), usage);
       await assert.rejects(main(["comments", "name"]), usage);
       await assert.rejects(main(["comments", "name", "   "]), /cannot be empty/);
       await assert.rejects(main(["comments", "name", "n".repeat(65)]), /limit is 64/);
@@ -1013,7 +1010,7 @@ test("comments name a missing resource the same way whatever the reason", async 
       OPENARTIFACTS_TOKEN: "opaque-test-token",
     }, async () => {
       await assert.rejects(main(["comments", "list", DOC]), /Not found, or this server does not support comments\./);
-      await assert.rejects(main(["comments", "on", DOC]), /Not found, or this server does not support comments\./);
+      await assert.rejects(main(["comments", "reply", DOC, THREAD, "--body", "b"]), /Not found, or this server does not support comments\./);
     });
   } finally {
     remote.server.close();
@@ -1054,6 +1051,8 @@ test("share --role sets the role of the people added in the same call", async ()
       OPENARTIFACTS_TOKEN: "opaque-test-token",
     }, async () => {
       await main(["share", DOC, "--add", "bob@acme.com", "--role", "view"]);
+      // On a person already listed, the same flags set the role: the server decides add or change.
+      await main(["share", DOC, "--add", "bob@acme.com", "--role", "comment"]);
       await main(["share", DOC, "--add", "bob@acme.com"]);
       await assert.rejects(main(["share", DOC, "--role", "view"]), /--role applies/);
     });
@@ -1062,6 +1061,7 @@ test("share --role sets the role of the people added in the same call", async ()
   }
   assert.deepEqual(remote.requests.map(({ method, path, body }) => [method, path, body]), [
     ["PUT", `/api/v1/docs/${DOC}/access/people/bob%40acme.com`, { role: "view" }],
+    ["PUT", `/api/v1/docs/${DOC}/access/people/bob%40acme.com`, { role: "comment" }],
     ["PUT", `/api/v1/docs/${DOC}/access/people/bob%40acme.com`, undefined],
   ]);
 });
@@ -1072,14 +1072,13 @@ test("presentError explains the comment error codes", () => {
   console.error = (...parts) => lines.push(parts.join(" "));
   try {
     presentError(new APIError(400, { error: { code: "anchor_not_found", message: "Quote not found." } }));
-    presentError(new APIError(409, { error: { code: "comments_off", message: "Comments are off." } }));
     presentError(new APIError(409, { error: { code: "name_required", message: "Name needed." } }));
     presentError(new APIError(402, { error: { code: "limit_reached", message: "Comments need a plan.", limit: "comments" } }));
   } finally {
     console.error = previous;
   }
   assert(lines.some((line) => line.includes("openartifacts get <docId>")));
-  assert(lines.some((line) => line.includes("openartifacts comments on <docId>")));
+  assert(!lines.some((line) => line.includes("comments on")));
   assert(lines.some((line) => line.includes('openartifacts comments name "<name>"')));
   assert(lines.includes("Limit: comments"));
   assert(lines.some((line) => line.includes("paid plan")));

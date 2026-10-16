@@ -131,15 +131,15 @@ openartifacts share <docId>
 - After `--link invited` on a page that was public, say: "People who opened it while it was public may have kept a copy."
 - After `--link anyone`, say that anyone with the link can now open it, and that the list of invited people is kept in case the user switches back.
 - When the user asks who has access, run `share <docId>` and report `people` and the pending `requests`, with the `manageUrl`. Approve a request with `--add <email>` ("let bob@other.com in") and decline it with `--decline <email>` ("decline bob@other.com"), only when the user says so. Approving adds them as an invitee (OpenArtifacts emails the invitation when `email` is true); declining tells the requester nothing.
-- An added person can comment by default. `--role view` makes them a reader who cannot, and adding the same address again with the other `--role` changes it. `--role` only goes with `--add`.
+- An added person can comment by default. `--role view` makes them a reader who cannot, and adding the same address again with the other `--role` changes it. `--role` only goes with `--add`. When the user asks to let someone comment, run `share <docId> --add <email>`; when they ask to stop someone commenting, run `--add <email> --role view`, or `--remove`. Commenters are people the user names: there is no switch for a whole page, and a public link never lets a stranger comment.
 - Each `--add`, `--remove` or `--decline` changes one address, so never try to send a whole list.
 - Tell the user that invitees sign in with the address that was invited.
-- Private sharing needs a paid plan for making a page private, adding and approving people. Declining, removing and switching to public never need it. Relay a `limit_reached` with `privateSharing` the way you relay any limit, and say private sharing needs a paid plan.
+- Private sharing needs a paid plan for making a page private, adding and approving people, and changing anyone's role. Declining, removing and switching to public never need it. Relay a `limit_reached` with `privateSharing` the way you relay any limit, and say private sharing needs a paid plan.
 - If `share` says "Not found, or this server does not support private documents.", relay it and do not guess.
 
 ## 5. Address the comments
 
-On a page whose owner turned comments on, readers select text and leave comments. Each
+Readers the owner gave **Can comment** select text and leave comments. Each
 one is a thread on a quoted passage. Only the owner changes the page; you answer a
 thread by publishing a version that addresses it. Do this when the user asks to
 address, answer or work through the comments on a page, and before revising a page
@@ -152,7 +152,6 @@ openartifacts comments resolve <docId> <threadId> --version 4
 openartifacts comments reopen <docId> <threadId>
 openartifacts comments add <docId> --quote "exact text" --body "…" [--prefix "…"] [--suffix "…"]
 openartifacts comments delete <docId> <commentId>
-openartifacts comments on <docId>                    # also: off
 openartifacts comments name "Display name"
 ```
 
@@ -165,9 +164,9 @@ openartifacts comments name "Display name"
 
 - Replies and resolutions post at once and show as the owner's agent. Never reply to or resolve a thread you did not change the page for, and never delete someone else's comment (you cannot; `comments delete` removes only your own).
 - `comments add` starts a thread of your own. `--quote` must be text exactly as it reads in the page, without tags; add `--prefix` or `--suffix` (up to 32 characters of the surrounding text) when the quote appears more than once. Use it only when the user asks you to leave a comment.
-- `comments on` and `comments off` turn comments on or off for a page the user owns, only when they ask. Turning them on needs a paid plan: on `limit_reached` with `comments`, say comments need a paid plan, not that a publishing limit was reached.
+- You comment as the owner's agent, and that works on any page the user owns on a paid plan, with nobody else added. On `limit_reached` with `comments`, say comments need a paid plan, not that a publishing limit was reached.
 - A `name_required` error means the account has no display name. Ask the user what name their comments should carry, then run `comments name "<name>"` and retry. Agents are normally exempt, so this is rare.
-- `comments_off` means the page's comments are off; tell the user and offer `comments on`. If a `comments` command says "Not found, or this server does not support comments.", relay it and do not guess. If `comments name` says "This credential has no account to name. Sign in to link one.", tell the user to run `openartifacts login` to link an account, then retry.
+- If a `comments` command says "Not found, or this server does not support comments.", relay it and do not guess. If `comments name` says "This credential has no account to name. Sign in to link one.", tell the user to run `openartifacts login` to link an account, then retry.
 - When `share` shows a person with `"role": "view"`, they can read and see comments but cannot comment.
 
 ## 6. Withdraw
