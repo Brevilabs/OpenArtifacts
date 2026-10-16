@@ -1041,8 +1041,11 @@ cookie.
 inertly where it cannot. On the shared link `/d/{docId}` the top bar's **Share**
 link carries `data-comments="on"` or `"off"` (the owner's switch when the page was
 served; it is part of that page's validator and reaches readers within its 60
-seconds), and on `"off"` the script makes no request. A pinned `/d/{docId}/v{n}`
-page carries no such attribute, since it is immutable. Otherwise it fetches
+seconds), and on `"off"` the script makes no request. Beside it the link carries
+`data-version="n"`, the version that page is, and the script reads and writes
+comments at that version, so they stay with the text on screen when a push lands
+while the page is open or cached. A pinned `/d/{docId}/v{n}` page carries neither
+attribute, since it is immutable and its path names the version. Otherwise it fetches
 `/d/{docId}/threads[?v=n]` same-origin, and on a `404` does nothing more. The Share
 popover tells the page when its owner flips the switch, and the page then asks
 again. Otherwise it adds `💬 N` (open threads) beside **Share**,

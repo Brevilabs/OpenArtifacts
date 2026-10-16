@@ -1585,6 +1585,23 @@ describe("an invited-only document", () => {
       expect(await pinned.text()).not.toContain("data-comments");
     });
 
+    // An open tab, or the shared link's 60-second cache, can show a version older
+    // than the newest, so the bar says which one it is and comments stay with it.
+    it("S3: the shared link names the version it serves, and a pinned page, whose path names it, carries none", async () => {
+      const publicDoc = await privateDoc("a public page", KEY, "anyone");
+      const url = `https://openartifacts.site/d/${publicDoc.docId}`;
+      const named = async (response: Response) => /data-version="(\d+)"/.exec(await response.text())?.[1] ?? null;
+      expect(await named(await getFrom(url, {}, PRIVATE))).toBe("1");
+
+      const second = await sendTo("PUT", `/api/v1/docs/${publicDoc.docId}`, {
+        headers: { authorization: `Bearer ${KEY}`, "content-type": "application/json" },
+        body: JSON.stringify({ title: "Secret", html: page("<p>a second version</p>") }),
+      });
+      expect(second.status).toBe(200);
+      expect(await named(await getFrom(url, {}, PRIVATE))).toBe("2");
+      expect(await named(await getFrom(`${url}/v1`, {}, PRIVATE))).toBeNull();
+    });
+
     it("S1: replaces the header byline with the bar, keeping the byline text smoke.sh looks for", async () => {
       const docId = await markedPublicDoc();
 

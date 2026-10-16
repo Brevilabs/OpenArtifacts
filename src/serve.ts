@@ -380,15 +380,16 @@ function matchesConditions(conditions: Headers, object: R2Object): boolean {
  * every viewer: it names no identity, which is what keeps public pages
  * cacheable. On the shared link it also carries the document's comments switch,
  * so the page script does not ask the threads resource about a document that has
- * none; `comments` is null on a pinned url, which carries nothing.
+ * none, and the version served, so its comments follow the text on screen;
+ * `comments` is null on a pinned url, which carries neither.
  */
-function topBarFor(env: Env, route: DocRoute, comments: boolean | null): TopBar | null {
+function topBarFor(env: Env, route: DocRoute, version: number, comments: boolean | null): TopBar | null {
   if (!readerSignInConfigured(env)) return null;
   const api = `https://${env.API_HOST!.trim()}`;
   return {
     shareUrl: `${api}${SHARE_PREFIX}/${route.docId}`,
     scriptUrl: `${api}${PAGE_SCRIPT_PATH}`,
-    ...(comments === null ? {} : { comments }),
+    ...(comments === null ? {} : { comments, version }),
   };
 }
 
@@ -418,7 +419,7 @@ async function serveObject(
   // the page script asks the threads resource there instead. The validator reads
   // the flag off the bar, so it moves only when the bytes do: no bar (no reader
   // sign-in) means no flag in either.
-  const bar = topBarFor(env, route, route.pinned === null ? commentsEnabled : null);
+  const bar = topBarFor(env, route, version, route.pinned === null ? commentsEnabled : null);
   const suffix = renderingSuffix(bar?.comments ?? null);
   const key = versionObjectKey(route.docId, version);
   const headers = servingHeaders(

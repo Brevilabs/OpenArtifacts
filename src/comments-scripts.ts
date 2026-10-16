@@ -70,7 +70,8 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
     const FONT = "font:500 13px/1.25 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
     const pin = /^[/]d[/][0-9a-z]{16}[/]v([1-9][0-9]{0,8})[/]?$/.exec(location.pathname);
     const painting = typeof Highlight === "function" && window.CSS && CSS.highlights;
-    let version = pin ? Number(pin[1]) : 0;
+    // The version on screen: the path names it on a pinned url, the bar on the shared link. A shared page served before the bar carried it asks the newest.
+    let version = pin ? Number(pin[1]) : Number(link.getAttribute("data-version")) || 0;
     let data = null, active = false, shown = true, canComment = false, mode = "margin";
     let mhost = null, mframe = null, ready = false, sheet = false, button = null, tipHost = null, tip = null;
     let canon = null, dirty = true, ranges = new Map(), lost = [], draft = null, draftRange = null, focusId = "", timer = 0;

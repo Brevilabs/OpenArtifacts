@@ -1368,3 +1368,44 @@ test("typing in a card survives the page re-measuring and the frame redrawing on
   assert.equal(await frame.evaluate(() => document.activeElement.dataset.key), "draft", "the draft kept the focus");
   await context.close();
 });
+
+test("a page served before a push reads and writes comments at the version on screen", { timeout: 120_000 }, async () => {
+  const docId = await publish("Pushed under the reader", REPORT);
+  const quote = "Staffing is unchanged";
+  const context = await newContext(ALICE, { signedInTo: docId });
+  const tab = await context.newPage();
+  // The page's first thread read waits until a second version has landed, as it would for a tab opened from the 60-second cache.
+  await tab.addInitScript((serving) => {
+    if (location.host !== serving) return;
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    window.__release = () => release();
+    const original = window.fetch;
+    window.fetch = (input, init) => (String(input).includes("/threads") ? gate.then(() => original(input, init)) : original(input, init));
+  }, SERVING);
+  const asked = [];
+  tab.on("request", (request) => { if (request.url().includes(`/d/${docId}/threads`)) asked.push(request.url()); });
+  await tab.goto(docUrl(docId));
+  assert.equal(await tab.locator("a[data-openartifacts-share]").getAttribute("data-version"), "1");
+  assert.equal(await update(docId, REPORT.replace(quote, "Staff are unchanged")), 2);
+  await tab.evaluate(() => window.__release());
+
+  const frame = await until("the comments frame", () => commentsFrame(tab, docId));
+  await barButton(tab).waitFor();
+  assert.ok(asked.length > 0 && asked.every((url) => url.endsWith("?v=1")), asked.join(", "));
+  await select(tab, quote);
+  const tip = tab.locator(".openartifacts-comment-tip");
+  await until("the Comment button", async () => await tip.isVisible());
+  await tip.click();
+  const box = frame.getByRole("textbox", { name: "Add a comment…" });
+  await box.waitFor();
+  await box.fill("Written against the first version.");
+  await frame.getByRole("button", { name: "Post" }).click();
+  await frame.getByText("Written against the first version.").waitFor();
+
+  const at = async (v) => (await (await api(`/api/v1/docs/${docId}/threads?v=${v}`)).json()).threads;
+  assert.equal((await at(1))[0].anchorStatus, "anchored");
+  assert.equal((await at(1))[0].comments[0].atVersion, 1);
+  assert.equal((await at(2))[0].anchorStatus, "orphaned");
+  await context.close();
+});

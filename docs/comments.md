@@ -166,8 +166,11 @@ function of the stored version. So comments are a **separate resource**:
   Share link carries `data-comments="on|off"`, read from the `docs` row the serving
   path already loads and folded into that rendering's etag (`.c0` / `.c1` after the
   render revision), so a page with comments off costs no second request and a flip
-  reaches readers within the route's 60 seconds. A pinned `/v{n}` is immutable and
-  carries no attribute; there the script asks. The owner flipping the switch in the
+  reaches readers within the route's 60 seconds. The link also carries
+  `data-version`, the version that rendering is, and the script reads and writes
+  at it, so comments stay with the text on screen when a push lands while the page
+  is open or cached. A pinned `/v{n}` is immutable and carries neither attribute;
+  there the script asks, at the version its path names. The owner flipping the switch in the
   Share popover makes the open page ask again, so no reload is needed.
 - Agents fetch the same resource, or `GET /api/v1/docs/{docId}/threads` with their
   credential for the viewer fields, instead of parsing threads out of a page. That

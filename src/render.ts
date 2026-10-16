@@ -454,6 +454,14 @@ export interface TopBar {
    * Rendered as `data-comments="on|off"` on the Share link; absent means "ask".
    */
   comments?: boolean;
+  /**
+   * The version these bytes are, set alongside `comments` on the shared link,
+   * whose bytes change on a push while a reader's copy (an open tab, a 60-second
+   * cache) does not. Rendered as `data-version`; the page script reads and writes
+   * comments at it, so they stay tied to the text on screen. A pinned `/v{n}`
+   * names its version in its path.
+   */
+  version?: number;
 }
 
 /**
@@ -490,6 +498,7 @@ function topBar(bar: TopBar, byline: boolean): string {
     "</span>" +
     `<a class="openartifacts-share" data-openartifacts-share href="${escapeAttribute(bar.shareUrl)}" ` +
     (bar.comments === undefined ? "" : `data-comments="${bar.comments ? "on" : "off"}" `) +
+    (bar.version === undefined ? "" : `data-version="${bar.version}" `) +
     `target="_blank" rel="noopener noreferrer" style="${SHARE_STYLE}">${SHARE_ICON}Share</a>` +
     "</div>" +
     `<script defer src="${escapeAttribute(bar.scriptUrl)}"></script>`
