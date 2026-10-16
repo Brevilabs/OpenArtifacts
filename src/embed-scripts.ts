@@ -798,10 +798,12 @@ export const FRAME_SCRIPT = String.raw`(() => {
         node("option", { value: "view" }, ["Can view"]),
         node("option", { value: "comment" }, ["Can comment"]),
       ]);
-      select.value = entry.role === "comment" ? "comment" : "view";
+      const held = entry.role === "comment" ? "comment" : "view";
+      select.value = held;
+      // A select shows its new value before the write lands. A write that lands redraws the view with a new select; one that fails, or that another write turned away, leaves this one showing a role nobody has, so it goes back.
       select.addEventListener("change", () => {
         if (select.value === entry.role) return;
-        write("PUT", "/access/people/" + encodeURIComponent(entry.email), { role: select.value });
+        write("PUT", "/access/people/" + encodeURIComponent(entry.email), { role: select.value }).then(() => { select.value = held; });
       });
       return select;
     };

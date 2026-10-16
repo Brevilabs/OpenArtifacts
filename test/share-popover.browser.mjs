@@ -993,3 +993,32 @@ test("the owner turns comments on and off and sets a role from the popover", { t
   }
   await context.close();
 });
+
+test("a role change the server refuses puts the select back on the role the person has", { timeout: 120_000 }, async () => {
+  const X = await publish("Role refused", "<p>Mine.</p>");
+  const invitee = "refused@example.com";
+  assert.equal((await api(`/api/v1/docs/${X}/access/people/${encodeURIComponent(invitee)}`, { method: "PUT", body: "{}" })).status, 200);
+  assert.equal((await api(`/api/v1/docs/${X}/settings`, { method: "PUT", body: JSON.stringify({ comments: true }) })).status, 200);
+  const roleOf = async () => (await (await api(`/api/v1/docs/${X}/access`)).json()).people.find((entry) => entry.email === invitee).role;
+  const context = await newContext(OWNER_ACCOUNT);
+  const { page, frame } = await ownerFrame(context, X);
+  const select = frame.getByLabel(`Access for ${invitee}`);
+  await select.waitFor();
+  assert.equal(await select.inputValue(), "comment");
+
+  const url = `https://${API}/embed/api/docs/${X}/access/people/${encodeURIComponent(invitee)}`;
+  for (const refuse of [(route) => route.fulfill({ status: 500, body: "" }), (route) => route.abort()]) {
+    const handler = (route) => (route.request().method() === "PUT" ? refuse(route) : route.continue());
+    await page.route(url, handler);
+    await select.selectOption("view");
+    await frame.getByText("Something went wrong. Nothing was changed.").waitFor();
+    await until("the select to go back", async () => (await select.inputValue()) === "comment");
+    assert.equal(await roleOf(), "comment");
+    await page.unroute(url, handler);
+  }
+  // Unrefused, the same change lands and stays.
+  await select.selectOption("view");
+  await until("the role to land", async () => (await roleOf()) === "view");
+  assert.equal(await frame.getByLabel(`Access for ${invitee}`).inputValue(), "view");
+  await context.close();
+});
