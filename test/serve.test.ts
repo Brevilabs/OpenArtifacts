@@ -2023,18 +2023,6 @@ describe("an invited-only document", () => {
       expect((await claim({ doc: doc.docId, nonce: n })).status).toBe(404);
     });
 
-    it("leaves `comments` out of the popover's owner view where the comments object is not bound, so it draws no switch", async () => {
-      const doc = await privateDoc("for invited eyes");
-      const owner = await ownerAccount(doc);
-      const token = await tokenFor(owner, doc.docId);
-
-      const bound = (await (await embedApi(`${doc.docId}/access`, token)).json()) as Record<string, unknown>;
-      expect(typeof bound.comments).toBe("boolean");
-      const unbound = (await (await embedApi(`${doc.docId}/access`, token, {}, { ...OPEN, COMMENTS: undefined })).json()) as Record<string, unknown>;
-      expect("comments" in unbound).toBe(false);
-      expect(unbound.viewer).toBe("owner");
-    });
-
     it("tells the popover's owner view the roles its plan grants, and leaves them out where comments are not bound", async () => {
       const doc = await privateDoc("for invited eyes");
       const owner = await ownerAccount(doc);
@@ -2547,9 +2535,7 @@ describe("an invited-only document", () => {
       expect(html).toContain("Decline");
       expect(html.indexOf("Requests")).toBeLessThan(html.indexOf("Who has access"));
       expect(html).not.toContain("may have kept a copy");
-      // Comments are bound in this suite, so the switch and each person's role are drawn.
-      expect(html).toContain("<h2>Comments</h2>");
-      expect(html).toContain('name="comments" value="off" checked');
+      expect(html).not.toContain('name="comments"');
       expect(html).toContain('<option value="comment" selected>Can comment</option>');
     });
 
@@ -2566,34 +2552,6 @@ describe("an invited-only document", () => {
       expect(html).not.toMatch(/Comments|Can comment|Can view|name="role"/);
     });
 
-    it("turns comments on and off from the page, on the plan the API's switch needs", async () => {
-      const doc = await privateDoc();
-      const owner = await ownerAccount(doc);
-      const enabled = async () =>
-        (await env.DB.prepare("SELECT comments_enabled AS c FROM docs WHERE id = ?").bind(doc.docId).first<{ c: number }>())!.c;
-
-      expect((await write(doc.docId, owner, { op: "comments", comments: "on" })).status).toBe(303);
-      expect(await enabled()).toBe(1);
-      expect(await (await open(doc.docId, owner)).text()).toContain('name="comments" value="on" checked');
-      expect((await write(doc.docId, owner, { op: "comments", comments: "off" })).status).toBe(303);
-      expect(await enabled()).toBe(0);
-      expect((await write(doc.docId, owner, { op: "comments", comments: "sideways" })).status).toBe(404);
-
-      // A free plan is refused with the upgrade link, and the page says what stayed as it was.
-      await env.DB.prepare("UPDATE accounts SET plan = 'free' WHERE id = ?").bind(owner).run();
-      const refused = await write(doc.docId, owner, { op: "comments", comments: "on" });
-      expect(refused.status).toBe(402);
-      const html = await refused.text();
-      expect(html).toContain("Comments need a paid plan. Nothing was changed.");
-      expect(html).toContain('<a href="https://openartifacts.ai/account">Upgrade</a>');
-      expect(await enabled()).toBe(0);
-
-      // Only the owner: another reader's write is the not-available page and changes nothing.
-      const bob = await reader("bob@other.com");
-      expect((await write(doc.docId, bob, { op: "comments", comments: "on" })).status).toBe(404);
-      expect(await enabled()).toBe(0);
-    });
-
     it("changes a person's role from the page, and refuses a role that is not one", async () => {
       const doc = await privateDoc();
       const owner = await ownerAccount(doc);
@@ -2608,6 +2566,30 @@ describe("an invited-only document", () => {
       expect(await (await open(doc.docId, owner)).text()).toContain('<option value="view" selected>Can view</option>');
       expect((await write(doc.docId, owner, { op: "role", email: "alice@acme.com", role: "admin" })).status).toBe(404);
       expect(await role()).toBe("view");
+    });
+
+    it("refuses a role change on a free plan with the upgrade link, and from another reader as not available", async () => {
+      const doc = await privateDoc();
+      const owner = await ownerAccount(doc);
+      await env.DB.prepare("INSERT INTO doc_invites (doc_id, email, role, created_at) VALUES (?, 'alice@acme.com', 'comment', ?)")
+        .bind(doc.docId, Date.now())
+        .run();
+      const role = async () =>
+        (await env.DB.prepare("SELECT role FROM doc_invites WHERE doc_id = ? AND email = 'alice@acme.com'").bind(doc.docId).first<{ role: string }>())!.role;
+
+      // Only the owner: another reader's write is the not-available page and changes nothing.
+      const bob = await reader("bob@other.com");
+      expect((await write(doc.docId, bob, { op: "role", email: "alice@acme.com", role: "view" })).status).toBe(404);
+      expect(await role()).toBe("comment");
+
+      // A free plan is refused with the upgrade link, and the page says what stayed as it was.
+      await env.DB.prepare("UPDATE accounts SET plan = 'free' WHERE id = ?").bind(owner).run();
+      const refused = await write(doc.docId, owner, { op: "role", email: "alice@acme.com", role: "view" });
+      expect(refused.status).toBe(402);
+      const html = await refused.text();
+      expect(html).toContain("Private sharing needs a paid plan. Nothing was changed.");
+      expect(html).toContain('<a href="https://openartifacts.ai/account">Upgrade</a>');
+      expect(await role()).toBe("comment");
     });
 
     it("hides the Requests section when nothing is pending, and says to send the link when the server sends no email", async () => {
@@ -2636,7 +2618,7 @@ describe("an invited-only document", () => {
       expect(added.headers.get("cache-control")).toBe("no-store");
       expect((await access(doc.docId)).people.map((person) => person.email)).toEqual(["alice@acme.com"]);
       expect(sent.map((message) => message.to)).toEqual(["alice@acme.com"]);
-      expect(sent[0]!.text).toContain("Sign in with this address, alice@acme.com, to open it.");
+      expect(sent[0]!.text).toContain("Sign in with this address, alice@acme.com, to comment.");
       expect(sent[0]!.text).toContain(`https://openartifacts.site/d/${doc.docId}`);
       // A repeat is the same list and no second email.
       await write(doc.docId, owner, { op: "add", email: "alice@acme.com" }, over);
@@ -3113,7 +3095,7 @@ describe("GET /d/{docId}/threads", () => {
       expect(events).toEqual([]);
     });
 
-    it("is 404 for an unknown id, comments off, comments unavailable and a version that does not exist", async () => {
+    it("is 404 for an unknown id, comments unavailable and a version that does not exist", async () => {
       const { docId } = await commented();
       const status = async (path: string, overrides: Partial<Env> = {}) => {
         const response = await getFrom(`${APEX}${path}`, {}, { ...HOSTS, ...overrides });
@@ -3134,11 +3116,8 @@ describe("GET /d/{docId}/threads", () => {
       const missBody = await miss.text();
       expect(JSON.parse(missBody)).toMatchObject({ error: { code: "not_found" } });
 
-      await env.DB.prepare("UPDATE docs SET comments_enabled = 0 WHERE id = ?").bind(docId).run();
-      const off = await status(`/d/${docId}/threads`);
-      expect(off.status).toBe(404);
-      // The same bytes as an id that never existed.
-      expect(await off.text()).toBe(missBody);
+      // A version that does not exist is the same bytes as an id that never existed.
+      expect(await (await status(`/d/${docId}/threads?v=9`)).text()).toBe(missBody);
     });
 
     it("is 410 for a deleted document, before it asks which version, and 404 for an invited-only one with no redirect", async () => {
@@ -3251,13 +3230,11 @@ describe("GET /d/{docId}/threads", () => {
       expect(response.headers.get("location")).toBeNull();
     });
 
-    it("is 404 for a public document here (the apex serves it), comments off, and 410 once deleted", async () => {
+    it("is 404 for a public document here (the apex serves it), and 410 once deleted", async () => {
       const doc = await commented("invited");
       const cookie = await cookieFor(doc, doc.owner);
       const read = (init = { headers: { cookie } }) => getFrom(`${doc.host}/d/${doc.docId}/threads`, init, HOSTS);
 
-      await env.DB.prepare("UPDATE docs SET comments_enabled = 0 WHERE id = ?").bind(doc.docId).run();
-      expect((await read()).status).toBe(404);
       await env.DB.prepare("UPDATE docs SET comments_enabled = 1, link_access = 'anyone' WHERE id = ?").bind(doc.docId).run();
       const toApex = await read();
       expect(toApex.status).toBe(404);
