@@ -39,7 +39,7 @@
  *   plain `target="_blank"` link the design requires.
  * - Messages are accepted only from that iframe's window and the API origin,
  *   and carry no credential in either direction.
- * - The popover is **one fixed height** (at most 480 px, less on a short
+ * - The popover is **one fixed height** (at most 336 px, less on a short
  *   viewport) and the frame scrolls inside it. The frame never reports its
  *   size: on a public document any page on `openartifacts.site` can embed the
  *   same frame for any document it knows, and the height of what the frame
@@ -72,31 +72,34 @@ export const PAGE_SCRIPT = String.raw`(() => {
   const place = () => {
     const box = link.getBoundingClientRect();
     const view = viewport();
-    const top = Math.round(box.bottom + 8);
-    const width = Math.min(380, view.clientWidth - 16);
+    // 8 px clear of the bar when Share is on one (the bar's own hairline would
+    // otherwise sit 2 px above the popover's ring), of Share itself otherwise.
+    const bar = link.closest(".openartifacts-bar");
+    const top = Math.round((bar ? bar.getBoundingClientRect() : box).bottom + 8);
+    const width = Math.min(360, view.clientWidth - 16);
     // Anchored by the left edge to Share's right edge, then kept on screen, so it
     // opens in view wherever Share sits.
     host.style.width = width + "px";
     host.style.top = top + "px";
     host.style.left = Math.round(Math.max(8, Math.min(box.right - width, view.clientWidth - width - 8))) + "px";
-    host.style.height = Math.max(120, Math.min(480, view.clientHeight - top - 8)) + "px";
+    host.style.height = Math.max(120, Math.min(336, view.clientHeight - top - 8)) + "px";
   };
   const build = () => {
     host = document.createElement("div");
     host.className = "openartifacts-share-popover";
-    host.setAttribute("style", "all:initial;position:fixed;z-index:2147483647;display:none;box-sizing:border-box;direction:ltr;border-radius:12px;background:#fff;box-shadow:0 12px 32px rgba(0,0,0,.18),0 0 0 1px rgba(0,0,0,.08);overflow:hidden");
+    host.setAttribute("style", "all:initial;position:fixed;z-index:2147483647;display:none;box-sizing:border-box;direction:ltr;border-radius:14px;background:#0d0f14;box-shadow:0 12px 32px rgba(0,0,0,.35),0 2px 6px rgba(0,0,0,.25),0 0 0 1px rgba(255,255,255,.14);overflow:hidden");
     const root = host.attachShadow ? host.attachShadow({ mode: "closed" }) : host;
     frame = document.createElement("iframe");
     frame.title = "Share";
     frame.setAttribute("allow", "clipboard-write");
-    frame.setAttribute("style", "display:block;width:100%;height:100%;border:0;background:#fff");
+    frame.setAttribute("style", "display:block;width:100%;height:100%;border:0;background:#0d0f14;color-scheme:dark");
     frame.src = api + "/embed/share?doc=" + docId + "&origin=" + encodeURIComponent(window.location.origin);
     fallback = document.createElement("a");
     fallback.href = link.href;
     fallback.target = "_blank";
     fallback.rel = "noopener noreferrer";
     fallback.textContent = "Open sharing settings";
-    fallback.setAttribute("style", "display:none;padding:16px;font:14px/1.4 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#1f1f1f");
+    fallback.setAttribute("style", "display:none;padding:16px;font:14px/1.4 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#f6ae52;text-underline-offset:3px");
     root.append(frame, fallback);
     document.documentElement.append(host);
   };
@@ -180,34 +183,73 @@ export const POPUP_DONE_SCRIPT = String.raw`(function () {
  * The popover frame's stylesheet (`src/embed.ts` puts it in the shell). The
  * frame fills the popover's fixed height, whatever it shows: nothing here sizes
  * the popover to its content. `main` scrolls when an owner's lists are long. On
- * the short views `.foot` follows the last line, so the spare room falls below it
- * inside the panel rather than as a gap above the actions. Flex items do not
- * collapse margins, so spacing is adjusted in the margins, not the structure.
- * Children of `main` never shrink: an `overflow:hidden` item such as `.seg` has
- * no content minimum, so it would squash to a line and the footer would be
+ * the short views the top group (heading, sentence, link field, Copy link) sits
+ * at the top and `.bottom` (the account line and the hint) is pinned to the
+ * floor above a divider, so the room between them reads as layout (the popover
+ * is only as tall as the fullest of those views needs, so that room is small).
+ * The owner view is longer than the popover and scrolls, but it starts the same
+ * way: the header (sticky, so it never scrolls away or gets cut through the
+ * middle of a line) and then the link field and Copy link, so Copy link sits at
+ * the same place in every view. Link access, with the notice that follows a
+ * switch to private, comes next so that it is in view without any scrolling;
+ * the people and requests follow and scroll. Flex items do
+ * not collapse margins, so spacing is adjusted in the margins, not the
+ * structure. Children of `main` never shrink: an item with its own overflow rule
+ * has no content minimum, so it would squash to a line and the footer would be
  * clipped instead of `main` scrolling.
+ *
+ * Dark only, in the reader pages' palette (`src/page.ts`): surface `#0d0f14`,
+ * wells `#07080b`, borders `#20242c` and `#2c313b`, text `#e9ebee`, muted
+ * `#8d94a0` (6.2:1 on the surface), accent `#f6ae52`. System fonts: the frame
+ * fetches nothing, and its policy would not let it.
  */
-export const FRAME_CSS = `:root{color-scheme:light;font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:#1f1f1f;background:#fff}
+export const FRAME_CSS = `:root{color-scheme:dark;font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:#e9ebee;background:#0d0f14;-webkit-font-smoothing:antialiased}
 *{box-sizing:border-box}html,body{height:100%}body{margin:0}
-main{height:100%;overflow:auto;display:flex;flex-direction:column;padding:16px}
+main{height:100%;overflow:auto;display:flex;flex-direction:column;padding:0 16px;scrollbar-color:#2c313b transparent;scrollbar-width:thin}
 main>*{flex-shrink:0}
-header{display:flex;align-items:flex-start;gap:8px;margin:0 0 8px}
-h1{flex:1;min-width:0;margin:0;font-size:15px;font-weight:600;overflow-wrap:anywhere}
-h2{margin:16px 0 6px;font-size:12px;font-weight:600;color:#666}
-p{margin:8px 0}.muted{color:#666}.err{color:#b3261e}.notice{color:#7a4b00}.err:empty{display:none}
-button{font:inherit;cursor:pointer;border:1px solid #d0d0d0;border-radius:6px;background:#fff;color:#1f1f1f;padding:6px 12px}
-button:hover{border-color:#999}button:disabled{cursor:default;opacity:.6}
-button.primary{background:#1f1f1f;border-color:#1f1f1f;color:#fff}
-button.link{border:0;padding:0;background:none;color:inherit;text-decoration:underline}
-header button{border:0;padding:2px 6px;font-size:18px;line-height:1;color:#666}
-input{font:inherit;flex:1;min-width:0;padding:6px 10px;border:1px solid #d0d0d0;border-radius:6px}
+body::before{content:"";position:fixed;top:0;left:0;right:0;height:1px;background:rgba(255,255,255,.06);z-index:3;pointer-events:none}
+.fade{position:sticky;bottom:0;z-index:1;height:28px;margin:0 -16px;background:linear-gradient(to bottom,rgba(13,15,20,0),#0d0f14 85%);pointer-events:none}
+:focus-visible{outline:2px solid #f6ae52;outline-offset:2px}
+header{position:sticky;top:0;z-index:2;display:flex;align-items:flex-start;gap:8px;margin:0 -16px;padding:16px;background:#0d0f14}
+main.scrolled header{box-shadow:0 1px 0 #20242c,0 8px 10px -6px rgba(0,0,0,.6)}
+h1{flex:1;min-width:0;margin:0;font-size:16px;line-height:28px;font-weight:600;color:#f4f5f7;overflow-wrap:anywhere}
+h2{margin:20px 0 10px;font-size:11px;line-height:16px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:#8d94a0}
+p{margin:8px 0 0}header+p{margin-top:0}
+.muted{color:#8d94a0}.err{margin-top:8px;color:#ff8a80}.err:empty{display:none}
+.notice{margin-top:10px;padding:8px 10px;border:1px solid rgba(246,174,82,.2);border-radius:8px;background:rgba(246,174,82,.08);font-size:13px;color:#f6ae52}
+a{color:#f6ae52;text-decoration:none}a:hover{text-decoration:underline;text-underline-offset:3px}
+button{font:inherit;font-size:13px;font-weight:500;line-height:1;cursor:pointer;height:28px;padding:0 12px;border:1px solid #2c313b;border-radius:8px;background:transparent;color:#e9ebee;display:inline-flex;align-items:center;justify-content:center;gap:6px;white-space:nowrap}
+button:hover{border-color:#3a404b;background:rgba(255,255,255,.04)}
+button:disabled{cursor:default;opacity:.5}button:disabled:hover{border-color:#2c313b;background:transparent}
+button.primary{background:#f4f5f7;border-color:#f4f5f7;color:#0b0c10;font-weight:600}
+button.primary:hover{background:#fff;border-color:#fff}
+.row input:placeholder-shown+button.primary{background:transparent;border-color:#2c313b;color:#e9ebee}
+.row input:placeholder-shown+button.primary:hover{background:rgba(255,255,255,.04);border-color:#3a404b}
+button.tall{height:36px;padding:0 16px;border-radius:10px;font-size:14px}
+button.link{display:inline;height:auto;padding:0;border:0;background:none;color:#f6ae52;font-size:inherit;font-weight:inherit;line-height:inherit;white-space:normal}
+button.link.block{display:block;margin-top:2px}
+button.link:hover{background:none;text-decoration:underline;text-underline-offset:3px}
+header button{flex:none;width:28px;padding:0;border:0;font-size:20px;font-weight:400;color:#8d94a0}
+header button:hover{background:rgba(255,255,255,.06);color:#f4f5f7}
+input{font:inherit;flex:1;min-width:0;height:36px;padding:0 12px;border:1px solid #20242c;border-radius:10px;background:#07080b;color:#e9ebee}
+input::placeholder{color:#5b626e}
+input:focus-visible{outline:0;border-color:#f6ae52;box-shadow:0 0 0 3px rgba(246,174,82,.18)}
 .row{display:flex;gap:8px;align-items:center}
-.seg{display:flex;border:1px solid #d0d0d0;border-radius:8px;overflow:hidden}
-.seg button{flex:1;border:0;border-radius:0}.seg button[aria-checked="true"]{background:#1f1f1f;color:#fff}
+.seg{display:flex;gap:2px;padding:3px;border:1px solid #20242c;border-radius:10px;background:#07080b}
+.seg button{flex:1;height:28px;border:0;border-radius:7px;color:#8d94a0;background:transparent}
+.seg button:hover{color:#e9ebee;background:transparent}
+.seg button[aria-checked="true"]{background:#20242c;color:#f4f5f7}
+.seg button:focus-visible{outline-offset:0}
 ul{list-style:none;margin:0;padding:0}
-li{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 0;border-top:1px solid #eee}
-li span{min-width:0;overflow-wrap:anywhere}li small{display:block;color:#666}
-.foot{display:flex;justify-content:flex-end;margin-top:12px}
+li{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 0;border-top:1px solid #1a1d24}
+li span{min-width:0;overflow-wrap:anywhere}li small{display:block;font-size:12px;color:#8d94a0}
+.foot{display:flex;flex-direction:column;gap:8px;margin:16px 0 4px}header+.foot{margin-top:0}
+.field{display:flex;align-items:center;height:36px;padding:0 12px;border:1px solid #20242c;border-radius:10px;background:#07080b;color:#c9ced6;font:12.5px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.field span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;user-select:all}
+.foot button{width:100%}
+.foot svg{width:16px;height:16px;flex:none;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.bottom{margin-top:auto;padding:12px 0 16px;border-top:1px solid #20242c;font-size:13px;overflow-wrap:anywhere}
+.bottom p{margin:0}.bottom .err{margin:0 0 8px}.bottom .hint{margin-top:8px;font-size:12.5px}
 `;
 
 /**
@@ -253,6 +295,9 @@ export const FRAME_SCRIPT = String.raw`(() => {
   // No id on <main>: it scrolls (overflow:auto), and a scroll container is
   // focusable, but only when its content overflows, which differs by view.
   const main = document.querySelector("main");
+  // Content passing under the sticky header gets a defined edge, and only then:
+  // at rest the header abuts the first field.
+  main.addEventListener("scroll", () => main.classList.toggle("scrolled", main.scrollTop > 0));
   const doc = main.dataset.doc;
   const link = main.dataset.link;
   const parentOrigin = main.dataset.origin;
@@ -305,10 +350,27 @@ export const FRAME_SCRIPT = String.raw`(() => {
   const bytesToBase64Url = (bytes) => btoa(String.fromCharCode(...bytes)).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
   const bytesToHex = (bytes) => Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 
+  // Icons are built with createElementNS, never from markup. Their look (size,
+  // stroke) is in the stylesheet, so the shell's static copy and these match.
+  const SVG_NS = "http://www.w3.org/2000/svg";
+  const LINK_ICON = ["M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71", "M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"];
+  const CHECK_ICON = ["M20 6 9 17l-5-5"];
+  const icon = (paths) => {
+    const svg = document.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("aria-hidden", "true");
+    for (const d of paths) {
+      const path = document.createElementNS(SVG_NS, "path");
+      path.setAttribute("d", d);
+      svg.append(path);
+    }
+    return svg;
+  };
+  const copyLabel = (target, paths, text) => target.replaceChildren(icon(paths), node("span", {}, [text]));
   const copyLink = (target) => {
     const done = () => {
-      target.textContent = "Copied";
-      window.setTimeout(() => { target.textContent = "Copy link"; }, 2000);
+      copyLabel(target, CHECK_ICON, "Copied");
+      window.setTimeout(() => copyLabel(target, LINK_ICON, "Copy link"), 2000);
     };
     const fallback = () => {
       const area = node("textarea", { readonly: "", style: "position:fixed;opacity:0" });
@@ -470,19 +532,25 @@ export const FRAME_SCRIPT = String.raw`(() => {
     return node("header", {}, [node("h1", { id: "oa-title" }, [title]), close]);
   };
   const muted = (kids) => node("p", { class: "muted" }, kids);
+  // The canonical link, read-only, and a full-width Copy link beneath it. Built
+  // from the id alone (data-link), so it reveals nothing about the document.
+  const bare = link.startsWith("https://") ? link.slice(8) : link.startsWith("http://") ? link.slice(7) : link;
   const footer = () => {
-    const copy = button("Copy link", null, "primary");
+    const copy = button("", null, "primary tall");
+    copyLabel(copy, LINK_ICON, "Copy link");
     copyButton(copy);
-    return node("div", { class: "foot" }, [copy]);
+    return node("div", { class: "foot" }, [node("div", { class: "field" }, [node("span", {}, [bare])]), copy]);
   };
-  const anotherAccount = (lead) => muted([lead, button("Use another account", () => signIn(true), "link")]);
+  const bottom = (kids) => node("div", { class: "bottom" }, kids);
+  const anotherAccount = (lead, stacked) => muted([lead, button("Use another account", () => signIn(true), stacked ? "link block" : "link")]);
+  const hintLine = () => node("p", { class: "muted hint" }, [hint]);
   const quoted = (title) => "Share “" + title + "”";
 
   const showReader = (body) => {
-    main.replaceChildren(header(quoted(body.title)), muted([SENTENCE]), footer(), anotherAccount("Signed in as " + body.account + ". "), muted([hint]));
+    main.replaceChildren(header(quoted(body.title)), muted([SENTENCE]), footer(), bottom([anotherAccount("Signed in as " + body.account + ".", true), hintLine()]));
   };
   const showNone = () => {
-    main.replaceChildren(header("Share"), muted([SENTENCE]), footer(), anotherAccount("Is this your page? "), muted([hint]));
+    main.replaceChildren(header("Share"), muted([SENTENCE]), footer(), bottom([anotherAccount("Is this your page? "), hintLine()]));
   };
 
   const fail = (target, response, body) => {
@@ -596,15 +664,15 @@ export const FRAME_SCRIPT = String.raw`(() => {
     const person = (address, detail, buttons) => node("li", {}, [node("span", {}, [address, node("small", {}, [detail])]), node("div", { class: "row" }, buttons)]);
     const kids = [
       header(quoted(body.title)),
-      node("div", { class: "row" }, [input, button("Add", add)]),
-      message,
+      footer(),
       node("h2", {}, ["Link access"]),
       node("div", { class: "seg", role: "radiogroup", "aria-label": "Link access" }, [choice("anyone", "Anyone with the link"), choice("invited", "Only those invited")]),
     ];
     if (notice) kids.push(node("p", { class: "notice" }, ["People who opened it while it was public may have kept a copy."]));
+    kids.push(node("h2", {}, ["Add people"]), node("div", { class: "row" }, [input, button("Add", add, "primary tall")]), message);
     if (body.requests.length > 0) {
       kids.push(node("h2", {}, ["Requests"]), node("ul", {}, body.requests.map((request) => person(request.email, "Asked to open it", narrow ? [] : [
-        button("Approve", () => write("PUT", "/people/" + encodeURIComponent(request.email))),
+        button("Approve", () => write("PUT", "/people/" + encodeURIComponent(request.email)), "primary"),
         button("Decline", () => write("DELETE", "/requests/" + encodeURIComponent(request.email))),
       ]))));
     }
@@ -616,7 +684,9 @@ export const FRAME_SCRIPT = String.raw`(() => {
     // Approve, Decline and Remove are one click on a private document, and this
     // frame is on the public origin. See exposed().
     if (narrow) kids.push(muted(["To remove people or answer requests, ", node("a", { href: location.origin + "/share/" + doc, target: "_blank", rel: "noopener noreferrer" }, ["open the share page"]), "."]));
-    kids.push(footer());
+    // The owner view scrolls: a sticky fade at its foot dissolves a half-visible
+    // row instead of slicing it, and its 28 px keeps the last row clear at the end.
+    kids.push(node("div", { class: "fade", "aria-hidden": "true" }));
     main.replaceChildren(...kids);
   };
 
