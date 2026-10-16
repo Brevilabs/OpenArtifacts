@@ -31,7 +31,7 @@
  *
  * Needs Node 22 and a Google Chrome. `OA_HEADED=1` shows the browser, and
  * `OA_SCREENSHOTS={dir}` saves `bar.png`, `popover-signed-out.png`,
- * `popover-owner.png` and `popover-private.png`, which is how the screenshots in
+ * `popover-owner.png`, `popover-private.png` and the `popover-pasted*.png` pair, which is how the screenshots in
  * a pull request are made.
  */
 import assert from "node:assert/strict";
@@ -430,7 +430,7 @@ test("a frame a hostile page embedded while the document was public shows no con
   await frame.getByText("People who opened it while it was public may have kept a copy.").waitFor();
   assert.equal(await frame.getByRole("button", { name: "Remove" }).count(), 0);
   assert.equal(await frame.getByText(invitee).count(), 1, "the list is still shown");
-  assert.equal(await frame.getByPlaceholder("Add people by email").count(), 1);
+  assert.equal(await frame.getByPlaceholder("Emails, separated by commas").count(), 1);
 
   // Switching back to public from inside the frame ends the notice.
   await frame.getByRole("radio", { name: "Anyone with the link" }).click();
@@ -738,6 +738,41 @@ test("an owner view taller than the popover scrolls instead of squashing its con
     copyBox.y >= frameBox.y && copyBox.y + copyBox.height <= frameBox.y + view.height + 1,
     `Copy link (y ${copyBox.y}..${copyBox.y + copyBox.height}) is inside the frame (y ${frameBox.y}..${frameBox.y + view.height}) once main is scrolled to the bottom`,
   );
+  await context.close();
+});
+
+test("an owner pastes a column of addresses and adds them all at once", { timeout: 120_000 }, async () => {
+  const X = await publish("Pasted", "<p>Mine.</p>");
+  const context = await newContext(OWNER_ACCOUNT);
+  const { page, frame } = await ownerFrame(context, X);
+  const puts = [];
+  page.on("request", (request) => { if (request.method() === "PUT" && request.url().includes("/access/people/")) puts.push(decodeURIComponent(request.url().split("/people/")[1])); });
+
+  // A text field drops line breaks from a paste and would glue the column into
+  // one address; the frame turns them into separators first.
+  const field = frame.getByPlaceholder("Emails, separated by commas");
+  await field.click();
+  await field.evaluate((input) => {
+    const data = new DataTransfer();
+    data.setData("text", "ann@example.com\r\nBob <bob@example.com>\r\nbob@\r\ncarol@example.com\r\n");
+    input.dispatchEvent(new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true }));
+  });
+  assert.equal(await field.inputValue(), "ann@example.com, Bob <bob@example.com>, bob@, carol@example.com");
+  await shoot(page, "popover-pasted");
+
+  await frame.getByRole("button", { name: "Add", exact: true }).click();
+  await frame.getByText("Not added: bob@ (not an email address).").waitFor();
+  await shoot(page, "popover-pasted-added");
+  assert.match(await frame.locator("#oa-msg").innerText(), /^Added 3 people\. Not added: bob@ \(not an email address\)\.$/);
+  // Some went in and some did not: amber, not the red of a failure.
+  assert.equal(await frame.locator("#oa-msg").evaluate((node) => getComputedStyle(node).color), "rgb(246, 174, 82)");
+  for (const address of ["ann@example.com", "bob@example.com", "carol@example.com"]) {
+    assert.equal(await frame.getByText(address).count(), 1, address);
+  }
+  assert.equal(await frame.getByRole("button", { name: "Remove" }).count(), 3);
+  // One request per address that is one, and none for the one that is not.
+  assert.deepEqual(puts, ["ann@example.com", "bob@example.com", "carol@example.com"]);
+  assert.deepEqual((await (await api(`/api/v1/docs/${X}/access`)).json()).people.map((entry) => entry.email).sort(), puts);
   await context.close();
 });
 

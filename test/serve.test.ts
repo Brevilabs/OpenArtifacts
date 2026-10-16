@@ -2403,6 +2403,75 @@ describe("an invited-only document", () => {
       expect((await access(doc.docId)).people).toEqual([]);
     });
 
+    it("adds several people pasted at once, and says so", async () => {
+      const { sent, over } = mailbox();
+      const doc = await privateDoc();
+      const owner = await ownerAccount(doc);
+
+      const response = await write(doc.docId, owner, { op: "add", email: "Ann <ann@acme.com>, bob@acme.com;\ncarol@acme.com BOB@acme.com" }, over);
+
+      expect(response.status).toBe(200);
+      expect(await response.text()).toContain("Added 3 people.");
+      expect((await access(doc.docId)).people.map((person) => person.email).sort()).toEqual(["ann@acme.com", "bob@acme.com", "carol@acme.com"]);
+      expect(sent.map((message) => message.to).sort()).toEqual(["ann@acme.com", "bob@acme.com", "carol@acme.com"]);
+      // Posting the same list again is fine: nobody is added twice or emailed again.
+      expect(await (await write(doc.docId, owner, { op: "add", email: "ann@acme.com, bob@acme.com" }, over)).text()).toContain("Added 2 people.");
+      expect(sent).toHaveLength(3);
+    });
+
+    it("adds the addresses in a paste that are addresses and names the ones that are not", async () => {
+      const doc = await privateDoc();
+      const owner = await ownerAccount(doc);
+
+      const response = await write(doc.docId, owner, { op: "add", email: "ann@acme.com\nbob@\n&@\ncarol@acme.com" });
+
+      expect(response.status).toBe(200);
+      const html = await response.text();
+      expect(html).toContain("Added 2 people. Not added: bob@ (not an email address), &amp;@ (not an email address).");
+      expect((await access(doc.docId)).people.map((person) => person.email).sort()).toEqual(["ann@acme.com", "carol@acme.com"]);
+    });
+
+    it("stops a paste at the document's cap and keeps the people added before it", async () => {
+      const doc = await privateDoc();
+      const owner = await ownerAccount(doc);
+      for (let n = 0; n < 98; n++) {
+        await env.DB.prepare("INSERT INTO doc_invites (doc_id, email, role, created_at) VALUES (?, ?, 'comment', ?)")
+          .bind(doc.docId, `p${n}@acme.com`, Date.now())
+          .run();
+      }
+
+      const response = await write(doc.docId, owner, { op: "add", email: "a@acme.com b@acme.com c@acme.com d@acme.com" });
+
+      expect(response.status).toBe(400);
+      expect(await response.text()).toContain("Added 2 people. Stopped: A document can be shared with at most 100 people.");
+      const people = (await access(doc.docId)).people.map((person) => person.email);
+      expect(people).toHaveLength(100);
+      expect(people).toContain("b@acme.com");
+      expect(people).not.toContain("c@acme.com");
+      expect(people).not.toContain("d@acme.com");
+    });
+
+    it("takes a pasted list as long as the document's cap, past the size of the other forms", async () => {
+      const doc = await privateDoc();
+      const owner = await ownerAccount(doc);
+      const list = Array.from({ length: 90 }, (_, n) => `"Person ${n}" <person.number.${n}@acme-example.com>`).join(",\n");
+      expect(new URLSearchParams({ op: "add", email: list }).toString().length).toBeGreaterThan(4096);
+
+      const response = await write(doc.docId, owner, { op: "add", email: list });
+
+      expect(response.status).toBe(200);
+      expect(await response.text()).toContain("Added 90 people.");
+      expect((await access(doc.docId)).people).toHaveLength(90);
+    });
+
+    it("reads a lone pasted contact as its address", async () => {
+      const doc = await privateDoc();
+      const owner = await ownerAccount(doc);
+
+      expect((await write(doc.docId, owner, { op: "add", email: "Ann Lee <Ann@Acme.com>" })).status).toBe(303);
+      expect((await access(doc.docId)).people.map((person) => person.email)).toEqual(["ann@acme.com"]);
+    });
+
     it("refuses a write from another site, with the header or without it, and changes nothing", async () => {
       const doc = await privateDoc();
       const owner = await ownerAccount(doc);

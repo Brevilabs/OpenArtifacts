@@ -215,7 +215,7 @@ main.scrolled header{box-shadow:0 1px 0 #20242c,0 8px 10px -6px rgba(0,0,0,.6)}
 h1{flex:1;min-width:0;margin:0;font-size:16px;line-height:28px;font-weight:600;color:#f4f5f7;overflow-wrap:anywhere}
 h2{margin:20px 0 10px;font-size:11px;line-height:16px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:#8d94a0}
 p{margin:8px 0 0}header+p{margin-top:0}
-.muted{color:#8d94a0}.err{margin-top:8px;color:#ff8a80}.err:empty{display:none}
+.muted{color:#8d94a0}.err{margin-top:8px;color:#ff8a80}.err.warn{color:#f6ae52}.err:empty{display:none}
 .notice{margin-top:10px;padding:8px 10px;border:1px solid rgba(246,174,82,.2);border-radius:8px;background:rgba(246,174,82,.08);font-size:13px;color:#f6ae52}
 a{color:#f6ae52;text-decoration:none}a:hover{text-decoration:underline;text-underline-offset:3px}
 button{font:inherit;font-size:13px;font-weight:500;line-height:1;cursor:pointer;height:28px;padding:0 12px;border:1px solid #2c313b;border-radius:8px;background:transparent;color:#e9ebee;display:inline-flex;align-items:center;justify-content:center;gap:6px;white-space:nowrap}
@@ -621,29 +621,14 @@ export const FRAME_SCRIPT = String.raw`(() => {
     else showOwner(body);
   };
 
-  const write = async (method, suffix, body, modeAfter) => {
+  // One write at a time, checked first. The write itself is run.
+  const guarded = async (run) => {
     if (writing) return;
     writing = true;
     seq += 1;
     try {
       if (!(await stillPublic())) return;
-      const response = await call(method, suffix, body);
-      if (response === null) { showGuest("", false); return; }
-      let parsed = null;
-      try { parsed = await response.json(); } catch (error) {}
-      if (response.status === 200 && parsed && parsed.viewer === "owner") {
-        // Only a write that changed the mode counts, so a repeat of "Only those
-        // invited" on a stale view neither shows the notice nor vouches for the frame.
-        if (modeAfter && parsed.changed && parsed.linkAccess === "invited") { notice = true; switched = true; }
-        present(parsed);
-      } else if (response.status === 401) {
-        writeToken(null);
-        showGuest("", false);
-      } else if (response.status === 404) {
-        showNone();
-      } else {
-        fail(message, response, parsed);
-      }
+      await run();
     } catch (error) {
       message.textContent = "Something went wrong. Nothing was changed.";
     } finally {
@@ -652,13 +637,110 @@ export const FRAME_SCRIPT = String.raw`(() => {
     }
   };
 
+  const write = (method, suffix, body, modeAfter) => guarded(async () => {
+    const response = await call(method, suffix, body);
+    if (response === null) { showGuest("", false); return; }
+    let parsed = null;
+    try { parsed = await response.json(); } catch (error) {}
+    if (response.status === 200 && parsed && parsed.viewer === "owner") {
+      // Only a write that changed the mode counts, so a repeat of "Only those
+      // invited" on a stale view neither shows the notice nor vouches for the frame.
+      if (modeAfter && parsed.changed && parsed.linkAccess === "invited") { notice = true; switched = true; }
+      present(parsed);
+    } else if (response.status === 401) {
+      writeToken(null);
+      showGuest("", false);
+    } else if (response.status === 404) {
+      showNone();
+    } else {
+      fail(message, response, parsed);
+    }
+  });
+
+  // The addresses in what the owner pasted, one PUT each, in order. The first
+  // refusal that applies to every address (the plan, the daily quota, a full
+  // list) stops the batch, and those already added stay added. A lone address is
+  // the plain single write, so it reads exactly as it always has. Copy of
+  // parseAddresses in src/addresses.ts: change both together.
+  const parseAddresses = (text) => {
+    const emails = [];
+    const bad = [];
+    const seen = new Set();
+    const gap = String.fromCharCode(9, 10, 11, 12, 13, 32, 160);
+    for (const token of text.split(new RegExp('[,;<>"' + gap + "]+"))) {
+      const key = token.toLowerCase();
+      if (!token.includes("@") || seen.has(key)) continue;
+      seen.add(key);
+      if (/^[^@]+@[^@]+$/.test(token)) emails.push(key);
+      else bad.push(token);
+    }
+    return { emails: emails, bad: bad };
+  };
+  const addMany = (text) => {
+    const found = parseAddresses(text);
+    // One entry, or nothing with an "@" in it (the server then says what is
+    // wrong), is the plain single write.
+    const count = found.emails.length + found.bad.length;
+    if (count <= 1) {
+      const lone = count === 1 ? found.emails.concat(found.bad)[0] : text.trim();
+      return lone === "" ? undefined : write("PUT", "/people/" + encodeURIComponent(lone));
+    }
+    return guarded(async () => {
+      let added = 0;
+      let last = null;
+      let stop = null;
+      let crashed = false;
+      for (const address of found.emails) {
+        let response;
+        let parsed = null;
+        try {
+          response = await call("PUT", "/people/" + encodeURIComponent(address));
+          if (response !== null) parsed = await response.json().catch(() => null);
+        } catch (error) { crashed = true; break; }
+        if (response === null) { showGuest("", false); return; }
+        if (response.status === 200 && parsed && parsed.viewer === "owner") { added += 1; last = parsed; continue; }
+        if (response.status === 401) { writeToken(null); showGuest("", false); return; }
+        if (response.status === 404) { showNone(); return; }
+        stop = [response, parsed];
+        break;
+      }
+      const done = [];
+      if (added > 0) done.push("Added " + added + (added === 1 ? " person." : " people."));
+      if (found.bad.length > 0) done.push("Not added: " + found.bad.map((entry) => entry + " (not an email address)").join(", ") + ".");
+      if (last !== null) present(last);
+      if (stop !== null) {
+        fail(message, stop[0], stop[1]);
+        if (done.length > 0) {
+          // "Nothing was changed" is not true of a batch that got part way.
+          message.firstChild.textContent = message.firstChild.textContent.replace(" Nothing was changed.", "");
+          message.prepend(done.join(" ") + " Stopped: ");
+        }
+      } else {
+        message.textContent = done.concat(crashed ? ["Stopped: Something went wrong."] : []).join(" ");
+        // Everyone was added: that is not an error, so it is not drawn as one.
+        if (found.bad.length === 0 && !crashed) message.className = "muted";
+      }
+      // Some went in and some did not: amber, like the share page, not a failure.
+      if (added > 0 && message.className === "err") message.className = "err warn";
+    });
+  };
+
   const showOwner = (body) => {
     latest = body;
     if (body.linkAccess !== "invited") { notice = false; switched = false; }
     message = node("p", { id: "oa-msg", class: "err", role: "alert" });
-    const input = node("input", { type: "email", placeholder: "Add people by email", "aria-label": "Add people by email", autocomplete: "off" });
-    const add = () => { const address = input.value.trim(); if (address) write("PUT", "/people/" + encodeURIComponent(address)); };
+    const input = node("input", { type: "text", inputmode: "email", placeholder: "Emails, separated by commas", "aria-label": "Add people by email, separated by commas", autocomplete: "off" });
+    const add = () => addMany(input.value);
     input.addEventListener("keydown", (event) => { if (event.key === "Enter") add(); });
+    // A text field drops line breaks from what it is given, which would glue a
+    // pasted column into one address. Turn them into separators first.
+    input.addEventListener("paste", (event) => {
+      const pasted = event.clipboardData ? event.clipboardData.getData("text") : "";
+      const lines = pasted.split(new RegExp("[" + String.fromCharCode(13, 10) + "]+")).map((line) => line.trim()).filter((line) => line !== "");
+      if (lines.length < 2) return;
+      event.preventDefault();
+      input.setRangeText(lines.join(", "), input.selectionStart, input.selectionEnd, "end");
+    });
     const choice = (value, label) => node("button", { type: "button", role: "radio", "aria-checked": String(body.linkAccess === value), onclick: () => { if (body.linkAccess !== value) write("PUT", "", { linkAccess: value }, true); } }, [label]);
     const narrow = limited(body);
     const person = (address, detail, buttons) => node("li", {}, [node("span", {}, [address, node("small", {}, [detail])]), node("div", { class: "row" }, buttons)]);
