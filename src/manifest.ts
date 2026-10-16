@@ -91,8 +91,8 @@ async function readManifest(env: Env, docId: string): Promise<string | null> {
  * One residual: a writer that read a live snapshot before a concurrent delete
  * can put it after the tombstone. Its re-read sees `deletedAt` and repairs it,
  * unless that corrective put fails or its isolate dies first. Then only a later
- * rebuild would restore the withdrawn doc as live, so an operator checks the
- * deleted docs against D1 Time Travel (docs/deploying.md).
+ * rebuild would restore the withdrawn doc as live. Accepted: closing it would
+ * mean serializing every manifest write against delete.
  */
 export async function writeManifest(env: Env, docId: string): Promise<void> {
   let body = await readManifest(env, docId);

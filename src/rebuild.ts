@@ -144,8 +144,7 @@ const insert = (table: string, columns: string[], values: Array<string | number 
  * rebuild is for a lost D1, and a partial loss is restored with D1 Time Travel,
  * not with this. Plain `INSERT`, so a non-empty database fails instead of
  * merging a stale snapshot into live rows (an invite removed since the
- * manifest was written would come back and regain access). Parents come before
- * children, so a row that already exists fails on the first statement.
+ * manifest was written would come back and regain access).
  */
 export function rebuildSql(rebuilt: readonly RebuiltRows[]): string {
   const lines: string[] = [];

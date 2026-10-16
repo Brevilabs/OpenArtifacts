@@ -497,8 +497,9 @@ three, including a private one and a withdrawn one:
 The route is removed in the PR after this has been run.
 
 **Rebuild.** This is for a D1 that is lost, not damaged. A partial loss is
-restored with D1 Time Travel, never with this. Recreate the database and restore
-the schema first (`wrangler d1 migrations apply`), confirm the target is empty
+restored with D1 Time Travel, never with this. Recreate the database (a new
+`wrangler d1 create` gets a new `database_id`: put it in `wrangler.jsonc` and
+redeploy), restore the schema (`wrangler d1 migrations apply`), confirm it is empty
 (`npx wrangler d1 execute symposium --remote --command "SELECT count(*) FROM docs"`
 must print 0), then:
 
@@ -523,8 +524,9 @@ and the bytes in place, and a rebuild would restore that withdrawn document.
 Before applying the rebuild SQL, search the Worker logs for `delete left a stale
 manifest` and `delete left objects behind`, and set `deleted_at` by hand for
 those documents. A withdrawn document's version rows are not recovered, since
-its bytes are gone. A delete racing a snapshot writer can, rarely, leave a live
-manifest after the tombstone, so check the deleted docs against D1 Time Travel too.
+its bytes are gone. A delete racing a snapshot writer whose own repair then fails
+can, rarely, leave a live manifest after the tombstone; nothing records that case,
+and the rebuild accepts it.
 
 ## Private sharing
 
