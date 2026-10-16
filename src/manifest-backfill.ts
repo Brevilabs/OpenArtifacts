@@ -10,16 +10,13 @@
  * the same bytes. Call it again with the returned `cursor` until none is returned.
  */
 import type { Env } from "./config.js";
-import { errorResponse } from "./errors.js";
-import { isDocId } from "./ids.js";
 import { writeManifest } from "./manifest.js";
 
-/** Three subrequests per doc (two D1 reads and the put), well inside one invocation's budget. */
+/** Three subrequests per doc (a D1 batch, the put and the batch that checks it), well inside one invocation's budget. */
 const PAGE = 100;
 
 export async function backfillManifests(url: URL, env: Env): Promise<Response> {
   const cursor = url.searchParams.get("cursor") ?? "";
-  if (cursor !== "" && !isDocId(cursor)) return errorResponse("bad_request", "Invalid cursor.");
 
   const { results } = await env.DB.prepare("SELECT id FROM docs WHERE id > ? ORDER BY id LIMIT ?")
     .bind(cursor, PAGE)

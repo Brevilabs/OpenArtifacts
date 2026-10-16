@@ -180,11 +180,12 @@ export async function setMode(
   }
 
   const changed = await setLinkAccess(env.DB, docId, principal.owner, mode);
-  // Unconditionally, repeat or not: see `writeManifest`.
-  await writeManifest(env, docId);
   const state = await readAccess(env.DB, docId);
+  if (state !== null && changed) recordChange(analytics, docId, doc.publisher_id, state);
+  // Last, so a failed put cannot swallow the event, and unconditionally, repeat
+  // or not: see `writeManifest`.
+  await writeManifest(env, docId);
   if (state === null) return refused("not_found");
-  if (changed) recordChange(analytics, docId, doc.publisher_id, state);
   return { ok: true, state, changed };
 }
 
@@ -225,18 +226,22 @@ export async function addPerson(
   const added = await insertInvite(env.DB, docId, principal.owner, email, Date.now(), MAX_INVITES_PER_DOC, role);
   const roleChanged =
     !added && role !== undefined && (await setInviteRole(env.DB, docId, principal.owner, email, role));
-  await writeManifest(env, docId);
 
   // One read after the write answers everything below: the cap check, the
   // response and the count the event carries.
   const state = await readAccess(env.DB, docId);
-  if (state === null) return refused("not_found");
-  if (!added && !state.people.some((person) => person.email === email)) {
+  if (state !== null && !added && !state.people.some((person) => person.email === email)) {
     return refused(state.people.length >= MAX_INVITES_PER_DOC ? "full" : "invite_quota");
   }
 
-  if (added) await invite(env, requestUrl, doc.publisher_id, docId, doc.title, email);
-  if (added || roleChanged) recordChange(analytics, docId, doc.publisher_id, state);
+  // The manifest comes after the email and the event, so a failed put cannot
+  // swallow either: the retry it invites is a pure repeat, which mails nobody.
+  if (state !== null) {
+    if (added) await invite(env, requestUrl, doc.publisher_id, docId, doc.title, email);
+    if (added || roleChanged) recordChange(analytics, docId, doc.publisher_id, state);
+  }
+  await writeManifest(env, docId);
+  if (state === null) return refused("not_found");
   return { ok: true, state, changed: added || roleChanged };
 }
 
@@ -254,10 +259,10 @@ export async function removePerson(
   if (email === null) return refused("bad_email");
 
   const removed = await deleteInvite(env.DB, docId, principal.owner, email);
-  await writeManifest(env, docId);
   const state = await readAccess(env.DB, docId);
+  if (state !== null && removed) recordChange(analytics, docId, doc.publisher_id, state);
+  await writeManifest(env, docId);
   if (state === null) return refused("not_found");
-  if (removed) recordChange(analytics, docId, doc.publisher_id, state);
   return { ok: true, state, changed: removed };
 }
 

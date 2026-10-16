@@ -82,6 +82,22 @@ async function deleteDocObjects(env: Env, docId: string, objectBatch: number): P
   } while (cursor !== undefined);
 }
 
+const TOMBSTONE_ATTEMPTS = 3;
+
+async function writeTombstone(env: Env, docId: string): Promise<void> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await writeManifest(env, docId);
+      return;
+    } catch (error) {
+      if (attempt === TOMBSTONE_ATTEMPTS) {
+        console.error("delete left a stale manifest", { docId, error });
+        return;
+      }
+    }
+  }
+}
+
 /**
  * Row first, bytes second.
  *
@@ -113,17 +129,15 @@ export async function deleteDoc(
   }
 
   // The tombstone, written while the row is the only thing that has changed and
-  // before the sweep, which leaves it in place. Awaited, but unlike the other
-  // write points a failure here is logged and not surfaced: the retry a 500
-  // invites answers 404 (the row is already marked), so it could never repair
-  // the manifest, and it would skip the sweep that destroys the bytes. The doc
-  // is withdrawn from every reader whatever this does; what a failure costs is
-  // a manifest still saying live, which the backfill rewrites from D1.
-  try {
-    await writeManifest(env, docId);
-  } catch (error) {
-    console.error("delete left a stale manifest", { docId, error });
-  }
+  // before the sweep, which leaves it in place. Retried a few times here and not
+  // surfaced if it still fails: the retry a 500 invites answers 404 (the row is
+  // already marked), so it could never repair the manifest, and it would skip the
+  // sweep that destroys the bytes. The doc is withdrawn from every reader whatever
+  // this does. A failure that survives the retries costs one doc its 410 after a
+  // rebuild (the manifest still says live over an emptied prefix, so it answers
+  // 404), which the log makes findable; the temporary manifest backfill rewrites
+  // it from D1 only while that route exists.
+  await writeTombstone(env, docId);
 
   // Recorded before the R2 sweep, not inside it: the doc is withdrawn once the
   // row is marked, and the handler answers 204 even if the sweep fails.

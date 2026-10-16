@@ -2,6 +2,7 @@ import { createExecutionContext, env, waitOnExecutionContext } from "cloudflare:
 import { describe, expect, it } from "vitest";
 import type { Env } from "../src/config.js";
 import { sha256Hex } from "../src/hash.js";
+import { writeManifest } from "../src/manifest.js";
 import { newAccountId, newApiToken, newTokenId } from "../src/ids.js";
 import worker from "../src/index.js";
 import { rebuildSql, rowsFromManifest, type ListedObject } from "../src/rebuild.js";
@@ -109,6 +110,19 @@ async function expectInSync(docId: string) {
   return manifest;
 }
 
+/** The real bucket, except that `put` runs `before` first, and may fail. */
+function bucketWith(before: (key: string) => Promise<void>): R2Bucket {
+  return {
+    put: async (key: string, value: unknown, options?: R2PutOptions) => {
+      await before(key);
+      return env.DOCS.put(key, value as string, options);
+    },
+    get: (key: string) => env.DOCS.get(key),
+    list: (options?: R2ListOptions) => env.DOCS.list(options),
+    delete: (keys: string | string[]) => env.DOCS.delete(keys),
+  } as unknown as R2Bucket;
+}
+
 const person = (docId: string, email: string) => `/api/v1/docs/${docId}/access/people/${encodeURIComponent(email)}`;
 
 describe("a manifest follows every change to a document's state", () => {
@@ -195,6 +209,80 @@ describe("a manifest follows every change to a document's state", () => {
     }
   });
 
+  it("settles on what D1 says when a newer change lands between a snapshot and its put", async () => {
+    const o = await owner();
+    const docId = await publish(o.token, "docs");
+    let flipped = false;
+    const racing = {
+      ...env,
+      ...HOSTS,
+      DOCS: bucketWith(async () => {
+        if (flipped) return;
+        flipped = true;
+        // The owner makes the page private after this writer read `anyone` and before its put.
+        await env.DB.prepare("UPDATE docs SET link_access = 'invited' WHERE id = ?").bind(docId).run();
+      }),
+    } as unknown as Env;
+
+    await writeManifest(racing, docId);
+    expect(await manifestOf(docId)).toMatchObject({ linkAccess: "invited" });
+    await expectInSync(docId);
+  });
+
+  it("fails loudly rather than leave a manifest that never settles", async () => {
+    const o = await owner();
+    const docId = await publish(o.token, "docs");
+    let n = 0;
+    const churning = {
+      ...env,
+      ...HOSTS,
+      DOCS: bucketWith(async () => {
+        await env.DB.prepare("UPDATE docs SET title = ? WHERE id = ?").bind(`T${n++}`, docId).run();
+      }),
+    } as unknown as Env;
+    await expect(writeManifest(churning, docId)).rejects.toThrow(/did not settle/);
+  });
+
+  it("rewrites the manifest on a plan-gated repeat of invited", async () => {
+    const o = await owner();
+    const docId = await publish(o.token, "private-docs");
+    await env.DB.prepare("UPDATE accounts SET plan = 'free' WHERE id = ?").bind(o.id).run();
+    await env.DOCS.delete(manifestObjectKey(docId));
+
+    const response = await send("PUT", `/api/v1/docs/${docId}/access`, o.token, { linkAccess: "invited" });
+    expect(response.status).toBe(200);
+    await expectInSync(docId);
+  });
+
+  it("does not swallow the invite email when the manifest put fails", async () => {
+    const o = await owner();
+    const docId = await publish(o.token, "private-docs");
+    const sent: unknown[] = [];
+    const failing = {
+      ...env,
+      ...HOSTS,
+      EMAIL: { send: async (message: unknown) => void sent.push(message) },
+      DOCS: bucketWith(async () => { throw new Error("r2 down"); }),
+    } as unknown as Env;
+    const ctx = createExecutionContext();
+    const response = await worker.fetch(
+      new Request(`${API}${person(docId, "alice@acme.com")}`, {
+        method: "PUT",
+        headers: { authorization: `Bearer ${o.token}`, "content-type": "application/json" },
+        body: JSON.stringify({ role: "view" }),
+      }),
+      failing,
+      ctx,
+    ).catch(() => null);
+    await waitOnExecutionContext(ctx).catch(() => undefined);
+
+    expect(response === null || response.status >= 500).toBe(true);
+    expect(sent).toHaveLength(1);
+    // The retry is a pure repeat: it mails nobody and still repairs the manifest.
+    expect((await send("PUT", person(docId, "alice@acme.com"), o.token, { role: "view" })).status).toBe(200);
+    expect(await expectInSync(docId)).toMatchObject({ people: [{ email: "alice@acme.com" }] });
+  });
+
   it("surfaces a failed put as a 500 the client can retry, rather than a silent gap", async () => {
     const o = await owner();
     const docId = await publish(o.token, "docs");
@@ -257,12 +345,31 @@ describe("delete", () => {
     expect(await env.DOCS.get(versionObjectKey(docId, 1))).toBeNull();
   });
 
-  it("keeps the tombstone when the delete goes through the API", async () => {
+  it("retries a failed tombstone, and still sweeps and answers 204 if it never lands", async () => {
+    const { deleteDoc } = await import("../src/api/manage.js");
+    const { NO_ANALYTICS } = await import("../src/analytics.js");
     const o = await owner();
-    const docId = await publish(o.token, "docs");
-    expect((await send("DELETE", `/api/v1/docs/${docId}`, o.token)).status).toBe(204);
-    expect((await manifestOf(docId)).deletedAt).toEqual(expect.any(Number));
-    expect((await send("GET", `https://openartifacts.site/d/${docId}`, null)).status).toBe(410);
+    const publisher = { owner: o.id } as Parameters<typeof deleteDoc>[1];
+
+    const retried = await publish(o.token, "docs");
+    let failures = 2;
+    const flaky = {
+      ...env,
+      ...HOSTS,
+      DOCS: bucketWith(async () => { if (failures-- > 0) throw new Error("r2 down"); }),
+    } as unknown as Env;
+    expect((await deleteDoc(flaky, publisher, retried, NO_ANALYTICS)).status).toBe(204);
+    expect((await manifestOf(retried)).deletedAt).toEqual(expect.any(Number));
+
+    const stuck = await publish(o.token, "docs");
+    const down = {
+      ...env,
+      ...HOSTS,
+      DOCS: bucketWith(async () => { throw new Error("r2 down"); }),
+    } as unknown as Env;
+    expect((await deleteDoc(down, publisher, stuck, NO_ANALYTICS)).status).toBe(204);
+    expect(await env.DOCS.get(versionObjectKey(stuck, 1))).toBeNull();
+    expect((await send("GET", `https://openartifacts.site/d/${stuck}`, null)).status).toBe(410);
   });
 });
 
@@ -275,7 +382,7 @@ describe("rowsFromManifest", () => {
     { key: `docs/${ID}/manifest.json`, size: 500, uploaded: 4000 },
     { key: `docs/${ID}/v0.html`, size: 1, uploaded: 1 },
   ];
-  const manifest = {
+  const manifest: Record<string, any> = {
     schema: 1, docId: ID, owner: "o1", title: "T", linkAccess: "anyone", commentsEnabled: true,
     createdAt: 100, updatedAt: 200, deletedAt: null, latestVersion: 5,
     people: [{ email: "a@b.c", role: "comment", createdAt: 150 }],
@@ -300,25 +407,18 @@ describe("rowsFromManifest", () => {
 
   it("fails closed on a missing or unknown linkAccess", () => {
     for (const linkAccess of [undefined, null, "", "Anyone", "public", true, 1, {}]) {
-      expect(rowsFromManifest(ID, { ...manifest, linkAccess }, objects).doc.link_access).toBe("invited");
+      expect(rowsFromManifest(ID, { ...manifest, linkAccess } as never, objects).doc.link_access).toBe("invited");
     }
     const { linkAccess: _omitted, ...without } = manifest;
     expect(rowsFromManifest(ID, without, objects).doc.link_access).toBe("invited");
   });
 
-  it("fails closed on everything else it cannot vouch for", () => {
-    for (const bad of [null, undefined, "x", 3, [], {}]) {
-      const rows = rowsFromManifest(ID, bad, objects);
-      expect(rows.doc).toMatchObject({ link_access: "invited", owner: "", comments_enabled: 0, deleted_at: null });
-      expect(rows.invites).toEqual([]);
-    }
-    const odd = rowsFromManifest(ID, {
-      ...manifest,
-      deletedAt: "yesterday",
-      people: [{ email: "x@y.z", role: "admin" }, { role: "view" }, null, { email: "x@y.z", role: "comment" }],
-    }, objects);
-    expect(odd.doc.deleted_at).toBe(0);
-    expect(odd.invites).toEqual([{ doc_id: ID, email: "x@y.z", role: "view", created_at: 0 }]);
+  it("restores a missing or unknown role as view, and a missing manifest as private with no owner", () => {
+    const people = [{ email: "x@y.z", role: "admin", createdAt: 1 }, { email: "w@y.z", createdAt: 2 }];
+    const rows = rowsFromManifest(ID, { ...manifest, people } as never, objects);
+    expect(rows.invites.map((invite) => invite.role)).toEqual(["view", "view"]);
+
+    expect(rowsFromManifest(ID, null, objects).doc).toMatchObject({ link_access: "invited", owner: "", deleted_at: null });
   });
 
   it("quotes values into SQL", () => {
@@ -401,22 +501,6 @@ describe("rebuilding D1 from R2 alone", () => {
     const ledger = await env.DB.prepare("SELECT COUNT(*) AS n FROM storage_usage").first<{ n: number }>();
     expect(ledger!.n).toBe(after.versions.length);
   });
-
-  it("hides a prefix whose manifest is gone instead of publishing it", async () => {
-    const o = await owner();
-    const docId = await publish(o.token, "docs");
-    await env.DOCS.delete(manifestObjectKey(docId));
-    await env.DB.batch([
-      env.DB.prepare("DELETE FROM storage_usage"),
-      env.DB.prepare("DELETE FROM versions"),
-      env.DB.prepare("DELETE FROM docs"),
-    ]);
-    const listing = await env.DOCS.list({ prefix: docObjectPrefix(docId) });
-    const objects = listing.objects.map((object) => ({ key: object.key, size: object.size, uploaded: object.uploaded.getTime() }));
-    await env.DB.exec(rebuildSql([rowsFromManifest(docId, null, objects)]).trim());
-    const response = await send("GET", `https://openartifacts.site/d/${docId}`, null);
-    expect(response.status).toBe(302);
-  });
 });
 
 describe("POST /admin/v1/manifests/backfill (temporary)", () => {
@@ -450,9 +534,5 @@ describe("POST /admin/v1/manifests/backfill (temporary)", () => {
 
     await send("POST", "/admin/v1/manifests/backfill", ADMIN);
     expect(await Promise.all(ids.map((id) => manifestOf(id)))).toEqual(snapshots);
-  });
-
-  it("rejects a cursor it did not issue", async () => {
-    expect((await send("POST", "/admin/v1/manifests/backfill?cursor=not%20an%20id", ADMIN)).status).toBe(400);
   });
 });

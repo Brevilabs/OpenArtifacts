@@ -7,11 +7,10 @@
  *
  * **Fail closed.** Whatever a manifest cannot vouch for is read in the
  * direction that exposes least: an unknown or missing `linkAccess` is
- * `invited`, an unknown role is `view`, a malformed `deletedAt` counts as
- * deleted, and a prefix with no readable manifest becomes a private doc with no
- * owner, which nobody can read until an operator assigns one by hand. A rebuild
- * can therefore hide a document that should be public; it cannot publish one
- * that should be private.
+ * `invited`, an unknown role is `view`, and a prefix with no readable manifest
+ * becomes a private doc with no owner, which nobody can read until an operator
+ * assigns one by hand. A rebuild can therefore hide a document that should be
+ * public; it cannot publish one that should be private.
  *
  * Scope: document state only (`docs`, `doc_invites`, `versions`, and the
  * `storage_usage` ledger rows that mirror `versions`). Accounts, sessions,
@@ -42,69 +41,42 @@ export interface RebuiltRows {
   versions: Array<{ doc_id: string; n: number; size: number; title: null; created_at: number }>;
 }
 
-const DEFAULT_TITLE = "Untitled";
-
-const isTime = (value: unknown): value is number =>
-  typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
-
 /**
  * The rows for one doc. `docId` comes from the prefix the objects were listed
- * under and is trusted over the manifest's own copy. `manifest` is whatever
- * parsed from `manifest.json`, or null when there is none.
+ * under and is trusted over the manifest's own copy. `manifest` is what parsed
+ * from `manifest.json`, or null when there is none.
  */
 export function rowsFromManifest(
   docId: string,
-  manifest: unknown,
+  manifest: Partial<DocManifest> | null,
   objects: readonly ListedObject[],
 ): RebuiltRows {
-  const m: Partial<Record<keyof DocManifest, unknown>> =
-    manifest !== null && typeof manifest === "object" && !Array.isArray(manifest) ? manifest : {};
-  const prefix = `docs/${docId}/`;
+  const m = manifest ?? {};
 
   const versions = objects.flatMap((object) => {
-    if (!object.key.startsWith(prefix)) return [];
-    const match = /^v([1-9][0-9]*)\.html$/.exec(object.key.slice(prefix.length));
-    if (!match) return [];
-    return [{ doc_id: docId, n: Number(match[1]), size: object.size, title: null, created_at: object.uploaded }];
-  });
-  versions.sort((a, b) => a.n - b.n);
-
-  const highest = versions.at(-1)?.n ?? 0;
-  const counter = typeof m.latestVersion === "number" && Number.isSafeInteger(m.latestVersion) ? m.latestVersion : 0;
-  const firstSeen = versions.reduce((least, v) => Math.min(least, v.created_at), Infinity);
-  const created = isTime(m.createdAt) ? m.createdAt : Number.isFinite(firstSeen) ? firstSeen : 0;
-
-  // Absent or null is live. A present value that is not a time is not trusted to mean live.
-  const deleted = m.deletedAt === undefined || m.deletedAt === null ? null : isTime(m.deletedAt) ? m.deletedAt : 0;
-
-  const people = Array.isArray(m.people) ? m.people : [];
-  const seen = new Set<string>();
-  const invites = people.flatMap((person: unknown) => {
-    if (person === null || typeof person !== "object") return [];
-    const { email, role, createdAt } = person as Record<string, unknown>;
-    if (typeof email !== "string" || email === "" || seen.has(email)) return [];
-    seen.add(email);
-    return [{
-      doc_id: docId,
-      email,
-      role: role === "comment" ? ("comment" as const) : ("view" as const),
-      created_at: isTime(createdAt) ? createdAt : 0,
-    }];
+    const match = /^v([1-9][0-9]*)\.html$/.exec(object.key.slice(`docs/${docId}/`.length));
+    return match ? [{ doc_id: docId, n: Number(match[1]), size: object.size, title: null, created_at: object.uploaded }] : [];
   });
 
+  const created = m.createdAt ?? 0;
   return {
     doc: {
       id: docId,
-      owner: typeof m.owner === "string" ? m.owner : "",
-      title: typeof m.title === "string" ? m.title : DEFAULT_TITLE,
-      latest_version: Math.max(counter, highest),
+      owner: m.owner ?? "",
+      title: m.title ?? "Untitled",
+      latest_version: Math.max(m.latestVersion ?? 0, ...versions.map((v) => v.n)),
       created_at: created,
-      updated_at: isTime(m.updatedAt) ? m.updatedAt : created,
-      deleted_at: deleted,
+      updated_at: m.updatedAt ?? created,
+      deleted_at: m.deletedAt ?? null,
       link_access: m.linkAccess === "anyone" ? "anyone" : "invited",
       comments_enabled: m.commentsEnabled === true ? 1 : 0,
     },
-    invites,
+    invites: (m.people ?? []).map((person) => ({
+      doc_id: docId,
+      email: person.email,
+      role: person.role === "comment" ? "comment" : "view",
+      created_at: person.createdAt ?? 0,
+    })),
     versions,
   };
 }

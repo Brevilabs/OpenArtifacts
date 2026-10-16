@@ -76,8 +76,7 @@ These are day-one decisions, not retrofits:
 - **R2 is the system of record**, and the stored format is HTML. D1 holds pointer
   rows only, never content, and the document rows are rebuildable from R2: each
   doc's `manifest.json` carries its state, and the version objects carry the version
-  log. Accounts, sessions, owner links and the publishers cache are not in R2; see
-  "Document state in R2" below for what is and is not covered.
+  log; see "Document state in R2" below for what is and is not covered.
   Comment bodies are the one exception to "D1 holds pointer rows": they live in the
   per-document Durable Object `DocComments`, snapshotted to `docs/{id}/threads.json`
   in R2 after every change, and never in D1.
@@ -101,9 +100,12 @@ deleted and whether it is private. Each doc therefore keeps
 `commentsEnabled`, timestamps, `latestVersion`, and the invite list with roles. It
 is a snapshot of the D1 rows, never a read-modify-write, awaited right after every
 write that changes them (create, update, delete, access mode, invites, comments
-switch) and written even when the write changed nothing, so a retry repairs a
-failed put. Delete leaves it behind as the tombstone, so a rebuild answers 410 and
-not 404. Pending access requests are not in it.
+switch), re-read and re-put until it matches D1 (two writers can interleave), and
+written even when the write changed nothing, so a retry repairs a failed put.
+Delete is the exception to that last point: its retry answers 404 before reaching
+the write, so it retries the tombstone put itself, and a put that still fails
+costs that one doc a 404 where a rebuild promised 410. Delete leaves the manifest
+behind as the tombstone. Pending access requests are not in it.
 
 `src/rebuild.ts` turns manifests plus the listed `v{n}.html` objects back into
 `docs`, `doc_invites`, `versions` and `storage_usage` rows, and **fails closed**:
@@ -113,9 +115,7 @@ manifest becomes a private doc with no owner. Procedure: `docs/deploying.md`.
 **This covers document state only.** Accounts, sessions, owner links, the
 publishers cache, access requests and comments (which snapshot to `threads.json`)
 are not in R2; D1 Time Travel (30 days) is what covers them, so D1 stays a
-system of record for those. One race is accepted: a push can write a live-looking
-manifest just after a concurrent delete's tombstone, and a rebuild would then
-answer 404 for that one doc.
+system of record for those.
 
 The one-time backfill route (`POST /admin/v1/manifests/backfill`) is temporary:
 remove it, with `src/manifest-backfill.ts` and its tests, in the PR after it has
