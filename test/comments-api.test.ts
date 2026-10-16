@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DocComments } from "../src/comments/object.js";
 import { MAX_COMMENTS, MAX_THREADS } from "../src/comments/object.js";
 import type { Env } from "../src/config.js";
+import { readableAccounts } from "../src/db.js";
 import { sha256Hex } from "../src/hash.js";
 import { newAccountId, newApiToken, newTokenId, SHARE_TOKEN_PREFIX } from "../src/ids.js";
 import worker from "../src/index.js";
@@ -979,6 +980,16 @@ describe("notifications", () => {
     sent.length = 0;
     await send("POST", `/api/v1/docs/${pub}/threads/${open.threadId}/comments`, owner.token, { body: "SECRET now private" });
     expect(sent).toEqual([]);
+  });
+
+  it("counts nobody a reader of a deleted document, so mail sent after a delete reaches no one", async () => {
+    const { owner, alice, carol, priv, pub } = await world();
+    expect(await readableAccounts(env.DB, priv, [owner.id, alice.id])).toEqual(new Set([owner.id, alice.id]));
+    expect(await readableAccounts(env.DB, pub, [carol.id])).toEqual(new Set([carol.id]));
+    // Notifications run after the response, so the delete can land first.
+    await env.DB.prepare("UPDATE docs SET deleted_at = ? WHERE id IN (?, ?)").bind(Date.now(), priv, pub).run();
+    expect(await readableAccounts(env.DB, priv, [owner.id, alice.id])).toEqual(new Set());
+    expect(await readableAccounts(env.DB, pub, [carol.id])).toEqual(new Set());
   });
 
   it("sends after the response, on the request's execution context", async () => {

@@ -1716,8 +1716,10 @@ export async function displayNames(db: D1Database, ids: string[]): Promise<Map<s
 /**
  * Which of these accounts can read `docId` right now: `CAN_READ_SQL`'s rule for
  * each (a public document, the account owns it or a key linked to it does, or its
- * address is on the invite list). Notifications go only to these, because access
- * is revocable and a past commenter must not be mailed text they can no longer open.
+ * address is on the invite list), and nobody once it is deleted. Notifications go
+ * only to these, because access is revocable and a past commenter must not be
+ * mailed text they can no longer open. They are sent after the response, so a
+ * delete can land between the write and this query.
  */
 export async function readableAccounts(db: D1Database, docId: string, ids: string[]): Promise<Set<string>> {
   const readable = new Set<string>();
@@ -1728,6 +1730,7 @@ export async function readableAccounts(db: D1Database, docId: string, ids: strin
       .prepare(
         `SELECT a.id AS id FROM accounts a JOIN docs d ON d.id = ?
           WHERE a.id IN (${part.map(() => "?").join(",")})
+            AND d.deleted_at IS NULL
             AND (d.link_access = 'anyone'
               OR d.owner = a.id
               OR d.owner IN (SELECT external_owner FROM owner_links WHERE account_id = a.id)
