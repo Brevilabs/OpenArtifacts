@@ -17,7 +17,9 @@ It is a small API-first publishing service with inline comments on a quoted pass
 
 ## What works today
 
-- **Publish rendered HTML.** Send a complete HTML document and get a public link.
+- **Publish rendered HTML.** Send a complete HTML document and get a link. The
+  CLI starts a new page private (invited people only) when the plan allows it,
+  and public otherwise or when you pass `--public`.
 - **Keep one stable link.** Every push creates a new version. The shared link
   shows the latest version, while pinned `/v2`-style links keep showing the
   version they name.
@@ -226,7 +228,8 @@ Worker becomes reachable only after Cloudflare attaches both custom domains.
 
 Documents are all public until you configure reader sign-in, and a server without
 it answers the private-sharing routes `404`, like a server that predates the
-feature. To turn it on you need, besides a Google or GitHub OAuth app (or Email
+feature. A plain `openartifacts publish` still publishes public there, because the
+CLI falls back to a public page when the server has no private documents. To turn it on you need, besides a Google or GitHub OAuth app (or Email
 Service for emailed codes):
 
 - a `READER_SESSION_SECRET` Worker secret of at least 32 characters;

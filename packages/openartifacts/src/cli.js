@@ -100,14 +100,24 @@ export function browserProcess(url, os = platform()) {
     : { command: os === "darwin" ? "open" : "xdg-open", args: [url], env: process.env };
 }
 
-/** @param {string} url */
+/**
+ * Hand a url to the system browser. Resolves true once the opener started and
+ * false when it could not, and never rejects: callers that only offer a url
+ * ignore the answer.
+ * @param {string} url @returns {Promise<boolean>}
+ */
 function openBrowser(url) {
-  const opener = browserProcess(url);
-  try {
-    const child = spawn(opener.command, opener.args, { env: opener.env, shell: false, detached: true, stdio: "ignore" });
-    child.on("error", () => {});
-    child.unref();
-  } catch {}
+  return new Promise((resolvePromise) => {
+    const opener = browserProcess(url);
+    try {
+      const child = spawn(opener.command, opener.args, { env: opener.env, shell: false, detached: true, stdio: "ignore" });
+      child.on("error", () => resolvePromise(false));
+      child.on("spawn", () => resolvePromise(true));
+      child.unref();
+    } catch {
+      resolvePromise(false);
+    }
+  });
 }
 
 /** @param {number} milliseconds */
@@ -222,10 +232,13 @@ Commands:
   install            Install or upgrade the CLI and detected agent skills
   login              Approve this machine and store its token
   account [--open]   Refresh plan, limits, and usage; open account management with --open
-  publish <file.html> [--title <title>] [--doc-id <docId>] [--private]
-                     Publish an HTML file; pass --doc-id to update an existing document,
-                     or --private to create it for invited people only (on a server
-                     that supports private documents; otherwise nothing is created)
+  publish <file.html> [--title <title>] [--doc-id <docId>] [--public | --private]
+                     Publish an HTML file. A new page is private (invited people only)
+                     when the plan allows it and public otherwise; --public makes it
+                     public, and --private requires private (it fails rather than
+                     publishing publicly). Pass --doc-id to update an existing document;
+                     an update never changes who can open it
+  open <docId>       Open your own page in the browser, signed in as you
   share <docId> [--add <email> [--role view|comment]] [--remove <email>] [--decline <email>]
         [--link anyone|invited]
                      Show who can open a document, pending requests and its share page,
@@ -256,18 +269,22 @@ Commands:
  * defaults the title to the file name; an update omits it so the server keeps the
  * current title unless --title was given.
  * @param {string} file @param {string[]} options
- * @returns {Promise<{docId?: string, private: boolean, body: {title?: string, html: string}}>}
+ * @returns {Promise<{docId?: string, access: "private" | "public" | "default", body: {title?: string, html: string}}>}
  */
 export async function preparePublish(file, options) {
   if (![".html", ".htm"].includes(extname(file).toLowerCase())) {
     throw new Error("Publish an HTML file (.html, .htm). Render other formats to HTML first.");
   }
-  /** @type {{title?: string, docId?: string, private?: boolean}} */
+  /** @type {{title?: string, docId?: string, private?: boolean, public?: boolean}} */
   const flags = {};
   for (let index = 0; index < options.length; index += 1) {
     const flag = options[index];
     if (flag === "--private" && !flags.private) {
       flags.private = true;
+      continue;
+    }
+    if (flag === "--public" && !flags.public) {
+      flags.public = true;
       continue;
     }
     const value = options[++index];
@@ -276,15 +293,21 @@ export async function preparePublish(file, options) {
     else if (flag === "--doc-id" && flags.docId === undefined) flags.docId = value;
     else throw new Error(HELP);
   }
+  if (flags.private && flags.public) {
+    throw new Error("--public and --private cannot be used together.");
+  }
   if (flags.private && flags.docId) {
     throw new Error("--private applies to a new document. Change an existing one with `openartifacts share <docId> --link invited`.");
+  }
+  if (flags.public && flags.docId) {
+    throw new Error("--public applies to a new document. Change an existing one with `openartifacts share <docId> --link anyone`.");
   }
   const path = resolve(file);
   const html = await readFile(path, "utf8");
   const title = flags.title ?? (flags.docId ? undefined : basename(path, extname(path)));
   return {
     docId: flags.docId,
-    private: flags.private === true,
+    access: flags.private ? "private" : flags.public ? "public" : "default",
     body: { ...(title === undefined ? {} : { title }), html },
   };
 }
@@ -479,10 +502,10 @@ export async function main(args) {
     console.log(HELP);
     return;
   }
-  if (!["install", "login", "account", "publish", "share", "comments", "list", "get", "unshare", "tokens", "revoke"].includes(command)) {
+  if (!["install", "login", "account", "publish", "open", "share", "comments", "list", "get", "unshare", "tokens", "revoke"].includes(command)) {
     throw new Error(HELP);
   }
-  const needsArgument = ["publish", "share", "comments", "get", "unshare", "revoke"].includes(command);
+  const needsArgument = ["publish", "open", "share", "comments", "get", "unshare", "revoke"].includes(command);
   if ((extra.length && command !== "publish" && command !== "share" && command !== "comments") || (needsArgument && !argument) || (!needsArgument && argument && !(command === "account" && argument === "--open"))) {
     throw new Error(HELP);
   }
@@ -508,7 +531,9 @@ export async function main(args) {
     const result = await client.account();
     console.log(JSON.stringify({ accountId: result.accountId, plan: result.plan,
       limits: { documents: result.limits.documents, pushesPerDay: result.limits.pushesPerDay, htmlBytes: result.limits.htmlBytes,
-        ...(Number.isSafeInteger(result.limits.storageBytes) ? { storageBytes: result.limits.storageBytes } : {}) },
+        ...(Number.isSafeInteger(result.limits.storageBytes) ? { storageBytes: result.limits.storageBytes } : {}),
+        // The skill reads this to know whether to offer a private page.
+        ...(typeof result.limits.privateSharing === "boolean" ? { privateSharing: result.limits.privateSharing } : {}) },
       usage: { documents: result.usage.documents, pushesToday: result.usage.pushesToday,
         ...(Number.isSafeInteger(result.usage.storedBytes) ? { storedBytes: result.usage.storedBytes } : {}) }, externalLinked: result.externalLinked,
       refresh: { status: result.refresh.status, checkedAt: result.refresh.checkedAt, expiresAt: result.refresh.expiresAt } }));
@@ -529,16 +554,16 @@ export async function main(args) {
     return;
   }
 
-  if (prepared) {
+  if (command === "open") {
+    await openOwnPage(client, value);
+  } else if (prepared) {
     try {
-      const published = prepared.docId
-        ? await client.updateDoc(prepared.docId, prepared.body)
-        : prepared.private
-          ? await client.createPrivateDoc(prepared.body)
-          : await client.createDoc(prepared.body);
+      const { published, viaPrivateRoute } = prepared.docId
+        ? { published: await client.updateDoc(prepared.docId, prepared.body), viaPrivateRoute: false }
+        : await createPage(client, prepared.access, prepared.body);
       // A 201 from the private route proves the server has the share page, and the
       // skill ends its report with this url even when the user named nobody.
-      console.log(JSON.stringify(prepared.private
+      console.log(JSON.stringify(viaPrivateRoute
         ? { ...published, manageUrl: manageUrl(host, published.docId) }
         : published));
     } catch (error) {
@@ -547,7 +572,7 @@ export async function main(args) {
       }
       // A Worker that predates private sharing, and one without reader sign-in,
       // both answer 404 and create nothing. There is no fallback to a public page.
-      if (prepared.private && error instanceof APIError && error.status === 404) {
+      if (prepared.access === "private" && error instanceof APIError && error.status === 404) {
         throw new Error("This server does not support private documents. Nothing was published.");
       }
       throw error;
@@ -620,6 +645,60 @@ export async function main(args) {
 }
 
 /**
+ * Create a new page. `--public` and `--private` name their route and never fall
+ * back. With no flag the page starts private, because a page that was ever
+ * public may already have been copied by whoever saw it and a later switch
+ * cannot recall those copies; it starts public only where private is not on
+ * offer: a plan without private sharing (`402 limit_reached`, `limit:
+ * "privateSharing"`) or a server with no private documents (`404` from the
+ * private route, after which nothing exists). Any other failure stays a failure.
+ * @param {ReturnType<typeof createClient>} client @param {"private" | "public" | "default"} access
+ * @param {{title?: string, html: string}} body
+ */
+async function createPage(client, access, body) {
+  if (access === "public") return { published: await client.createDoc(body), viaPrivateRoute: false };
+  try {
+    return { published: await client.createPrivateDoc(body), viaPrivateRoute: true };
+  } catch (error) {
+    const unavailable = error instanceof APIError &&
+      (error.status === 404 || (error.status === 402 && error.code === "limit_reached" && error.detail.limit === "privateSharing"));
+    if (access === "private" || !unavailable) throw error;
+    return { published: await client.createDoc(body), viaPrivateRoute: false };
+  }
+}
+
+/**
+ * Open the owner's own page in the browser. The url the server returns is a
+ * 60-second grant that signs the owner in, so it goes to the browser and is
+ * never printed: agent wrappers print command output into transcripts.
+ * @param {ReturnType<typeof createClient>} client @param {string} docId
+ */
+async function openOwnPage(client, docId) {
+  let opened;
+  try {
+    opened = await client.openDoc(docId);
+  } catch (error) {
+    if (error instanceof APIError && error.status === 404) {
+      error.message = `No document ${docId} is in this account, or this server cannot open it.`;
+    }
+    throw error;
+  }
+  /** @type {URL | undefined} */
+  let url;
+  try {
+    url = new URL(opened.url);
+  } catch {}
+  const local = ["localhost", "127.0.0.1", "[::1]"].includes(url?.hostname ?? "");
+  if (!url || url.username || url.password || (url.protocol !== "https:" && !(url.protocol === "http:" && local))) {
+    throw new Error("The server returned an invalid page link.");
+  }
+  if (!(await openBrowser(url.toString()))) {
+    throw new Error(`Could not start a browser to open ${docId}. Open the page from its share page instead.`);
+  }
+  console.log(JSON.stringify({ opened: true, docId }));
+}
+
+/**
  * Run one prepared `comments` request and print its result: the server's JSON
  * for everything that returns a body, a sentence for the delete that returns none.
  * @param {ReturnType<typeof createClient>} client @param {CommentsRequest} request
@@ -657,6 +736,9 @@ export function presentError(error) {
     }
     if (error.code === "limit_reached") {
       if (error.detail.limit) console.error(`Limit: ${error.detail.limit}`);
+      if (error.detail.limit === "privateSharing") {
+        console.error("Private sharing needs a paid plan, so nothing was published or changed. To publish a new page for anyone with the link instead, add --public.");
+      }
       if (error.detail.limit === "comments") {
         console.error("Comments need a paid plan on the document owner's account, or the document has reached its thread or comment cap.");
       }
