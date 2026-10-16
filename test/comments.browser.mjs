@@ -1448,6 +1448,24 @@ test("on a phone, a signed-out invitee can still open the sheet's sign-in line a
   await context.close();
 });
 
+test("on a phone, a signed-out invitee can open the sheet's sign-in line when every thread's text is folded away", { timeout: 120_000 }, async () => {
+  const hidden = "The folded figures sit here";
+  const docId = await publish("Phone, folded", REPORT + `<details><summary>More</summary><p>${hidden}.</p></details>`);
+  await agentThread(docId, { exact: hidden }, "Unfold this?");
+  const context = await newContext(null, { viewport: { width: 390, height: 844 } });
+  const tab = await context.newPage();
+  await tab.goto(docUrl(docId));
+  const frame = await until("the comments frame", () => commentsFrame(tab, docId));
+  const button = barButton(tab);
+  await button.waitFor();
+  // Located, so the highlight exists, but inside a closed <details> it draws nothing to tap.
+  await until("the highlight", async () => (await painted(tab, "openartifacts-open")).length === 1);
+  await button.click();
+  await until("the sheet", async () => (await hostBox(tab)) !== null);
+  await frame.getByRole("button", { name: "Invited to comment? Sign in." }).waitFor();
+  await context.close();
+});
+
 test("on a phone, a reader who cannot comment on a thread-less page gets no blank sheet from the bar's button", { timeout: 120_000 }, async () => {
   const docId = await publish("Phone, nothing to show", REPORT);
   const context = await newContext(BOB, { viewport: { width: 390, height: 844 }, signedInTo: docId });

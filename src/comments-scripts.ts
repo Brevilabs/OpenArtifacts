@@ -392,8 +392,8 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       button.className = "openartifacts-comments-button";
       button.setAttribute("style", "all:initial;flex:none;box-sizing:border-box;display:inline-flex;align-items:center;gap:6px;height:34px;padding:0 14px;margin-left:auto;border:1px solid rgba(255,255,255,0.08);border-radius:999px;color:#c9ced6;cursor:pointer;white-space:nowrap;-webkit-font-smoothing:antialiased;" + FONT.replace("13px/1.25", "14px/1"));
       button.addEventListener("click", () => {
-        // In overlay mode a page with no thread to tap has nothing to hide, whether it has none or an update orphaned them all: the button opens the sheet, which carries the margin's one line. The focus message makes the frame redraw and report its height, and a frame with nothing to show reports 0 and the page closes the sheet again.
-        if (mode === "overlay" && data && ranges.size === 0) {
+        // In overlay mode a page with no thread to tap has nothing to hide, whether it has none, an update orphaned them all, or their text is not drawn (a closed <details>): the button opens the sheet, which carries the margin's one line. The focus message makes the frame redraw and report its height, and a frame with nothing to show reports 0 and the page closes the sheet again.
+        if (mode === "overlay" && data && ![...ranges.values()].some((range) => range.getClientRects().length > 0)) {
           if (sheet) closeSheet(); else { shown = true; openSheet(); send({ event: "focus", threadId: "" }); }
           label();
           paint();
