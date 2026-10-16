@@ -286,7 +286,8 @@ li button.link{font-size:12px;color:#8d94a0}li button.link:hover{color:#e9ebee}
  * **What it tells the page around it.** Only `ready`, once, before it touches
  * storage, `close`, only from a user action in the frame (the × button or
  * Escape), and `people`, only after the owner's own click inside the owner view
- * (an add, a role change, or × / Escape): it says this visitor is the owner, so it
+ * (an add, a role change, or × / Escape, the last only where the plan grants Can
+ * comment): it says this visitor is the owner, so it
  * is never sent when a view is drawn. Nothing the frame sends, and nothing it does that an embedding page
  * can observe (a size change, a focus move), depends on what is in storage. On a
  * public document any page on `openartifacts.site` can embed this frame for any
@@ -405,9 +406,11 @@ export const FRAME_SCRIPT = String.raw`(() => {
     else fallback();
   };
   // The owner view is the only one with the fade at its foot. Leaving it is a click or a key inside
-  // the frame, so it may say that this visitor is the owner (see the header comment); leaving any
-  // other view says nothing more than close.
-  const leave = () => { post("close"); if (main.querySelector(".fade")) post("people"); };
+  // the frame, so it may say that this visitor is the owner (see the header comment), but only an
+  // owner whose plan grants Can comment: a free owner's page has no comments to bring up. Leaving
+  // any other view says nothing more than close.
+  let grantsComment = false;
+  const leave = () => { post("close"); if (grantsComment && main.querySelector(".fade")) post("people"); };
   const closeButton = (target) => target.addEventListener("click", leave);
   const copyButton = (target) => target.addEventListener("click", () => copyLink(target));
   document.addEventListener("keydown", (event) => { if (event.key === "Escape") leave(); });
@@ -770,6 +773,7 @@ export const FRAME_SCRIPT = String.raw`(() => {
     // (no role is drawn, and people are added as before); empty on a plan that grants none (no way to add).
     const roles = Array.isArray(body.roles) ? body.roles : null;
     const mayAdd = roles === null || roles.length > 0;
+    grantsComment = roles !== null && roles.includes("comment");
     const input = node("input", { type: "text", inputmode: "email", placeholder: "Emails, separated by commas", "aria-label": "Add people by email, separated by commas", autocomplete: "off" });
     const add = () => addMany(input.value);
     input.addEventListener("keydown", (event) => { if (event.key === "Enter") add(); });

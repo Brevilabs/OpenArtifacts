@@ -1032,6 +1032,21 @@ test("the popover tells the page its owner is looking only from a click inside i
   await frame.getByPlaceholder("Emails, separated by commas").waitFor();
   await frame.locator("main").press("Escape");
   await until("people after Escape", async () => (await events(page)).filter((name) => name === "people").length === 4);
+
+  // A free owner's page has no comments to bring up: closing their owner view says only close.
+  await db.prepare("UPDATE accounts SET plan = 'free' WHERE id = ?").bind(OWNER_ACCOUNT).run();
+  try {
+    const free = await context.newPage();
+    await free.goto(docUrl(X));
+    await free.locator("a[data-openartifacts-share]").click();
+    const freeFrame = await until("the Share frame", () => frameOf(free, X));
+    await freeFrame.getByText("Private pages and comments need a paid plan.").waitFor();
+    await freeFrame.getByRole("button", { name: "Close" }).click();
+    await until("the close", async () => (await events(free)).includes("close"));
+    assert.deepEqual((await events(free)).filter((name) => name === "people"), []);
+  } finally {
+    await db.prepare("UPDATE accounts SET plan = 'pro' WHERE id = ?").bind(OWNER_ACCOUNT).run();
+  }
   await context.close();
 });
 

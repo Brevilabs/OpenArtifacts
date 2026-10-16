@@ -712,7 +712,7 @@ writes. `origin` is the page's own origin, which the script fills in.
   size, and posts only `ready`, before it reads its storage, `close`, after a
   click inside it, and `people`, after the owner's own click inside it: an add, a
   role change, or closing it (which tells the page that this visitor is the owner,
-  but only on that click). On a public document any page on `openartifacts.site` can embed
+  but only on that click, and only for an owner whose plan grants Can comment). On a public document any page on `openartifacts.site` can embed
   the frame, and they share its storage.
 - It sets no cookie, no `Access-Control-Allow-*` header and no
   `X-Frame-Options`; it is `no-store`.
