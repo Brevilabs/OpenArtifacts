@@ -400,7 +400,7 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
           return;
         }
         shown = !shown;
-        if (!shown) { sheet = false; hideTip(); }
+        if (!shown) { closeSheet(); hideTip(); }
         label();
         paint();
         measure();
@@ -681,7 +681,6 @@ button.b.primary{background:#18191d;border-color:#18191d;color:#fff}
 .muted-text{font-size:11.5px;color:#6d6a62;margin:6px 0 0}
 .err{font-size:11.5px;color:#b4342b;margin:6px 0 0}.err:empty{display:none}
 .ask{font-size:12px;margin:0 0 6px}
-.signin{margin:0}
 .card.topline{padding:8px 12px}.topline .muted-text{margin:0}
 `;
 
@@ -1006,7 +1005,6 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
 
   // The box a person writes in: a textarea and its buttons, the name field a first comment may ask for, or the reason there is none.
   const writer = (key, placeholder, submit, cancel) => {
-    if (readToken() === null) return [];
     const v = viewer();
     if (v === null) return [];
     if (!v.canComment) return [muted("You can view this page.")];

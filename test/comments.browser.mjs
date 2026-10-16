@@ -618,6 +618,17 @@ test("a narrow page draws no margin; a tapped highlight or Comment opens a botto
   await frame.getByRole("button", { name: "Close" }).click();
   await until("the sheet to close", async () => (await hostBox(tab)) === null);
 
+  // Hiding comments from the bar while a sheet is open closes it for good: showing them again draws no focused passage.
+  await tab.mouse.click(at.x + at.width / 3, at.y + at.height / 2);
+  await until("the sheet", async () => (await hostBox(tab)) !== null);
+  await until("the focused passage", async () => (await painted(tab, "openartifacts-focus")).length === 1);
+  await barButton(tab).click();
+  await until("the sheet to close", async () => (await hostBox(tab)) === null);
+  await barButton(tab).click();
+  await until("the highlight back", async () => (await painted(tab, "openartifacts-open")).length === 1);
+  assert.equal((await painted(tab, "openartifacts-focus")).length, 0, "no stale focus");
+  assert.equal(await hostBox(tab), null, "no sheet reopens");
+
   // Selecting text and pressing Comment opens a new card the same way.
   await select(tab, "Staffing is unchanged");
   const tip = tab.locator(".openartifacts-comment-tip");
