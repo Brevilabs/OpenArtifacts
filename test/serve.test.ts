@@ -2423,11 +2423,11 @@ describe("an invited-only document", () => {
       const doc = await privateDoc();
       const owner = await ownerAccount(doc);
 
-      const response = await write(doc.docId, owner, { op: "add", email: "ann@acme.com\nbob@\n\"hi\ncarol@acme.com" });
+      const response = await write(doc.docId, owner, { op: "add", email: "ann@acme.com\nbob@\n&@\ncarol@acme.com" });
 
       expect(response.status).toBe(200);
       const html = await response.text();
-      expect(html).toContain("Added 2 people. Not added: bob@ (not an email address), &quot;hi (not an email address).");
+      expect(html).toContain("Added 2 people. Not added: bob@ (not an email address), &amp;@ (not an email address).");
       expect((await access(doc.docId)).people.map((person) => person.email).sort()).toEqual(["ann@acme.com", "carol@acme.com"]);
     });
 
@@ -2449,6 +2449,19 @@ describe("an invited-only document", () => {
       expect(people).toContain("b@acme.com");
       expect(people).not.toContain("c@acme.com");
       expect(people).not.toContain("d@acme.com");
+    });
+
+    it("takes a pasted list as long as the document's cap, past the size of the other forms", async () => {
+      const doc = await privateDoc();
+      const owner = await ownerAccount(doc);
+      const list = Array.from({ length: 90 }, (_, n) => `"Person ${n}" <person.number.${n}@acme-example.com>`).join(",\n");
+      expect(new URLSearchParams({ op: "add", email: list }).toString().length).toBeGreaterThan(4096);
+
+      const response = await write(doc.docId, owner, { op: "add", email: list });
+
+      expect(response.status).toBe(200);
+      expect(await response.text()).toContain("Added 90 people.");
+      expect((await access(doc.docId)).people).toHaveLength(90);
     });
 
     it("reads a lone pasted contact as its address", async () => {

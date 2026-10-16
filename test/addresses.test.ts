@@ -37,11 +37,15 @@ describe.each([
     expect(parse("A@x.com b@x.com a@X.com B@x.com")).toEqual({ emails: ["a@x.com", "b@x.com"], bad: [] });
   });
 
-  it("keeps what is not an address so it can be reported, once", () => {
-    expect(parse("a@x.com, bob@, @x.com, plain, plain, a@b@c, ,;")).toEqual({
+  it("keeps what has an @ but is not an address so it can be reported, once", () => {
+    expect(parse("a@x.com, bob@, @x.com, bob@, a@b@c, ,;")).toEqual({
       emails: ["a@x.com"],
-      bad: ["bob@", "@x.com", "plain", "a@b@c"],
+      bad: ["bob@", "@x.com", "a@b@c"],
     });
+  });
+
+  it("skips words with no @, which are names", () => {
+    expect(parse("plain words, Lee; a@x.com")).toEqual({ emails: ["a@x.com"], bad: [] });
   });
 
   it("finds nothing in nothing", () => {

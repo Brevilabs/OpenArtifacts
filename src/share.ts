@@ -77,6 +77,9 @@ import { publicDocUrl } from "./urls.js";
 /** The one line shown after a public document is switched to invited-only. */
 const COPY_NOTICE = "People who opened it while it was public may have kept a copy.";
 
+/** A pasted list of `MAX_INVITES_PER_DOC` addresses, form-encoded, fits with room to spare. */
+const SHARE_FORM_BYTES = 16 * 1024;
+
 /**
  * The Copy button's script and the Add people box's Enter key, small enough to
  * read in full. The page's policy
@@ -194,7 +197,8 @@ export async function handleShare(
       : unavailable();
   }
 
-  const form = await readSmallForm(request);
+  // Room for a pasted list as long as a document's people list may be.
+  const form = await readSmallForm(request, SHARE_FORM_BYTES);
   if (form === null) return READER_NOT_FOUND();
   const found = form.get("op") === "add" ? parseAddresses(form.get("email") ?? "") : null;
   if (found !== null && found.emails.length + found.bad.length > 1) {

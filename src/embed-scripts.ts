@@ -667,10 +667,9 @@ export const FRAME_SCRIPT = String.raw`(() => {
     const bad = [];
     const seen = new Set();
     const gap = String.fromCharCode(9, 10, 11, 12, 13, 32, 160);
-    const named = new RegExp('(?<![^,;' + gap + '])(?:"[^"]*"[' + gap + ']*|[^<>,;"@' + String.fromCharCode(10) + ']*)<([^<>]*)>', "g");
-    for (const token of text.replace(named, " $1 ").split(new RegExp("[,;" + gap + "]+"))) {
+    for (const token of text.split(new RegExp('[,;<>"' + gap + "]+"))) {
       const key = token.toLowerCase();
-      if (token === "" || seen.has(key)) continue;
+      if (!token.includes("@") || seen.has(key)) continue;
       seen.add(key);
       if (/^[^@]+@[^@]+$/.test(token)) emails.push(key);
       else bad.push(token);
@@ -679,8 +678,13 @@ export const FRAME_SCRIPT = String.raw`(() => {
   };
   const addMany = (text) => {
     const found = parseAddresses(text);
-    if (found.emails.length + found.bad.length === 1) return write("PUT", "/people/" + encodeURIComponent(found.emails.concat(found.bad)[0]));
-    if (found.emails.length + found.bad.length === 0) return;
+    // One entry, or nothing with an "@" in it (the server then says what is
+    // wrong), is the plain single write.
+    const count = found.emails.length + found.bad.length;
+    if (count <= 1) {
+      const lone = count === 1 ? found.emails.concat(found.bad)[0] : text.trim();
+      return lone === "" ? undefined : write("PUT", "/people/" + encodeURIComponent(lone));
+    }
     return guarded(async () => {
       let added = 0;
       let last = null;
@@ -706,7 +710,11 @@ export const FRAME_SCRIPT = String.raw`(() => {
       if (last !== null) present(last);
       if (stop !== null) {
         fail(message, stop[0], stop[1]);
-        if (done.length > 0) message.prepend(done.join(" ") + " Stopped: ");
+        if (done.length > 0) {
+          // "Nothing was changed" is not true of a batch that got part way.
+          message.firstChild.textContent = message.firstChild.textContent.replace(" Nothing was changed.", "");
+          message.prepend(done.join(" ") + " Stopped: ");
+        }
       } else {
         message.textContent = done.concat(crashed ? ["Stopped: Something went wrong."] : []).join(" ");
         // Everyone was added: that is not an error, so it is not drawn as one.

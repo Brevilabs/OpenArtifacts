@@ -666,11 +666,11 @@ function redirectUri(url: URL, provider: ProviderId): string {
  * that submitted one of our forms can land here, so the reader is a probe, and
  * a distinct status per check would only tell it which one it failed.
  */
-export async function readSmallForm(request: Request): Promise<URLSearchParams | null> {
+export async function readSmallForm(request: Request, maxBytes = MAX_FORM_BYTES): Promise<URLSearchParams | null> {
   const contentType = request.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase();
   if (contentType !== FORM_CONTENT_TYPE) return null;
 
-  const body = await readBodyWithin(request, MAX_FORM_BYTES);
+  const body = await readBodyWithin(request, maxBytes);
   if (body === null) return null;
 
   return new URLSearchParams(new TextDecoder().decode(body));

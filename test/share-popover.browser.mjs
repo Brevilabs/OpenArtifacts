@@ -754,16 +754,16 @@ test("an owner pastes a column of addresses and adds them all at once", { timeou
   await field.click();
   await field.evaluate((input) => {
     const data = new DataTransfer();
-    data.setData("text", "ann@example.com\r\nBob <bob@example.com>\r\nnot-an-address\r\ncarol@example.com\r\n");
+    data.setData("text", "ann@example.com\r\nBob <bob@example.com>\r\nbob@\r\ncarol@example.com\r\n");
     input.dispatchEvent(new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true }));
   });
-  assert.equal(await field.inputValue(), "ann@example.com, Bob <bob@example.com>, not-an-address, carol@example.com");
+  assert.equal(await field.inputValue(), "ann@example.com, Bob <bob@example.com>, bob@, carol@example.com");
   await shoot(page, "popover-pasted");
 
   await frame.getByRole("button", { name: "Add", exact: true }).click();
-  await frame.getByText("Not added: not-an-address (not an email address).").waitFor();
+  await frame.getByText("Not added: bob@ (not an email address).").waitFor();
   await shoot(page, "popover-pasted-added");
-  assert.match(await frame.locator("#oa-msg").innerText(), /^Added 3 people\. Not added: not-an-address \(not an email address\)\.$/);
+  assert.match(await frame.locator("#oa-msg").innerText(), /^Added 3 people\. Not added: bob@ \(not an email address\)\.$/);
   // Some went in and some did not: amber, not the red of a failure.
   assert.equal(await frame.locator("#oa-msg").evaluate((node) => getComputedStyle(node).color), "rgb(246, 174, 82)");
   for (const address of ["ann@example.com", "bob@example.com", "carol@example.com"]) {
