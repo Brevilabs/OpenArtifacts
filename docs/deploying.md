@@ -482,10 +482,13 @@ the fallback when it cannot be used.
 Documents published before manifests existed got theirs from a one-time admin
 backfill, run in production on 2026-10-16 and again after migration `0016` on
 2026-10-17. The route has been removed; from then on every write to a document's
-state keeps its own manifest. A self-hosted deployment upgrading from a Worker
-older than manifests has none for its older documents until each is next written,
-and a rebuild would make those private with no owner; D1 Time Travel is its
-recovery for them until then. To inspect one:
+state keeps its own manifest. A self-hosted deployment that has not run migration
+`0016`, its step 3 and then the backfill upgrades through commit `f26c7eb`, the
+last with the route: deploy it, follow that commit's `docs/deploying.md` through
+the backfill, and only then deploy a later Worker. Skipping it leaves older
+documents with no manifest, or with one that still says `comment` for an invite
+step 3 lowered, and a rebuild would make the first private with no owner and
+restore the second's grant. To inspect one:
 `npx wrangler r2 object get symposium-docs/docs/<docId>/manifest.json --remote --pipe`.
 
 **Rebuild.** This is for a D1 that is lost, not damaged. A partial loss is
@@ -720,10 +723,8 @@ on the free Workers plan.
    ```
 
    In production this was followed on 2026-10-17 by the manifest backfill, since
-   removed (see above). A deployment that runs this step later has manifests that
-   still say `comment` for the invites it lowered, until each document's next
-   access or invite write rewrites them; a rebuild before then must run the
-   lowering above again on the rebuilt database.
+   removed. A deployment that runs this step later does so on commit `f26c7eb`
+   and follows it with that backfill (see above).
 4. The comment limiters are in the same deploy; see below.
 
 **The comment limiters.** Two more optional `ratelimits` bindings, on the same
