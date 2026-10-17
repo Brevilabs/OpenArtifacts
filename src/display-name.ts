@@ -1,7 +1,7 @@
 /**
  * The one rule for a display name, shared by the name a person sets
  * (`PUT …/account`), the name a provider sends at sign-in, and the name derived
- * from an email: trimmed, 1 to 64 characters, no control characters.
+ * from nowhere else: trimmed, 1 to 64 characters, no control characters.
  */
 
 /** The longest display name, after trimming. */
@@ -17,7 +17,5 @@ export function normalizeDisplayName(raw: unknown): string | null {
   return name.length < 1 || name.length > MAX_NAME || CONTROL.test(name) ? null : name;
 }
 
-/** The name a person with none is shown under: their email before the `@`, else "Reader". */
-export function nameFromEmail(email: string): string {
-  return normalizeDisplayName(email.split("@")[0]) ?? "Reader";
-}
+/** What a person with no name is shown under. Never derived from their address: names are public. */
+export const FALLBACK_NAME = "Reader";
