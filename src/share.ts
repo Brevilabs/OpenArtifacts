@@ -158,6 +158,7 @@ export async function handleShare(
   url: URL,
   env: Env,
   analytics: AnalyticsSink,
+  ctx: ExecutionContext,
 ): Promise<Response> {
   const docId = shareRoute(url.pathname);
   const secret = readerSecret(env);
@@ -213,9 +214,9 @@ export async function handleShare(
   if (form === null) return READER_NOT_FOUND();
   const found = form.get("op") === "add" ? parseAddresses(form.get("email") ?? "") : null;
   if (found !== null && found.emails.length + found.bad.length > 1) {
-    return (await addMany(env, url, principal, docId, found, analytics)) ?? unavailable();
+    return (await addMany(env, url, principal, docId, found, analytics, ctx)) ?? unavailable();
   }
-  const result = await write(env, url, principal, docId, form, analytics);
+  const result = await write(env, url, principal, docId, form, analytics, ctx);
   if (result === null) return READER_NOT_FOUND();
   if (result.ok) {
     // Post, redirect, get: a reload shows the page and repeats nothing.
@@ -280,6 +281,7 @@ async function write(
   docId: string,
   form: URLSearchParams,
   analytics: AnalyticsSink,
+  ctx: ExecutionContext,
 ): Promise<AccessResult | null> {
   const op = form.get("op");
   const raw = form.get("email") ?? "";
@@ -290,11 +292,11 @@ async function write(
     const mode = form.get("linkAccess");
     return mode === "anyone" || mode === "invited" ? await setMode(env, principal, docId, mode, analytics) : null;
   }
-  if (op === "add") return await addPerson(env, url, principal, docId, address, undefined, analytics);
+  if (op === "add") return await addPerson(env, url, principal, docId, address, undefined, analytics, ctx);
   if (op === "role") {
     // A role this Worker does not know parses to null and changes nothing: it is never rewritten.
     const role = parseInviteRole(form.get("role"));
-    return role === null ? null : await addPerson(env, url, principal, docId, address, role, analytics);
+    return role === null ? null : await addPerson(env, url, principal, docId, address, role, analytics, ctx);
   }
   if (op === "remove") return await removePerson(env, principal, docId, address, analytics);
   if (op === "decline") return await declineRequest(env, principal, docId, address);
@@ -320,12 +322,13 @@ async function addMany(
   docId: string,
   found: ReturnType<typeof parseAddresses>,
   analytics: AnalyticsSink,
+  ctx: ExecutionContext,
 ): Promise<Response | null> {
   let added = 0;
   let stop: DialogError | undefined;
   for (const address of found.emails) {
     // The batch snapshots the manifest once, after the loop.
-    const result = await addWithoutManifest(env, url, principal, docId, address, undefined, analytics);
+    const result = await addWithoutManifest(env, url, principal, docId, address, undefined, analytics, ctx);
     if (result.ok) added += 1;
     else if (result.refusal === "not_found") return null;
     else {
