@@ -615,9 +615,7 @@ request** leads, and the url `share <docId>` prints:
   dialog. **Link access** (Anyone with the link / Only those invited), **Add
   people**, **Requests** (only when some are pending, each with **Approve** and
   **Decline**), **Who has access** (**You**, **Owner**, then each invitee with
-  **Remove**), **Copy link**, and after a switch from public to private the line
-  "People who opened it while it was public may have kept a copy." There is no
-  role control.
+  **Remove**) and **Copy link**. There is no role control.
 - A session whose account may read the document but does not manage it: the
   reader view. The title, "Only the owner can change who can open this.", **Copy
   link**, **Use another account**, and a line saying that a page published from

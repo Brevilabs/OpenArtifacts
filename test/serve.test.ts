@@ -2757,20 +2757,18 @@ describe("an invited-only document", () => {
       expect(sent.map((message) => message.to)).toEqual(["bob@other.com"]);
     });
 
-    it("switches the link access, and shows the copy notice only after a switch to private", async () => {
+    it("switches the link access, and never shows a copy notice", async () => {
       const doc = await privateDoc("a public page", KEY, "anyone");
       const owner = await ownerAccount(doc);
 
       const toPrivate = await write(doc.docId, owner, { op: "link", linkAccess: "invited" });
       expect(toPrivate.status).toBe(303);
-      expect(toPrivate.headers.get("location")).toBe(`/share/${doc.docId}?notice=private`);
+      expect(toPrivate.headers.get("location")).toBe(`/share/${doc.docId}`);
       expect((await access(doc.docId)).linkAccess).toBe("invited");
-      expect(await (await open(doc.docId, owner, PRIVATE, "?notice=private")).text()).toContain(
-        "People who opened it while it was public may have kept a copy.",
-      );
+      expect(await (await open(doc.docId, owner, PRIVATE, "?notice=private")).text()).not.toContain("may have kept a copy");
       expect(await (await open(doc.docId, owner)).text()).not.toContain("may have kept a copy");
 
-      // A repeat is not a switch, and going back to public needs no plan and shows no notice.
+      // A repeat changes nothing, and going back to public needs no plan.
       expect((await write(doc.docId, owner, { op: "link", linkAccess: "invited" })).headers.get("location")).toBe(`/share/${doc.docId}`);
       const toPublic = await write(doc.docId, owner, { op: "link", linkAccess: "anyone" });
       expect(toPublic.headers.get("location")).toBe(`/share/${doc.docId}`);
@@ -2817,7 +2815,7 @@ describe("an invited-only document", () => {
       const html = await (await open(doc.docId, owner)).text();
 
       expect(html).not.toMatch(/<h2>Comments<\/h2>|name="comments"|Needs a paid plan/);
-      expect(html).toContain("Only people you add can open this page. To let someone comment, add them with Can comment.");
+      expect(html).toContain('<p class="hint">Only people you add can open this page.</p>');
       expect(html).not.toContain("Private pages and comments need a paid plan.");
       expect(html).toContain('<option value="view">Can view</option><option value="comment" selected>Can comment</option>');
       expect(html).toContain('<option value="view" selected>Can view</option><option value="comment">Can comment</option>');
@@ -2825,8 +2823,8 @@ describe("an invited-only document", () => {
 
       await env.DB.prepare("UPDATE docs SET link_access = 'anyone' WHERE id = ?").bind(doc.docId).run();
       const pub = await (await open(doc.docId, owner)).text();
-      expect(pub).toContain("Anyone with the link can view. To let someone comment, add them with Can comment.");
-      expect(pub).not.toContain("Only people you add can open it. Can comment");
+      expect(pub).toContain('<p class="hint">Anyone with the link can view. Only people you add can comment.</p>');
+      expect(pub).not.toContain("Only people you add can open this page");
     });
 
     it("shows a plan that grants no role the plan line and roles as text: no Add people, no select, no Approve, and Remove and Decline still work", async () => {
@@ -2898,7 +2896,7 @@ describe("an invited-only document", () => {
       try {
         const html = await (await open(doc.docId, owner, { ...PRIVATE, LICENSE_API_URL: "https://license.test", LICENSE_API_KEY: "ours" })).text();
         expect(html).not.toContain("Private pages and comments need a paid plan.");
-        expect(html).toContain("To let someone comment, add them with Can comment.");
+        expect(html).toContain('<p class="hint">Only people you add can open this page.</p>');
       } finally {
         vi.unstubAllGlobals();
       }

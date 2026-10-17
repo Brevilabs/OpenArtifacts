@@ -42,9 +42,9 @@ import { PAGE_COMMENTS_SCRIPT } from "./comments-scripts.js";
  *   and carry no credential in either direction.
  * - The popover is **one fixed height** (at most 640 px, less on a short
  *   viewport) and the frame scrolls inside it. 640 is the tallest owner view
- *   with nobody added (measured at the popover's 360 px: 605 px for a private
- *   page with the copy notice and the wrapped helper line; the free owner's plan
- *   line is shorter) plus a margin, so that view has no scrollbar; a list of
+ *   with nobody added (measured at the popover's 360 px: under 605 px for a
+ *   private page with its helper line; the free owner's plan line is shorter)
+ *   plus a margin, so that view has no scrollbar; a list of
  *   people scrolls. The frame never reports its
  *   size: on a public document any page on `openartifacts.site` can embed the
  *   same frame for any document it knows, and the height of what the frame
@@ -207,8 +207,7 @@ export const POPUP_DONE_SCRIPT = String.raw`(function () {
  * few people without scrolling; longer lists scroll. The owner view starts the
  * same way as the others: the header (sticky, so it never scrolls away or gets cut through the
  * middle of a line) and then the link field and Copy link, so Copy link sits at
- * the same place in every view. Link access, with the notice that follows a
- * switch to private, comes next so that it is in view without any scrolling,
+ * the same place in every view. Link access comes next so that it is in view without any scrolling,
  * and the plan line (for an owner whose plan grants no role) or Add people
  * follows Link access, also in view without scrolling; the people and requests
  * follow and scroll. Flex items do
@@ -235,7 +234,6 @@ h1{flex:1;min-width:0;margin:0;font-size:16px;line-height:28px;font-weight:600;c
 h2{margin:20px 0 10px;font-size:11px;line-height:16px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:#8d94a0}
 p{margin:8px 0 0}header+p{margin-top:0}
 .muted{color:#8d94a0}.err{margin-top:8px;color:#ff8a80}.err.warn{color:#f6ae52}.err:empty{display:none}
-.notice{margin-top:10px;padding:8px 10px;border:1px solid rgba(246,174,82,.2);border-radius:8px;background:rgba(246,174,82,.08);font-size:13px;color:#f6ae52}
 a{color:#f6ae52;text-decoration:none}a:hover{text-decoration:underline;text-underline-offset:3px}
 button{font:inherit;font-size:13px;font-weight:500;line-height:1;cursor:pointer;height:28px;padding:0 12px;border:1px solid #2c313b;border-radius:8px;background:transparent;color:#e9ebee;display:inline-flex;align-items:center;justify-content:center;gap:6px;white-space:nowrap}
 button:hover{border-color:#3a404b;background:rgba(255,255,255,.04)}
@@ -439,7 +437,6 @@ export const FRAME_SCRIPT = String.raw`(() => {
   let generation = 0;
   let wake = null;
   let writing = false;
-  let notice = false;
   // Whether this frame made the document private. See exposed().
   let switched = false;
   let latest = null;
@@ -682,8 +679,8 @@ export const FRAME_SCRIPT = String.raw`(() => {
     try { parsed = await response.json(); } catch (error) {}
     if (response.status === 200 && parsed && parsed.viewer === "owner") {
       // Only a write that changed the mode counts, so a repeat of "Only those
-      // invited" on a stale view neither shows the notice nor vouches for the frame.
-      if (modeAfter && parsed.changed && parsed.linkAccess === "invited") { notice = true; switched = true; }
+      // invited" on a stale view does not vouch for the frame.
+      if (modeAfter && parsed.changed && parsed.linkAccess === "invited") switched = true;
       present(parsed);
       // An add, an approval or a role change the owner just made with a click: the page may now have
       // someone who can comment, and the owner is looking.
@@ -777,7 +774,7 @@ export const FRAME_SCRIPT = String.raw`(() => {
 
   const showOwner = (body) => {
     latest = body;
-    if (body.linkAccess !== "invited") { notice = false; switched = false; }
+    if (body.linkAccess !== "invited") switched = false;
     message = node("p", { id: "oa-msg", class: "err", role: "alert" });
     // The roles this owner may grant now, in ladder order. Absent where the comments object is not bound
     // (no role is drawn, and people are added as before); empty on a plan that grants none (no way to add).
@@ -822,7 +819,6 @@ export const FRAME_SCRIPT = String.raw`(() => {
       node("h2", {}, ["Link access"]),
       node("div", { class: "seg", role: "radiogroup", "aria-label": "Link access" }, [choice("anyone", "Anyone with the link"), choice("invited", "Only those invited")]),
     ];
-    if (notice) kids.push(node("p", { class: "notice" }, ["People who opened it while it was public may have kept a copy."]));
     if (roles !== null && roles.length === 0) {
       const upgrade = typeof body.upgradeUrl === "string" && body.upgradeUrl.startsWith("https://") ? body.upgradeUrl : null;
       kids.push(muted(["Private pages and comments need a paid plan."].concat(upgrade === null ? [] : [" ", node("a", { href: upgrade, target: "_blank", rel: "noopener noreferrer" }, ["Upgrade"])])));
@@ -830,7 +826,7 @@ export const FRAME_SCRIPT = String.raw`(() => {
     if (mayAdd) {
       kids.push(node("h2", {}, ["Add people"]), node("div", { class: "row" }, [input, button("Add", add, "primary tall")]));
       if (roles !== null && roles.includes("comment")) {
-        kids.push(muted([body.linkAccess === "anyone" ? "Anyone with the link can view. People you add can comment. You can change that below." : "Only people you add can open this page, and they can comment. You can change that below."]));
+        kids.push(muted([body.linkAccess === "anyone" ? "Anyone with the link can view. Only people you add can comment." : "Only people you add can open this page."]));
       }
     }
     kids.push(message);
