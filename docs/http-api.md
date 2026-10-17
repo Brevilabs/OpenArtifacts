@@ -951,8 +951,9 @@ order. A write refused at steps 1 to 4 never spends the rate limit:
 3. The owner's plan has comments: else `402 limit_reached` (`limit: "comments"`) to
    the owner and `404` to everyone else.
 4. A person has a display name. Sign-in sets it from the provider's name when the
-   account has none; a person with none who comments is named `Reader` (never from their
-   address; names are public) and the write proceeds. Agents are named after
+   account has none; a person with none who comments is named from their email before
+   the `@`, without any `+tag` (`Reader` if that is empty), and the write proceeds. That
+   name is shown to everyone who can read the comments. Agents are named after
    their account. `PUT /api/v1/account` (or the frame's equivalent) sets it: trimmed,
    1 to 64 characters, no control characters, else `400`. The same rule decides whether
    a provider's name is used. Originally this step was "else `409 name_required`;
@@ -1286,7 +1287,7 @@ exposes this API payload to a reader.
 | `quota_exceeded` | 429 | License-key publishing ceiling, device-flow rate limit, or the daily invite cap reached. |
 | `limit_reached` | 402 | Account-token publish would exceed a plan limit. Carries the exceeded limit's identifier (`limit`), current plan name (`plan`), and optional `upgrade_url` inside `error`. Also returned, for license keys as well as account tokens, for adding a person or setting a role when the plan lacks that role's flag, and for a switch to `invited` (`limit: "privateSharing"`). |
 | `anchor_not_found` | 400 | A new comment's quote is not in the version it names. See [Comments](#comments). |
-| `name_required` | 409 | A person (not an agent) with no display name tried to write a comment. No longer returned since 2026-10-16, when names came from sign-in or the `Reader` fallback; clients written against it keep working. |
+| `name_required` | 409 | A person (not an agent) with no display name tried to write a comment. No longer returned since 2026-10-16, when names came from sign-in or the email; clients written against it keep working. |
 | `internal` | 500 | Our fault, including the license server being unreachable for a key we have never seen. |
 | `authorization_pending` | 400 | `POST /device/token`: nobody has approved the code yet. |
 | `slow_down` | 400 | `POST /device/token`: polled faster than the `interval`. Also `POST /embed/token`, over its per-address limit. |

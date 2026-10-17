@@ -29,8 +29,8 @@
  * plan lapsed or a role lowered never costs anyone the ability to take back what
  * they wrote.
  */
-import { markHasThreads, setDisplayName, setDisplayNameIfUnset } from "../db.js";
-import { FALLBACK_NAME, MAX_NAME, normalizeDisplayName } from "../display-name.js";
+import { accountEmail, markHasThreads, setDisplayName, setDisplayNameIfUnset } from "../db.js";
+import { MAX_NAME, nameFromEmail, normalizeDisplayName } from "../display-name.js";
 import { writeManifest } from "../manifest.js";
 import type { Env } from "../config.js";
 import { docNotFound, errorResponse } from "../errors.js";
@@ -160,11 +160,13 @@ async function authoriseWrite(env: Env, docId: string, caller: Caller, now: numb
     return standing.canManage ? commentsPlanRefusal(env, caller.publisher) : docNotFound(docId);
   }
   // A person is named on their cards; an agent is named after the person it acts for. Nobody is
-  // asked: a person with no name (sign-in sends one when the provider has it) is named "Reader"
-  // (never from their address: names are public), which `PUT …/account` can still change.
+  // asked: a person with no name (sign-in sends one when the provider has it) is named from their
+  // email, which `PUT …/account` can still change.
   if (caller.kind === "human" && standing.doc.viewer_name === null) {
-    await setDisplayNameIfUnset(env.DB, standing.doc.principal_id, FALLBACK_NAME);
-    standing.doc.viewer_name = FALLBACK_NAME;
+    const email = await accountEmail(env.DB, standing.doc.principal_id);
+    const name = nameFromEmail(email ?? "");
+    await setDisplayNameIfUnset(env.DB, standing.doc.principal_id, name);
+    standing.doc.viewer_name = name;
   }
   if (!(await withinLimit(env.COMMENT_WRITE_LIMITER, await sha256Hex(`comment:${standing.doc.principal_id}`)))) {
     return errorResponse("quota_exceeded", "Too many comments. Try again in a minute.", {

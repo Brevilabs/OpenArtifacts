@@ -888,7 +888,7 @@ describe("threads", () => {
 });
 
 describe("display names", () => {
-  it("names a person Reader (never from their address) on their first comment instead of asking, and keeps a chosen name", async () => {
+  it("names a person from their email before the @, without a +tag, on their first comment instead of asking, and keeps a chosen name", async () => {
     const { priv } = await world();
     const erin = await person("erin@acme.com", null);
     await invite(priv, erin.email, "comment");
@@ -896,7 +896,7 @@ describe("display names", () => {
     const first = await thread(priv, await frame(erin, priv));
     expect(first.status).toBe(201);
     expect(await env.DB.prepare("SELECT display_name FROM accounts WHERE id = ?").bind(erin.id).first()).toEqual({
-      display_name: "Reader",
+      display_name: "erin",
     });
 
     // An agent acting for the same account is named after it.
