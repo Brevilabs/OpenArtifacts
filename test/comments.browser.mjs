@@ -1842,8 +1842,10 @@ test("resolving takes the thread off the page and offers Undo; resolved threads 
 
 test("in the header, Undo is a button for its few seconds and the resolved count a button whose chevron turns, on a light page and a dark one", { timeout: 180_000 }, async () => {
   const cases = [["light", page(REPORT)], ["dark", page(REPORT, "<style>body{background:#111316;color:#e8e6e1}</style>")]];
-  const look = (locator) => locator.evaluate((el) => ({ bg: getComputedStyle(el).backgroundColor, border: getComputedStyle(el).borderTopWidth, size: parseFloat(getComputedStyle(el).fontSize) }));
-  const turn = (toggle) => toggle.locator("svg").evaluate((el) => getComputedStyle(el).transform);
+  // The frame rebuilds its header on every render, and a node replaced between the locator finding it and the read has no computed style; so a read waits for one taken from a node still drawn.
+  const look = (locator) =>
+    until("a drawn button", () => locator.evaluate((el) => el.isConnected && { bg: getComputedStyle(el).backgroundColor, border: getComputedStyle(el).borderTopWidth, size: parseFloat(getComputedStyle(el).fontSize) }));
+  const turn = (toggle) => until("a drawn chevron", () => toggle.locator("svg").evaluate((el) => el.isConnected && getComputedStyle(el).transform));
   for (const [name, html] of cases) {
     const docId = await publish(`Header ${name}`, REPORT, { html });
     await agentThread(docId, { exact: "Renewal risk is concentrated in three accounts", section: "risk" }, "This overstates the renewal risk.");
@@ -1859,6 +1861,7 @@ test("in the header, Undo is a button for its few seconds and the resolved count
     const rowHeight = (await head.boundingBox()).height;
 
     await cardFor(frame, "Is that deliberate?").getByRole("button", { name: "Resolve" }).click();
+    await until("one card", async () => (await cards.count()) === 1);
     const undo = head.getByRole("button", { name: "Undo" });
     await undo.waitFor();
     const offer = await look(undo);
