@@ -696,6 +696,19 @@ describe("a publisher's origin code in the manifest", () => {
     expect((await manifestOf(priv)).schema).toBe(1);
   });
 
+  it("is written to R2 when the owner's first open allocates the code, with no later change to the doc", async () => {
+    const o = await owner();
+    const priv = await publish(o.token, "private-docs", "Private");
+    expect(await manifestOf(priv)).toMatchObject({ originCode: null });
+
+    const opened = await send("POST", `/api/v1/docs/${priv}/open`, o.token);
+    expect(opened.status).toBe(200);
+    const code = new URL(((await opened.json()) as { url: string }).url).hostname.split(".")[0];
+
+    expect(await manifestOf(priv)).toMatchObject({ originCode: code });
+    await expectInSync(priv);
+  });
+
   it("comes back with the rebuild: the same owner has the same code, and no code has two owners", async () => {
     const o = await owner();
     const priv = await publish(o.token, "private-docs", "Private");

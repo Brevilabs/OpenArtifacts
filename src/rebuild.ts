@@ -120,7 +120,7 @@ export function rowsFromManifest(docId: string, manifest: unknown, objects: read
       link_access: m.linkAccess === "anyone" ? "anyone" : "invited",
       has_threads: m.hasThreads === true || objects.some((object) => object.key === `docs/${docId}/threads.json`) ? 1 : 0,
     },
-    origin: m.owner !== "" && isString(m.originCode) ? { owner: m.owner, code: m.originCode, created_at: m.createdAt } : null,
+    origin: isString(m.originCode) ? { owner: m.owner, code: m.originCode, created_at: m.createdAt } : null,
     invites: m.people.map((person) => ({
       doc_id: docId,
       email: person.email,
@@ -197,7 +197,6 @@ export function rebuildSql(rebuilt: readonly RebuiltRows[]): string {
     for (const invite of invites) lines.push(insert("doc_invites", Object.keys(invite), Object.values(invite)));
     for (const version of versions) lines.push(insert("versions", Object.keys(version), Object.values(version)));
   }
-  // The quota ledger mirrors `versions`, as migrations/0013 builds it.
   const { rows, conflicts } = originRows(rebuilt);
   for (const conflict of conflicts) lines.push(`-- origin code conflict, ignored: ${conflict.replaceAll(/[\r\n]/g, " ")}`);
   for (const row of rows) {
@@ -205,6 +204,7 @@ export function rebuildSql(rebuilt: readonly RebuiltRows[]): string {
       insert("publisher_origins", Object.keys(row), Object.values(row)).replace("INSERT INTO", "INSERT OR IGNORE INTO"),
     );
   }
+  // The quota ledger mirrors `versions`, as migrations/0013 builds it.
   lines.push("INSERT INTO storage_usage (doc_id, n, size) SELECT doc_id, n, size FROM versions WHERE size > 0;");
   return lines.join("\n") + "\n";
 }

@@ -573,7 +573,7 @@ async function openOwn(env: Env, publisher: Publisher, docId: string, requestUrl
   if (found.link_access === "anyone") {
     return Response.json({ url: publicDocUrl(env, requestUrl, docId), expiresAt: now + 60_000 }, { headers: NO_STORE });
   }
-  const grant = await grantUrl(env, found.owner, { docId, pinned: null }, publisher.owner, now);
+  const grant = await grantUrl(env, found.owner, { docId, pinned: null }, publisher.owner, now, found.origin_code);
   return grant
     ? Response.json(grant, { headers: NO_STORE })
     : errorResponse("not_found", "No API route for this request.");

@@ -183,7 +183,7 @@ async function open(request: Request, url: URL, env: Env, now: number): Promise<
       return servingRedirect(`https://${servingHost}${docPath(SERVING_PREFIX, route)}`, 302);
     }
     if (found.allowed) {
-      const grant = await grantUrl(env, found.owner, route, accountId, now);
+      const grant = await grantUrl(env, found.owner, route, accountId, now, found.origin_code);
       if (grant !== null) return servingRedirect(grant.url, 302);
     }
   }

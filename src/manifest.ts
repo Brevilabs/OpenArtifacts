@@ -30,8 +30,9 @@ export interface DocManifest {
   hasThreads?: boolean;
   /**
    * The owner's origin code (`publisher_origins`), or null when none was allocated yet.
-   * Absent from manifests written before it. Allocation does not rewrite existing
-   * manifests, so it lands in a doc's next snapshot.
+   * Absent from manifests written before it. Allocation snapshots the manifest
+   * of the doc whose open created the code (`grantUrl`); the owner's other docs
+   * carry it from their next snapshot.
    */
   originCode?: string | null;
   createdAt: number;

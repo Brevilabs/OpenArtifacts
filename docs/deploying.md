@@ -684,8 +684,10 @@ on the free Workers plan.
    deploy workflow refuses to ship over an unapplied migration. Apply
    `0017_publisher_origins.sql` before the deploy that reads it too: it adds the
    `publisher_origins` table (a publisher's 6-character origin code), is additive,
-   and the live Worker ignores it. Codes are allocated lazily, so there is nothing
-   to backfill; a code, once allocated, is never changed or deleted.
+   and the live Worker ignores it. Codes are allocated lazily, on a publisher's first
+   open of an invited-only page, which also rewrites that doc's `manifest.json`
+   so R2 holds the code. A manifest written before then has no code and needs no
+   backfill; a code, once allocated, is never changed or deleted.
 2. Deploy. `wrangler deploy` applies the Durable Object itself: the `COMMENTS`
    binding in `durable_objects.bindings` and the
    `migrations: [{"tag": "v1", "new_sqlite_classes": ["DocComments"]}]` block in

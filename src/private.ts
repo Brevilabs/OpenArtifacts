@@ -32,6 +32,7 @@ import type { AnalyticsSink } from "./analytics.js";
 import { threadsNotFound, threadsResource } from "./comments/resource.js";
 import type { Env } from "./config.js";
 import { findReadableDoc } from "./db.js";
+import { writeManifestBestEffort } from "./manifest.js";
 import { originCode } from "./origin-code.js";
 import { SERVING_PREFIX, docPath, parseDocPath, parseThreadsPath, type DocRoute } from "./paths.js";
 import { readerSecret, readerSignInConfigured } from "./reader-config.js";
@@ -64,32 +65,13 @@ export function codeOrigin(env: Env, code: string): string | null {
 }
 
 /**
- * Where a publisher's invited-only documents are served: a code host under
- * `SERVING_HOST`. Null when this deployment has no serving host. Allocates the
- * owner's code on first need.
- *
- * `/open` and the owner route reach a publisher origin only through here, so a
- * custom domain, a verified `publisher_hosts` lookup, changes this function and
- * no link anyone holds. `owner` is always `docs.owner` of the document being
- * opened, never the caller's own `Publisher.owner`: a publisher whose license key
- * was later linked to an account has documents under two owner ids and so two
- * origins, and a code from the caller would land the reader on a host that
- * answers `404`.
- */
-export async function publisherOrigin(
-  env: Env,
-  owner: string,
-): Promise<{ code: string; origin: string } | null> {
-  if (!env.SERVING_HOST?.trim()) return null;
-  const code = await originCode(env.DB, owner);
-  return { code, origin: codeOrigin(env, code)! };
-}
-
-/**
  * The url that opens `route` on its publisher's origin for `principal`, good for
  * `URL_GRANT_TTL_MS`. Null when this deployment cannot do private sharing.
  *
- * `docOwner` is the document's `docs.owner`. `principal` is either a reader's
+ * `docOwner` is the document's `docs.owner`, never the caller's own
+ * `Publisher.owner`: a publisher whose license key was later linked to an account
+ * has documents under two owner ids and so two origins. `knownCode` is that
+ * owner's code when the caller's read already has it. `principal` is either a reader's
  * account id or a publisher's owner id; the origin checks it with `canRead`
  * like any other.
  */
@@ -99,10 +81,19 @@ export async function grantUrl(
   route: DocRoute,
   principal: string,
   now: number,
+  knownCode: string | null = null,
 ): Promise<{ url: string; expiresAt: number } | null> {
   const secret = readerSecret(env);
-  const publisher = await publisherOrigin(env, docOwner);
-  if (secret === null || publisher === null) return null;
+  if (secret === null || !env.SERVING_HOST?.trim()) return null;
+  // The document was read with its owner's code, so only a first open lacks one.
+  // That is the moment the code comes to exist, and R2 learns it now: nothing
+  // else would snapshot a manifest before the next change to the doc.
+  let code = knownCode;
+  if (code === null) {
+    code = await originCode(env.DB, docOwner);
+    await writeManifestBestEffort(env, route.docId);
+  }
+  const publisher = { code, origin: codeOrigin(env, code)! };
 
   const expiresAt = now + URL_GRANT_TTL_MS;
   const grant = await signPayload(secret, "grant-url", { l: publisher.code, p: principal }, expiresAt);
