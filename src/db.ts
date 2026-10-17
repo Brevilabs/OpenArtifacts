@@ -1846,12 +1846,9 @@ export interface RequestRow {
 export async function readAccess(
   db: D1Database,
   docId: string,
-): Promise<{ title: string; link_access: LinkAccess; owner_email_available: number; people: InviteRow[]; requests: RequestRow[] } | null> {
+): Promise<{ title: string; link_access: LinkAccess; people: InviteRow[]; requests: RequestRow[] } | null> {
   const [doc, people, requests] = await db.batch<DocAccessRow | InviteRow | RequestRow>([
-    db.prepare(`SELECT title, link_access,
-      EXISTS(SELECT 1 FROM accounts a
-        WHERE a.id = COALESCE((SELECT account_id FROM owner_links WHERE external_owner = docs.owner), docs.owner)) AS owner_email_available
-      FROM docs WHERE id = ? AND deleted_at IS NULL`).bind(docId),
+    db.prepare("SELECT title, link_access FROM docs WHERE id = ? AND deleted_at IS NULL").bind(docId),
     db
       .prepare("SELECT email, role, created_at FROM doc_invites WHERE doc_id = ? ORDER BY created_at, email")
       .bind(docId),
@@ -1869,7 +1866,7 @@ export async function readAccess(
     : null;
 }
 
-type DocAccessRow = { title: string; link_access: LinkAccess; owner_email_available: number };
+type DocAccessRow = { title: string; link_access: LinkAccess };
 
 /**
  * Set a live document's mode. True only when this call changed it: false means

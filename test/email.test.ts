@@ -57,12 +57,16 @@ it("tracks sign-in codes and their limits against the Share document, without lo
     const url = new URL("https://api.openartifacts.ai/signin/email");
     return handleReader(new Request(url, { method: "POST", body: new URLSearchParams({ email: "alice@example.com", next: `/share/${DOC}?signin` }) }), url, over, undefined, { record: (event) => { events.push(event); } });
   };
+  const refuse = { limit: async () => ({ success: false }) };
   expect((await ask()).status).toBe(200);
-  expect((await ask({ ...configured, SIGNIN_EMAIL_CLIENT_LIMITER: { limit: async () => ({ success: false }) } })).status).toBe(429);
+  expect((await ask({ ...configured, SIGNIN_EMAIL_LIMITER: refuse })).status).toBe(429);
+  // A refused client is abuse control, not an intended email: it records nothing,
+  // so posting past its limit cannot generate analytics traffic.
+  expect((await ask({ ...configured, SIGNIN_EMAIL_CLIENT_LIMITER: refuse })).status).toBe(429);
   expect(sent).toHaveBeenCalledTimes(1);
-  expect(events).toMatchObject([
-    { name: "email_delivery", docId: DOC, emailType: "signin_code", outcome: "sent" },
-    { name: "email_delivery", docId: DOC, emailType: "signin_code", outcome: "skipped_limit" },
+  expect(events).toEqual([
+    expect.objectContaining({ name: "email_delivery", docId: DOC, emailType: "signin_code", outcome: "sent" }),
+    expect.objectContaining({ name: "email_delivery", docId: DOC, emailType: "signin_code", outcome: "skipped_limit" }),
   ]);
   expect(logs).toHaveBeenCalledTimes(2);
   expect(logs.mock.calls[0]![1]).toMatchObject({ document_key: await documentAnalyticsKey(DOC) });

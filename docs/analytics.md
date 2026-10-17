@@ -51,6 +51,9 @@ Both carry `email_type` (`invite`, `access_request`, `signin_code`, `comment_thr
 (`sent`, `failed`, `skipped_limit`, `skipped_no_owner_email`) and a fixed `reason`.
 No address, title, code, URL, content or exception text is included. A missing
 owner address has a null hash; sign-in with no document uses `no_document`.
+A sign-in request refused by the per-client limiter records nothing: it is abuse
+control, not an intended email, and recording it would let a refused client
+generate events at line rate.
 
 The hash is `email_v1_` + HMAC-SHA256 with `READER_SESSION_SECRET`, signing
 `email-recipient-v1.` + the address trimmed and lowercased, exactly as accounts

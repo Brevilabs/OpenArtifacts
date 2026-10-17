@@ -52,7 +52,6 @@ import {
   getAccess,
   grantableRoles,
   type InviteDelivery,
-  ownerEmailNotice,
   planRefusal,
   removePerson,
   setMode,
@@ -428,7 +427,6 @@ ${message === null ? "" : `<p${shown.quiet === true ? "" : ' class="err"'} role=
     `${mode("anyone", "Anyone with the link", "Exactly today's public page. No sign-in.")}${mode("invited", "Only those invited", "Only people you add can open it. They sign in once.")}<button type="submit">Save</button>`,
   )}</section>
 ${planLine}
-${state.owner_email_available ? "" : `<p class="hint">${escapeHtml(ownerEmailNotice(env))}</p>`}
 ${mayAdd ? `<section><h2>Add people</h2>${form(
     "add",
     {},

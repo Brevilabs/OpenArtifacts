@@ -388,16 +388,19 @@ exists, and the invite email that add sends is the notice to the requester.
 
 - **Table:** `doc_access_requests (doc_id, email, created_at)`, one pending row
   per document and address, capped at 100 per document. Past the cap a new request
-  is not recorded; the reader sees **Request not sent**.
+  is dropped silently.
 - **Route:** `POST /open/{docId}/request`, on the API host, session required (no
   session shows the sign-in page), same-origin required. One statement inserts
   the row only when the document is live and invited-only, the account cannot
   already read it, no request is pending and the list is under the cap.
-- **Only a recorded request or repeat says Request sent.** Every unrecorded case
-  gets the same **Request not sent** page, including limits and unknown/deleted
-  ids. The owner email runs after the response and does not decide its words.
+- **It says nothing.** The **Request sent** page is the same status and the same
+  words for every outcome: stored, repeated, unknown id, deleted, public, already
+  allowed and a full list. The owner's email, the one slow step, runs after the
+  response is decided. Without an email binding the page says what will happen
+  instead ("the link will open for {email}").
 - **Rate limit:** per account, by `REQUEST_ACCESS_LIMITER`. Over the limit stores
-  nothing; a previously recorded request remains confirmed.
+  nothing and shows **Request not sent**. The limit is the account's, not the
+  document's, so the page is the same for every id.
 - **Approve and decline.** Approving is `PUT …/access/people/{email}` (or **Approve** on
   the share page): one batch inserts the invite and deletes the request, and the
   invite email goes out. It needs the plan, like any add. Declining deletes the

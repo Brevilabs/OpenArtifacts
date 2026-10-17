@@ -1005,7 +1005,6 @@ export const FRAME_SCRIPT = String.raw`(() => {
         kids.push(node("p", { class: "muted help" }, [body.linkAccess === "anyone" ? "Anyone can view. Invitees can comment." : "Only people you add can open this page."]));
       }
     }
-    if (body.notificationNotice) kids.push(muted([body.notificationNotice]));
     kids.push(message);
     if (body.requests.length > 0) {
       kids.push(node("h2", {}, ["Requests"]), node("ul", {}, body.requests.map((request) => person(request.email, "Asked to open it", narrow ? [] : [

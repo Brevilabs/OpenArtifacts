@@ -114,7 +114,7 @@ export function planRefusal(env: Env, publisher: Publisher, what = "Private shar
 export type InviteDelivery = { email: string; outcome: EmailOutcome };
 export type AccessState = NonNullable<Awaited<ReturnType<typeof readAccess>>> & { inviteDelivery?: InviteDelivery[] };
 
-export function ownerEmailNotice(env: Env): string {
+function ownerEmailNotice(env: Env): string {
   const fix = env.ACCOUNT_ACTION_URL?.trim()
     ? `Link your Copilot account at ${env.ACCOUNT_ACTION_URL.trim()} to enable these emails.`
     : "Ask your server operator to link your license to a verified account to enable these emails.";
@@ -407,7 +407,6 @@ export function accessBody(env: Env, requestUrl: URL, docId: string, state: Acce
     // Only an account has a checkout to go to; a license key's plan is managed in Copilot, as in `planRefusal`.
     ...(roles?.length === 0 && publisher.authKind === "account" && upgradeLink(env) !== undefined ? { upgradeUrl: upgradeLink(env) } : {}),
     email: emailConfigured(env),
-    ...(state.owner_email_available ? {} : { notificationNotice: ownerEmailNotice(env) }),
     ...(state.inviteDelivery === undefined ? {} : { inviteDelivery: state.inviteDelivery }),
     people: state.people.map((person) => ({ email: person.email, role: person.role, addedAt: person.created_at })),
     requests: state.requests.map((request) => ({ email: request.email, requestedAt: request.created_at })),

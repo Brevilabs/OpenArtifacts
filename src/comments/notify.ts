@@ -71,10 +71,8 @@ export async function notifyComment(env: Env, requestUrl: URL, n: Notification, 
       });
     })();
     // An unlinked license owner has no account, so the reader query omits it.
-    // Log its skipped notification too, unless the doc was deleted.
-    if (recipients.includes(n.doc.owner_account) && !emails.has(n.doc.owner_account) && await env.DB.prepare(
-      "SELECT 1 FROM docs WHERE id = ? AND deleted_at IS NULL",
-    ).bind(n.docId).first() !== null) {
+    // Log its skipped notification too.
+    if (recipients.includes(n.doc.owner_account) && !emails.has(n.doc.owner_account)) {
       await sendEmail(env, analytics, { type: `comment_${n.event}`, docId: n.docId, to: null }, message);
     }
     const key = await sha256Hex(`comment-email:${n.docId}`);

@@ -1439,7 +1439,7 @@ describe("an invited-only document", () => {
     const post = async (docId: string, accountId: string, over: Partial<Env> = PRIVATE, headers: Record<string, string> = SAME_ORIGIN) =>
       sendTo("POST", API_OPEN(docId), { headers: { cookie: await sessionFor(accountId), ...headers } }, over);
 
-    it("confirms a recorded request or repeat, and gives the same failure for every unrecorded document", async () => {
+    it("stores one row, nothing on a repeat or for an id that cannot be requested, and answers one page every time", async () => {
       const doc = await privateDoc();
       const publicDoc = await privateDoc("a public page", KEY, "anyone");
       const deleted = await privateDoc("withdrawn");
@@ -1470,17 +1470,14 @@ describe("an invited-only document", () => {
         [deleted.docId, bob],
         [invitedDoc.docId, alice],
       ];
-      let failure = "";
       for (const [docId, account] of others) {
         const response = await post(docId, account);
         expect(response.status).toBe(200);
-        const html = await bytes(response, docId);
-        expect(html).toContain("Request not sent");
-        failure ||= html;
-        expect(html).toBe(failure);
+        expect(await bytes(response, docId)).toBe(account === alice ? (await bytes(await post(docId, alice), docId)) : expected);
         expect(await requestRows(docId)).toEqual([]);
       }
-      expect(failure).not.toContain("alice@acme.com");
+      // Alice, already allowed, sees her own address in the same words.
+      expect(await (await post(invitedDoc.docId, alice)).text()).toContain("alice@acme.com");
     });
 
     it("says what will happen instead when the server cannot send email", async () => {
@@ -1538,7 +1535,7 @@ describe("an invited-only document", () => {
       expect(await requestRows(doc.docId)).toEqual([]);
     });
 
-    it("tells the reader when the pending request list is full", async () => {
+    it("stops storing past 100 pending requests, still answering Request sent", async () => {
       const doc = await privateDoc();
       for (let n = 0; n < 100; n += 1) {
         await env.DB.prepare("INSERT INTO doc_access_requests (doc_id, email, created_at) VALUES (?, ?, ?)")
@@ -1549,7 +1546,7 @@ describe("an invited-only document", () => {
 
       const response = await post(doc.docId, bob);
 
-      expect(await response.text()).toContain("Request not sent");
+      expect(await response.text()).toContain("Request sent");
       expect((await requestRows(doc.docId)).length).toBe(100);
     });
 
@@ -1563,8 +1560,11 @@ describe("an invited-only document", () => {
       const limited = await post(docs[1]!.docId, bob);
 
       expect(limited.status).toBe(200);
-      expect(await limited.text()).toContain("Request not sent");
+      const page = (await limited.text()).replaceAll(docs[1]!.docId, "ID");
+      expect(page).toContain("Request not sent");
       expect(await requestRows(docs[1]!.docId)).toEqual([]);
+      // The limit is the account's, so an unknown id gets the same words.
+      expect((await (await post(UNKNOWN_DOC_ID, bob)).text()).replaceAll(UNKNOWN_DOC_ID, "ID")).toBe(page);
     });
 
     it("emails the owner once, with the share page link and no token, and never tells the requester who they are", async () => {

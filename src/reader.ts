@@ -199,9 +199,12 @@ async function open(request: Request, url: URL, env: Env, now: number): Promise<
  * in. The only place a reader acts on a document they cannot open, so it is
  * built to say nothing.
  *
- * A recorded request or repeat is confirmed; every unrecorded case gets the
- * same generic failure, including unknown/deleted ids and a full list. The
- * owner's email runs after the response and never determines what it says. The address
+ * Within the account's allowance the page is the same bytes with the same
+ * status for every outcome: a stored request, a repeat, an unknown or deleted
+ * id, a public document, an account that is already allowed, and a full list.
+ * Only the per-account limit, which no document decides, answers **Request not
+ * sent**. The owner's email, the one slow step, runs after the response is
+ * decided, so timing says nothing either. The address
  * that goes on the list is the session account's own `accounts.email`, never a
  * field, and the form that posts here carries none.
  */
@@ -230,13 +233,7 @@ async function requestAccess(
     if (ctx === undefined) await notified;
     else ctx.waitUntil(notified);
   }
-  // A repeat is already recorded. Every other unrecorded case (full, unknown,
-  // deleted, public or already allowed) gets the same generic failure: this
-  // route must not become a document-existence oracle.
-  const recorded = added !== null || await env.DB.prepare(
-    "SELECT 1 FROM doc_access_requests WHERE doc_id = ? AND email = ?",
-  ).bind(docId, email).first() !== null;
-  return requestSentPage(email, docId, emailConfigured(env), recorded);
+  return requestSentPage(email, docId, emailConfigured(env), allowed);
 }
 
 /**
@@ -413,11 +410,11 @@ async function mailCode(
   const context = { type: "signin_code" as const, docId, to: email };
   // The client's allowance first: a client that is already refused must not go on
   // spending the buckets of whatever addresses it types, which would lock those
-  // addresses out of their own sign-in. `||` stops at the first refusal.
-  if (
-    !(await withinClientLimit(env.SIGNIN_EMAIL_CLIENT_LIMITER, request)) ||
-    !(await withinLimit(env.SIGNIN_EMAIL_LIMITER, await sha256Hex(`signin:${email}`)))
-  ) {
+  // addresses out of their own sign-in. Its refusal records nothing either, or a
+  // refused client could post as fast as it likes and every post would still be
+  // an analytics event; every record below is inside the client's allowance.
+  if (!(await withinClientLimit(env.SIGNIN_EMAIL_CLIENT_LIMITER, request))) return TOO_MANY();
+  if (!(await withinLimit(env.SIGNIN_EMAIL_LIMITER, await sha256Hex(`signin:${email}`)))) {
     await recordEmailDelivery(env, analytics, context, "skipped_limit", "sending_limit");
     return TOO_MANY();
   }
