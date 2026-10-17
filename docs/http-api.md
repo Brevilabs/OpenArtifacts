@@ -1124,8 +1124,7 @@ could invent a commenter. A hostile page on the document's own serving origin ca
 learn, from `viewer`, whether this visitor holds a token for the document and may
 comment. The layout messages (`size`, `height`, `reveal`) carry only heights, but
 those depend on what the frame draws for this visitor, so the page can also infer
-whether they may resolve a thread, whether a comment is theirs and whether they
-have set a display name. It learns nothing else about them, and no message in
+whether they may resolve a thread and whether a comment is theirs. It learns nothing else about them, and no message in
 either direction carries a credential.
 
 **Signing in.** The comments frame's sign-in line runs the Share popover's flow
