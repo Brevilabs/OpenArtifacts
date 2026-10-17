@@ -36,7 +36,7 @@ export function actionUrl(env: Env): URL | null {
 }
 
 const COPILOT_CLIENT = "obsidian-copilot";
-const LINK_MESSAGE = "Publish from other agents too? Link your Copilot for Obsidian account to OpenArtifacts to keep one list of pages and use your Copilot plan there. Nothing is linked until you confirm.";
+const LINK_MESSAGE = "Link your Copilot account to get an email when someone asks for access or comments, and to put your name on your invites.";
 
 /** A display hint, never account proof. It must not fail or change a publish. */
 export async function linkGuidance(request: Request, env: Env, publisher: Publisher): Promise<{ message: string; url: string } | undefined> {

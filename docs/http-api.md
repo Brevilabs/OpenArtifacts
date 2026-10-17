@@ -256,7 +256,7 @@ the key's owner is not linked to an account, and the Worker has
  "url": "https://openartifacts.site/d/9f2k4mvq7t0xbz3n",
  "version": 1,
  "linkAccess": "anyone",
- "guidance": {"message": "Publish from other agents too? …",
+ "guidance": {"message": "Link your Copilot account to get an email …",
               "url": "https://openartifacts.ai/account"}}
 ```
 
