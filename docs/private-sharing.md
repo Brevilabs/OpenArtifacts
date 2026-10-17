@@ -508,17 +508,24 @@ that must never be on a page whose scripts the author writes.
   frame's storage partition, and any of them can embed the frame for any id it
   knows; a size report, a focus move or an early message would tell that page, with
   no click, whether its visitor holds a token.
-- **On a private document's own origin it also reports its size** (`size`, the
-  height of its content), and the popover takes it. The frame decides this once,
-  as it loads: it reports only when the origin it was embedded by is set and is
-  not the shared one. `frame-ancestors` admits only the document's serving origin
-  at load, so that origin is the publisher's `{code}.openartifacts.site`, which
-  runs only that publisher's scripts, and the only visitors it admits are the
-  publisher and the people they invited by address. The height tells those
-  scripts nothing their author cannot already know. A frame loaded on the shared
-  origin stays silent after the document goes private; one loaded on the code
-  origin keeps reporting, to the same publisher's page, after it goes public; and
-  a code origin cannot load the frame for a public document at all.
+- **On a private document's own origin the owner view also reports its size**
+  (`size`, the height of its content), and the popover takes it. Only the owner
+  view: every other view (signed out, a reader, not found, the skeleton) keeps the
+  one fixed height there too and posts nothing. The page around the frame is the
+  publisher's, so the owner view's height tells its scripts only what their author
+  knows, but an invitee's would not: the reader view's "Signed in as {email}."
+  wraps by address, so its height would say which invitee is looking, and any
+  report from a view other than the signed-out one would say the visitor has
+  signed in to Share. Leaving the owner view posts `0`, the fixed height again,
+  which follows only from the owner's own view. The frame decides once, as it
+  loads, whether it may report at all: only when the origin it was embedded by is
+  set and is not the shared one. `frame-ancestors` admits only the document's
+  serving origin at load, so that origin is the publisher's
+  `{code}.openartifacts.site`, which runs only that publisher's scripts. A frame
+  loaded on the shared origin stays silent after the document goes private; one
+  loaded on the code origin keeps reporting its owner view, to the same
+  publisher's page, after it goes public; and a code origin cannot load the frame
+  for a public document at all.
 - **Its layout** is the same in every view. A row at the top holds the link
   field, **Copy link** (an icon) and ×; it is the primary action, so it never scrolls away,
   and it belongs to the frame's shell, not to a view, so nothing a view draws moves
@@ -535,10 +542,11 @@ that must never be on a page whose scripts the author writes.
   owner's plan line, and the refusal after a failed switch. The tallest of these,
   measured in Chrome at the popover's 360 px width, is 309 px; the popover is
   320 px, capped by the viewport. A list of people scrolls. On a private
-  document's own origin the popover is as tall as what the frame shows, up to
-  720 px and the viewport below the bar less 8 px, and scrolls past that; it
-  follows the content as people are added or removed and a line appears, and the
-  frame is laid out while hidden, so the popover opens at its height.
+  document's own origin the owner view's popover is as tall as what the frame
+  shows, up to 720 px and the viewport below the bar less 8 px, and scrolls past
+  that; it follows the content as people are added or removed and a line appears,
+  and the frame is laid out while hidden, so the popover opens at its height.
+  Every other view there has the fixed height.
   `test/share-popover.browser.mjs` holds all of it.
 - **Its views** follow the table: the owner gets the **Link access** choice
   (Anyone with the link / Only those invited), the address field with **Add**, one
@@ -854,7 +862,9 @@ subdomain needs a paid certificate for `*.docs.example.net`.
 - **The popover is one fixed height on a public page**, so its short views have
   room to spare and a long list scrolls in 320 px; the alternative is a frame that
   reports its size there, which would tell any page that can embed it whether its
-  visitor manages the document. Only a private page's popover fits its content.
+  visitor manages the document. Only the owner view on a private page fits its
+  content; an invitee's view there stays fixed, since its height would say which
+  invitee is looking.
 - **Browsers with no Fetch Metadata** (Safari before 16.4) cannot sign in to the
   popover and use the share page.
 - **A popover token outlives sign-out** by up to 24 hours. It can do only what that
