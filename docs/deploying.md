@@ -479,22 +479,17 @@ snapshots its own `threads.json`). For those, and for anything within 30 days,
 D1 Time Travel (`wrangler d1 time-travel restore`) is the first resort; this is
 the fallback when it cannot be used.
 
-**One-time backfill, after the first deploy that writes manifests.** Documents
-that existed before it have none. With the Worker's `ADMIN_API_KEY`, call the
-temporary route until it stops returning a `cursor`:
-
-```bash
-curl -s -X POST -H "authorization: Bearer $ADMIN_API_KEY" \
-  "https://api.openartifacts.ai/admin/v1/manifests/backfill"
-# then again with ?cursor=<the cursor it returned>, until none comes back
-```
-
-Each call writes 15 documents (sized for the 50 subrequests of a Workers Free
-invocation), so a few hundred documents is a few dozen calls. It writes a manifest
-for every row, withdrawn documents included, and is safe to repeat. Spot-check
-three, including a private one and a withdrawn one:
+Documents published before manifests existed got theirs from a one-time admin
+backfill, run in production on 2026-10-16 and again after migration `0016` on
+2026-10-17. The route has been removed; from then on every write to a document's
+state keeps its own manifest. A self-hosted deployment that has not run migration
+`0016`, its step 3 and then the backfill upgrades through commit `f26c7eb`, the
+last with the route: deploy it, follow that commit's `docs/deploying.md` through
+the backfill, and only then deploy a later Worker. Skipping it leaves older
+documents with no manifest, or with one that still says `comment` for an invite
+step 3 lowered, and a rebuild would make the first private with no owner and
+restore the second's grant. To inspect one:
 `npx wrangler r2 object get symposium-docs/docs/<docId>/manifest.json --remote --pipe`.
-The route is removed in the PR after this has been run.
 
 **Rebuild.** This is for a D1 that is lost, not damaged. A partial loss is
 restored with D1 Time Travel, never with this. Recreate the database (a new
@@ -727,9 +722,9 @@ on the free Workers plan.
      done
    ```
 
-   Last, rewrite every manifest from D1 with `POST /admin/v1/manifests/backfill` (under
-   **One-time backfill** above), since these updates change roles without
-   rewriting them, and a rebuild would otherwise bring back `comment`.
+   In production this was followed on 2026-10-17 by the manifest backfill, since
+   removed. A deployment that runs this step later does so on commit `f26c7eb`
+   and follows it with that backfill (see above).
 4. The comment limiters are in the same deploy; see below.
 
 **The comment limiters.** Two more optional `ratelimits` bindings, on the same

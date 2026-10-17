@@ -115,10 +115,6 @@ publishers cache, access requests and comments (which snapshot to `threads.json`
 are not in R2; D1 Time Travel (30 days) is what covers them, so D1 stays a
 system of record for those.
 
-The one-time backfill route (`POST /admin/v1/manifests/backfill`) is temporary:
-remove it, with `src/manifest-backfill.ts` and its tests, in the PR after it has
-been run.
-
 ## Owed now that the serving domain has landed
 
 Before the cutover, the serving split uses the old hosts: documents on

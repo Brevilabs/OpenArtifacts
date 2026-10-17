@@ -6,7 +6,6 @@ import type { Env } from "./config.js";
 import { errorResponse } from "./errors.js";
 import { configuredPlans } from "./plans.js";
 import { readBodyWithin } from "./quota.js";
-import { backfillManifests } from "./manifest-backfill.js";
 
 export const ADMIN_PREFIX = "/admin/v1";
 
@@ -19,8 +18,6 @@ export async function handleAdmin(request: Request, url: URL, env: Env): Promise
     ["POST", /^\/admin\/v1\/browser-logins\/consume$/, "browser-consume"],
     ["GET", /^\/admin\/v1\/external-owners\/([^/]+)$/, "owner-lookup"],
     ["POST", /^\/admin\/v1\/accounts$/, "account-create"],
-    // TEMPORARY: removed in the PR after the one-time manifest backfill.
-    ["POST", /^\/admin\/v1\/manifests\/backfill$/, "manifest-backfill"],
   ] as const;
   const route = routes.find(
     ([method, path]) => request.method === method && path.test(url.pathname),
@@ -43,7 +40,6 @@ export async function handleAdmin(request: Request, url: URL, env: Env): Promise
   if (route[2] === "browser-consume") return await consumeBrowserLogin(request, env);
   if (route[2] === "handoff") return await consumeHandoff(request, env);
   if (route[2] === "account-create") return await createLinkedAccount(request, env);
-  if (route[2] === "manifest-backfill") return await backfillManifests(url, env);
   if (route[2] === "owner-lookup") {
     let externalOwner: string;
     try {

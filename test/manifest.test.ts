@@ -697,36 +697,6 @@ describe("rebuilding into a database that is not empty", () => {
   });
 });
 
-describe("POST /admin/v1/manifests/backfill (temporary)", () => {
-  it("needs the admin key", async () => {
-    expect((await send("POST", "/admin/v1/manifests/backfill", null)).status).toBe(401);
-    expect((await send("POST", "/admin/v1/manifests/backfill", "wrong")).status).toBe(401);
-    expect((await send("POST", "/admin/v1/manifests/backfill", (await owner()).token)).status).toBe(401);
-  });
-
-  it("writes a manifest for every existing doc, deleted ones included, and is safe to repeat", async () => {
-    const o = await owner();
-    const live = await publish(o.token, "docs", "Live");
-    const priv = await publish(o.token, "private-docs", "Priv");
-    await send("PUT", person(priv, "alice@acme.com"), o.token, { role: "view" });
-    const gone = await publish(o.token, "docs", "Gone");
-    await send("DELETE", `/api/v1/docs/${gone}`, o.token);
-    const ids = [live, priv, gone];
-
-    // The state before manifests existed.
-    for (const id of ids) await env.DOCS.delete(manifestObjectKey(id));
-
-    const first = await send("POST", "/admin/v1/manifests/backfill", ADMIN);
-    expect(first.status).toBe(200);
-    expect(first.headers.get("cache-control")).toBe("no-store");
-    const body = (await first.json()) as { written: number; cursor?: string };
-    expect(body.written).toBeGreaterThanOrEqual(3);
-    expect(body.cursor).toBeUndefined();
-    const snapshots = await Promise.all(ids.map((id) => expectInSync(id)));
-    expect(snapshots[1]).toMatchObject({ linkAccess: "invited", people: [{ email: "alice@acme.com", role: "view" }] });
-    expect(snapshots[2]!.deletedAt).toEqual(expect.any(Number));
-
-    await send("POST", "/admin/v1/manifests/backfill", ADMIN);
-    expect(await Promise.all(ids.map((id) => manifestOf(id)))).toEqual(snapshots);
-  });
+it("has no manifest backfill route any more", async () => {
+  expect((await send("POST", "/admin/v1/manifests/backfill", ADMIN)).status).toBe(404);
 });
