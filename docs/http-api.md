@@ -548,6 +548,11 @@ when the server has one and the caller signed in with an account, when the plan 
 comments. `requests` are the addresses that asked to open the document and
 have not been answered.
 
+Invites and access are managed from
+Share in the published page's top bar, not Copilot's publish dialog. Share also
+shows conditional linking guidance to unlinked license-key publishers before
+they can authenticate as the owner.
+
 - `PUT …/access` takes `{"linkAccess": "anyone" | "invited"}`. Switching to
   `anyone` keeps the list and the requests, and switching back restores them.
 - `PUT …/access/people/{email}` adds one address (URL-encode the `@`; it is
@@ -640,7 +645,9 @@ and the full serving header policy. Unknown ids are still `404` and deleted ones
    session and `Sec-Fetch-Site: same-origin`; the address comes from the session,
    never from the form. It always answers the same **Request sent** page, with the
    same status and words, whether it stored a request, found one already pending,
-   or the id is unknown, deleted, public or already allowed. At most one row is
+   or the id is unknown, deleted, public or already allowed. Only an account over
+   its per-account allowance, which no document decides, gets **Request not sent**
+   (`200`) instead. At most one row is
    stored per document and address, and the owner is emailed once per new row
    when the server has their address. It is rate limited per account.
 3. **`GET /d/{docId}[/v{n}]` on `{code}.{serving host}`.** The code is 6 random
@@ -780,7 +787,7 @@ request email's **Review request** and the url `share` prints.
 | No session, a live public document | The title, "Only the owner can change who can open this.", **Copy link**, and "Is this your page? **Sign in to manage**" (`?signin` selects the sign-in page) |
 | No session, anything else, or `?signin` | The sign-in page, the same bytes for an invited-only, an unknown and a deleted id, returning to `/share/{docId}` |
 | A signed-in account that owns the document | **Link access**, **Add people**, **Requests** with **Approve** and **Decline**, **Who has access** with **Remove** and, where the plan grants two or more roles, a role select beside each person (a plan that grants none sees a plan line instead of **Add people**, **Approve** and the select), and **Copy link** |
-| A signed-in account that may read it | The title, the same sentence, **Copy link**, **Use another account** and a line telling a Copilot owner to manage access in Copilot |
+| A signed-in account that may read it | The title, the same sentence, **Copy link**, **Use another account** and conditional no-email guidance telling an unlinked Copilot owner how to link their account and then manage access here |
 | A signed-in account that may not, unknown, deleted | The unavailable page as `/open`, `404`, never `403` |
 
 Its writes are `POST /share/{docId}` forms (`op` of `link`, `add`, `remove` or

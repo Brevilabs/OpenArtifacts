@@ -55,7 +55,7 @@ import {
   type LinkAccess,
 } from "../db.js";
 import { commentRoute } from "../comments/routes.js";
-import { emailConfigured, inviteMessage, sendEmail } from "../email.js";
+import { emailConfigured, inviteMessage, sendEmail, type EmailOutcome } from "../email.js";
 import { docNotFound, errorResponse } from "../errors.js";
 import { sha256Hex } from "../hash.js";
 import { isDocId } from "../ids.js";
@@ -112,6 +112,18 @@ export function planRefusal(env: Env, publisher: Publisher, what = "Private shar
 
 /** The document's mode, invite list and pending requests, as `readAccess` reads them. */
 export type AccessState = NonNullable<Awaited<ReturnType<typeof readAccess>>>;
+
+function ownerEmailNotice(env: Env): string {
+  const fix = env.ACCOUNT_ACTION_URL?.trim()
+    ? `Link your Copilot account at ${env.ACCOUNT_ACTION_URL.trim()} to enable these emails.`
+    : "Ask your server operator to link your license to a verified account to enable these emails.";
+  return `Access requests and new comment threads cannot reach you by email, and invitations do not name you. ${fix}`;
+}
+
+/** Conditional guidance, identical for every document, even when ownership is unknown. */
+export function copilotHint(env: Env): string {
+  return `Published from Copilot? If your license key is not linked to an OpenArtifacts account, we have no email address for you. ${ownerEmailNotice(env)} After linking, sign in here to manage access.`;
+}
 
 /**
  * Why an operation did nothing. `not_found` covers a missing, deleted and
@@ -264,7 +276,7 @@ export async function addWithoutManifest(
     return refused(state.people.length >= MAX_INVITES_PER_DOC ? "full" : "invite_quota");
   }
 
-  if (added) ctx.waitUntil(invite(env, requestUrl, doc.publisher_id, docId, doc.title, email, granted));
+  if (added) ctx.waitUntil(invite(env, requestUrl, doc.publisher_id, docId, doc.title, email, granted, analytics));
   if (added || roleChanged) recordChange(analytics, docId, doc.publisher_id, state);
   return { ok: true, state, changed: added || roleChanged };
 }
@@ -333,8 +345,7 @@ function recordChange(analytics: AnalyticsSink, docId: string, ownerId: string, 
  * (`Access.email`), never that this one was delivered. The address is on the
  * list whether or not this succeeds, and the link always points at the
  * sacrificial domain, so a failure costs the invitee an email and nothing else.
- * It never throws: the limiter and the sharer's address are inside the `try`
- * too, so nothing here can surface as an unhandled rejection. Bounded per
+ * It never throws, so nothing here can surface as an unhandled rejection. Bounded per
  * publisher by a binding, keyed by the canonical publisher id so a license key,
  * its linked account and the share page draw on one allowance.
  */
@@ -346,15 +357,12 @@ async function invite(
   title: string,
   email: string,
   role: InviteRole,
-): Promise<void> {
-  try {
-    if (!emailConfigured(env)) return;
-    if (!(await withinLimit(env.INVITE_EMAIL_LIMITER, await sha256Hex(`invite:${publisherId}`)))) return;
+  analytics: AnalyticsSink,
+): Promise<EmailOutcome> {
+  return await sendEmail(env, analytics, { type: "invite", docId, to: email }, async () => {
     const sharer = await ownerEmail(env.DB, publisherId);
-    await sendEmail(env, email, inviteMessage(sharer, title, publicDocUrl(env, requestUrl, docId), email, role));
-  } catch (error) {
-    console.error("invite email failed", { error: error instanceof Error ? error.name : "unknown" });
-  }
+    return inviteMessage(sharer, title, publicDocUrl(env, requestUrl, docId), email, role);
+  }, async () => withinLimit(env.INVITE_EMAIL_LIMITER, await sha256Hex(`invite:${publisherId}`)));
 }
 
 /**

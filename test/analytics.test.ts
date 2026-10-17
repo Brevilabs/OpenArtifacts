@@ -600,7 +600,7 @@ describe("which outcomes record", () => {
     // The key is what makes a document one page for its whole life, so this is
     // the assertion that an update attaches to the page it changed instead of
     // arriving as a second one.
-    expect(await documentAnalyticsKey(events[1]!.docId)).toBe(await documentAnalyticsKey(docId));
+    expect(await documentAnalyticsKey(events[1]!.docId!)).toBe(await documentAnalyticsKey(docId));
     expect(events[1]).toEqual({
       name: "document_updated",
       docId,
@@ -645,7 +645,7 @@ describe("which outcomes record", () => {
       "document_unshared",
     ]);
     const keys = new Set(
-      await Promise.all(events.map((event) => documentAnalyticsKey(event.docId))),
+      await Promise.all(events.map((event) => documentAnalyticsKey(event.docId!))),
     );
     expect(keys.size).toBe(1);
     // Every publication event is attributed to the account the credential
@@ -903,6 +903,8 @@ describe("who a publication is attributed to", () => {
     await removePerson(quiet, token, docId, "alice@acme.com", sink);
     await setMode(quiet, token, docId, "anyone", sink);
 
+    expect(events.filter((e) => e.name === "email_delivery")).toMatchObject([{ emailType: "invite", outcome: "sent" }]);
+    events.splice(0, events.length, ...events.filter((e) => e.name !== "email_delivery"));
     // Mode, add, role, remove, mode: five changes, each under the license owner the publication used.
     expect(events.map((event) => event.name)).toEqual(Array(5).fill("document_access_changed"));
     expect(owners(events)).toEqual(Array(5).fill(LICENSE_OWNER));
