@@ -2780,6 +2780,8 @@ describe("an invited-only document", () => {
     it("rechecks a free plan when its owner opens the page, so an upgrade shows Add people at once", async () => {
       const doc = await privateDoc();
       const owner = await ownerAccount(doc, "free");
+      // Checked a minute ago, before the owner went to checkout.
+      await env.DB.prepare("UPDATE accounts SET plan_checked_at = ? WHERE id = ?").bind(Date.now() - 60_000, owner).run();
       const real = globalThis.fetch;
       vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) =>
         String(input instanceof Request ? input.url : input).startsWith("https://license.test/")

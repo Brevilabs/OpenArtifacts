@@ -351,10 +351,17 @@ describe("the roles are the only control", () => {
     });
     const roles = async () =>
       ((await (await send("GET", `/embed/api/docs/${priv}/access`, await frame(owner, priv), undefined, license)).json()) as { roles: string[] }).roles;
+    // Checked a minute ago, before the owner went to checkout.
     const setPlan = (plan: string, retryAfter: number | null = null) =>
-      env.DB.prepare("UPDATE accounts SET plan = ?, plan_checked_at = ?, plan_retry_after = ? WHERE id = ?").bind(plan, Date.now(), retryAfter, owner.id).run();
+      env.DB.prepare("UPDATE accounts SET plan = ?, plan_checked_at = ?, plan_retry_after = ? WHERE id = ?").bind(plan, Date.now() - 60_000, retryAfter, owner.id).run();
 
-    // Cached free a moment ago, upgraded since: the open asks the license server, and Add people is back.
+    // Still free: asked once, and an open straight after is not asked again.
+    await setPlan("free");
+    expect(await roles()).toEqual([]);
+    expect(await roles()).toEqual([]);
+    expect(calls).toBe(1);
+    calls = 0;
+    // Upgraded since: the open asks the license server, and Add people is back.
     await setPlan("free");
     answer = "plus";
     expect(await roles()).toEqual(["view", "comment"]);

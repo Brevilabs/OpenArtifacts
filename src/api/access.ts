@@ -364,15 +364,19 @@ export function grantableRoles(env: Env, publisher: Publisher): InviteRole[] | u
 /**
  * The account owner with the plan their Share view and their writes both go by:
  * the effective plan (an expired one has lapsed), rechecked on the usual hour,
- * and at once, unless the license server is backing off, when the cached plan
- * grants no role. So an owner who has just upgraded sees Add people on their next
- * open and can use it, and a lapsed owner is never shown what the write refuses.
+ * and after `PLAN_RECHECK_MS`, unless the license server is backing off, when the
+ * cached plan grants no role. So an owner back from checkout sees Add people on
+ * their next open and can use it, a free owner's opens are not each a call to the
+ * license server, and a lapsed owner is never shown what the write refuses.
  */
 export async function withCurrentPlan(env: Env, owner: Publisher): Promise<Publisher> {
   if (owner.authKind !== "account") return owner;
   const grantsNone = grantableRoles(env, owner)?.length === 0;
-  return { ...owner, plan: (await accountPlan(env, owner.owner, grantsNone ? { maxAgeMs: 0 } : {})).plan };
+  return { ...owner, plan: (await accountPlan(env, owner.owner, grantsNone ? { maxAgeMs: PLAN_RECHECK_MS } : {})).plan };
 }
+
+/** How old a plan that grants no role may be when its owner opens Share: shorter than any checkout. */
+const PLAN_RECHECK_MS = 30_000;
 
 /**
  * The frozen `Access` object: `url` is always the canonical link, never a grant.
