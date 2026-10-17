@@ -7,6 +7,7 @@
  */
 import { INVITE_WINDOW_MS, MAX_NEW_INVITES_PER_OWNER_PER_DAY } from "./config.js";
 import { PUBLISHER_USER_ID_SQL, OWNER_SCOPE_SQL } from "./owners.js";
+import { DEFAULT_ROLE, rolesAtLeastSql, type InviteRole } from "./roles.js";
 
 /** Publisher row, which doubles as the license-validation cache (phase 2). */
 export interface PublisherRow {
@@ -232,6 +233,8 @@ export function d1PublisherStore(db: D1Database): PublisherStore {
  * key, and an account is not one. "No doc without a publisher we validated" is
  * therefore the auth path's invariant rather than the database's — only a
  * resolved publisher reaches this.
+ *
+ * Callers rewrite the manifest (src/manifest.ts).
  */
 export async function insertDocWithinQuota(
   db: D1Database,
@@ -370,6 +373,8 @@ export async function reserveNextVersion(
  * and a dead reservation must not veto a version that really landed.
  *
  * Batched, so a reader cannot catch the pair mid-update.
+ *
+ * Callers rewrite the manifest (src/manifest.ts).
  */
 export async function commitVersionMetadata(
   db: D1Database,
@@ -414,6 +419,14 @@ export async function insertVersion(db: D1Database, version: VersionRow): Promis
     .run();
 }
 
+/**
+ * Whether the page has comments to show, as SQL, for the serving reads: a thread
+ * has been written, or a person on the list holds a role of at least `comment`.
+ * Derived, never set; the owner has no switch.
+ */
+const COMMENTER_LISTED_SQL = `EXISTS (SELECT 1 FROM doc_invites i WHERE i.doc_id = d.id AND i.role IN ${rolesAtLeastSql("comment")})`;
+const HAS_COMMENTS_SQL = `(d.has_threads = 1 OR ${COMMENTER_LISTED_SQL})`;
+
 /** What the serving path needs to know about a doc, in one read. */
 export interface ServableVersion {
   /** Epoch ms when the doc was soft-deleted, else null. Deleted serves 410. */
@@ -421,8 +434,11 @@ export interface ServableVersion {
   /** The version that has bytes, or null when the request names none. */
   version: number | null;
   link_access: LinkAccess;
-  /** The owner's comments switch, as 0 or 1: the top bar carries it on the shared link. */
-  comments_enabled: number;
+  /**
+   * Whether the page has comments to show, as 0 or 1: a thread exists, or a
+   * person holds a role of at least `comment`. The top bar carries it on the shared link.
+   */
+  has_comments: number;
 }
 
 /**
@@ -454,7 +470,7 @@ export async function findServableVersion(
   return await db
     .prepare(
       `SELECT d.deleted_at AS deleted_at, d.link_access AS link_access,
-              d.comments_enabled AS comments_enabled,
+              ${HAS_COMMENTS_SQL} AS has_comments,
               (SELECT MAX(v.n)
                  FROM versions v
                 WHERE v.doc_id = d.id
@@ -550,6 +566,8 @@ export async function canManage(db: D1Database, docId: string, principal: string
  * Ownership and liveness are predicates on the write itself rather than an
  * earlier read, so two concurrent deletes of the same doc produce exactly one
  * true — which is what makes "delete the objects" safe to run only on that one.
+ *
+ * Callers rewrite the manifest (src/manifest.ts).
  */
 export async function softDeleteDoc(
   db: D1Database,
@@ -1498,8 +1516,8 @@ export interface ReadableDoc {
   version: number | null;
   /** `canRead` for the principal. */
   allowed: boolean;
-  /** The owner's comments switch, as 0 or 1: the top bar carries it on the shared link. */
-  comments_enabled: number;
+  /** Whether the page has comments to show, as 0 or 1 (see `ServableVersion`). */
+  has_comments: number;
 }
 
 /**
@@ -1528,7 +1546,7 @@ export async function findReadableDoc(
     .prepare(
       `${OWNER_SCOPE_SQL}
        SELECT d.owner AS owner, d.title AS title, d.deleted_at AS deleted_at, d.link_access AS link_access,
-              d.comments_enabled AS comments_enabled,
+              ${HAS_COMMENTS_SQL} AS has_comments,
               (SELECT MAX(v.n) FROM versions v
                 WHERE v.doc_id = d.id AND (? IS NULL OR v.n = ?)) AS version,
               ${CAN_READ_SQL} AS allowed
@@ -1540,8 +1558,6 @@ export async function findReadableDoc(
   // SQLite has no boolean: the predicate comes back as 0 or 1.
   return row === null ? null : { ...row, allowed: row.allowed === 1 };
 }
-
-export type InviteRole = "view" | "comment";
 
 /**
  * What a comment request needs to decide, in one read: the document, what
@@ -1555,8 +1571,10 @@ export interface CommentableDoc {
   title: string;
   deleted_at: number | null;
   link_access: LinkAccess;
-  /** The owner's switch. */
-  comments_enabled: boolean;
+  /** Whether any thread has ever been written (`docs.has_threads`). */
+  has_threads: boolean;
+  /** Someone other than the owner may write here: a person on the list holds a role of at least `comment`. */
+  commentable: boolean;
   /** The version asked for (`pinned`) or the newest that has bytes, or null. */
   version: number | null;
   /** The newest version that has bytes, or null before the first lands. */
@@ -1565,8 +1583,8 @@ export interface CommentableDoc {
   allowed: boolean;
   /** `canManage` for the principal. */
   can_manage: boolean;
-  /** The principal is an invited account whose role is `comment`. */
-  invited_comment: boolean;
+  /** The principal's role on the document's list, or null when they are not on it. Unknown roles pass through. */
+  role: string | null;
   /**
    * The principal as comments store it: the account id when the principal is a
    * license owner linked to one, else the principal itself. So a linked key and
@@ -1587,11 +1605,11 @@ export interface CommentableDoc {
 }
 
 /** `CommentableDoc` as D1 returns it: flags as 0/1, the scope as a JSON string. */
-type CommentableRow = Omit<CommentableDoc, "comments_enabled" | "allowed" | "can_manage" | "invited_comment" | "scope_ids"> & {
-  comments_enabled: number;
+type CommentableRow = Omit<CommentableDoc, "has_threads" | "commentable" | "allowed" | "can_manage" | "scope_ids"> & {
+  has_threads: number;
+  commentable: number;
   allowed: number;
   can_manage: number;
-  invited_comment: number;
   scope_ids: string;
 };
 
@@ -1599,7 +1617,7 @@ type CommentableRow = Omit<CommentableDoc, "comments_enabled" | "allowed" | "can
  * The document, the principal's standing on it, and the version to answer for,
  * in one read. `canComment` is not computed here because it also depends on the
  * owner's plan, which the caller reads separately; this returns its two inputs
- * that live in D1 (`comments_enabled`, `invited_comment`) beside `allowed` and
+ * that live in D1 (`role`, `commentable`, `has_threads`) beside `allowed` and
  * `can_manage`, so the rule is assembled in one place (`src/comments/access.ts`).
  *
  * Bind order: the owner scope twice, then the principal for `CAN_READ_SQL`, then
@@ -1615,14 +1633,15 @@ export async function findCommentableDoc(
     .prepare(
       `${OWNER_SCOPE_SQL}
        SELECT d.owner AS owner, d.title AS title, d.deleted_at AS deleted_at, d.link_access AS link_access,
-              d.comments_enabled AS comments_enabled,
+              d.has_threads AS has_threads,
+              ${COMMENTER_LISTED_SQL} AS commentable,
               (SELECT MAX(v.n) FROM versions v
                 WHERE v.doc_id = d.id AND (? IS NULL OR v.n = ?)) AS version,
               (SELECT MAX(v.n) FROM versions v WHERE v.doc_id = d.id) AS latest_version,
               ${CAN_READ_SQL} AS allowed,
               (${CAN_MANAGE_SQL}) AS can_manage,
-              EXISTS (SELECT 1 FROM accounts a JOIN doc_invites i ON i.email = a.email
-                       WHERE a.id = ? AND i.doc_id = d.id AND i.role = 'comment') AS invited_comment,
+              (SELECT i.role FROM accounts a JOIN doc_invites i ON i.email = a.email
+                WHERE a.id = ? AND i.doc_id = d.id) AS role,
               (SELECT id FROM canonical) AS principal_id,
               COALESCE((SELECT account_id FROM owner_links WHERE external_owner = d.owner), d.owner) AS owner_account,
               (SELECT json_group_array(owner) FROM owner_scope) AS scope_ids,
@@ -1636,32 +1655,25 @@ export async function findCommentableDoc(
   if (row === null) return null;
   return {
     ...row,
-    comments_enabled: row.comments_enabled === 1,
+    has_threads: row.has_threads === 1,
+    commentable: row.commentable === 1,
     allowed: row.allowed === 1,
     can_manage: row.can_manage === 1,
-    invited_comment: row.invited_comment === 1,
     scope_ids: JSON.parse(row.scope_ids) as string[],
   };
 }
 
 /**
- * Set a live document's comments switch. The principal must manage the
- * document; the plan check is the caller's.
+ * Record that the document may have a thread, once. `has_threads` is never
+ * cleared: deleting the last thread leaves it set and the page then shows
+ * nothing. The `WHERE` makes every call after the first a no-op, so the service
+ * can run it before each create.
+ *
+ * True when this call set it. Callers then rewrite the manifest (src/manifest.ts).
  */
-export async function setCommentsEnabled(
-  db: D1Database,
-  docId: string,
-  owner: string,
-  enabled: boolean,
-): Promise<void> {
-  await db
-    .prepare(
-      `${OWNER_SCOPE_SQL}
-       UPDATE docs AS d SET comments_enabled = ?
-        WHERE d.id = ? AND ${CAN_MANAGE_SQL} AND d.deleted_at IS NULL`,
-    )
-    .bind(owner, owner, enabled ? 1 : 0, docId)
-    .run();
+export async function markHasThreads(db: D1Database, docId: string): Promise<boolean> {
+  const result = await db.prepare("UPDATE docs SET has_threads = 1 WHERE id = ? AND has_threads = 0").bind(docId).run();
+  return result.meta.changes > 0;
 }
 
 /**
@@ -1802,7 +1814,8 @@ export async function ownerPlans(db: D1Database, owner: string): Promise<OwnerPl
 /** One person a document is shared with. */
 export interface InviteRow {
   email: string;
-  role: InviteRole;
+  /** As stored: a role this Worker does not know is passed through, never rewritten. */
+  role: string;
   created_at: number;
 }
 
@@ -1819,9 +1832,9 @@ export interface RequestRow {
 export async function readAccess(
   db: D1Database,
   docId: string,
-): Promise<{ title: string; link_access: LinkAccess; comments_enabled: number; people: InviteRow[]; requests: RequestRow[] } | null> {
+): Promise<{ title: string; link_access: LinkAccess; people: InviteRow[]; requests: RequestRow[] } | null> {
   const [doc, people, requests] = await db.batch<DocAccessRow | InviteRow | RequestRow>([
-    db.prepare("SELECT title, link_access, comments_enabled FROM docs WHERE id = ? AND deleted_at IS NULL").bind(docId),
+    db.prepare("SELECT title, link_access FROM docs WHERE id = ? AND deleted_at IS NULL").bind(docId),
     db
       .prepare("SELECT email, role, created_at FROM doc_invites WHERE doc_id = ? ORDER BY created_at, email")
       .bind(docId),
@@ -1839,13 +1852,15 @@ export async function readAccess(
     : null;
 }
 
-type DocAccessRow = { title: string; link_access: LinkAccess; comments_enabled: number };
+type DocAccessRow = { title: string; link_access: LinkAccess };
 
 /**
  * Set a live document's mode. True only when this call changed it: false means
  * the document already had that mode, or the principal manages no such
  * document. A repeat is therefore not a change, which is what lets the caller
  * record an access event only for a real one.
+ *
+ * Callers rewrite the manifest (src/manifest.ts).
  */
 export async function setLinkAccess(
   db: D1Database,
@@ -1890,6 +1905,8 @@ export async function setLinkAccess(
  * in the same batch, so the list and the requests can never show one address in
  * both. The delete runs only when the address is on the list afterwards, so a
  * full list leaves the request where the owner can still see it.
+ *
+ * Callers rewrite the manifest (src/manifest.ts).
  */
 export async function insertInvite(
   db: D1Database,
@@ -1898,7 +1915,7 @@ export async function insertInvite(
   email: string,
   atMs: number,
   maxPeople: number,
-  role: InviteRole = "comment",
+  role: InviteRole = DEFAULT_ROLE,
   maxPerOwnerPerDay: number = MAX_NEW_INVITES_PER_OWNER_PER_DAY,
   windowMs: number = INVITE_WINDOW_MS,
 ): Promise<boolean> {
@@ -2000,6 +2017,8 @@ export async function deleteAccessRequest(
 /**
  * Change the role of an address already on a live document's list. True only
  * when the role actually changed, so naming the role it already has is a repeat.
+ *
+ * Callers rewrite the manifest (src/manifest.ts).
  */
 export async function setInviteRole(
   db: D1Database,
@@ -2024,6 +2043,8 @@ export async function setInviteRole(
 /**
  * Remove an address from a live document's list. True only when this call
  * removed it; removing an absent one is fine and reports false.
+ *
+ * Callers rewrite the manifest (src/manifest.ts).
  */
 export async function deleteInvite(
   db: D1Database,

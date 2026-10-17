@@ -1152,9 +1152,12 @@ describe("the D1 publication aggregate", () => {
       (await env.DB.prepare("SELECT n FROM storage_usage WHERE doc_id = ?").bind(withdrawn).all())
         .results,
     ).toEqual([]);
-    expect((await env.DOCS.list({ prefix: `docs/${withdrawn}/` })).objects).toEqual([]);
+    // Only the tombstone manifest is left of the withdrawn doc.
+    expect((await env.DOCS.list({ prefix: `docs/${withdrawn}/` })).objects.map((o) => o.key)).toEqual([
+      `docs/${withdrawn}/manifest.json`,
+    ]);
     expect(await env.DOCS.list({ prefix: `docs/${kept}/` })).toMatchObject({
-      objects: [expect.anything()],
+      objects: [expect.anything(), expect.anything()],
     });
   });
 

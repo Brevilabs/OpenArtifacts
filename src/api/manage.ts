@@ -22,7 +22,8 @@ import { listPublisherDocs, softDeleteDoc, type DocListCursor, type DocListRow }
 import { docNotFound, errorResponse } from "../errors.js";
 import { isDocId } from "../ids.js";
 import { releaseStorage } from "../storage-quota.js";
-import { docObjectPrefix } from "../storage.js";
+import { writeManifest } from "../manifest.js";
+import { docObjectPrefix, manifestObjectKey } from "../storage.js";
 import { publicDocUrl } from "../urls.js";
 
 /** Docs per page when the caller names no `limit`. */
@@ -58,22 +59,32 @@ export interface DeleteDeps {
  * can hold more than a page of versions — 100 pushes a day compounds — so this
  * pages rather than assuming one listing covers it.
  */
-async function deleteDocObjects(env: Env, docId: string, objectBatch: number): Promise<void> {
+async function deleteDocObjects(
+  env: Env,
+  docId: string,
+  objectBatch: number,
+  keepManifest: boolean,
+): Promise<void> {
   const prefix = docObjectPrefix(docId);
   let cursor: string | undefined;
 
   do {
     const listing = await env.DOCS.list({ prefix, limit: objectBatch, cursor });
-    if (listing.objects.length > 0) {
-      await env.DOCS.delete(listing.objects.map((object) => object.key));
-      const versions = listing.objects.flatMap((object) => {
+    // The manifest is the tombstone: it stays so a rebuild can answer 410.
+    const objects = keepManifest
+      ? listing.objects.filter((object) => object.key !== manifestObjectKey(docId))
+      : listing.objects;
+    if (objects.length > 0) {
+      await env.DOCS.delete(objects.map((object) => object.key));
+      const versions = objects.flatMap((object) => {
         const match = /^v([1-9][0-9]*)\.html$/.exec(object.key.slice(prefix.length));
         return match ? [Number(match[1])] : [];
       });
       await releaseStorage(env.DB, docId, versions);
     }
     // Cursors are positions in the key order, and everything before this one is
-    // already gone, so resuming from it never revisits a deleted key.
+    // already gone (bar a kept manifest), so resuming from it never revisits a
+    // deleted key.
     cursor = listing.truncated ? listing.cursor : undefined;
   } while (cursor !== undefined);
 }
@@ -108,6 +119,22 @@ export async function deleteDoc(
     return docNotFound(docId);
   }
 
+  // The tombstone, written before the sweep, which leaves it in place. A failure
+  // is not surfaced: the retry a 500 invites answers 404, so it could not repair
+  // anything. Instead the sweep also removes manifest.json, so a partial outage
+  // leaves no live manifest and a rebuild closes the doc (private, no owner)
+  // rather than reviving it. If both the put and the sweep fail (a full R2
+  // outage) the old manifest and bytes remain and a rebuild could restore the
+  // doc; the "delete left a stale manifest" and "delete left objects behind"
+  // logs identify it.
+  let keepManifest = true;
+  try {
+    await writeManifest(env, docId);
+  } catch (error) {
+    keepManifest = false;
+    console.error("delete left a stale manifest", { docId, error });
+  }
+
   // Recorded before the R2 sweep, not inside it: the doc is withdrawn once the
   // row is marked, and the handler answers 204 even if the sweep fails.
   analytics.record({ name: "document_unshared", docId, atMs: now, ownerId: owner });
@@ -123,7 +150,7 @@ export async function deleteDoc(
   }
 
   try {
-    await deleteDocObjects(env, docId, deps.objectBatch ?? OBJECT_BATCH);
+    await deleteDocObjects(env, docId, deps.objectBatch ?? OBJECT_BATCH, keepManifest);
   } catch (error) {
     // Past this point the doc is withdrawn from every reader whatever R2 does,
     // so answering anything but 204 would be a lie in the direction that costs

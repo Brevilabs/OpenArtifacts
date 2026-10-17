@@ -466,6 +466,70 @@ merge corrects them.
 All changes ship through a pull request; never push to `main`.
 
 
+## Rebuilding D1 from R2
+
+Every document keeps a `docs/{docId}/manifest.json` beside its versions: its
+owner, title, access mode, comments switch, timestamps, version counter and
+invite list, rewritten after every change to them and left in place as the
+tombstone when the document is withdrawn (the sweep removes it if the tombstone
+put fails). It is what makes the document rows of
+D1 rebuildable from the bucket. It does **not** cover accounts, sessions, owner
+links, the publishers cache, access requests or comments (the comments object
+snapshots its own `threads.json`). For those, and for anything within 30 days,
+D1 Time Travel (`wrangler d1 time-travel restore`) is the first resort; this is
+the fallback when it cannot be used.
+
+**One-time backfill, after the first deploy that writes manifests.** Documents
+that existed before it have none. With the Worker's `ADMIN_API_KEY`, call the
+temporary route until it stops returning a `cursor`:
+
+```bash
+curl -s -X POST -H "authorization: Bearer $ADMIN_API_KEY" \
+  "https://api.openartifacts.ai/admin/v1/manifests/backfill"
+# then again with ?cursor=<the cursor it returned>, until none comes back
+```
+
+Each call writes 15 documents (sized for the 50 subrequests of a Workers Free
+invocation), so a few hundred documents is a few dozen calls. It writes a manifest
+for every row, withdrawn documents included, and is safe to repeat. Spot-check
+three, including a private one and a withdrawn one:
+`npx wrangler r2 object get symposium-docs/docs/<docId>/manifest.json --remote --pipe`.
+The route is removed in the PR after this has been run.
+
+**Rebuild.** This is for a D1 that is lost, not damaged. A partial loss is
+restored with D1 Time Travel, never with this. Recreate the database (a new
+`wrangler d1 create` gets a new `database_id`: put it in `wrangler.jsonc` and
+redeploy), restore the schema (`wrangler d1 migrations apply`), confirm it is empty
+(`npx wrangler d1 execute symposium --remote --command "SELECT count(*) FROM docs"`
+must print 0), then:
+
+```bash
+rclone copy r2:symposium-docs/docs ./mirror/docs   # any copy that keeps last-modified times
+node scripts/rebuild-d1.mjs ./mirror > rebuild.sql
+npx wrangler d1 execute symposium --remote --file rebuild.sql
+```
+
+The script reads each manifest and lists each prefix's `v{n}.html` objects (the
+version log comes from them), and writes plain `INSERT` statements for `docs`,
+`doc_invites`, `versions` and the `storage_usage` ledger, so a database that
+already holds a row fails loudly instead of having a stale snapshot merged into
+live rows (an invite removed since the manifest was written would otherwise come
+back). It fails closed: an unknown or missing
+access mode becomes `invited`, an unknown role `view`, and a prefix with no readable
+manifest becomes a private document with no owner (the script names each one).
+Assign those by hand with `UPDATE docs SET owner = …`. A rebuild can therefore hide
+a document that should be public; it cannot publish one that should be private,
+with one exception. A full R2 outage during a delete can leave the old manifest
+and the bytes in place, and a rebuild would restore that withdrawn document.
+Before applying the rebuild SQL, search the Worker logs for `delete left a stale
+manifest` and `delete left objects behind`, and set `deleted_at` by hand for
+those documents. One whose sweep succeeded left no prefix, so the rebuild has no
+row for it: insert a withdrawn row by hand (any owner, `deleted_at` set) so its
+url still answers 410 rather than 404. A withdrawn document's version rows are not recovered, since
+its bytes are gone. A delete racing a snapshot writer whose own repair then fails
+can, rarely, leave a live manifest after the tombstone; nothing records that case,
+and the rebuild accepts it.
+
 ## Private sharing
 
 The Worker that introduces private sharing needs four settings made once, before
@@ -613,10 +677,15 @@ on the free Workers plan.
 
 1. Apply the D1 migration **before** the deploy:
    `npx wrangler d1 migrations apply symposium --remote`. `0015_comments.sql` adds
-   `docs.comments_enabled` (default `0`, so nothing turns on) and
-   `accounts.display_name`. It is additive and backward compatible: the Worker
-   that is live while it applies ignores both columns. The deploy workflow
-   refuses to ship over an unapplied migration.
+   `docs.comments_enabled` (no longer read since the roles revision: the roles
+   are the only control, and the column is dropped in a later cleanup) and
+   `accounts.display_name`. `0016_has_threads.sql` adds `docs.has_threads`
+   (default `0`; the first thread sets it). Both are additive and backward
+   compatible: the Worker that is live while they apply ignores the columns. Apply
+   `0016` before the deploy that reads it. `0016` also marks `has_threads` on
+   every document whose `comments_enabled` is `1`, the only ones a thread could
+   have been written to. It leaves the invites alone: step 3 lowers them. The
+   deploy workflow refuses to ship over an unapplied migration.
 2. Deploy. `wrangler deploy` applies the Durable Object itself: the `COMMENTS`
    binding in `durable_objects.bindings` and the
    `migrations: [{"tag": "v1", "new_sqlite_classes": ["DocComments"]}]` block in
@@ -624,8 +693,44 @@ on the free Workers plan.
    exist for a Worker that binds it to upload at all. It is not a separate command,
    and it is not part of the D1 migrations. A self-hoster adds both blocks to their
    config and nothing else. Keep the `tag` (and add later migrations with new tags);
-   never edit a tag that has been applied.
-3. The comment limiters are in the same deploy; see below.
+   never edit a tag that has been applied. Note when the new version went live, in
+   milliseconds since the epoch, as `T1`.
+3. Right after, on every deployment, settle what the switch meant. `0014`
+   defaulted every invite to `comment`, which meant nothing while a document's
+   comments were off; the new Worker reads it as a grant. Lower to `view` every
+   invitee of a document whose `comments_enabled` is `0`, so nobody an owner
+   never meant to allow can comment; documents whose owner switched comments on
+   keep their roles. The old Worker stayed live until `T1`, inviting and
+   switching, and the new one never writes `comments_enabled`, so after `T1` the
+   column is the owner's last word. The invite update is bounded by `T1`, so it
+   leaves alone every person the new Worker added, and the `has_threads` update
+   covers a document switched on in the window. The last update turns every
+   switch off once both have read it, so a rollback to the previous Worker, which
+   still reads the switch, cannot let every signed-in reader comment again; it
+   shows no comments until the roll forward:
+
+   ```bash
+   npx wrangler d1 execute symposium --remote --command "UPDATE doc_invites SET role = 'view' WHERE created_at < T1 AND doc_id IN (SELECT id FROM docs WHERE comments_enabled = 0); UPDATE docs SET has_threads = 1 WHERE comments_enabled = 1; UPDATE docs SET comments_enabled = 0"
+   ```
+
+   Until this runs, an invitee left at `0014`'s default can comment, and a role an
+   owner raises through the new Worker before it runs, on a document whose
+   comments were off, is lowered with the rest; run it the moment `T1` is known.
+   Then mark the documents whose comments were switched off after they had
+   threads: `comments_enabled` no longer says so, but their `threads.json` does.
+
+   ```bash
+   npx wrangler d1 execute symposium --remote --json --command "SELECT id FROM docs WHERE has_threads = 0 AND deleted_at IS NULL" \
+     | jq -r '.[0].results[].id' | while read -r id; do
+       npx wrangler r2 object get "symposium-docs/docs/$id/threads.json" --remote --pipe < /dev/null > /dev/null 2>&1 \
+         && npx wrangler d1 execute symposium --remote --command "UPDATE docs SET has_threads = 1 WHERE id = '$id'" < /dev/null
+     done
+   ```
+
+   Last, rewrite every manifest from D1 with `POST /admin/v1/manifests/backfill` (under
+   **One-time backfill** above), since these updates change roles without
+   rewriting them, and a rebuild would otherwise bring back `comment`.
+4. The comment limiters are in the same deploy; see below.
 
 **The comment limiters.** Two more optional `ratelimits` bindings, on the same
 rule as the others (absent means no limit). `namespace_id` is unique across the
@@ -639,7 +744,8 @@ whole account:
 **Plans.** Comments are a plan feature: add `"comments": true` to the plans that
 should have them in your `PLAN_LIMITS` (Brevilabs: `pro` and `pro_lifetime`, not
 `free`). License keys whose plan may publish (`PLUS`, `BELIEVER`) have them
-without a flag. Nothing turns on by itself: each owner switches a document on.
+without a flag. Nothing turns on by itself: a page has comments once its owner
+gives a person **Can comment** or their agent comments.
 
 **Self-hosting.** The feature is on when the Worker has the `COMMENTS` binding and
 reader sign-in is configured ([Self-hosting](#self-hosting)). A deployment whose

@@ -1,7 +1,7 @@
 # Data model
 
 Every place this Worker keeps state, on one page: D1 tables, R2 keys, Durable
-Object storage, and the small rest. Current as of migration `0015_comments.sql`.
+Object storage, and the small rest. Current as of migration `0016_has_threads.sql`.
 
 > **Update this file in the same PR as any migration or storage-key change.**
 
@@ -38,10 +38,11 @@ doc keeps its row so its url answers 410.
 | `updated_at` | INTEGER | NOT NULL | Last landed push |
 | `deleted_at` | INTEGER | NULL | Set on withdrawal; tombstone, serves 410 |
 | `link_access` | TEXT | NOT NULL, `'anyone'` | CHECK in (`anyone`, `invited`); `invited` means sign in and be on `doc_invites` or own it |
-| `comments_enabled` | INTEGER | NOT NULL, 0 | Owner's switch for inline comments |
+| `comments_enabled` | INTEGER | NOT NULL, 0 | Unread since the roles revision (the owner's switch is gone); set to 0 everywhere by the deploy's reconciliation (`docs/deploying.md`), and dropped in a later cleanup |
+| `has_threads` | INTEGER | NOT NULL, 0 | Set before the first thread is written, never cleared; rebuildable from `threads.json`. With a person at role `comment` or above it is "this page has comments" |
 
 - Indexes: `docs_by_owner_live (owner, created_at DESC, id DESC) WHERE deleted_at IS NULL` (list and live-doc quota), `docs_by_owner (owner)` (storage quota counts tombstones).
-- Written by: push (insert, version bump, title, `updated_at`), withdrawal (`deleted_at`), the Share and comments toggles. The only `DELETE` is the rollback of an empty create.
+- Written by: push (insert, version bump, title, `updated_at`), withdrawal (`deleted_at`), the Share toggles and the first thread (`has_threads`). The only `DELETE` is the rollback of an empty create.
 
 #### `versions`
 
@@ -226,18 +227,19 @@ only keys are under one prefix per doc.
 | Key | Content | Written | Deleted | Content type |
 | --- | --- | --- | --- | --- |
 | `docs/{docId}/v{n}.html` | The publisher's own bytes for version `n`, no injections | Once per push, before the `versions` row | Withdrawal (prefix scan) or a push that lost a race with it | `text/html; charset=utf-8` |
+| `docs/{docId}/manifest.json` | Snapshot of the doc's D1 state: `{ schema: 1, docId, owner, title, linkAccess, commentsEnabled, hasThreads, createdAt, updatedAt, deletedAt, latestVersion, people: [{ email, role, createdAt }] }` (`src/manifest.ts`); `commentsEnabled` is unread since the roles revision and kept for older rebuilds, and this rebuild ignores it | Rewritten from D1 and awaited after access and invite writes, whose request fails if the put does; best effort (logged) on create and update; the tombstone on delete | Withdrawal leaves it as the tombstone, and removes it only if the tombstone put fails | `application/json` |
 | `docs/{docId}/threads.json` | Snapshot of the comment threads: `{ docId, schema: 1, threads }`, each thread with its comments and per-version anchors | Overwritten by `DocComments` after every mutation, best effort | Withdrawal (same prefix scan) | `application/json` |
 
 - Version objects are immutable: never rewritten, `n` is reserved atomically in D1 first. The robots meta, favicon, social card and bylines are injected on the way out by `renderServedHtml`, never stored.
 - `threads.json` is not read at runtime; it exists to rebuild the Durable Object from.
-- No custom metadata on any object. No manifest yet (see below).
-- Withdrawal lists and deletes the whole `docs/{docId}/` prefix, not just `versions` rows.
+- No custom metadata on any object.
+- Withdrawal lists and deletes the whole `docs/{docId}/` prefix, not just `versions` rows, except for the manifest tombstone.
 
 ## Durable Objects
 
 One class, `DocComments`, bound as `COMMENTS`, SQLite-backed (migration tag `v1`).
 Keyed by `idFromName(docId)`, so one object per document. It keeps threads, so D1
-carries only `docs.comments_enabled`. Source: `src/comments/object.ts`.
+carries only `docs.has_threads`. Source: `src/comments/object.ts`.
 
 | Table | Key | Columns |
 | --- | --- | --- |
@@ -264,7 +266,6 @@ carries only `docs.comments_enabled`. Source: `src/comments/object.ts`.
 
 ## What is the system of record
 
-- **D1 is the only record** of who owns a doc, its title, whether it was withdrawn, and who may read it. Treat it as a system of record, not a cache. Only `publishers` (and the plan columns on `accounts`) cache something held elsewhere.
-- **R2 holds bytes only**: the publisher's HTML per version, plus the `threads.json` snapshot. A rebuild from R2 could not recover owner, title, timestamps or access, and could not tell a withdrawn url (410) from one that never existed (404).
+- **Document state is rebuildable from R2**: `manifest.json` carries owner, title, timestamps, deletion, access and the invite list, the version objects carry the version log, and `has_threads` comes from the manifest or, for one written before it, from a `threads.json` under the prefix. `src/rebuild.ts` turns them back into `docs`, `doc_invites`, `versions` and `storage_usage` rows, and fails closed (`docs/deploying.md`).
+- **D1 is still the only record** of accounts, sessions, owner links, the publishers cache and pending access requests; D1 Time Travel (30 days) covers them. Only `publishers` (and the plan columns on `accounts`) cache something held elsewhere.
 - **The Durable Object is the only live record of comments**; `threads.json` is its backup.
-- The planned fix, a per-doc `manifest.json` snapshot written after each push and left as a tombstone on delete, is in CLAUDE.md under "Owed before there is much data" and `docs/cost-at-scale.md` section 6. The rebuildability claims in older comments and `wrangler.jsonc` do not hold until it ships.

@@ -42,10 +42,21 @@ so Bob gets the ordinary invite email. **Decline** removes the request and tells
 Bob nothing. Removing Alice takes effect on her next request. Switching back to
 **Anyone with the link** makes the same url public for everyone, with no sign-in.
 
-**Public documents did not change.** `link_access` defaults to `anyone` for every
-document, old and new, and the public path serves the same url, headers, caching
-and bytes it always did, with no sign-in and no cookie. The one addition to a
-public page is the top bar with its **Share** button, described below.
+**Public documents did not change.** `link_access` is `anyone` for every document
+made through `POST /api/v1/docs`, old and new, and the public path serves the same
+url, headers, caching and bytes it always did, with no sign-in and no cookie. The
+one addition to a public page is the top bar with its **Share** button, described
+below.
+
+**The CLI's default for a new page is private (2026-10-15).** For the CLI and its
+skill, a new page now starts private; the server and the HTTP contract are
+untouched, and Copilot is not changed by this. A page that was ever public may
+already have been copied by whoever saw it, and switching it private later cannot
+recall those copies. `--public` is the explicit public route and `--private` never
+falls back to public; the CLI's package README has the flags and the fallback. The
+skill reads `limits.privateSharing` from `openartifacts account` and never offers
+private to a plan without it. The owner of a private page opens it with
+`openartifacts open <docId>`, which uses `POST …/open`.
 
 ## The constraint everything else follows from
 
@@ -249,18 +260,19 @@ Two predicates, named once, so every surface asks the same question. They live i
   it, through `findReadableDoc`. If any of them used a different rule, a reader
   could be sent from one to the other forever.
 - **`canManage(principal, doc)`**: the principal is in the owner scope. Access
-  changes, the share page, turning comments on, and resolving any thread.
+  changes and roles, the share page, and resolving any thread.
 
 **Every surface answers "not `canRead`" as `404`, never `403`**, and the label
 hosts, `/open`, `/share` and the request route all keep the convention that a
 document you may not see is indistinguishable from one that never existed.
 
-`canComment` is built (`src/comments/access.ts`): `canRead`, and comments are on
-for the document, and the owner's plan has them, and the principal is the owner or
-an invited account whose `role` is `comment` (on an `anyone` document, any
-signed-in reader, as [comments.md](comments.md) has it). `doc_invites.role` is
-`view` or `comment`, defaulting to `comment`; a `view` invitee reads the threads
-and cannot write. Both the popover and the share page set it per person.
+`canComment` is built (`src/comments/access.ts`): `canRead`, and the owner's plan
+has comments, and the principal is the owner or an account on the document's list
+whose `role` is at least `comment` (`src/roles.ts`; link access plays no part, as
+[comments.md](comments.md) has it). `doc_invites.role` is `view` or `comment`,
+defaulting to `comment`; a `view` invitee reads the threads and cannot write. Both
+the popover and the share page set it per person, from the roles the owner's plan
+grants (`Access.roles`).
 There is no edit role or manage role: the owner alone updates a document, through
 the push route.
 
@@ -470,8 +482,9 @@ that must never be on a page whose scripts the author writes.
 - **It tells the page around it nothing about its viewer.** It has one fixed
   height (at most 480 px) and scrolls inside it. It posts the page exactly three
   messages: `ready`, once, before it reads its storage; `close`, only after a
-  click or key press inside it; and `comments`, only after the owner flips the
-  Comments switch inside it, so the page asks for its threads again. That one
+  click or key press inside it; and `people`, only after the owner's own click
+  inside it (an add, a role change, or closing it), so the page asks for its
+  threads again. That one
   tells the page its visitor is the owner, but only on the owner's own click. Every public page on `openartifacts.site` shares the
   frame's storage partition, and any of them can embed the frame for any id it
   knows; a size report, a focus move or an early message would tell that page, with
@@ -683,8 +696,9 @@ Google or GitHub (both halves of the OAuth pair) or emailed codes (the `EMAIL`
 binding and `EMAIL_FROM`). When it is not, `POST /api/v1/private-docs`, every
 `…/access` route, `…/open`, `/open/*`, `/share/*`, `/signin/*` and `/embed/*` answer
 `404` exactly as a Worker that predates private sharing does, and served pages
-carry no top bar and no page-script tag: the header byline stays as it was. Every client already knows what to do: `publish --private`
-reports that the server does not support private documents and creates nothing.
+carry no top bar and no page-script tag: the header byline stays as it was. Every client already knows what to do: `publish` and `publish --private`
+report that the server does not support private documents and create nothing, and
+`publish --public` publishes a public page.
 No half-configured state exists. `GET …/html` is not part of the family and keeps
 working, and `GET /api/v1/docs` still reports each document's stored `linkAccess`.
 
@@ -783,13 +797,14 @@ subdomain needs a paid certificate for `*.docs.example.net`.
   only the reader view, or the none view, in the popover and on the share page,
   which tells them to manage access in Copilot.
 
-## State owed to the manifest
+## State in the manifest
 
-`link_access`, the invite list and the pending requests live only in D1, like the
-title and the deleted flag. They belong in the per-document `manifest.json` that
-[CLAUDE.md](../CLAUDE.md) owes, with the same debt: until it exists, a rebuild
-from R2 would turn every private document public, so treat D1 as the system of
-record for them.
+`link_access` and the invite list, with the title, the owner, the comments switch
+and the deleted flag, are copied into the per-document `manifest.json` after every
+change, so a rebuild from R2 keeps a private document private and a withdrawn one
+410, and fails closed otherwise (see
+[Rebuilding D1 from R2](deploying.md#rebuilding-d1-from-r2)). Pending access
+requests are not copied: they are transient, and a requester asks again.
 
 ## Rollback floor
 

@@ -95,7 +95,7 @@ export function presentThread(thread: ThreadRecord, label: (actor: Actor) => Lab
 export async function presentThreads(
   env: Env,
   doc: { docId: string; title: string; ownerAccount: string },
-  listed: { version: number; latestVersion: number | null; threads: ThreadRecord[] },
+  listed: { version: number; latestVersion: number | null; commentable: boolean; threads: ThreadRecord[] },
   viewer: Viewer | null,
 ) {
   const label = await labeller(env, doc.ownerAccount, listed.threads);
@@ -104,6 +104,7 @@ export async function presentThreads(
     title: doc.title,
     version: listed.version,
     latestVersion: listed.latestVersion,
+    commentable: listed.commentable,
     threads: listed.threads.map((thread) => presentThread(thread, label, viewer)),
     ...(viewer === null ? {} : { viewer: { canComment: viewer.canComment, canManage: viewer.canManage, name: viewer.name } }),
   };

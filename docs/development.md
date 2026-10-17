@@ -106,7 +106,9 @@ routes, `/open`, `/share`, `/signin` and `/embed/*` answer `404`, exactly as on 
 server that has no sign-in configured. The test suite covers the whole flow,
 including the sign-in pages, the label hosts, the share page and the Share popover's
 frame, popup and token, with the hosts set per test.
-Trying it by hand needs a deployment: see
+A plain `openartifacts publish` therefore publishes nothing locally, as on any server
+with no private documents; `openartifacts publish --public` publishes by hand.
+Trying private sharing by hand needs a deployment: see
 [Self-hosting](deploying.md#self-hosting) under Private sharing.
 
 **The top bar cannot be seen from `npm run dev`.** The bar and its **Share**
@@ -132,7 +134,7 @@ Chrome installed (they drive the machine's own through `playwright-core`; nothin
 is downloaded). `OA_HEADED=1` shows the window and `OA_SCREENSHOTS=dir` writes
 screenshots to `dir` (the comments test writes the margin, the draft card, a
 resolved and an orphaned thread, the Can-view reader, the phone bottom sheet and
-the popover's Comments switch). The comments test uses the same harness plus the
+the popover's role select). The comments test uses the same harness plus the
 `COMMENTS` Durable Object binding, and covers selecting and posting through the
 frame after a real sign-in, card placement, highlights that leave the author's DOM
 untouched, the bar's count and toggle, the narrow-viewport sheet, and an orphaned
@@ -142,7 +144,7 @@ thread after a version without its text.
 relies on the one before): the owner and the owner's agent drive the real
 `openartifacts` CLI code in-process against the Worker, and Alice, Bob, a
 stranger, a signed-out reader, a Free-plan owner and a phone drive Chrome, from
-publishing a private page and turning Comments on, through a comment, a reply and
+publishing a private page and granting Alice Can comment, through a comment, a reply and
 a resolve across versions, to the unshare. Its Worker is wrapped so the `EMAIL`
 binding hands each message to the test, which asserts who was told and what the
 email carried.

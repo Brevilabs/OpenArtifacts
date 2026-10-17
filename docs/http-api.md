@@ -184,7 +184,6 @@ GET    /api/v1/docs/{docId}/threads?state&since&v       → 200 Threads
 POST   /api/v1/docs/{docId}/threads  {anchor, body}     → 201 {threadId, commentId, anchorStatus}
 POST   /api/v1/docs/{docId}/threads/{threadId}/comments | resolve | reopen
 DELETE /api/v1/docs/{docId}/comments/{commentId}        → 204
-PUT    /api/v1/docs/{docId}/settings  {comments}        → 200 {docId, comments}
 PUT    /api/v1/account  {displayName}                   → 200 {displayName}
 GET    /api/v1/tokens                         → 200 {tokens[]}
 DELETE /api/v1/tokens/{tokenId}               → 200 {tokenId, remaining}
@@ -533,6 +532,7 @@ answers `200` with the same list. An `Access` response is `no-store`.
  "url": "https://openartifacts.site/d/9f2k4mvq7t0xbz3n",
  "linkAccess": "invited",
  "email": true,
+ "roles": ["view", "comment"],
  "people": [{"email": "alice@acme.com", "role": "comment", "addedAt": 1785000000000}],
  "requests": [{"email": "bob@other.com", "requestedAt": 1785000100000}]}
 ```
@@ -540,15 +540,19 @@ answers `200` with the same list. An `Access` response is `no-store`.
 `url` is always the canonical link, never a grant. `email` says whether this
 server can send invite and request emails, not that one was delivered (a
 rate limit or the mail service can drop one): when it is `false` the owner
-shares the link themselves. `role` is `"view"` or `"comment"`; only `comment` may post threads
-(see [Comments](#comments)). `requests` are the addresses that asked to open the document and
+shares the link themselves. `role` is one of an ordered ladder, `"view"` then
+`"comment"`; a person whose role is at least `comment` may post threads, on a public or a
+private document (see [Comments](#comments)). `roles` (an added field) is the roles
+the owner may grant now, in ladder order; it is empty, with an `upgradeUrl` beside it
+when the server has one and the caller signed in with an account, when the plan allows none, and absent where the server has no
+comments. `requests` are the addresses that asked to open the document and
 have not been answered.
 
 - `PUT …/access` takes `{"linkAccess": "anyone" | "invited"}`. Switching to
   `anyone` keeps the list and the requests, and switching back restores them.
 - `PUT …/access/people/{email}` adds one address (URL-encode the `@`; it is
   lowercased and trimmed). The body is optional: `{"role": "view" | "comment"}`,
-  default `comment`; any other body, including an unknown role, is `400
+  default `comment`, or `view` on a plan that grants no higher role and on a server without comments; any other body, including an unknown role, is `400
   bad_request`. The call that adds an address sends it an invite email where the
   server has email; a repeat does not, and a repeat that names a different role
   updates the role. At most 100 people per document; the 101st is `400`.
@@ -589,7 +593,12 @@ except `…/html` answers `404 not_found`, like a server that predates it.
 
 On write, and only on the operations that spend it: `POST /api/v1/private-docs`,
 making a document invited-only that is public now (`PUT …/access` from `anyone`
-to `invited`), and adding a person, which includes approving a request. Naming
+to `invited`), and adding a person or changing a person's role, which includes
+approving a request: the plan must include the flag of the role granted (`view`
+needs `privateSharing`, `comment` needs `comments` as well; every paid plan has both).
+The `402` names the flag the plan lacks: `privateSharing` when it lacks private sharing,
+which adding anyone needs, otherwise `comments` for a person at `comment`.
+Naming
 the mode a document already has is a repeat and never checks. So is adding an
 address that is already on the list with no role or the role it already has: it
 answers `200` with the current `Access` on any plan, and sends no email. Removing people,
@@ -703,9 +712,9 @@ writes. `origin` is the page's own origin, which the script fills in.
   gets, never `403`.
 - *It tells the page around it nothing about its viewer.* The frame has one fixed
   size, and posts only `ready`, before it reads its storage, `close`, after a
-  click inside it, and `comments`, after the owner flips the Comments switch inside
-  it (which tells the page that this visitor is the owner, but only on that
-  click). On a public document any page on `openartifacts.site` can embed
+  click inside it, and `people`, after the owner's own click inside it: an add, a
+  role change, or closing it (which tells the page that this visitor is the owner,
+  but only on that click, and only for an owner whose plan grants Can comment). On a public document any page on `openartifacts.site` can embed
   the frame, and they share its storage.
 - It sets no cookie, no `Access-Control-Allow-*` header and no
   `X-Frame-Options`; it is `no-store`.
@@ -761,7 +770,7 @@ request email's **Review request** and the url `share` prints.
 | --- | --- |
 | No session, a live public document | The title, "Only the owner can change who can open this.", **Copy link**, and "Is this your page? **Sign in to manage**" (`?signin` selects the sign-in page) |
 | No session, anything else, or `?signin` | The sign-in page, the same bytes for an invited-only, an unknown and a deleted id, returning to `/share/{docId}` |
-| A signed-in account that owns the document | **Link access**, **Add people**, **Requests** with **Approve** and **Decline**, **Who has access** with **Remove**, **Copy link**, and, after a switch from public to private, the line "People who opened it while it was public may have kept a copy." |
+| A signed-in account that owns the document | **Link access**, **Add people**, **Requests** with **Approve** and **Decline**, **Who has access** with **Remove** and, where the plan grants two or more roles, a role select beside each person (a plan that grants none sees a plan line instead of **Add people**, **Approve** and the select), **Copy link**, and, after a switch from public to private, the line "People who opened it while it was public may have kept a copy." |
 | A signed-in account that may read it | The title, the same sentence, **Copy link**, **Use another account** and a line telling a Copilot owner to manage access in Copilot |
 | A signed-in account that may not, unknown, deleted | The unavailable page as `/open`, `404`, never `403` |
 
@@ -802,7 +811,6 @@ POST   /api/v1/docs/{docId}/threads/{threadId}/comments  {body, version?}    →
 POST   /api/v1/docs/{docId}/threads/{threadId}/resolve  {version?}           → 200 Thread
 POST   /api/v1/docs/{docId}/threads/{threadId}/reopen   {version?}           → 200 Thread
 DELETE /api/v1/docs/{docId}/comments/{commentId}                             → 204
-PUT    /api/v1/docs/{docId}/settings  {comments}                             → 200 {docId, comments}
 PUT    /api/v1/account  {displayName}                                        → 200 {displayName}
 ```
 
@@ -818,14 +826,13 @@ other method or path under a document is `404 not_found`, as before.
 | `POST …/threads`, `POST …/comments` | Anyone who can comment (below). |
 | `POST …/resolve`, `POST …/reopen` | The document's owner, or the thread's author while they can still comment. |
 | `DELETE …/comments/{commentId}` | The comment's author, on any document they can still read. |
-| `PUT …/settings` | The document's owner. |
 | `PUT /api/v1/account` | An account token, or a license key whose owner is linked to an account (it names that account). An unlinked key has no account to name: `404 not_found`. Like every route in this section, it answers `404 not_found` on a server without reader sign-in or the `COMMENTS` binding. |
 
-**Who can comment.** The caller can read the document, the owner has turned
-comments on, the owner's plan includes comments, and the caller is the owner, an
-invited account whose `role` is `comment`, or, on a document whose `linkAccess`
-is `anyone`, any signed-in account or key. A reader invited with `role: "view"`
-can read the threads and nothing more. Readers and commenters never pay: only the
+**Who can comment.** The caller can read the document, the owner's plan includes
+comments, and the caller is the owner or an account on the document's people list
+whose role is at least `comment`. `linkAccess` plays no part: on a public page,
+people who are not on the list can read the threads and nothing more. A reader
+invited with `role: "view"` can read the threads and nothing more. Readers and commenters never pay: only the
 document owner's plan is checked, so a free reader can comment on a Pro owner's
 page, and an owner whose plan lapses keeps their threads readable and stops
 accepting new writes. License keys whose plan may publish (`PLUS`, `BELIEVER`) and
@@ -834,14 +841,9 @@ does not. Which plans qualify is configuration, not part of this contract. An
 author's identity survives linking a license key to an account: a comment written
 by the key stays the account's.
 
-**Turning comments on.** `PUT …/settings` takes `{"comments": true | false}` and
-nothing else (`400 bad_request` for any other body). Turning it on needs the
-owner's plan (`402 limit_reached`, `limit: "comments"`, with an `upgrade_url` for
-an account); turning it off never does, and deletes nothing. Naming the state the
-document is already in is a repeat and answers `200`. Comments are off for every
-document until the owner turns them on. `GET …/access` and `PUT …/access…` carry
-the switch as `"comments": true | false` in the `Access` response (an added
-field).
+`Access` carries `roles`, the roles the owner may grant now in ladder order, empty
+with an `upgradeUrl` (account callers only) when the plan allows none, and absent where the server has no
+comments.
 
 **`GET …/html` is now readable by anyone who can read the document**, not only
 the owner, so a reviewer's agent can quote the page it was invited to. The
@@ -928,23 +930,22 @@ that comment.
 A document holds at most **500 threads** and **2,000 comments**; past that a
 write is `402 limit_reached` with `limit: "threads"` or `limit: "comments"` and no
 `upgrade_url`. A principal may write **30 comments a minute** (create, reply,
-resolve and reopen share the allowance; delete and the settings switch do not),
+resolve and reopen share the allowance; delete does not),
 else `429 quota_exceeded` with `Retry-After: 60`. A write is checked in this
-order. A write refused at steps 1 to 5 never spends the rate limit:
+order. A write refused at steps 1 to 4 never spends the rate limit:
 
 1. The caller can read the document, and comments are available on this server:
    else `404`. A deleted document is `404`, and its comment object refuses writes
    forever.
-2. Comments are on: else `409 comments_off` to someone who manages the document
-   and `404` to everyone else.
-3. The caller's role allows writing (owner, invited `comment`, or signed in on an
-   `anyone` document): else `404`. A `view` invitee gets `404`, never `403`.
-4. The owner's plan has comments: else `402 limit_reached` (`limit: "comments"`) to
+2. The caller's role allows writing (the owner, or a listed account at role
+   `comment` or above): else `404`. A `view` invitee, and anyone not on the list,
+   gets `404`, never `403`.
+3. The owner's plan has comments: else `402 limit_reached` (`limit: "comments"`) to
    the owner and `404` to everyone else.
-5. A person has a display name: else `409 name_required`. Agents are exempt, being
+4. A person has a display name: else `409 name_required`. Agents are exempt, being
    named after their account. `PUT /api/v1/account` (or the frame's equivalent)
    sets it: trimmed, 1 to 64 characters, no control characters, else `400`.
-6. The rate limit.
+5. The rate limit.
 
 A write that passes the rate limit and is then refused for its content (a malformed
 or over-long body or quote, `anchor_not_found`, a `version` that does not exist, the
@@ -959,9 +960,8 @@ Anything else the caller may not see or do (another publisher's document, a
 neither the owner nor the thread's author) is `404 not_found`, indistinguishable
 from an id that never existed. Malformed JSON, an unknown field, a body over 4,000
 characters or a quote over 1,000 is `400 bad_request`. Reading and deleting ask
-only for read access and authorship, so a switch turned off or a lapsed plan never
-costs anyone their own words; reading with comments off is `409 comments_off` to
-the owner and `404` to everyone else.
+only for read access and authorship, so a lapsed plan never costs anyone their
+own words.
 
 ### Email
 
@@ -983,7 +983,10 @@ GET|HEAD https://{label}.openartifacts.site/d/{docId}/threads[?v={n}]    an invi
 ```
 
 The same `Threads` JSON, unauthenticated: no `viewer`, `canResolve` or `mine`, and
-the same bytes for every reader. It is what the page script reads to paint
+the same bytes for every reader. Every `Threads` response carries `commentable`
+(an added field): `true` when the owner's plan includes comments and a person on the
+list holds a role of at least `comment`, the same for every viewer. A document that
+has never had a thread answers `200` with an empty `threads` list. It is what the page script reads to paint
 highlights, and what an agent can fetch without a credential for a public
 document. It counts no view, is `Cache-Control: no-store`, `Content-Type:
 application/json`, carries the full serving header policy, and never sets a cookie
@@ -995,7 +998,7 @@ on the apex.
 - On a publisher's origin the grant cookie is required, and the label, deleted,
   public and `canRead` chain is the page's own. `?grant=` is never swapped here. No
   cookie or an unreadable document is `404` JSON.
-- An unknown id, comments off, comments unavailable, a malformed `v` and a version
+- An unknown id, comments unavailable, a malformed `v` and a version
   that does not exist are `404`; a deleted document is `410`, decided before the
   version so `?v=` cannot tell a deleted document from one that never had it.
 
@@ -1023,7 +1026,6 @@ GET    /embed/api/docs/{docId}/threads?state=&since=&v=      the token is option
 POST   /embed/api/docs/{docId}/threads
 POST   /embed/api/docs/{docId}/threads/{threadId}/comments | resolve | reopen
 DELETE /embed/api/docs/{docId}/comments/{commentId}
-PUT    /embed/api/docs/{docId}/settings                      the Share popover's switch
 PUT    /embed/api/account                                    the display name
 ```
 
@@ -1041,16 +1043,17 @@ cookie.
 
 **The page script's comment half.** `/embed/page.js` also does the following,
 inertly where it cannot. On the shared link `/d/{docId}` the top bar's **Share**
-link carries `data-comments="on"` or `"off"` (the owner's switch when the page was
-served; it is part of that page's validator and reaches readers within its 60
+link carries `data-comments="on"` or `"off"` (whether the page had comments to show
+when it was served: a person at `comment` or above, or a thread; it is part of that page's validator and reaches readers within its 60
 seconds), and on `"off"` the script makes no request. Beside it the link carries
 `data-version="n"`, the version that page is, and the script reads and writes
 comments at that version, so they stay with the text on screen when a push lands
 while the page is open or cached. A pinned `/d/{docId}/v{n}` page carries neither
 attribute, since it is immutable and its path names the version. Otherwise it fetches
-`/d/{docId}/threads[?v=n]` same-origin, and on a `404` does nothing more. The Share
-popover tells the page when its owner flips the switch, and the page then asks
-again. Otherwise it adds `💬 N` (open threads) beside **Share**,
+`/d/{docId}/threads[?v=n]` same-origin, and does nothing more unless the answer
+lists a thread or says `commentable`. The Share popover tells the page when its
+owner adds a person, changes a role or closes it, and the page then asks again and,
+from then on in that tab, treats its viewer as the owner and stays active. Then it adds `💬 N` (open threads) beside **Share**,
 paints highlights with `CSS.highlights` (it never changes the author's DOM), shows a
 **Comment** button over a selection, and embeds the comments frame: in the page's
 margin when at least 256 px are free beside the content, else as a bottom sheet
@@ -1072,12 +1075,12 @@ also checks the origin.
 | page → frame | `draft` | `{anchor \| null, top}`: a selection awaiting its comment |
 | page → frame | `focus` | `{threadId}` (empty clears) |
 | frame → page | `ready` | none |
-| frame → page | `viewer` | `{canComment}`, after every read of the frame's own: `true` when signed out (Comment is offered and asks to sign in), the server's answer when signed in |
+| frame → page | `viewer` | `{canComment}`, after every read of the frame's own: `false` when signed out, the server's answer when signed in |
 | frame → page | `changed` | none: refetch now |
 | frame → page | `focus` | `{threadId}` |
 | frame → page | `close` | none: hide the sheet or cancel the draft |
 | frame → page | `size` | `{height}`: how tall the margin's stacked cards need the column to be (margin mode) |
-| frame → page | `height` | `{px}`: the height of the overlay sheet's content (overlay mode) |
+| frame → page | `height` | `{px}`: the height of the overlay sheet's content (overlay mode); `0` means the frame has nothing to show and the page closes the sheet |
 | frame → page | `reveal` | `{top, height}`: where the focused card sits in the margin, so the page can scroll it into view |
 
 The frame prefers its own read (its token's, else the anonymous one a public
@@ -1093,23 +1096,23 @@ whether they may resolve a thread, whether a comment is theirs and whether they
 have set a display name. It learns nothing else about them, and no message in
 either direction carries a credential.
 
-**Signing in.** The frame's **Sign in to comment** runs the Share popover's flow
+**Signing in.** The margin's sign-in line runs the Share popover's flow
 (`/embed/sign-in`, `POST /embed/token`) and keeps the token under the same storage
-key, so one sign-in serves both frames. The Share popover's owner view gains a
-**Comments** switch (`PUT …/settings`) and a **Can view / Can comment** select on
-each person (`PUT …/access/people/{email}` with `{role}`), and the share page the
-same two controls as forms; neither is drawn where `COMMENTS` is unbound.
+key, so one sign-in serves both frames. The Share popover's owner view draws a
+select on each person whose options are `Access.roles` (`PUT …/access/people/{email}`
+with `{role}`), and the share page the same as a form; neither is drawn where
+`COMMENTS` is unbound, which leaves `roles` out.
 
 ### Old clients
 
 Copilot and CLI releases that predate comments never call these routes and are
 unaffected. A client that does, against a server that predates them, gets
-`404 not_found` on `…/threads` and `…/settings`, which it should read as "this
+`404 not_found` on `…/threads`, which it should read as "this
 server does not support comments". `PUT /api/v1/account` on such a server answers
 `404 not_found` to an account token but `401 unauthorized` to a license key,
 because that server's account routes take account tokens only. A license-key
 client should therefore decide whether comments are supported from the
-`…/threads` or `…/settings` `404`, never from that one status, and should not
+`…/threads` `404`, never from that one status, and should not
 treat the `401` as a revoked key. (On a current server an unlinked license key
 also gets `404` there, so that status alone does not prove the server lacks
 comments.)
@@ -1268,9 +1271,8 @@ exposes this API payload to a reader.
 | `gone` | 410 | Every request to the retired `api.symposium.md` host. The canonical API does not emit this code. |
 | `too_large` | 413 | `html` over 10MB. |
 | `quota_exceeded` | 429 | License-key publishing ceiling, device-flow rate limit, or the daily invite cap reached. |
-| `limit_reached` | 402 | Account-token publish would exceed a plan limit. Carries the exceeded limit's identifier (`limit`), current plan name (`plan`), and optional `upgrade_url` inside `error`. Also returned, for license keys as well as account tokens, for a private-sharing operation the plan does not include (`limit: "privateSharing"`). |
+| `limit_reached` | 402 | Account-token publish would exceed a plan limit. Carries the exceeded limit's identifier (`limit`), current plan name (`plan`), and optional `upgrade_url` inside `error`. Also returned, for license keys as well as account tokens, for adding a person or setting a role when the plan lacks that role's flag, and for a switch to `invited` (`limit: "privateSharing"`). |
 | `anchor_not_found` | 400 | A new comment's quote is not in the version it names. See [Comments](#comments). |
-| `comments_off` | 409 | A caller who manages the document used a comment route while comments are off. Everyone else gets `404`. |
 | `name_required` | 409 | A person (not an agent) with no display name tried to write a comment. |
 | `internal` | 500 | Our fault, including the license server being unreachable for a key we have never seen. |
 | `authorization_pending` | 400 | `POST /device/token`: nobody has approved the code yet. |

@@ -121,18 +121,27 @@ const api = (path, init = {}) =>
     headers: { authorization: `Bearer ${KEY}`, "content-type": "application/json", ...init.headers },
   });
 
-/** Publish as the owner, turn comments on, and return the doc id. */
+/** Publish as the owner, give the readers who comment in these tests a Can comment role, and return the doc id. */
 async function publish(title, body, { route = "docs", comments = true, html } = {}) {
   const response = await api(`/api/v1/${route}`, { method: "POST", body: JSON.stringify({ title, html: html ?? page(body) }) });
   assert.equal(response.status, 201, await response.clone().text());
   const { docId } = await response.json();
-  if (comments) await setComments(docId, true);
+  if (comments) await grantCommenters(docId);
   return docId;
 }
 
-async function setComments(docId, on) {
-  const response = await api(`/api/v1/docs/${docId}/settings`, { method: "PUT", body: JSON.stringify({ comments: on }) });
-  assert.equal(response.status, 200, await response.clone().text());
+/**
+ * There is no switch: a page has comments once someone holds Can comment on it.
+ * Alice, Carol and Dan are the readers these tests comment as; Bob is never given a role
+ * here, so he reads and cannot write.
+ */
+async function grantCommenters(docId) {
+  for (const email of ["alice@example.com", "carol@example.com", "dan@example.com"]) {
+    await db
+      .prepare("INSERT OR IGNORE INTO doc_invites (doc_id, email, role, created_at) VALUES (?, ?, 'comment', ?)")
+      .bind(docId, email, Date.now())
+      .run();
+  }
 }
 
 async function update(docId, body, head = "") {
@@ -320,10 +329,20 @@ test("a selection offers Comment, the frame posts after sign-in, and the card si
   assert.ok(margin.height >= (await tab.evaluate(() => document.documentElement.scrollHeight)) - 2);
   const authorBefore = await tab.locator("#content").innerHTML();
 
-  // 3. Selecting text shows a floating Comment button; a selection inside the bar shows none.
+  // 3. Signed out, nothing offers Comment: the margin's one line invites the people who may comment to sign in.
   const quote = "Renewal risk is concentrated in three accounts";
-  assert.equal(await select(tab, quote), true);
   const tip = tab.locator(".openartifacts-comment-tip");
+  assert.equal(await select(tab, quote), true);
+  await tab.waitForTimeout(400);
+  assert.equal(await tip.isVisible().catch(() => false), false, "no Comment before sign-in");
+  const signIn = frame.getByRole("button", { name: "Invited to comment? Sign in." });
+  await signIn.waitFor();
+  const [popup] = await Promise.all([context.waitForEvent("page"), signIn.click()]);
+  await popup.waitForEvent("close").catch(() => {});
+  await frame.getByText("Select text to comment.").waitFor();
+
+  // Signed in and allowed, selecting text shows a floating Comment button; a selection inside the bar shows none.
+  await select(tab, quote);
   await until("the Comment button", async () => (await tip.isVisible()) && (await tip.boundingBox()).width > 0);
   const passage = await rectOf(tab, quote);
   const tipBox = await tip.boundingBox();
@@ -336,16 +355,12 @@ test("a selection offers Comment, the frame posts after sign-in, and the card si
   await select(tab, quote);
   await until("the Comment button", async () => await tip.isVisible());
 
-  // 4. Comment opens a draft card at the selection, with the quote, asking to sign in.
+  // 4. Comment opens a draft card at the selection, with the quote.
   await tab.mouse.click(tipBox.x + tipBox.width / 2, tipBox.y + tipBox.height / 2);
-  const signIn = frame.getByRole("button", { name: "Sign in to comment" });
-  await signIn.waitFor();
   await frame.getByText("Comment on “Q3 client report”").waitFor();
   assert.equal(await frame.locator(".quote").first().innerText(), quote);
-  const [popup] = await Promise.all([context.waitForEvent("page"), signIn.click()]);
-  await popup.waitForEvent("close").catch(() => {});
 
-  // 5. Signed in, the composer appears. Carol has no name, so the first post asks for one.
+  // 5. The composer is there. Carol has no name, so the first post asks for one.
   const box = frame.getByRole("textbox", { name: "Add a comment…" });
   await box.waitFor();
   await shoot(tab, "margin-draft-card");
@@ -603,6 +618,17 @@ test("a narrow page draws no margin; a tapped highlight or Comment opens a botto
   await frame.getByRole("button", { name: "Close" }).click();
   await until("the sheet to close", async () => (await hostBox(tab)) === null);
 
+  // Hiding comments from the bar while a sheet is open closes it for good: showing them again draws no focused passage.
+  await tab.mouse.click(at.x + at.width / 3, at.y + at.height / 2);
+  await until("the sheet", async () => (await hostBox(tab)) !== null);
+  await until("the focused passage", async () => (await painted(tab, "openartifacts-focus")).length === 1);
+  await barButton(tab).click();
+  await until("the sheet to close", async () => (await hostBox(tab)) === null);
+  await barButton(tab).click();
+  await until("the highlight back", async () => (await painted(tab, "openartifacts-open")).length === 1);
+  assert.equal((await painted(tab, "openartifacts-focus")).length, 0, "no stale focus");
+  assert.equal(await hostBox(tab), null, "no sheet reopens");
+
   // Selecting text and pressing Comment opens a new card the same way.
   await select(tab, "Staffing is unchanged");
   const tip = tab.locator(".openartifacts-comment-tip");
@@ -617,6 +643,24 @@ test("a narrow page draws no margin; a tapped highlight or Comment opens a botto
   await until("the new thread", async () => (await threadsOf(docId)).length === 2);
   await until("the new thread to show", async () => (await frame.getByText("Who is staffed?").count()) === 1);
   assert.equal((await threadsOf(docId))[1].anchor.exact, "Staffing is unchanged");
+  await context.close();
+});
+
+test("on a phone with no threads yet, the bar's button opens the sheet with the margin's one line, and again closes it", { timeout: 120_000 }, async () => {
+  const docId = await publish("Phone, no threads", REPORT);
+  const context = await newContext(null, { viewport: { width: 390, height: 844 } });
+  const tab = await context.newPage();
+  await tab.goto(docUrl(docId));
+  const frame = await until("the comments frame", () => commentsFrame(tab, docId));
+  const button = barButton(tab);
+  await button.waitFor();
+  assert.equal(await hostBox(tab), null, "nothing is drawn until the button is pressed");
+  await button.click();
+  await until("the sheet", async () => (await hostBox(tab)) !== null);
+  await frame.getByRole("button", { name: "Invited to comment? Sign in." }).waitFor();
+  assert.equal(await button.getAttribute("aria-pressed"), "true");
+  await button.click();
+  await until("the sheet to close", async () => (await hostBox(tab)) === null);
   await context.close();
 });
 
@@ -654,7 +698,7 @@ test("the page finds the same text the server does: entities, decomposed accents
   await context.close();
 });
 
-test("a page whose document has comments off is untouched by the script", { timeout: 60_000 }, async () => {
+test("a page with no thread and nobody who can comment is untouched by the script", { timeout: 60_000 }, async () => {
   const docId = await publish("Quiet", REPORT, { comments: false });
   const context = await newContext(ALICE);
   const tab = await context.newPage();
@@ -673,6 +717,84 @@ test("a page whose document has comments off is untouched by the script", { time
   // The Share popover still works.
   await tab.locator("a[data-openartifacts-share]").click();
   await until("the Share frame", () => tab.frames().find((frame) => frame.url().includes("/embed/share")));
+  await context.close();
+});
+
+test("the margin appears, without a reload, after the owner adds a person who can comment in Share", { timeout: 120_000 }, async () => {
+  const docId = await publish("Nobody yet", REPORT, { comments: false });
+  const context = await newContext(OWNER_ACCOUNT, { signedInTo: docId });
+  const tab = await context.newPage();
+  await tab.goto(docUrl(docId));
+  await tab.locator("a[data-openartifacts-share]").waitFor();
+  assert.equal(await tab.locator("a[data-openartifacts-share]").getAttribute("data-comments"), "off");
+  await tab.waitForTimeout(500);
+  assert.equal(await barButton(tab).count(), 0);
+
+  await tab.locator("a[data-openartifacts-share]").click();
+  const share = await until("the Share frame", () => tab.frames().find((frame) => frame.url().includes("/embed/share")));
+  const box = share.getByPlaceholder("Emails, separated by commas");
+  await box.waitFor();
+  // Opening the popover as the owner changed nothing on the page.
+  assert.equal(await barButton(tab).count(), 0);
+  await box.fill("newcomer@example.com");
+  await share.getByRole("button", { name: "Add", exact: true }).click();
+  await barButton(tab).waitFor();
+  assert.match(await barButton(tab).innerText(), /0$/);
+  await context.close();
+});
+
+test("the Share popover posts nothing when its owner view is drawn; closing it as the owner brings the margin and Comment", { timeout: 120_000 }, async () => {
+  const docId = await publish("Owner only", REPORT, { comments: false });
+  const context = await newContext(OWNER_ACCOUNT, { signedInTo: docId });
+  const tab = await context.newPage();
+  const requests = [];
+  tab.on("request", (request) => requests.push(request.url()));
+  await tab.goto(docUrl(docId));
+  await tab.locator("a[data-openartifacts-share]").click();
+  const share = await until("the Share frame", () => tab.frames().find((frame) => frame.url().includes("/embed/share")));
+  await share.getByPlaceholder("Emails, separated by commas").waitFor();
+  // Drawn, not clicked: a page that could see this would learn that its visitor owns the document.
+  await tab.waitForTimeout(800);
+  assert.equal(await barButton(tab).count(), 0);
+  assert.equal(requests.some((url) => url.includes("/threads")), false);
+  await share.getByRole("button", { name: "Close" }).click();
+  await barButton(tab).waitFor();
+  assert.match(await barButton(tab).innerText(), /0$/);
+  // The owner is signed in to the frame through Share's own token, so Comment is theirs before anyone else can write.
+  await commentsFrame(tab, docId).getByText("Select text to comment.").waitFor();
+  await select(tab, "Staffing is unchanged");
+  await until("the Comment button", () => tab.locator(".openartifacts-comment-tip").isVisible());
+  await context.close();
+});
+
+test("a signed-out reader is shown no sign-in line when only the owner's agent has commented", { timeout: 120_000 }, async () => {
+  const docId = await publish("Agent only", REPORT, { comments: false });
+  await agentThread(docId, { exact: "Staffing is unchanged" }, "Is that deliberate?");
+  const context = await newContext(null);
+  const tab = await context.newPage();
+  await tab.goto(docUrl(docId));
+  const frame = await until("the comments frame", () => commentsFrame(tab, docId));
+  await frame.locator("[data-thread]").waitFor();
+  await tab.waitForTimeout(500);
+  assert.equal(await frame.getByRole("button").count(), 0);
+  assert.equal(await frame.getByText(/Sign in|Select text|Continue/).count(), 0);
+  assert.equal(await frame.getByRole("textbox").count(), 0);
+  await context.close();
+});
+
+test("a stranger signed in on a public page gets no Comment and is told they can view", { timeout: 120_000 }, async () => {
+  const docId = await publish("Public", REPORT);
+  await agentThread(docId, { exact: "Closing remarks follow in the appendix" }, "A remark.");
+  const context = await newContext(BOB, { signedInTo: docId });
+  const tab = await context.newPage();
+  await tab.goto(docUrl(docId));
+  const frame = await until("the comments frame", () => commentsFrame(tab, docId));
+  await frame.getByText("You can view this page.").waitFor();
+  assert.equal(await frame.getByRole("textbox").count(), 0);
+  assert.equal(await frame.getByText(/Select text|Invited to comment/).count(), 0);
+  await select(tab, "Staffing is unchanged");
+  await tab.waitForTimeout(500);
+  assert.equal(await tab.locator(".openartifacts-comment-tip").isVisible().catch(() => false), false);
   await context.close();
 });
 
@@ -782,7 +904,7 @@ window.addEventListener("message", (e) => {
   await frame.getByText("Sign in again").waitFor();
   assert.equal(await frame.getByText("OpenArtifacts Security").count(), 0);
   await frame.getByText("A commenter").waitFor();
-  await frame.getByText("Sign in to see who wrote these comments.").waitFor();
+  await frame.getByRole("button", { name: "Continue to see names and comment." }).waitFor();
   await tab.waitForTimeout(800);
   assert.equal(await frame.getByRole("button", { name: "Delete" }).count(), 0);
   assert.equal(await frame.getByRole("button", { name: "Resolve" }).count(), 0);
@@ -1184,7 +1306,7 @@ test("a 30,000-character decomposed paragraph is located without freezing the pa
   await context.close();
 });
 
-test("a reader with no token sees the cards and is asked to sign in, once, on each card", { timeout: 120_000 }, async () => {
+test("a reader with no token sees the cards read-only and one sign-in line, only where someone can comment", { timeout: 120_000 }, async () => {
   const docId = await publish("Anonymous", REPORT);
   await agentThread(docId, { exact: "Staffing is unchanged" }, "Is that deliberate?");
   const context = await newContext(null);
@@ -1194,8 +1316,12 @@ test("a reader with no token sees the cards and is asked to sign in, once, on ea
   const frame = await until("the comments frame", () => commentsFrame(tab, docId));
   const card = frame.locator("[data-thread]");
   await card.waitFor();
-  await card.getByRole("button", { name: "Sign in to comment" }).waitFor();
+  await frame.getByRole("button", { name: "Invited to comment? Sign in." }).waitFor();
   assert.equal(await card.getByRole("textbox").count(), 0);
+  // Select text: a signed-out reader is never offered Comment.
+  await select(tab, "Staffing is unchanged");
+  await tab.waitForTimeout(500);
+  assert.equal(await tab.locator(".openartifacts-comment-tip").isVisible().catch(() => false), false);
   assert.equal(await card.getByRole("button", { name: "Delete" }).count(), 0);
   assert.equal(await card.getByRole("button", { name: "Resolve" }).count(), 0);
   assert.deepEqual(seen.filter((line) => !line.startsWith("GET ")), []);
@@ -1250,7 +1376,7 @@ test("relayed threads are drawn without names and with a sign-in note when the f
   await frame.getByText("Resolved", { exact: true }).waitFor();
   assert.equal(await frame.getByText("OpenArtifacts Security").count(), 0);
   await frame.getByText("A commenter").waitFor();
-  await frame.getByText("Sign in to see who wrote these comments.").waitFor();
+  await frame.getByRole("button", { name: "Continue to see names and comment." }).waitFor();
   await context.close();
 });
 
@@ -1267,7 +1393,7 @@ test("the frame's own read wins over what the page relays", { timeout: 120_000 }
   await frame.getByText("A real remark.").waitFor();
   await tab.waitForTimeout(800);
   assert.equal(await frame.getByText("Made-up words").count(), 0);
-  assert.equal(await frame.getByText("Sign in to see who wrote these comments.").count(), 0);
+  assert.equal(await frame.getByRole("button", { name: "Continue to see names and comment." }).count(), 0);
   await context.close();
 });
 
@@ -1302,6 +1428,73 @@ test("the bar counts what the bottom sheet can show: orphaned threads are not co
     await until("the count", async () => expected.test(await barButton(tab).innerText().catch(() => "")));
     await context.close();
   }
+});
+
+test("on a phone, a signed-out invitee can still open the sheet's sign-in line after an update orphaned every thread", { timeout: 120_000 }, async () => {
+  const docId = await publish("Phone, all orphaned", REPORT);
+  const gone = "The budget is on the next page";
+  await agentThread(docId, { exact: gone }, "Which page?");
+  await update(docId, REPORT.replace(gone, "Appendix B has the budget"));
+  const context = await newContext(null, { viewport: { width: 390, height: 844 } });
+  const tab = await context.newPage();
+  await tab.goto(docUrl(docId));
+  const frame = await until("the comments frame", () => commentsFrame(tab, docId));
+  const button = barButton(tab);
+  await button.waitFor();
+  assert.equal((await painted(tab, "openartifacts-open")).length, 0, "no highlight to tap");
+  await button.click();
+  await until("the sheet", async () => (await hostBox(tab)) !== null);
+  await frame.getByRole("button", { name: "Invited to comment? Sign in." }).waitFor();
+  await context.close();
+});
+
+test("on a phone, a signed-out invitee can open the sheet's sign-in line when every thread's text is folded away", { timeout: 120_000 }, async () => {
+  const hidden = "The folded figures sit here";
+  const docId = await publish("Phone, folded", REPORT + `<details><summary>More</summary><p>${hidden}.</p></details>`);
+  await agentThread(docId, { exact: hidden }, "Unfold this?");
+  const context = await newContext(null, { viewport: { width: 390, height: 844 } });
+  const tab = await context.newPage();
+  await tab.goto(docUrl(docId));
+  const frame = await until("the comments frame", () => commentsFrame(tab, docId));
+  const button = barButton(tab);
+  await button.waitFor();
+  // Located, so the highlight exists, but inside a closed <details> it draws nothing to tap.
+  await until("the highlight", async () => (await painted(tab, "openartifacts-open")).length === 1);
+  await button.click();
+  await until("the sheet", async () => (await hostBox(tab)) !== null);
+  await frame.getByRole("button", { name: "Invited to comment? Sign in." }).waitFor();
+  await context.close();
+});
+
+test("on a phone without the highlight API, a signed-out invitee can still open the sheet's sign-in line", { timeout: 120_000 }, async () => {
+  const docId = await publish("Phone, no highlights", REPORT);
+  await agentThread(docId, { exact: "The budget is on the next page" }, "Which page?");
+  const context = await newContext(null, { viewport: { width: 390, height: 844 } });
+  // A browser that cannot paint: the thread is located, with rects, but nothing marks it to tap.
+  await context.addInitScript(() => { delete window.Highlight; });
+  const tab = await context.newPage();
+  await tab.goto(docUrl(docId));
+  const frame = await until("the comments frame", () => commentsFrame(tab, docId));
+  const button = barButton(tab);
+  await button.waitFor();
+  await button.click();
+  await until("the sheet", async () => (await hostBox(tab)) !== null);
+  await frame.getByRole("button", { name: "Invited to comment? Sign in." }).waitFor();
+  await context.close();
+});
+
+test("on a phone, a reader who cannot comment on a thread-less page gets no blank sheet from the bar's button", { timeout: 120_000 }, async () => {
+  const docId = await publish("Phone, nothing to show", REPORT);
+  const context = await newContext(BOB, { viewport: { width: 390, height: 844 }, signedInTo: docId });
+  const tab = await context.newPage();
+  await tab.goto(docUrl(docId));
+  await until("the comments frame", () => commentsFrame(tab, docId));
+  const button = barButton(tab);
+  await button.waitFor();
+  await button.click();
+  // The click opens the sheet at once; it closes only when the frame answers that it has nothing to show.
+  await until("the sheet to close", async () => (await hostBox(tab)) === null);
+  await context.close();
 });
 
 test("a signed-in Can-view reader is never offered Comment, not even before the frame answers", { timeout: 120_000 }, async () => {

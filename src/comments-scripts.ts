@@ -22,14 +22,17 @@
  *
  * **Inert unless the threads resource answers, and it does not ask when the bar
  * says there is nothing to ask.** On the shared link the bar's Share link carries
- * `data-comments="on|off"`, the document's switch when the page was served: `off`
- * and the script makes no request at all. On `on`, or on a pinned `/v{n}` where
- * the attribute is absent (the page is immutable and must not freeze the switch),
- * its first act is `GET /d/{docId}/threads` on the page's own origin (`404` for
- * every document with comments off, or on a server without them), and on
- * anything but `200` it adds no button, no frame and no listener. The Share
- * popover tells it when its owner flips the switch (`comments` event), which
- * makes it ask again, so the margin appears or goes without a reload.
+ * `data-comments="on|off"`, whether the page had comments to show when it was
+ * served (a thread, or a person who can comment): `off` and the script makes no
+ * request at all. On `on`, or on a pinned `/v{n}` where the attribute is absent
+ * (the page is immutable and must not freeze it), its first act is
+ * `GET /d/{docId}/threads` on the page's own origin, and unless that answers
+ * `200` with a thread or `commentable: true` it adds no button, no frame and no
+ * listener. The Share popover tells it when its owner adds a person, changes a
+ * role or closes it (`people` event), which makes it ask again, so the margin
+ * appears without a reload; after that event the page treats its viewer as the
+ * owner for the rest of the tab and stays active even with no thread and
+ * `commentable: false`.
  *
  * **It paints, it never writes.** Highlights are `CSS.highlights` over Ranges,
  * styled by an adopted stylesheet, so a chart, a React island or a Pyodide cell
@@ -75,7 +78,7 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
     let data = null, active = false, shown = true, canComment = false, mode = "margin";
     let mhost = null, mframe = null, ready = false, sheet = false, button = null, tipHost = null, tip = null;
     let canon = null, dirty = true, ranges = new Map(), lost = [], draft = null, draftRange = null, focusId = "", timer = 0;
-    let need = 0, sheetH = 0, refreshSeq = 0;
+    let need = 0, sheetH = 0, refreshSeq = 0, ownerHere = false;
     const out = {};
     const flag = link.getAttribute("data-comments");
 
@@ -389,8 +392,15 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       button.className = "openartifacts-comments-button";
       button.setAttribute("style", "all:initial;flex:none;box-sizing:border-box;display:inline-flex;align-items:center;gap:6px;height:34px;padding:0 14px;margin-left:auto;border:1px solid rgba(255,255,255,0.08);border-radius:999px;color:#c9ced6;cursor:pointer;white-space:nowrap;-webkit-font-smoothing:antialiased;" + FONT.replace("13px/1.25", "14px/1"));
       button.addEventListener("click", () => {
+        // In overlay mode a page with no thread to tap has nothing to hide, whether it has none, an update orphaned them all, their text is not drawn (a closed <details>), or this browser cannot paint highlights: the button opens the sheet, which carries the margin's one line. The focus message makes the frame redraw and report its height, and a frame with nothing to show reports 0 and the page closes the sheet again.
+        if (mode === "overlay" && data && (!painting || ![...ranges.values()].some((range) => range.getClientRects().length > 0))) {
+          if (sheet) closeSheet(); else { shown = true; openSheet(); send({ event: "focus", threadId: "" }); }
+          label();
+          paint();
+          return;
+        }
         shown = !shown;
-        if (!shown) { sheet = false; hideTip(); }
+        if (!shown) { closeSheet(); hideTip(); }
         label();
         paint();
         measure();
@@ -445,7 +455,7 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
     // The sheet is invisible until the frame has said how tall its card is (or 300ms have passed), so it opens at its size and does not shrink under the reader's finger.
     let unsure = false;
     const openSheet = () => {
-      if (!sheet && !sheetH) { unsure = true; window.setTimeout(() => { unsure = false; if (sheet) layout(); }, 300); }
+      if (!sheet && !sheetH) { unsure = true; window.setTimeout(() => { unsure = false; layout(); }, 300); }
       sheet = true;
       layout();
     };
@@ -462,8 +472,8 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       sheet = false;
       sheetH = 0;
       focusId = "";
-      send({ event: "focus", threadId: "" });
       layout();
+      send({ event: "focus", threadId: "" });
       paint();
     };
 
@@ -479,6 +489,8 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       if (mine !== refreshSeq) return;
       if (response.status === 404 || response.status === 410) { if (active) deactivate(); return; }
       if (!body || !Array.isArray(body.threads)) return;
+      // The resource answers 200 for every page; one with no thread, nobody who can comment and no sign that its viewer is the owner has nothing to show.
+      if (body.threads.length === 0 && body.commentable !== true && !ownerHere) { if (active) deactivate(); return; }
       if (!version) version = body.version;
       data = body;
       if (!active) activate();
@@ -531,7 +543,7 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       document.addEventListener("keydown", (event) => { if (sheet && event.key === "Escape") { endDraft(); closeSheet(); } }, true);
       document.addEventListener("pointerdown", (event) => {
         // A draft is the reader's own words and the sheet covers half the page: a touch on the page above it (to scroll back to the passage) must not throw them away. Cancel, the close button, Escape and a post end it.
-        if (sheet && !draft && event.target !== mhost && event.target !== tipHost) closeSheet();
+        if (sheet && !draft && event.target !== mhost && event.target !== tipHost && event.target !== button) closeSheet();
       }, true);
       document.addEventListener("click", (event) => {
         if (!active || !shown || event.button !== 0 || ranges.size === 0) return;
@@ -580,8 +592,11 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
           const n = Math.max(0, Math.min(Math.round(msg.height), 1000000));
           if (mode === "margin" && n !== need) { need = n; schedule(); }
         } else if (msg.event === "height" && Number.isFinite(msg.px)) {
+          // A height while the sheet is closed would linger as sheetH and open the next sheet at the wrong height. Zero is a frame with nothing to show.
+          if (!sheet) return;
+          if (msg.px === 0) { closeSheet(); return; }
           const n = Math.max(80, Math.min(Math.round(msg.px), 4000));
-          if (n !== sheetH || unsure) { sheetH = n; unsure = false; if (sheet) layout(); }
+          if (n !== sheetH || unsure) { sheetH = n; unsure = false; layout(); }
         } else if (msg.event === "reveal" && Number.isFinite(msg.top) && Number.isFinite(msg.height)) {
           if (mode !== "margin" || !shown) return;
           const t = mhost.getBoundingClientRect().top + msg.top;
@@ -605,7 +620,8 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
         } catch (error) {}
       }
     };
-    commentsSwitched = () => { refresh(); };
+    // The Share popover's click (embed-scripts accepts the event only from its own frame and the API origin): its viewer is the owner, for the rest of this tab.
+    commentsSwitched = () => { ownerHere = true; refresh(); };
     if (flag !== "off") refresh();
   })();
   } catch (error) {}
@@ -668,7 +684,7 @@ button.b.primary{background:#18191d;border-color:#18191d;color:#fff}
 .muted-text{font-size:11.5px;color:#6d6a62;margin:6px 0 0}
 .err{font-size:11.5px;color:#b4342b;margin:6px 0 0}.err:empty{display:none}
 .ask{font-size:12px;margin:0 0 6px}
-.signin{margin-top:6px}
+.card.topline{padding:8px 12px}.topline .muted-text{margin:0}
 `;
 
 /**
@@ -689,13 +705,17 @@ button.b.primary{background:#18191d;border-color:#18191d;color:#fff}
  * author's name or agent badge and with a line saying to sign in for them: the
  * page is the author's, so what it relays could be invented, and must not appear
  * under real names beside our Sign in button. An own read always replaces it.
+ * The one line at the top (`topLine`) follows the same split: "Invited to comment?
+ * Sign in." only on its own anonymous read's `commentable`, "Continue to see names
+ * and comment." over relayed cards, "Select text to comment." for a viewer who
+ * may, nothing otherwise; the overlay sheet carries it too.
  * Relayed data is only ever drawn as text; the title shown above a new comment
  * is the server's whenever the frame has a token, and nothing a page sends can
  * post: every write goes to `/embed/api` for this one document.
  *
  * **What it tells the page.** `ready`, once, before it touches storage; `viewer`
- * with `{canComment}` after every read (true when signed out, so Comment is
- * offered and asks to sign in); `changed` after its own
+ * with `{canComment}` after every read (false until the server says a signed-in
+ * viewer may, so no one is offered Comment only to be refused); `changed` after its own
  * write; `focus` when a card is pressed; `close` from a user action. Nothing
  * else about the viewer.
  *
@@ -868,10 +888,10 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     if (error && error.code === "anchor_not_found") return "That text isn’t in the document itself, perhaps because the page draws it with a script. Select text from the page’s own content. Nothing was posted.";
     return error && typeof error.message === "string" ? error.message : "Something went wrong. Nothing was posted.";
   };
-  // Always tells the page: signed out it offers Comment (pressing it asks to sign in), signed in it follows the server's word.
+  // Tells the page false until the frame's own read says the signed-in viewer may comment.
   const reportViewer = () => {
     const v = viewer();
-    const can = v ? v.canComment === true : readToken() === null;
+    const can = v !== null && v.canComment === true;
     if (can !== lastViewer) {
       lastViewer = can;
       post({ event: "viewer", canComment: can });
@@ -966,17 +986,28 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     return node("div", { class: "who" }, kids);
   };
 
-  const signInBlock = () => {
-    const kids = [button("Sign in to comment", signIn, "b primary")];
+  const signInBlock = (label) => {
+    const kids = [button(label, signIn, "b primary")];
     kids[0].disabled = prepared === null;
     if (signState === "waiting") kids.push(muted("Complete sign-in in the window that opened."));
     if (signState === "blocked") kids.push(node("p", { class: "err" }, ["Your browser blocked the sign-in window. Allow pop-ups for this page and try again."]));
     return node("div", { class: "signin" }, kids);
   };
 
+  // The one line at the top, by state, drawn only where it can lead somewhere: an invitation to sign in when its own anonymous read says someone can comment, the way on when the cards are the page's relayed ones (a private page before the token), the instruction when this viewer may comment, and nothing otherwise.
+  const topLine = () => {
+    if (!loaded) return [];
+    if (own !== null) return viewer() && viewer().canComment ? [muted("Select text to comment.")] : [];
+    if (anon !== null) return anon.commentable === true ? [signInBlock("Invited to comment? Sign in.")] : [];
+    return relayed ? [signInBlock("Continue to see names and comment.")] : [];
+  };
+  const lineCard = () => {
+    const kids = topLine();
+    return kids.length ? node("div", { class: "card topline" }, kids) : null;
+  };
+
   // The box a person writes in: a textarea and its buttons, the name field a first comment may ask for, or the reason there is none.
   const writer = (key, placeholder, submit, cancel) => {
-    if (readToken() === null) return [signInBlock()];
     const v = viewer();
     if (v === null) return [];
     if (!v.canComment) return [muted("You can view this page.")];
@@ -1063,7 +1094,6 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
       }
       if (canDelete) acts.push(button("Delete", () => { confirming = firstId; render(); }, "link"));
     }
-    if (relayedOnly()) card.append(muted("Sign in to see who wrote these comments."));
     if (acts.length) card.append(node("div", { class: "acts" }, acts));
     if (errors["t:" + id]) card.append(errorLine("t:" + id));
     if (firstId && errors["c:" + firstId]) card.append(errorLine("c:" + firstId));
@@ -1115,6 +1145,8 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
 
   const renderMargin = () => {
     const items = [];
+    const top = lineCard();
+    if (top) items.push({ el: top, want: BAR, gap: 8 });
     const threads = threadsOf();
     const lost = new Set(lostIds);
     const orphans = threads.filter((t) => t.anchorStatus !== "anchored" || lost.has(t.threadId));
@@ -1159,13 +1191,21 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
   const renderOverlay = () => {
     const close = button("×", () => { if (draft) cancelDraft(); else post({ event: "close" }); }, "x");
     close.setAttribute("aria-label", "Close");
-    const kids = [node("div", { class: "grab" }, [node("i"), close])];
+    const kids = [];
     if (draft) kids.push(draftCard());
     else {
+      const top = lineCard();
+      if (top) kids.push(top);
       const thread = threadsOf().find((t) => t.threadId === focusId);
       if (thread) kids.push(threadCard(thread, thread.anchorStatus !== "anchored", true));
     }
-    cards.replaceChildren(...kids);
+    // Nothing to show, so no sheet: the page closes it on a height of 0. Before the first read the page's own fallback covers the wait.
+    if (!kids.length) {
+      cards.replaceChildren();
+      if (loaded) post({ event: "height", px: 0 });
+      return;
+    }
+    cards.replaceChildren(node("div", { class: "grab" }, [node("i"), close]), ...kids);
     cards.style.height = "";
   };
 
@@ -1178,7 +1218,7 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     sizes.disconnect();
     stacked = [];
     try {
-      if (!shown || (mode === "overlay" && !draft && !focusId)) cards.replaceChildren();
+      if (!shown) cards.replaceChildren();
       else if (mode === "overlay") renderOverlay();
       else renderMargin();
     } catch (error) {

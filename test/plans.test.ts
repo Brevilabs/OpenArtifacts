@@ -120,7 +120,10 @@ describe("configured account plans", () => {
     expect(await mode.json()).toEqual(expected);
     const person = await send("PUT", `/api/v1/docs/${docId}/access/people/alice%40acme.com`, undefined, config, key, api);
     expect(person.status).toBe(402);
-    expect(await person.json()).toEqual(expected);
+    // Adding a person is worded for the operation, which is right for a commenter on a public page too.
+    expect(await person.json()).toEqual({
+      error: { ...expected.error, message: "Your Copilot plan does not include adding people." },
+    });
     expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM doc_invites").first()).toEqual({ n: 0 });
   });
 

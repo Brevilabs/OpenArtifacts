@@ -17,7 +17,9 @@ It is a small API-first publishing service with inline comments on a quoted pass
 
 ## What works today
 
-- **Publish rendered HTML.** Send a complete HTML document and get a public link.
+- **Publish rendered HTML.** Send a complete HTML document and get a link. The
+  CLI starts a new page private (invited people only) when the plan allows it,
+  and public otherwise or when you pass `--public`.
 - **Keep one stable link.** Every push creates a new version. The shared link
   shows the latest version, while pinned `/v2`-style links keep showing the
   version they name.
@@ -30,8 +32,8 @@ It is a small API-first publishing service with inline comments on a quoted pass
   share page where scripts do not run).
   Private sharing is a paid-plan feature on the hosted service, and a self-hosted
   server needs a sign-in method configured to offer it.
-- **Comment on a passage.** The owner turns comments on (a paid-plan feature);
-  readers and agents select text, comment and reply, and the owner resolves the
+- **Comment on a passage.** The owner gives named people **Can comment** (a paid-plan
+  feature); they and the owner's agent select text, comment and reply, and the owner resolves the
   thread against the version that fixed it. Threads follow their quote across
   versions and are marked orphaned if the text goes. `openartifacts comments`
   does the same from a terminal.
@@ -226,7 +228,9 @@ Worker becomes reachable only after Cloudflare attaches both custom domains.
 
 Documents are all public until you configure reader sign-in, and a server without
 it answers the private-sharing routes `404`, like a server that predates the
-feature. To turn it on you need, besides a Google or GitHub OAuth app (or Email
+feature. A plain `openartifacts publish` publishes nothing there, because the CLI
+never falls back to a public page after the private route answers `404`; pass
+`--public` to publish for anyone with the link. To turn it on you need, besides a Google or GitHub OAuth app (or Email
 Service for emailed codes):
 
 - a `READER_SESSION_SECRET` Worker secret of at least 32 characters;

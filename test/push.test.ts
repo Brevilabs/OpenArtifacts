@@ -214,14 +214,17 @@ describe("POST /api/v1/docs", () => {
     expect(await stored(body.docId, 1)).toContain(interactive);
   });
 
-  it("writes one object at the documented key and nothing else", async () => {
+  it("writes the version and its manifest at the documented keys and nothing else", async () => {
     const body = await pushedOk(await post(KEY_A, { title: "t", html: page("<p>x</p>") }), 201);
 
     // Spelled out rather than built with `versionObjectKey`, which is what every
     // other test here reads through: the key layout is a contract phase 4 and
     // the delete path both depend on, and a helper compared against itself
     // would agree with any change to it.
-    expect((await allObjects()).map((o) => o.key)).toEqual([`docs/${body.docId}/v1.html`]);
+    expect((await allObjects()).map((o) => o.key)).toEqual([
+      `docs/${body.docId}/manifest.json`,
+      `docs/${body.docId}/v1.html`,
+    ]);
   });
 
   it("gives every doc its own id", async () => {

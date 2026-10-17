@@ -52,6 +52,7 @@ import {
   utf8Length,
 } from "../quota.js";
 
+import { writeManifestBestEffort } from "../manifest.js";
 import { STORED_CONTENT_TYPE, versionObjectKey } from "../storage.js";
 import { reserveStorage, releaseStorage } from "../storage-quota.js";
 import { publicDocUrl } from "../urls.js";
@@ -342,6 +343,7 @@ export async function createDoc(
       people: 0,
     });
   }
+  await writeManifestBestEffort(env, docId);
   return pushed(env, requestUrl, docId, FIRST_VERSION, 201, linkAccess);
 }
 
@@ -406,5 +408,6 @@ export async function updateDoc(
   await commitVersionMetadata(env.DB, docId, version, now);
 
   analytics.record({ name: "document_updated", docId, atMs: now, ownerId: reserved.owner });
+  await writeManifestBestEffort(env, docId);
   return pushed(env, requestUrl, docId, version, 200);
 }

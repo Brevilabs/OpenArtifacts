@@ -8,6 +8,8 @@ type Snapshot = { plan: string; expiresAt: number | null; checkedAt: number | nu
 /** Credentials stay in D1. Only the Worker-proven account/link and service secret cross the network. */
 export async function accountPlan(env: Env, owner: string, deps: {
   now?: () => number; fetch?: typeof fetch; forceAccountRefresh?: boolean; skipAccountRefresh?: boolean;
+  /** How old a cached plan may be before it is checked again; the license server's backoff still applies. */
+  maxAgeMs?: number;
 } = {}): Promise<{ plan: string; status: RefreshStatus }> {
   const read = () => env.DB.prepare(`SELECT plan, plan_expires_at AS expiresAt, plan_checked_at AS checkedAt, plan_retry_after AS retryAfter,
     (SELECT external_owner FROM owner_links WHERE account_id = accounts.id) AS externalOwner
@@ -19,7 +21,7 @@ export async function accountPlan(env: Env, owner: string, deps: {
   let status: RefreshStatus = "cached";
   if (!deps.skipAccountRefresh && (deps.forceAccountRefresh ||
       ((cached.retryAfter === null || cached.retryAfter <= at) &&
-       (cached.checkedAt === null || cached.checkedAt <= at - LICENSE_CACHE_TTL_MS ||
+       (cached.checkedAt === null || cached.checkedAt <= at - (deps.maxAgeMs ?? LICENSE_CACHE_TTL_MS) ||
         (cached.expiresAt !== null && cached.expiresAt <= at))))) {
     const original = cached;
     await syncNewsletter(env, owner, deps.fetch);

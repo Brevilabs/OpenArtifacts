@@ -137,7 +137,7 @@ test("installer fetches latest and copies its newly installed skill and themes",
 
 test("the shipped skill directory carries the skill and the research-memo theme", async () => {
   const skill = new URL("../skill/openartifacts/", import.meta.url);
-  assert.match(await readFile(new URL("SKILL.md", skill), "utf8"), /end your turn/i);
+  assert.match(await readFile(new URL("SKILL.md", skill), "utf8"), /Publish in the same turn, with no review step/);
   assert.match(await readFile(new URL("SKILL.md", skill), "utf8"), /\[\/Users\/me\/My Notes\/café\.html\]\(file:\/\/\/Users\/me\/My%20Notes\/caf%C3%A9\.html\)/);
   assert.deepEqual(await readdir(new URL("themes/", skill)), ["research-memo.md"]);
 });
@@ -150,26 +150,34 @@ test("publish reads only HTML files and parses its options before authentication
   await writeFile(markdown, "# Not rendered here");
   assert.deepEqual(await preparePublish(page, []), {
     docId: undefined,
-    private: false,
+    access: "default",
     body: { title: "My Page", html: "<!doctype html><p>kept</p>" },
   });
   assert.deepEqual(await preparePublish(page, ["--doc-id", "9f2k4mvq7t0xbz3n", "--title", "Notes"]), {
     docId: "9f2k4mvq7t0xbz3n",
-    private: false,
+    access: "default",
     body: { title: "Notes", html: "<!doctype html><p>kept</p>" },
   });
   // An update without --title omits the field so the server keeps the current title.
   assert.deepEqual(await preparePublish(page, ["--doc-id", "9f2k4mvq7t0xbz3n"]), {
     docId: "9f2k4mvq7t0xbz3n",
-    private: false,
+    access: "default",
     body: { html: "<!doctype html><p>kept</p>" },
   });
-  // --private selects the private route; it never rides in the body.
+  // --private and --public select a route; neither rides in the body.
   assert.deepEqual(await preparePublish(page, ["--private"]), {
     docId: undefined,
-    private: true,
+    access: "private",
     body: { title: "My Page", html: "<!doctype html><p>kept</p>" },
   });
+  assert.deepEqual(await preparePublish(page, ["--public", "--title", "Open"]), {
+    docId: undefined,
+    access: "public",
+    body: { title: "Open", html: "<!doctype html><p>kept</p>" },
+  });
+  await assert.rejects(preparePublish(page, ["--public", "--private"]), /--public and --private cannot be used together/);
+  await assert.rejects(preparePublish(page, ["--public", "--doc-id", "9f2k4mvq7t0xbz3n"]), /share <docId> --link anyone/);
+  await assert.rejects(preparePublish(page, ["--public", "--public"]), /Usage: openartifacts/);
   await assert.rejects(preparePublish(markdown, []), /HTML file.*Render other formats/);
   await assert.rejects(preparePublish(page, ["--title"]), /Usage: openartifacts/);
   await assert.rejects(preparePublish(page, ["--title", "--doc-id"]), /Usage: openartifacts/);
@@ -191,7 +199,7 @@ test("publish reads only HTML files and parses its options before authentication
 
 async function publishingServer() {
   const requests = [];
-  const control = { staleUpdates: false, missingDeletes: false, privateDocs: true, comments: true, unlinked: false };
+  const control = { staleUpdates: false, missingDeletes: false, privateDocs: true, privatePlan: true, privateLimit: undefined, comments: true, unlinked: false, openUrl: undefined };
   const server = createServer((request, response) => {
     let body = "";
     request.setEncoding("utf8");
@@ -237,6 +245,21 @@ async function publishingServer() {
         response.end(JSON.stringify({ error: { code: "not_found", message: "No API route for /api/v1/private-docs" } }));
         return;
       }
+      // A plan without private sharing is refused before anything is created.
+      if (request.url === "/api/v1/private-docs" && (!control.privatePlan || control.privateLimit)) {
+        response.statusCode = 402;
+        response.end(JSON.stringify({ error: { code: "limit_reached", message: "Private sharing needs a paid plan.", plan: "free", limit: control.privateLimit ?? "privateSharing" } }));
+        return;
+      }
+      if (request.url.endsWith("/open")) {
+        if (control.openUrl === null) {
+          response.statusCode = 404;
+          response.end(JSON.stringify({ error: { code: "not_found", message: "Document not found." } }));
+        } else {
+          response.end(JSON.stringify({ url: control.openUrl ?? "http://127.0.0.1:1/d/9f2k4mvq7t0xbz3n?grant=secret-grant", expiresAt: Date.now() + 60000 }));
+        }
+        return;
+      }
       if ((request.method === "PUT" && control.staleUpdates) || (request.method === "DELETE" && control.missingDeletes)) {
         response.statusCode = 404;
         response.end(JSON.stringify({ error: { code: "not_found", message: "Document not found." } }));
@@ -248,7 +271,7 @@ async function publishingServer() {
         return;
       }
       response.statusCode = request.method === "POST" ? 201 : 200;
-      const mode = request.url === "/api/v1/private-docs" ? { linkAccess: "invited" } : {};
+      const mode = request.url === "/api/v1/private-docs" ? { linkAccess: "invited" } : request.url === "/api/v1/docs" ? { linkAccess: "anyone" } : {};
       response.end(JSON.stringify({ docId, url, version: requests.length, ...mode }));
     });
   });
@@ -259,7 +282,7 @@ async function publishingServer() {
   return { server, requests, control, host: `http://127.0.0.1:${address.port}` };
 }
 
-test("publish creates, --doc-id updates, and unshare withdraws using the environment token", async () => {
+test("publish --public creates, --doc-id updates, and unshare withdraws using the environment token", async () => {
   const directory = await mkdtemp(join(tmpdir(), "openartifacts-publish-"));
   const page = join(directory, "notes.html");
   const html = '<!doctype html><style>p::before{content:"\\00b7"}</style><p>Kept</p>';
@@ -271,11 +294,11 @@ test("publish creates, --doc-id updates, and unshare withdraws using the environ
       OPENARTIFACTS_API_HOST: remote.host,
       OPENARTIFACTS_TOKEN: "opaque-test-token",
     }, async (lines) => {
-      await main(["publish", page, "--title", "Notes"]);
+      await main(["publish", page, "--title", "Notes", "--public"]);
       await main(["publish", page, "--doc-id", "9f2k4mvq7t0xbz3n"]);
       await main(["unshare", "9f2k4mvq7t0xbz3n"]);
       assert.deepEqual(lines, [
-        JSON.stringify({ docId: "9f2k4mvq7t0xbz3n", url: `${remote.host}/d/9f2k4mvq7t0xbz3n`, version: 1 }),
+        JSON.stringify({ docId: "9f2k4mvq7t0xbz3n", url: `${remote.host}/d/9f2k4mvq7t0xbz3n`, version: 1, linkAccess: "anyone" }),
         JSON.stringify({ docId: "9f2k4mvq7t0xbz3n", url: `${remote.host}/d/9f2k4mvq7t0xbz3n`, version: 2 }),
         "Unshared 9f2k4mvq7t0xbz3n.",
       ]);
@@ -360,6 +383,9 @@ test("publish --private creates through /private-docs and reports the share page
   }
 });
 
+const PRIVATE_UNSUPPORTED = "This server does not support private documents. Nothing was published. " +
+  "To publish a new page for anyone with the link instead, add --public.";
+
 test("publish --private against a server without private documents creates nothing", async () => {
   const directory = await mkdtemp(join(tmpdir(), "openartifacts-private-old-"));
   const page = join(directory, "notes.html");
@@ -373,7 +399,7 @@ test("publish --private against a server without private documents creates nothi
       OPENARTIFACTS_TOKEN: "opaque-test-token",
     }, async (lines) => {
       await assert.rejects(main(["publish", page, "--private"]), (error) =>
-        error.message === "This server does not support private documents. Nothing was published.");
+        error.message === PRIVATE_UNSUPPORTED);
       assert.deepEqual(lines, []);
     });
     // The process exit code is the failure the agent sees.
@@ -383,7 +409,7 @@ test("publish --private against a server without private documents creates nothi
       OPENARTIFACTS_TOKEN: "opaque-test-token",
     });
     assert.notEqual(result.code, 0);
-    assert.match(result.stderr, /This server does not support private documents\. Nothing was published\./);
+    assert.match(result.stderr, /This server does not support private documents\. Nothing was published\. To publish a new page for anyone with the link instead, add --public\./);
     assert.equal(result.stdout, "");
   } finally {
     remote.server.close();
@@ -393,6 +419,207 @@ test("publish --private against a server without private documents creates nothi
     ["POST", "/api/v1/private-docs"],
     ["POST", "/api/v1/private-docs"],
   ]);
+});
+
+const publishEnvironment = (directory, remote) => ({
+  OPENARTIFACTS_CONFIG_DIR: join(directory, "config"),
+  OPENARTIFACTS_API_HOST: remote.host,
+  OPENARTIFACTS_TOKEN: "opaque-test-token",
+});
+
+async function publishFixture(name) {
+  const directory = await mkdtemp(join(tmpdir(), `openartifacts-${name}-`));
+  const page = join(directory, "notes.html");
+  await writeFile(page, "<p>Page</p>");
+  return { directory, page };
+}
+
+const routes = (remote) => remote.requests.map(({ method, path }) => [method, path]);
+
+test("a new page starts private when no flag is given, and its receipt says so", async () => {
+  const { directory, page } = await publishFixture("default-private");
+  const remote = await publishingServer();
+  try {
+    await withEnvironment(publishEnvironment(directory, remote), async (lines) => {
+      await main(["publish", page]);
+      assert.deepEqual(routes(remote), [["POST", "/api/v1/private-docs"]]);
+      assert.deepEqual(JSON.parse(lines[0]), {
+        docId: "9f2k4mvq7t0xbz3n",
+        url: `${remote.host}/d/9f2k4mvq7t0xbz3n`,
+        version: 1,
+        linkAccess: "invited",
+        manageUrl: `${remote.host}/share/9f2k4mvq7t0xbz3n`,
+      });
+    });
+  } finally {
+    remote.server.close();
+  }
+});
+
+test("with no flag, a plan without private sharing publishes publicly instead", async () => {
+  const { directory, page } = await publishFixture("default-402");
+  const remote = await publishingServer();
+  remote.control.privatePlan = false;
+  try {
+    await withEnvironment(publishEnvironment(directory, remote), async (lines) => {
+      await main(["publish", page]);
+      // The refused private create made nothing, so the public one is the only page.
+      assert.deepEqual(routes(remote), [["POST", "/api/v1/private-docs"], ["POST", "/api/v1/docs"]]);
+      assert.deepEqual(remote.requests[1].body, remote.requests[0].body);
+      assert.deepEqual(JSON.parse(lines[0]), {
+        docId: "9f2k4mvq7t0xbz3n", url: `${remote.host}/d/9f2k4mvq7t0xbz3n`, version: 2, linkAccess: "anyone",
+      });
+    });
+  } finally {
+    remote.server.close();
+  }
+});
+
+test("with no flag, a server without private documents publishes nothing", async () => {
+  const { directory, page } = await publishFixture("default-404");
+  const remote = await publishingServer();
+  remote.control.privateDocs = false;
+  try {
+    await withEnvironment(publishEnvironment(directory, remote), async (lines) => {
+      await assert.rejects(main(["publish", page]), (error) => error.message === PRIVATE_UNSUPPORTED);
+      assert.deepEqual(lines, []);
+    });
+  } finally {
+    remote.server.close();
+  }
+  assert.deepEqual(routes(remote), [["POST", "/api/v1/private-docs"]]);
+});
+
+test("with no flag, a failure that is not about private support is not retried publicly", async () => {
+  const { directory, page } = await publishFixture("default-other");
+  const remote = await publishingServer();
+  remote.control.privateLimit = "documents";
+  try {
+    await withEnvironment(publishEnvironment(directory, remote), async () => {
+      await assert.rejects(main(["publish", page]), (error) => error instanceof APIError && error.detail.limit === "documents");
+    });
+  } finally {
+    remote.server.close();
+  }
+  assert.deepEqual(routes(remote), [["POST", "/api/v1/private-docs"]]);
+});
+
+test("publish --private on a plan without private sharing fails with no fallback and a hint", async () => {
+  const { directory, page } = await publishFixture("private-402");
+  const remote = await publishingServer();
+  remote.control.privatePlan = false;
+  try {
+    await withEnvironment(publishEnvironment(directory, remote), async (lines) => {
+      await assert.rejects(main(["publish", page, "--private"]), (error) =>
+        error instanceof APIError && error.status === 402 && error.detail.limit === "privateSharing");
+      assert.deepEqual(lines, []);
+    });
+    const result = await cliProcess(["publish", page, "--private"], publishEnvironment(directory, remote));
+    assert.notEqual(result.code, 0);
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, /Limit: privateSharing/);
+    assert.match(result.stderr, /Private sharing needs a paid plan\. Nothing was published\. To publish a new page for anyone with the link instead, add --public\./);
+  } finally {
+    remote.server.close();
+  }
+  assert.deepEqual(routes(remote), [["POST", "/api/v1/private-docs"], ["POST", "/api/v1/private-docs"]]);
+});
+
+test("publish --public creates through /docs and never tries the private route", async () => {
+  const { directory, page } = await publishFixture("public");
+  const remote = await publishingServer();
+  try {
+    await withEnvironment(publishEnvironment(directory, remote), async (lines) => {
+      await main(["publish", page, "--public"]);
+      assert.deepEqual(routes(remote), [["POST", "/api/v1/docs"]]);
+      assert.deepEqual(remote.requests[0].body, { title: "notes", html: "<p>Page</p>" });
+      assert.equal(JSON.parse(lines[0]).linkAccess, "anyone");
+      assert.equal(JSON.parse(lines[0]).manageUrl, undefined);
+    });
+  } finally {
+    remote.server.close();
+  }
+});
+
+/** A directory whose `open` and `xdg-open` record the url they were given, so a test sees what the browser would. */
+async function fakeBrowser(exitCode = 0, lingerSeconds = 0) {
+  const directory = await mkdtemp(join(tmpdir(), "openartifacts-browser-"));
+  const record = join(directory, "opened.txt");
+  for (const name of ["open", "xdg-open"]) {
+    await writeFile(join(directory, name), `#!/bin/sh\nprintf '%s' "$1" > "${record}"\n${lingerSeconds ? `/bin/sleep ${lingerSeconds}\n` : ""}exit ${exitCode}\n`);
+    await chmod(join(directory, name), 0o755);
+  }
+  return { directory, async opened() {
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      try { return await readFile(record, "utf8"); } catch { await new Promise((resolve) => setTimeout(resolve, 100)); }
+    }
+    return undefined;
+  } };
+}
+
+test("open sends the owner's own grant to the browser and never prints it", { skip: process.platform === "win32" }, async () => {
+  const { directory } = await publishFixture("open");
+  const remote = await publishingServer();
+  const browser = await fakeBrowser();
+  try {
+    const result = await cliProcess(["open", "9f2k4mvq7t0xbz3n"], { ...publishEnvironment(directory, remote), PATH: browser.directory });
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), { opened: true, docId: "9f2k4mvq7t0xbz3n" });
+    assert.equal(await browser.opened(), "http://127.0.0.1:1/d/9f2k4mvq7t0xbz3n?grant=secret-grant");
+    assert(!`${result.stdout}${result.stderr}`.includes("grant"));
+  } finally {
+    remote.server.close();
+  }
+  assert.deepEqual(routes(remote), [["POST", "/api/v1/docs/9f2k4mvq7t0xbz3n/open"]]);
+  assert.equal(remote.requests[0].authorization, "Bearer opaque-test-token");
+});
+
+test("open reports a missing page and a browser that will not start, and prints no url", async () => {
+  const { directory } = await publishFixture("open-errors");
+  const remote = await publishingServer();
+  try {
+    remote.control.openUrl = null;
+    const missing = await cliProcess(["open", "9f2k4mvq7t0xbz3n"], publishEnvironment(directory, remote));
+    assert.notEqual(missing.code, 0);
+    assert.match(missing.stderr, /No document 9f2k4mvq7t0xbz3n is in this account/);
+    assert.equal(missing.stdout, "");
+
+    remote.control.openUrl = undefined;
+    const noBrowser = await cliProcess(["open", "9f2k4mvq7t0xbz3n"], publishEnvironment(directory, remote));
+    assert.notEqual(noBrowser.code, 0);
+    assert.match(noBrowser.stderr, /Could not start a browser/);
+    assert(!`${noBrowser.stdout}${noBrowser.stderr}`.includes("grant"));
+
+    // An opener that stays up until the browser closes, as `xdg-open` can: the
+    // CLI stops waiting and reports the page opened.
+    if (process.platform !== "win32") {
+      const lingering = await fakeBrowser(0, 30);
+      const started = Date.now();
+      const opened = await cliProcess(["open", "9f2k4mvq7t0xbz3n"], { ...publishEnvironment(directory, remote), PATH: lingering.directory });
+      assert.equal(opened.code, 0, opened.stderr);
+      assert.deepEqual(JSON.parse(opened.stdout), { opened: true, docId: "9f2k4mvq7t0xbz3n" });
+      assert(Date.now() - started < 15_000);
+    }
+
+    // An opener that starts and then fails, as `xdg-open` does on a headless host.
+    if (process.platform !== "win32") {
+      const failing = await fakeBrowser(1);
+      const failed = await cliProcess(["open", "9f2k4mvq7t0xbz3n"], { ...publishEnvironment(directory, remote), PATH: failing.directory });
+      assert.notEqual(failed.code, 0);
+      assert.match(failed.stderr, /Could not start a browser/);
+      assert.equal(failed.stdout, "");
+      assert(!failed.stderr.includes("grant"));
+    }
+
+    remote.control.openUrl = "javascript:alert(1)";
+    const unsafe = await cliProcess(["open", "9f2k4mvq7t0xbz3n"], publishEnvironment(directory, remote));
+    assert.notEqual(unsafe.code, 0);
+    assert.match(unsafe.stderr, /invalid page link/);
+    assert(!unsafe.stderr.includes("alert"));
+    await assert.rejects(main(["open"]), /Usage: openartifacts/);
+  } finally {
+    remote.server.close();
+  }
 });
 
 test("a stale --doc-id is reported, never silently replaced", async () => {
@@ -486,9 +713,12 @@ test("prints guidance for current quota and future plan limits", () => {
         upgrade_url: "https://example.test/upgrade",
       },
     }));
+    presentError(new APIError(402, { error: { code: "limit_reached", message: "Private sharing needs a paid plan.", limit: "privateSharing" } }));
   } finally {
     console.error = previous;
   }
+  assert(lines.includes("Limit: privateSharing"));
+  assert(!lines.some((line) => line.includes("--public")));
   assert(lines.some((line) => line.includes("quota window")));
   assert(lines.includes("Limit: 10 documents"));
   assert(lines.some((line) => line.includes("https://example.test/upgrade")));
@@ -497,7 +727,7 @@ test("prints guidance for current quota and future plan limits", () => {
 
 async function accountServer() {
   const requests = [];
-  const control = { status: 200, unsafeUrl: false, storage: false };
+  const control = { status: 200, unsafeUrl: false, storage: false, privateSharing: undefined };
   const server = createServer((request, response) => {
     let raw = "";
     request.on("data", (chunk) => { raw += chunk; });
@@ -508,7 +738,7 @@ async function accountServer() {
       if (control.status !== 200) {
         response.end(JSON.stringify({ error: { code: "unauthorized", message: "Sign in again." } }));
       } else if (request.url === "/api/v1/account") {
-        response.end(JSON.stringify({ accountId: "oa_account", plan: "free", limits: { documents: 1, pushesPerDay: 6, htmlBytes: 1048576, ...(control.storage ? { storageBytes: 5368709120 } : {}) }, usage: { documents: 0, pushesToday: 0, ...(control.storage ? { storedBytes: 1234 } : {}) }, externalLinked: false, refresh: { status: "refreshed", checkedAt: 123, expiresAt: null }, access_token: "never-print-response-extra" }));
+        response.end(JSON.stringify({ accountId: "oa_account", plan: "free", limits: { documents: 1, pushesPerDay: 6, htmlBytes: 1048576, ...(control.storage ? { storageBytes: 5368709120 } : {}), ...(control.privateSharing === undefined ? {} : { privateSharing: control.privateSharing }) }, usage: { documents: 0, pushesToday: 0, ...(control.storage ? { storedBytes: 1234 } : {}) }, externalLinked: false, refresh: { status: "refreshed", checkedAt: 123, expiresAt: null }, access_token: "never-print-response-extra" }));
       } else if (request.url === "/api/v1/account/handoffs") {
         response.end(JSON.stringify({ url: control.unsafeUrl ? "javascript:alert(1)" : `https://actions.example.test/continue?code=${"a".repeat(64)}`, expiresAt: Date.now() + 600000, token: "never-print-response-extra" }));
       } else {
@@ -524,7 +754,7 @@ async function accountServer() {
 
 async function cliProcess(args, values) {
   const { spawn } = await import("node:child_process");
-  const env = { ...process.env, ...values, PATH: "" }; // Browser launch fails harmlessly; never open a real browser in tests.
+  const env = { ...process.env, ...values, PATH: values.PATH ?? "" }; // Browser launch fails harmlessly; never open a real browser in tests.
   if (!values.OPENARTIFACTS_TOKEN) delete env.OPENARTIFACTS_TOKEN;
   const child = spawn(process.execPath, [new URL("../bin/openartifacts.js", import.meta.url).pathname, ...args], { env });
   let stdout = "", stderr = "";
@@ -544,7 +774,7 @@ test("account commands use host-scoped stored OAuth tokens and print only safe J
   try {
     const account = await cliProcess(["account"], env);
     assert.equal(account.code, 0, account.stderr);
-    assert.deepEqual(JSON.parse(account.stdout), { accountId: "oa_account", plan: "free", limits: { documents: 1, pushesPerDay: 6, htmlBytes: 1048576 }, usage: { documents: 0, pushesToday: 0 }, externalLinked: false, refresh: { status: "refreshed", checkedAt: 123, expiresAt: null } });
+    assert.deepEqual(JSON.parse(account.stdout), { accountId: "oa_account", plan: "free", limits: { documents: 1, pushesPerDay: 6, htmlBytes: 1048576, privateSharing: false }, usage: { documents: 0, pushesToday: 0 }, externalLinked: false, refresh: { status: "refreshed", checkedAt: 123, expiresAt: null } });
     for (const args of [["account", "--open"]]) {
       const result = await cliProcess(args, env);
       assert.equal(result.code, 0, result.stderr);
@@ -640,6 +870,18 @@ test("Windows browser launch passes the complete URL as data rather than command
 });
 
 
+test("account output always carries a boolean privateSharing, for the skill to read", async () => {
+  const remote = await accountServer();
+  try {
+    const env = { OPENARTIFACTS_API_HOST: remote.host, OPENARTIFACTS_TOKEN: "oat_private-test" };
+    assert.equal(JSON.parse((await cliProcess(["account"], env)).stdout).limits.privateSharing, false);
+    remote.control.privateSharing = true;
+    assert.equal(JSON.parse((await cliProcess(["account"], env)).stdout).limits.privateSharing, true);
+    remote.control.privateSharing = false;
+    assert.equal(JSON.parse((await cliProcess(["account"], env)).stdout).limits.privateSharing, false);
+  } finally { remote.server.close(); }
+});
+
 test("account output includes additive storage figures without exposing unrelated response fields", async () => {
   const remote = await accountServer();
   remote.control.storage = true;
@@ -676,10 +918,8 @@ test("comments subcommands send one request each, with the exact method, path an
       await main(["comments", "resolve", DOC, THREAD]);
       await main(["comments", "reopen", DOC, THREAD]);
       await main(["comments", "delete", DOC, COMMENT]);
-      await main(["comments", "on", DOC]);
-      await main(["comments", "off", DOC]);
       await main(["comments", "name", "Logan Yang"]);
-      assert.equal(lines.length, 13);
+      assert.equal(lines.length, 11);
       // Output is the server's JSON, pretty-printed like list and share; delete prints a sentence.
       assert.equal(JSON.parse(lines[0]).docId, DOC);
       assert.equal(lines[9], `Deleted ${COMMENT}.`);
@@ -698,8 +938,6 @@ test("comments subcommands send one request each, with the exact method, path an
     ["POST", `/api/v1/docs/${DOC}/threads/${THREAD}/resolve`, {}],
     ["POST", `/api/v1/docs/${DOC}/threads/${THREAD}/reopen`, undefined],
     ["DELETE", `/api/v1/docs/${DOC}/comments/${COMMENT}`, undefined],
-    ["PUT", `/api/v1/docs/${DOC}/settings`, { comments: true }],
-    ["PUT", `/api/v1/docs/${DOC}/settings`, { comments: false }],
     ["PUT", "/api/v1/account", { displayName: "Logan Yang" }],
   ]);
   assert(remote.requests.every((request) => request.authorization === "Bearer opaque-test-token"));
@@ -741,8 +979,9 @@ test("comments reject malformed arguments before any credential is read or reque
       await assert.rejects(main(["comments", "resolve", DOC]), usage);
       await assert.rejects(main(["comments", "reopen", DOC, THREAD, "extra"]), usage);
       await assert.rejects(main(["comments", "delete", DOC, THREAD]), usage);
-      await assert.rejects(main(["comments", "on"]), usage);
-      await assert.rejects(main(["comments", "off", DOC, "extra"]), usage);
+      // The owner's switch is gone: the roles are the control.
+      await assert.rejects(main(["comments", "on", DOC]), usage);
+      await assert.rejects(main(["comments", "off", DOC]), usage);
       await assert.rejects(main(["comments", "name"]), usage);
       await assert.rejects(main(["comments", "name", "   "]), /cannot be empty/);
       await assert.rejects(main(["comments", "name", "n".repeat(65)]), /limit is 64/);
@@ -771,7 +1010,7 @@ test("comments name a missing resource the same way whatever the reason", async 
       OPENARTIFACTS_TOKEN: "opaque-test-token",
     }, async () => {
       await assert.rejects(main(["comments", "list", DOC]), /Not found, or this server does not support comments\./);
-      await assert.rejects(main(["comments", "on", DOC]), /Not found, or this server does not support comments\./);
+      await assert.rejects(main(["comments", "reply", DOC, THREAD, "--body", "b"]), /Not found, or this server does not support comments\./);
     });
   } finally {
     remote.server.close();
@@ -812,6 +1051,8 @@ test("share --role sets the role of the people added in the same call", async ()
       OPENARTIFACTS_TOKEN: "opaque-test-token",
     }, async () => {
       await main(["share", DOC, "--add", "bob@acme.com", "--role", "view"]);
+      // On a person already listed, the same flags set the role: the server decides add or change.
+      await main(["share", DOC, "--add", "bob@acme.com", "--role", "comment"]);
       await main(["share", DOC, "--add", "bob@acme.com"]);
       await assert.rejects(main(["share", DOC, "--role", "view"]), /--role applies/);
     });
@@ -820,6 +1061,7 @@ test("share --role sets the role of the people added in the same call", async ()
   }
   assert.deepEqual(remote.requests.map(({ method, path, body }) => [method, path, body]), [
     ["PUT", `/api/v1/docs/${DOC}/access/people/bob%40acme.com`, { role: "view" }],
+    ["PUT", `/api/v1/docs/${DOC}/access/people/bob%40acme.com`, { role: "comment" }],
     ["PUT", `/api/v1/docs/${DOC}/access/people/bob%40acme.com`, undefined],
   ]);
 });
@@ -830,14 +1072,13 @@ test("presentError explains the comment error codes", () => {
   console.error = (...parts) => lines.push(parts.join(" "));
   try {
     presentError(new APIError(400, { error: { code: "anchor_not_found", message: "Quote not found." } }));
-    presentError(new APIError(409, { error: { code: "comments_off", message: "Comments are off." } }));
     presentError(new APIError(409, { error: { code: "name_required", message: "Name needed." } }));
     presentError(new APIError(402, { error: { code: "limit_reached", message: "Comments need a plan.", limit: "comments" } }));
   } finally {
     console.error = previous;
   }
   assert(lines.some((line) => line.includes("openartifacts get <docId>")));
-  assert(lines.some((line) => line.includes("openartifacts comments on <docId>")));
+  assert(!lines.some((line) => line.includes("comments on")));
   assert(lines.some((line) => line.includes('openartifacts comments name "<name>"')));
   assert(lines.includes("Limit: comments"));
   assert(lines.some((line) => line.includes("paid plan")));

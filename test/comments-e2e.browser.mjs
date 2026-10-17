@@ -241,7 +241,7 @@ async function pressComment(tab, text, { touch = false } = {}) {
   else await tab.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
 }
 
-/** Press "Sign in to comment" and let the popup finish; the session cookie is already in the context. */
+/** Press a sign-in button of the margin and let the popup finish; the session cookie is already in the context. */
 async function signInThroughPopup(context, button) {
   const [popup] = await Promise.all([context.waitForEvent("page"), button.click()]);
   await popup.waitForEvent("close").catch(() => {});
@@ -405,38 +405,42 @@ test("1. the owner publishes a private page with the CLI and invites Alice to co
     access.people.map((person) => [person.email, person.role]).sort(),
     [[PEOPLE.alice.email, "comment"], [PEOPLE.bob.email, "view"]],
   );
-  // Comments are off until the owner says so: nobody sees a thing yet, and the owner is told to turn them on.
-  assert.equal((await request("alice", `/api/v1/docs/${DOC}/threads`)).status, 404);
-  assert.equal((await request("owner", `/api/v1/docs/${DOC}/threads`)).status, 409);
+  // There is no switch: Alice holds Can comment, so the page has comments to show, with none written yet.
+  const aliceRead = await request("alice", `/api/v1/docs/${DOC}/threads`);
+  assert.equal(aliceRead.status, 200);
+  assert.deepEqual(await aliceRead.json(), { docId: DOC, title: "Q3 client report", version: 1, latestVersion: 1, commentable: true, threads: [], viewer: { canComment: true, canManage: false, name: null } });
+  assert.equal((await request("owner", `/api/v1/docs/${DOC}/threads`)).status, 200);
+  // Bob, who can only view, reads the same empty list and cannot write.
+  assert.equal((await request("bob", `/api/v1/docs/${DOC}/threads`)).status, 200);
 });
 
-test("2. the owner turns Comments on in the Share popover and the page gets its 💬 0 button", { timeout: 120_000 }, async () => {
+test("2. the Share popover has no Comments switch, only roles, and the page has its 💬 0 button because Alice can comment", { timeout: 120_000 }, async () => {
   const context = await newContext("owner");
   const { tab, frame } = await ownerPopover(context, DOC, { private: true });
-  // Before: no comments button, nothing of ours but the bar.
-  assert.equal(await tab.locator(".openartifacts-bar button[aria-pressed]").count(), 0);
-  const on = frame.getByRole("radio", { name: "On", exact: true });
-  await on.waitFor();
-  assert.equal(await on.getAttribute("aria-checked"), "false");
-  await on.click();
-  await frame.getByText("People who can comment can now leave comments on this page.").waitFor();
-  assert.equal((await (await request("owner", `/api/v1/docs/${DOC}/access`)).json()).comments, true);
+  // No switch anywhere: the roles are the control.
+  assert.equal(await frame.getByText("Comments", { exact: true }).count(), 0);
+  assert.equal(await frame.getByRole("radio", { name: "On", exact: true }).count(), 0);
+  const access = await (await request("owner", `/api/v1/docs/${DOC}/access`)).json();
+  assert.deepEqual(access.roles, ["view", "comment"]);
+  assert.equal("comments" in access, false);
+  await frame.getByText("Only people you add can open it. Can comment lets them comment too.").waitFor();
   // The invite list shows the roles the CLI set.
   assert.equal(await frame.getByLabel(`Access for ${PEOPLE.alice.email}`).inputValue(), "comment");
   assert.equal(await frame.getByLabel(`Access for ${PEOPLE.bob.email}`).inputValue(), "view");
-  await shoot(tab, "01-owner-share-popover-comments-on");
+  await shoot(tab, "01-owner-share-popover-roles");
 
-  // No reload: the popover tells the page, which asked nothing while the bar said off.
+  // The page already has its button: someone can comment.
   const button = barButton(tab);
   await button.waitFor();
   assert.match(await button.innerText(), /💬\s*0$/);
   await shoot(tab, "02-owner-page-comments-button");
 
-  // Turning it off hides the button again.
-  await frame.getByRole("radio", { name: "Off", exact: true }).click();
-  await until("the button to go", async () => !(await button.isVisible()));
-  await frame.getByRole("radio", { name: "On", exact: true }).click();
-  await until("the button to return", async () => await button.isVisible());
+  // The dropdown writes the role at once.
+  const roleOf = async (email) => (await (await request("owner", `/api/v1/docs/${DOC}/access`)).json()).people.find((p) => p.email === email).role;
+  await frame.getByLabel(`Access for ${PEOPLE.bob.email}`).selectOption("comment");
+  await until("Bob's new role", async () => (await roleOf(PEOPLE.bob.email)) === "comment");
+  await frame.getByLabel(`Access for ${PEOPLE.bob.email}`).selectOption("view");
+  await until("Bob's role back", async () => (await roleOf(PEOPLE.bob.email)) === "view");
   await tab.reload();
   await button.waitFor();
   await context.close();
@@ -452,11 +456,16 @@ test("3. Alice selects a passage, signs in to the frame, names herself once, and
   const frame = await until("the comments frame", () => commentsFrame(tab, DOC));
   const authorBefore = await tab.locator("#content").innerHTML();
 
-  await pressComment(tab, QUOTE);
-  const signIn = frame.getByRole("button", { name: "Sign in to comment" });
+  // A private page before the token: the cards the page relayed, and the one line that leads on. No Comment yet.
+  const signIn = frame.getByRole("button", { name: "Continue to see names and comment." });
   await signIn.waitFor();
-  assert.equal(await frame.locator(".quote").first().innerText(), QUOTE);
+  await select(tab, QUOTE);
+  await tab.waitForTimeout(500);
+  assert.equal(await tab.locator(".openartifacts-comment-tip").isVisible().catch(() => false), false, "no Comment before the frame has its token");
   await signInThroughPopup(alice, signIn);
+  await frame.getByText("Select text to comment.").waitFor();
+  await pressComment(tab, QUOTE);
+  assert.equal(await frame.locator(".quote").first().innerText(), QUOTE);
 
   const box = frame.getByRole("textbox", { name: "Add a comment…" });
   await box.waitFor();
@@ -604,8 +613,9 @@ test("7. Bob (Can view) sees the cards, no reply box and no Comment button, and 
   assert.equal(await frame.locator("[data-thread].resolved").count(), 1, "the resolved thread is there, collapsed");
   // The frame learns who he is when he signs in; a card offers that, and never a box to type in.
   assert.equal(await frame.getByRole("textbox").count(), 0);
-  await signInThroughPopup(context, card.getByRole("button", { name: "Sign in to comment" }));
+  await signInThroughPopup(context, frame.getByRole("button", { name: "Continue to see names and comment." }));
   await frame.getByText("You can view this page.").waitFor();
+  assert.equal(await frame.getByText("Select text to comment.").count(), 0);
   assert.equal(await frame.getByRole("textbox").count(), 0);
   assert.equal(await frame.getByRole("button", { name: "Post" }).count(), 0);
 
@@ -640,7 +650,6 @@ test("8. a stranger gets 404 from every comment route, and so does a signed-out 
     ["POST", `/threads/${threadTwo}/resolve`, {}],
     ["POST", `/threads/${threadTwo}/reopen`, {}],
     ["DELETE", `/comments/cm_nothing`],
-    ["PUT", `/settings`, { comments: false }],
     ["GET", `/html`],
   ];
   const unknown = await request("stranger", `/api/v1/docs/doc_never_existed/threads`);
@@ -677,9 +686,10 @@ test("8. a stranger gets 404 from every comment route, and so does a signed-out 
 
 let PUBLIC; // the public document of step 9
 test("9. a signed-out reader of a public page sees read-only cards, signs in, and posts", { timeout: 180_000 }, async () => {
-  const published = await cli("owner", ["publish", htmlFile(page(V1)), "--title", "Public report"]);
+  const published = await cli("owner", ["publish", htmlFile(page(V1)), "--title", "Public report", "--public"]);
   PUBLIC = published.json().docId;
-  assert.equal((await cli("owner", ["comments", "on", PUBLIC])).json().comments, true);
+  // Erin will reply: commenting is a grant from the owner, on a public page as on a private one.
+  assert.equal((await cli("owner", ["share", PUBLIC, "--add", PEOPLE.erin.email, "--role", "comment"])).error, undefined);
   const added = await cli("owner", ["comments", "add", PUBLIC, "--quote", STAFFING, "--prefix", "", "--body", "Who is staffed?", "--section", "staffing"]);
   assert.equal(added.error, undefined, added.stderr);
 
@@ -693,11 +703,15 @@ test("9. a signed-out reader of a public page sees read-only cards, signs in, an
   assert.match(await card.innerText(), /agent/);
   await until("its highlight", async () => (await painted(tab, "openartifacts-open")).includes(STAFFING));
   assert.equal(await card.getByRole("textbox").count(), 0);
-  const signIn = card.getByRole("button", { name: "Sign in to comment" });
+  // Erin may comment, so the margin invites her to sign in; the card itself stays read-only.
+  const signIn = frame.getByRole("button", { name: "Invited to comment? Sign in." });
   await signIn.waitFor();
+  await select(tab, STAFFING);
+  await tab.waitForTimeout(500);
+  assert.equal(await tab.locator(".openartifacts-comment-tip").isVisible().catch(() => false), false, "no Comment for a signed-out reader");
   await shoot(tab, "09-signed-out-reader-public-page");
 
-  // Signing in is the one thing the context did not have; with it the same button leads to a reply box.
+  // Signing in is the one thing the context did not have; with it the same line leads to a reply box.
   await context.addCookies([sessionCookie(PEOPLE.erin.id)]);
   await signInThroughPopup(context, signIn);
   const reply = frame.getByRole("textbox", { name: "Reply…" });
@@ -711,24 +725,27 @@ test("9. a signed-out reader of a public page sees read-only cards, signs in, an
   await context.close();
 });
 
-test("10. a Free-plan owner cannot turn comments on: the CLI prints the upgrade hint and the popover says so", { timeout: 180_000 }, async () => {
+test("10. a Free-plan owner cannot add anyone: the CLI prints the upgrade hint and the popover shows the plan line, with no Add people", { timeout: 180_000 }, async () => {
+  // No flag: a Free plan has no private pages, so the CLI falls back to a public one.
   const published = await cli("free", ["publish", htmlFile(page(V1)), "--title", "Free report"]);
   assert.equal(published.error, undefined, published.stderr);
+  assert.equal(published.json().linkAccess, "anyone");
   const free = published.json().docId;
-  const refused = await cli("free", ["comments", "on", free]);
+  const refused = await cli("free", ["share", free, "--add", "dee@acme.com"]);
   assert.equal(refused.error?.status, 402);
   assert.equal(refused.error.code, "limit_reached");
-  assert.equal(refused.error.detail.limit, "comments");
-  assert.match(refused.stderr, /Limit: comments/);
+  assert.equal(refused.error.detail.limit, "privateSharing");
+  assert.match(refused.stderr, /Adding people needs a paid plan/);
   assert.match(refused.stderr, /Upgrade: https?:\/\//);
-  assert.match(refused.stderr, /paid plan/i);
 
   const context = await newContext("free");
   const { tab, frame } = await ownerPopover(context, free);
-  await frame.getByRole("radio", { name: "On", exact: true }).click();
-  await frame.getByText(/Comments need a paid plan/).waitFor();
-  assert.equal((await (await request("free", `/api/v1/docs/${free}/access`)).json()).comments, false);
-  await shoot(tab, "11-free-owner-comments-need-a-paid-plan");
+  await frame.getByText(/Private pages and comments need a paid plan/).waitFor();
+  assert.equal(await frame.getByRole("heading", { name: "Add people" }).count(), 0);
+  const access = await (await request("free", `/api/v1/docs/${free}/access`)).json();
+  assert.deepEqual(access.roles, []);
+  assert.equal("comments" in access, false);
+  await shoot(tab, "11-free-owner-plan-line");
   await context.close();
 });
 
@@ -748,6 +765,9 @@ test("11. on a phone a tapped highlight opens a bottom sheet with the card, and 
   const sheet = await until("the bottom sheet", () => hostBox(tab));
   assert.ok(sheet.y + sheet.height >= 844 - 2 && sheet.height < 844 * 0.55 + 2 && sheet.width >= 388, `a bottom sheet (${JSON.stringify(sheet)})`);
   await frame.getByText("Who is staffed?").waitFor();
+  // Erin's phone has not signed in to the frame yet: the sheet carries the margin's one line, and the popup answers.
+  await signInThroughPopup(context, frame.getByRole("button", { name: "Invited to comment? Sign in." }));
+  await frame.getByText("Select text to comment.").waitFor();
   await shoot(tab, "12-phone-bottom-sheet-card");
   await frame.getByRole("button", { name: "Close" }).click();
   await until("the sheet to close", async () => (await hostBox(tab)) === null);
@@ -755,8 +775,6 @@ test("11. on a phone a tapped highlight opens a bottom sheet with the card, and 
   await tab.evaluate(() => window.scrollTo(0, 0));
   await pressComment(tab, "Revenue grew 18% quarter over quarter", { touch: true });
   await until("the sheet", async () => (await hostBox(tab)) !== null);
-  // Erin's phone has not signed in to the frame yet: the sheet asks, and the popup answers.
-  await signInThroughPopup(context, frame.getByRole("button", { name: "Sign in to comment" }));
   const area = frame.getByRole("textbox", { name: "Add a comment…" });
   await area.fill("What is the base for 18%?");
   await shoot(tab, "13-phone-new-comment-sheet");
@@ -784,14 +802,17 @@ test("12. unsharing answers 410 for the page and the threads, 404 for the commen
     ["owner", "POST", "/threads", { anchor, body: "after" }],
     ["owner", "POST", `/threads/${threadTwo}/comments`, { body: "after" }],
     ["owner", "POST", `/threads/${threadTwo}/resolve`, {}],
-    ["owner", "PUT", "/settings", { comments: true }],
     ["alice", "POST", `/threads/${threadTwo}/comments`, { body: "after" }],
   ]) {
     const response = await request(who, `/api/v1/docs/${DOC}${path}`, { method, ...(body ? { body: JSON.stringify(body) } : {}) });
     assert.equal(response.status, 404, `${who} ${method} ${path}`);
   }
   assert.equal(await bucket.head(`docs/${DOC}/threads.json`), null, "threads.json is gone");
-  assert.equal((await bucket.list({ prefix: `docs/${DOC}/` })).objects.length, 0, "nothing of the document is left in R2");
+  assert.deepEqual(
+    (await bucket.list({ prefix: `docs/${DOC}/` })).objects.map((o) => o.key),
+    [`docs/${DOC}/manifest.json`],
+    "nothing of the document is left in R2 but its tombstone manifest",
+  );
 
   // The Durable Object itself refuses a write now, whatever reaches it.
   const object = async (method, args) => (await mf.dispatchFetch(`https://${API}/__e2e/comments-object`, { method: "POST", body: JSON.stringify({ docId: DOC, method, args }) })).json();
