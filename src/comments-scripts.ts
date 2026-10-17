@@ -738,7 +738,7 @@ main.margin{min-height:100%}
 main.overlay{background:var(--sheet);padding:0 14px 18px}
 .cards{position:relative}
 .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px 12px;box-shadow:var(--shadow)}
-.margin .card,.margin .heading,.margin .head{position:absolute;left:8px;right:16px}
+.margin .card,.margin .heading,.margin .head,.margin .line{position:absolute;left:8px;right:16px}
 .card.focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--ring),var(--shadow)}
 .card.muted,.card.resolved{background:var(--sunk)}
 .heading{font:10px/1.4 ui-monospace,"SF Mono",Menlo,Consolas,monospace;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);background:var(--card);border:1px solid var(--line);border-radius:6px;padding:2px 6px}
@@ -798,7 +798,8 @@ button.b:hover{border-color:var(--muted)}button.b:disabled{cursor:default;opacit
 button.b.primary{background:var(--send);border-color:var(--send);color:var(--send-ink)}
 .muted-text{font-size:11.5px;color:var(--muted);margin:6px 0 0}
 .err{font-size:11.5px;color:var(--danger);margin:6px 0 0}.err:empty{display:none}
-.card.topline{padding:8px 12px}.topline .muted-text{margin:0}.topline>*+*{margin-top:6px}
+.card.topline{padding:8px 12px}
+.line{padding:2px 4px}.line .muted-text{margin:0}.line>*+*{margin-top:6px}
 `;
 
 /**
@@ -819,11 +820,12 @@ button.b.primary{background:var(--send);border-color:var(--send);color:var(--sen
  * author's name or agent badge and with a line saying to sign in for them: the
  * page is the author's, so what it relays could be invented, and must not appear
  * under real names beside our Sign in button. An own read always replaces it.
- * The one line under the header (`lineCard`) follows the same split: "Invited to
+ * The plain line under the header (`lineCard`) follows the same split: "Invited to
  * comment? Sign in." only on its own anonymous read's `commentable`, "Continue to
  * see names and comment." over relayed cards, "Select text to comment." for a
- * viewer who may, after "No open comments." when there are none; the sheet
- * carries it too.
+ * viewer who may, after "No comments yet." (or "No open comments." when every
+ * thread is resolved) when nothing is open; the sheet carries it too, but over
+ * one thread only the way to sign in.
  * Relayed data is only ever drawn as text; the title shown above a new comment
  * is the server's whenever the frame has a token, and nothing a page sends can
  * post: every write goes to `/embed/api` for this one document.
@@ -1104,19 +1106,22 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     return node("div", { class: "signin" }, kids);
   };
 
-  // The one line at the top, by state, drawn only where it can lead somewhere: an invitation to sign in when its own anonymous read says someone can comment, the way on when the cards are the page's relayed ones (a private page before the token), the instruction when this viewer may comment, and nothing otherwise.
-  const notice = () => {
-    if (!loaded) return [];
-    if (own !== null) return viewer() && viewer().canComment ? [muted("Select text to comment.")] : [];
-    if (anon !== null) return anon.commentable === true ? [signInBlock("Invited to comment? Sign in.")] : [];
-    return relayed ? [signInBlock("Continue to see names and comment.")] : [];
+  // The way to sign in, drawn only where it can lead somewhere: an invitation when its own anonymous read says someone can comment, and the way on when the cards are the page's relayed ones (a private page before the token).
+  const signInLine = () => {
+    if (!loaded || own !== null) return null;
+    if (anon !== null) return anon.commentable === true ? signInBlock("Invited to comment? Sign in.") : null;
+    return relayed ? signInBlock("Continue to see names and comment.") : null;
   };
   const resolvedOf = () => threadsOf().filter((t) => t.state === "resolved");
-  // The one line under the header: the notice, after "No open comments." when there are none, so an open sidebar or sheet is never blank.
-  const lineCard = () => {
-    const kids = notice();
-    if (loaded && !draft && !threadsOf().some((t) => t.state !== "resolved")) kids.unshift(muted("No open comments."));
-    return kids.length ? node("div", { class: "card topline" }, kids) : null;
+  // The line under the header, plain text rather than a card: "No comments yet." when nothing is open (so an open sidebar or list is never blank), the instruction to a viewer who may comment, and the way to sign in. Over one thread (the sheet's thread view) only the way to sign in.
+  const lineCard = (overThread) => {
+    const words = [];
+    if (!overThread && loaded && !draft && !threadsOf().some((t) => t.state !== "resolved")) words.push(threadsOf().length ? "No open comments." : "No comments yet.");
+    if (!overThread && viewer() && viewer().canComment) words.push("Select text to comment.");
+    const kids = words.length ? [muted(words.join(" "))] : [];
+    const way = signInLine();
+    if (way) kids.push(way);
+    return kids.length ? node("div", { class: "line" }, kids) : null;
   };
   // The title, the resolved threads (off the page, waiting behind their count) and the close button, in the sidebar and the sheet alike.
   const header = () => {
@@ -1365,10 +1370,10 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     else {
       const undo = undoCard();
       if (undo) kids.push(undo);
-      const line = lineCard();
+      const thread = threadsOf().find((t) => t.threadId === focusId && t.state !== "resolved");
+      const line = lineCard(!!thread);
       if (line) kids.push(line);
       if (showResolved) kids.push(...resolvedOf().map((t) => threadCard(t, false)));
-      const thread = threadsOf().find((t) => t.threadId === focusId && t.state !== "resolved");
       const list = rows();
       if (thread) kids.push(threadCard(thread, thread.anchorStatus !== "anchored"));
       else if (list.length) kids.push(node("div", { class: "list" }, list));

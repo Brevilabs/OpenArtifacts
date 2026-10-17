@@ -1411,7 +1411,7 @@ test("on a phone, a reader who cannot comment on a thread-less page gets a sheet
   await button.waitFor();
   await button.click();
   await until("the sheet", async () => (await hostBox(tab)) !== null);
-  await frame.getByText("No open comments.").waitFor();
+  await frame.getByText("No comments yet.", { exact: true }).waitFor();
   await frame.locator(".head").getByText("Comments", { exact: true }).waitFor();
   await context.close();
 });
@@ -2308,4 +2308,34 @@ test("the Comment button is centred over the selection, and ⌘⌥M (Ctrl+Alt+M 
   await tab.waitForTimeout(300);
   assert.equal((await threadsOf(docId)).length, 0, "the shortcut never posts");
   await context.close();
+});
+
+test("with no comments the sidebar says so in plain text, and the phone sheet's thread view carries no such line", { timeout: 180_000 }, async () => {
+  const docId = await publish("Empty", REPORT);
+  const context = await newContext(ALICE, { signedInTo: docId });
+  const tab = await context.newPage();
+  await tab.goto(docUrl(docId));
+  await openSidebar(tab);
+  const frame = commentsFrame(tab, docId);
+  const empty = frame.getByText("No comments yet. Select text to comment.", { exact: true });
+  await empty.waitFor();
+  assert.equal(await empty.evaluate((el) => el.closest(".card") === null), true, "not inside a card");
+  assert.equal(await empty.evaluate((el) => getComputedStyle(el).borderTopWidth), "0px", "no border");
+  assert.equal(await frame.getByText("No open comments.").count(), 0);
+  await shoot(tab, "sidebar-empty");
+  await context.close();
+
+  const quote = "Renewal risk is concentrated in three accounts";
+  await agentThread(docId, { exact: quote, section: "risk" }, "Is this still true?");
+  const phone = await newContext(ALICE, { viewport: { width: 390, height: 844 }, signedInTo: docId });
+  const small = await phone.newPage();
+  await small.goto(docUrl(docId));
+  const sheetFrame = await until("the comments frame", () => commentsFrame(small, docId));
+  await until("the highlight", async () => (await painted(small, "openartifacts-open")).length === 1);
+  const at = await rectOf(small, quote);
+  await small.mouse.click(at.x + at.width / 3, at.y + at.height / 2);
+  await sheetFrame.getByText("Is this still true?").waitFor();
+  assert.equal(await sheetFrame.getByText("Select text to comment.").count(), 0, "no instruction over the thread");
+  assert.equal(await sheetFrame.getByText("No comments yet").count(), 0);
+  await phone.close();
 });

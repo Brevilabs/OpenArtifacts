@@ -238,6 +238,9 @@ The model is a document editor's comment margin (Google Docs, Notion, Figma):
 - **Comment** sits centred over the selection (kept inside the viewport), and
   ⌘⌥M (Ctrl+Alt+M elsewhere) does what it does: it opens the composer on the
   selection and never posts.
+- **With nothing open** the column says "No comments yet. Select text to
+  comment." in plain text, not a card ("No open comments." once every thread is
+  resolved); the sheet's thread view carries no such line.
 
 ## Plans, limits and abuse
 
