@@ -502,10 +502,11 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
         tip.title = "Comment (" + (MAC ? "⌘⌥M" : "Ctrl+Alt+M") + ")";
         tip.setAttribute("aria-keyshortcuts", MAC ? "Meta+Alt+M" : "Control+Alt+M");
         tip.addEventListener("mousedown", (event) => event.preventDefault());
-        tip.addEventListener("click", startDraft);
         root.append(tip);
         document.documentElement.append(tipHost);
       }
+      // The button belongs to this passage even if the browser clears its native selection before click.
+      tip.onclick = () => startDraft(cap);
       // Centred over the selection, above its first line when there is room, else below the last: never over the text itself. On a phone the system's Copy menu is above the selection, so the button goes below the last line, and 44px tall to be a touch target.
       const first = cap.first, last = cap.rect;
       const phone = mode === "overlay";
@@ -520,8 +521,9 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       tipHost.style.left = Math.round(Math.max(8, Math.min(x, viewport().clientWidth * z - wide - 8)) / z) + "px";
       tipHost.style.top = Math.round(y / z) + "px";
     };
-    const startDraft = () => {
-      const cap = capture();
+    const startDraft = (selected) => {
+      if (!active || !canComment) return;
+      const cap = capture() || selected;
       if (!cap) return;
       draftRange = toRange(cap.a, cap.b);
       draft = cap.anchor;
