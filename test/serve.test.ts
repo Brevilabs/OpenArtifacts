@@ -1439,7 +1439,7 @@ describe("an invited-only document", () => {
     const post = async (docId: string, accountId: string, over: Partial<Env> = PRIVATE, headers: Record<string, string> = SAME_ORIGIN) =>
       sendTo("POST", API_OPEN(docId), { headers: { cookie: await sessionFor(accountId), ...headers } }, over);
 
-    it("stores one row, nothing on a repeat or for an id that cannot be requested, and answers one page every time", async () => {
+    it("confirms a recorded request or repeat, and gives the same failure for every unrecorded document", async () => {
       const doc = await privateDoc();
       const publicDoc = await privateDoc("a public page", KEY, "anyone");
       const deleted = await privateDoc("withdrawn");
@@ -1470,14 +1470,17 @@ describe("an invited-only document", () => {
         [deleted.docId, bob],
         [invitedDoc.docId, alice],
       ];
+      let failure = "";
       for (const [docId, account] of others) {
         const response = await post(docId, account);
         expect(response.status).toBe(200);
-        expect(await bytes(response, docId)).toBe(account === alice ? (await bytes(await post(docId, alice), docId)) : expected);
+        const html = await bytes(response, docId);
+        expect(html).toContain("Request not sent");
+        failure ||= html;
+        expect(html).toBe(failure);
         expect(await requestRows(docId)).toEqual([]);
       }
-      // Alice, already allowed, sees her own address in the same words.
-      expect(await (await post(invitedDoc.docId, alice)).text()).toContain("alice@acme.com");
+      expect(failure).not.toContain("alice@acme.com");
     });
 
     it("says what will happen instead when the server cannot send email", async () => {
@@ -1535,7 +1538,7 @@ describe("an invited-only document", () => {
       expect(await requestRows(doc.docId)).toEqual([]);
     });
 
-    it("stops storing past 100 pending requests, still answering Request sent", async () => {
+    it("tells the reader when the pending request list is full", async () => {
       const doc = await privateDoc();
       for (let n = 0; n < 100; n += 1) {
         await env.DB.prepare("INSERT INTO doc_access_requests (doc_id, email, created_at) VALUES (?, ?, ?)")
@@ -1546,11 +1549,11 @@ describe("an invited-only document", () => {
 
       const response = await post(doc.docId, bob);
 
-      expect(await response.text()).toContain("Request sent");
+      expect(await response.text()).toContain("Request not sent");
       expect((await requestRows(doc.docId)).length).toBe(100);
     });
 
-    it("stores nothing once the account is over its allowance, and still answers Request sent", async () => {
+    it("tells the reader when their request allowance is exhausted", async () => {
       const bob = await reader("bob@other.com");
       const docs = [await privateDoc("one"), await privateDoc("two")];
       // The allowance is 10 a minute per account: ten requests for the first document are one row and nine repeats.
@@ -1560,7 +1563,7 @@ describe("an invited-only document", () => {
       const limited = await post(docs[1]!.docId, bob);
 
       expect(limited.status).toBe(200);
-      expect(await limited.text()).toContain("Request sent");
+      expect(await limited.text()).toContain("Request not sent");
       expect(await requestRows(docs[1]!.docId)).toEqual([]);
     });
 
@@ -1589,15 +1592,22 @@ describe("an invited-only document", () => {
       expect(await response.text()).not.toContain("owner@acme.com");
     });
 
-    it("sends no email when the owner's address is unknown, but still lists the request", async () => {
-      const { sent, over } = mailbox();
-      const doc = await privateDoc(); // owned by a license key nobody linked
-      const bob = await reader("bob@other.com");
-
-      await post(doc.docId, bob, over);
-
-      expect(sent).toEqual([]);
-      expect((await requestRows(doc.docId)).length).toBe(1);
+    it("records a missing owner mailbox and sends a new request notice after linking", async () => {
+      const logs = vi.spyOn(console, "info").mockImplementation(() => {});
+      try {
+        const { sent, over } = mailbox();
+        const doc = await privateDoc(); // owned by a license key nobody linked
+        const bob = await reader("bob@other.com");
+        await post(doc.docId, bob, over);
+        expect(sent).toEqual([]);
+        expect((await requestRows(doc.docId)).length).toBe(1);
+        expect(logs.mock.calls.filter(([name]) => name === "email delivery")).toMatchObject([
+          ["email delivery", { email_type: "access_request", outcome: "skipped_no_owner_email", recipient_hash: null }],
+        ]);
+        await ownerAccount(doc);
+        await post(doc.docId, await reader("carol@other.com"), over);
+        expect(sent.map((message) => message.to)).toEqual(["owner@acme.com"]);
+      } finally { logs.mockRestore(); }
     });
 
     it("is not there at all on a server with no reader sign-in", async () => {
@@ -2633,8 +2643,8 @@ describe("an invited-only document", () => {
       expect(html).toContain(`value="https://openartifacts.site/d/${doc.docId}"`);
       expect(html).toContain("<b>You</b><small>Owner</small>");
       expect(html).toContain("alice@acme.com");
-      expect(html).toContain("<small>Invited</small>");
-      expect(html).toContain("OpenArtifacts emails each invitation. If someone doesn’t get it, send them the link.");
+      expect(html).toContain("<small>Has access</small>");
+      expect(html).not.toContain("OpenArtifacts emails each invitation.");
       expect(html).not.toContain("Invited · email sent");
       expect(html).toContain("bob@other.com");
       expect(html).toContain("Asked to open it");
@@ -2698,7 +2708,7 @@ describe("an invited-only document", () => {
       expect(await role()).toBe("comment");
     });
 
-    it("hides the Requests section when nothing is pending, and says to send the link when the server sends no email", async () => {
+    it("does not claim a past invite was sent when delivery is unknown", async () => {
       const doc = await privateDoc();
       const owner = await ownerAccount(doc);
       await env.DB.prepare("INSERT INTO doc_invites (doc_id, email, created_at) VALUES (?, 'alice@acme.com', ?)")
@@ -2708,8 +2718,28 @@ describe("an invited-only document", () => {
       const html = await (await open(doc.docId, owner, { ...PRIVATE, EMAIL: undefined })).text();
 
       expect(html).not.toContain("<h2>Requests</h2>");
-      expect(html).toContain("Invited · send them the link");
+      expect(html).toContain("Has access");
       expect(html).not.toContain("Invited · email sent");
+    });
+
+    it("keeps access and offers Copy link when an invitation fails or hits its sending limit", async () => {
+      const { over } = mailbox();
+      const doc = await privateDoc();
+      const owner = await ownerAccount(doc);
+      for (const [email, extra] of [
+        ["failed@acme.com", { EMAIL: { send: async () => { throw new Error("mail down"); } } }],
+        ["limited@acme.com", { INVITE_EMAIL_LIMITER: { limit: async () => ({ success: false }) } }],
+      ] as Array<[string, Partial<Env>]>) {
+        const response = await write(doc.docId, owner, { op: "add", email }, { ...over, ...extra });
+        expect(response.status).toBe(200);
+        const html = await response.text();
+        expect(html).toContain("Invite email not sent · copy the link and send it yourself");
+        expect(html).toContain('<h2>Copy link</h2>');
+        expect((await access(doc.docId)).people.some((person) => person.email === email)).toBe(true);
+      }
+      const reloaded = await (await open(doc.docId, owner, over)).text();
+      expect(reloaded).toContain("Has access");
+      expect(reloaded).not.toContain("Invite email sent");
     });
 
     it("writes through the page into Access: add, which emails the invitee, then remove", async () => {
@@ -2719,8 +2749,8 @@ describe("an invited-only document", () => {
 
       const added = await write(doc.docId, owner, { op: "add", email: "Alice@Acme.com" }, over);
 
-      expect(added.status).toBe(303);
-      expect(added.headers.get("location")).toBe(`/share/${doc.docId}`);
+      expect(added.status).toBe(200);
+      expect(await added.text()).toContain("Invite email sent");
       expect(added.headers.get("cache-control")).toBe("no-store");
       expect((await access(doc.docId)).people.map((person) => person.email)).toEqual(["alice@acme.com"]);
       expect(sent.map((message) => message.to)).toEqual(["alice@acme.com"]);
@@ -3010,7 +3040,7 @@ describe("an invited-only document", () => {
       const doc = await privateDoc();
       const owner = await ownerAccount(doc);
 
-      expect((await write(doc.docId, owner, { op: "add", email: "Ann Lee <Ann@Acme.com>" })).status).toBe(303);
+      expect((await write(doc.docId, owner, { op: "add", email: "Ann Lee <Ann@Acme.com>" })).status).toBe(200);
       expect((await access(doc.docId)).people.map((person) => person.email)).toEqual(["ann@acme.com"]);
     });
 
@@ -3031,7 +3061,7 @@ describe("an invited-only document", () => {
       }
       expect((await access(doc.docId)).people).toEqual([]);
       // A browser that sends no Fetch Metadata is held to its Origin.
-      expect((await write(doc.docId, owner, fields, PRIVATE, { origin: API })).status).toBe(303);
+      expect((await write(doc.docId, owner, fields, PRIVATE, { origin: API })).status).toBe(200);
       expect((await access(doc.docId)).people.length).toBe(1);
     });
 

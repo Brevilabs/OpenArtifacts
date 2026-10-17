@@ -936,7 +936,7 @@ describe("private sharing through the owner's credential", () => {
     const mine = (await findOrCreateAccount(env.DB, newAccountId(), "me@acme.com", now)).id;
     expect(await linkExternalOwner(env.DB, owner, mine, 1000)).toBe("linked");
     const asAccount: Publisher = { owner: mine, plan: "pro", authKind: "account" };
-    const viaAccount = await addPerson({ ...env, ...hosts } as Env, new URL(`${API}/api/v1/docs`), asAccount, second.docId, "zed@acme.com", undefined, NO_ANALYTICS, createExecutionContext());
+    const viaAccount = await addPerson({ ...env, ...hosts } as Env, new URL(`${API}/api/v1/docs`), asAccount, second.docId, "zed@acme.com", undefined, NO_ANALYTICS);
     expect(viaAccount).toEqual({ ok: false, refusal: "invite_quota" });
 
     // Repeats, role changes and removals are not new invites.
@@ -1153,9 +1153,14 @@ describe("access requests", () => {
       linkAccess: "invited",
       roles: ["view", "comment"],
       email: true,
+      notificationNotice: expect.stringContaining("Link your Copilot account"),
       people: [{ email: "alice@acme.com", role: "comment", addedAt: people.created_at }],
       requests: [{ email: "bob@other.com", requestedAt: 2000 }],
     });
+
+    expect(await linkExternalOwner(env.DB, ownerPlus, await account("owner@acme.com"), Date.now())).toBe("linked");
+    const linked = await send("GET", `${API}/api/v1/docs/${docId}/access`, KEY_PLUS, undefined, hosts);
+    expect(await linked.json()).not.toHaveProperty("notificationNotice");
 
     // A deployment with Google and no Email Service binding still does private sharing, and says it sends nothing.
     const google = { OAUTH_GOOGLE_CLIENT_ID: "id", OAUTH_GOOGLE_CLIENT_SECRET: "secret" };
@@ -1249,10 +1254,8 @@ describe("access requests", () => {
     const mine = await account("me@acme.com");
     expect(await linkExternalOwner(env.DB, ownerPlus, mine, 1000)).toBe("linked");
     const asAccount: Publisher = { owner: mine, plan: "pro", authKind: "account" };
-    const ctx = createExecutionContext();
-    const result = await addPerson({ ...env, ...withLimiter } as Env, new URL(`${API}/api/v1/docs`), asAccount, docId, "b@acme.com", undefined, NO_ANALYTICS, ctx);
+    const result = await addPerson({ ...env, ...withLimiter } as Env, new URL(`${API}/api/v1/docs`), asAccount, docId, "b@acme.com", undefined, NO_ANALYTICS);
     expect(result.ok).toBe(true);
-    await waitOnExecutionContext(ctx);
     expect(sent.map((message) => message.to)).toEqual(["a@acme.com", "b@acme.com"]);
     expect(sent[1]!.text).toContain("Shared by me@acme.com");
     expect(keys).toHaveLength(2);
@@ -1266,30 +1269,8 @@ describe("access requests", () => {
 
     const response = await send("PUT", `${API}/api/v1/docs/${docId}/access/people/a%40acme.com`, KEY_PLUS, undefined, { ...hosts, INVITE_EMAIL_LIMITER: broken } as Partial<Env>);
     expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ people: [{ email: "a@acme.com" }] });
+    expect(await response.json()).toMatchObject({ people: [{ email: "a@acme.com" }], inviteDelivery: [{ email: "a@acme.com", outcome: "failed" }] });
     expect(sent).toEqual([]);
-  });
-
-  it("answers an add before its invite email is sent, and still sends it", async () => {
-    const docId = await privateDoc();
-    let release!: () => void;
-    const gate = new Promise<void>((resolve) => { release = resolve; });
-    const mailed: string[] = [];
-    const slow = { send: async (message: { to: string }) => { await gate; mailed.push(message.to); } };
-    const ctx = createExecutionContext();
-    // If the route awaited the mail, this fetch would wait on the gate forever.
-    const response = await worker.fetch(
-      new Request(`${API}/api/v1/docs/${docId}/access/people/a%40acme.com`, { method: "PUT", headers: { authorization: `Bearer ${KEY_PLUS}` } }),
-      { ...env, LEGACY_SERVING_HOST: "", RETIRED_API_HOST: "", ...hosts, EMAIL: slow } as unknown as Env,
-      ctx,
-    );
-    expect(response.status).toBe(200);
-    // `email` says the server can send one, which stays true: the send is only later.
-    expect(await response.json()).toMatchObject({ email: true, people: [{ email: "a@acme.com" }] });
-    expect(mailed).toEqual([]);
-    release();
-    await waitOnExecutionContext(ctx);
-    expect(mailed).toEqual(["a@acme.com"]);
   });
 
   it("refuses an address that is not one, and the 101st person", async () => {

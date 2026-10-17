@@ -548,6 +548,14 @@ when the server has one and the caller signed in with an account, when the plan 
 comments. `requests` are the addresses that asked to open the document and
 have not been answered.
 
+Additive fields: `inviteDelivery: [{email, outcome}]` appears only on the add
+that attempted an invite. Outcomes are `sent` (mail service accepted), `failed`,
+`skipped_limit` or `skipped_no_owner_email`. It is not stored; a repeat, role
+change or reload makes no delivery claim. Clients show failures with Copy link.
+`notificationNotice`, when present, tells an owner with no verified address
+that request/thread emails cannot reach them and how to link their Copilot account.
+Existing clients may ignore these fields; Copilot must adopt them to show the notice.
+
 - `PUT …/access` takes `{"linkAccess": "anyone" | "invited"}`. Switching to
   `anyone` keeps the list and the requests, and switching back restores them.
 - `PUT …/access/people/{email}` adds one address (URL-encode the `@`; it is
@@ -569,8 +577,8 @@ have not been answered.
   is how the requester learns the answer. Like any add it needs the plan.
 - `DELETE …/access/requests/{email}` declines a request. It is idempotent, sends
   nothing, tells the requester nothing, and never needs the plan. At most 100
-  requests are pending per document; past that, new requests are dropped
-  silently.
+  requests are pending per document; past that, new requests are not recorded
+  and the reader sees **Request not sent**.
 - `GET …/html` returns the latest stored HTML (`text/html`, `private, no-store`,
   sandboxed), so `openartifacts get` keeps working once a page's public url stops
   answering. Anyone who can read the document may call it, not only the owner, so an
@@ -638,9 +646,10 @@ and the full serving header policy. Unknown ids are still `404` and deleted ones
    content. The same page serves not invited, removed, deleted and never existed.
 2. **`POST /open/{docId}/request`**, the **Request access** form. It needs the
    session and `Sec-Fetch-Site: same-origin`; the address comes from the session,
-   never from the form. It always answers the same **Request sent** page, with the
-   same status and words, whether it stored a request, found one already pending,
-   or the id is unknown, deleted, public or already allowed. At most one row is
+   never from the form. A recorded request or repeat answers **Request sent**.
+   Every unrecorded case, including limits, unknown/deleted ids, public and
+   already-allowed pages, answers the same **Request not sent** page (200).
+   At most one row is
    stored per document and address, and the owner is emailed once per new row
    when the server has their address. It is rate limited per account.
 3. **`GET /d/{docId}[/v{n}]` on `{code}.{serving host}`.** The code is 6 random
@@ -1334,8 +1343,8 @@ Three of these are worth handling deliberately in a client:
   That holds on every route that names a document, not only `/api/v1`: `/open`,
   `/share`, `/embed/api` and a publisher's own origin all answer an unavailable `404` (or a
   redirect to the page that does) for a document the caller may not see, and the
-  request route answers the same **Request sent** page for every id, so all of
-  them are indistinguishable from a document that never existed.
+  request route gives every unrecorded request the same **Request not sent**
+  page, indistinguishable from a document that never existed.
 
 ## Account plans
 

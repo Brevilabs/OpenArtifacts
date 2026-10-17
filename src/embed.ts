@@ -378,7 +378,6 @@ async function frameApi(
   env: Env,
   analytics: AnalyticsSink,
   now: number,
-  ctx: ExecutionContext,
 ): Promise<Response> {
   const [docs, docId, access, kind, person, ...rest] = url.pathname.slice(EMBED_API_PREFIX.length + 1).split("/");
   const method = request.method;
@@ -428,7 +427,7 @@ async function frameApi(
     // The popover's role select sends {role}; Approve and the add box send no body.
     const role = await roleOf(request);
     if (role === null) return errorResponse("bad_request", 'Expected {"role": "view" | "comment"} or no body.', NO_STORE);
-    return answer(await addPerson(env, url, principal, docId, decodeAddress(person), role, analytics, ctx));
+    return answer(await addPerson(env, url, principal, docId, decodeAddress(person), role, analytics));
   }
   if (people) return answer(await removePerson(env, principal, docId, decodeAddress(person), analytics));
   if (requests) return answer(await declineRequest(env, principal, docId, decodeAddress(person)));
@@ -455,7 +454,7 @@ export async function handleEmbed(
     // The comments family first; null means the path is not one of its routes.
     const comments = await handleCommentsEmbed(request, url, env, now, ctx);
     if (comments !== null) return comments;
-    return await frameApi(request, url, env, analytics, now, ctx);
+    return await frameApi(request, url, env, analytics, now);
   }
   return READER_NOT_FOUND();
 }

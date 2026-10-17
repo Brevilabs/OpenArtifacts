@@ -221,7 +221,7 @@ describe("which reads record", () => {
     await read(sink, `/d/${first}`);
     await read(sink, `/d/${second}`);
 
-    const keys = await Promise.all(events.map((event) => documentAnalyticsKey(event.docId)));
+    const keys = await Promise.all(events.map((event) => documentAnalyticsKey(event.docId!)));
     expect(new Set(keys).size).toBe(2);
     // The distinct-page count is only as good as this: two documents sharing a
     // key would silently report as one page.

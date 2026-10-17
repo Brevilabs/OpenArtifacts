@@ -320,6 +320,11 @@ before(async () => {
 
   const vars = wranglerVars();
   mf = new Miniflare({
+    // Keep Worker diagnostics out of the in-process CLI's captured console.
+    handleRuntimeStdio: (stdout, stderr) => {
+      stdout.pipe(process.stderr, { end: false });
+      stderr.pipe(process.stderr, { end: false });
+    },
     modules: [
       { type: "ESModule", path: join(BUILD, "e2e-entry.js") },
       { type: "ESModule", path: join(BUILD, "index.js") },

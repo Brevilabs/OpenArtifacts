@@ -388,18 +388,16 @@ exists, and the invite email that add sends is the notice to the requester.
 
 - **Table:** `doc_access_requests (doc_id, email, created_at)`, one pending row
   per document and address, capped at 100 per document. Past the cap a new request
-  is dropped silently.
+  is not recorded; the reader sees **Request not sent**.
 - **Route:** `POST /open/{docId}/request`, on the API host, session required (no
   session shows the sign-in page), same-origin required. One statement inserts
   the row only when the document is live and invited-only, the account cannot
   already read it, no request is pending and the list is under the cap.
-- **It says nothing.** The **Request sent** page is the same status and the same
-  words for every outcome: stored, repeated, unknown id, deleted, public, already
-  allowed, a full list and a rate limit. The owner's email, the one slow step,
-  runs after the response is decided. Without an email binding the page says what
-  will happen instead ("the link will open for {email}").
+- **Only a recorded request or repeat says Request sent.** Every unrecorded case
+  gets the same **Request not sent** page, including limits and unknown/deleted
+  ids. The owner email runs after the response and does not decide its words.
 - **Rate limit:** per account, by `REQUEST_ACCESS_LIMITER`. Over the limit stores
-  nothing and still shows **Request sent**.
+  nothing; a previously recorded request remains confirmed.
 - **Approve and decline.** Approving is `PUT …/access/people/{email}` (or **Approve** on
   the share page): one batch inserts the invite and deletes the request, and the
   invite email goes out. It needs the plan, like any add. Declining deletes the
@@ -702,7 +700,8 @@ the plan gate, the invite email, idempotency and the `document_access_changed`
 event cannot differ between the two. A refused write re-renders the dialog with
 the reason, including "Private sharing needs a paid plan." and the upgrade link
 (`402`), or the 24-hour invite cap (`429`, "Nothing was changed.");
-a successful one redirects (`303`) back to the page. The page is `no-store` with
+an add that attempted email renders its delivery result (`200`); other successful
+writes redirect (`303`) back to the page. The page is `no-store` with
 `frame-ancestors 'none'` and `Referrer-Policy: same-origin` (as on every page of
 the API host that holds a form: a form posted from a `no-referrer` page sends
 `Origin: null`, which would defeat the `Origin` fallback for browsers without
@@ -761,8 +760,9 @@ work.
 
 Links in emails always point at the sacrificial domain or at our own share page,
 never at a grant and never at a requester-chosen url. Without an email binding the
-`email` field of the access JSON is `false`, the share page says "Invited · send
-them the link" instead of "Invited · email sent", and requests are listed without
+`email` field of the access JSON is `false`. Share shows each new invite's actual
+send result and offers Copy link on failure; reload shows only "Has access".
+Requests are listed without
 a notice to the owner.
 
 ## Self-hosting

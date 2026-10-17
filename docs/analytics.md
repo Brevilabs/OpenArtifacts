@@ -9,10 +9,9 @@ reader's browser.
 
 ## What is instrumented today
 
-All five events. `createDoc`, `updateDoc` and `deleteDoc` each record one on
-their success path, the access routes record one after each write, and
-`handleServing` and `handlePublisherServing` record one per qualifying read; no
-other code in the Worker calls `record`.
+`createDoc`, `updateDoc` and `deleteDoc` record on success, the access routes
+record after a change, and the serving routes record qualifying reads.
+The shared email sender records each send or skip.
 
 | Events | Where |
 | --- | --- |
@@ -26,7 +25,7 @@ absence of instrumentation, not the absence of usage.
 
 ## The events
 
-There are five, and the list is closed. `DocumentEvent` in `src/analytics.ts` is
+There are six, and the list is closed. `DocumentEvent` in `src/analytics.ts` is
 a union of exactly these shapes, so a new event is a change to that type rather
 than a new string somebody passed in.
 
@@ -37,6 +36,38 @@ than a new string somebody passed in.
 | `document_unshared` | A document was withdrawn by its owner. |
 | `document_access_changed` | A document's link setting or invite list was written. It carries the state left behind (`link_access` and `people`, a count), never an address. It is the adoption measure for private sharing. |
 | `document_viewed` | A reader successfully fetched a document page, public or private. Counted per document, never per reader. |
+| `email_delivery` | One intended email's result, including sending-limit and no-owner-address skips. No person profile. |
+
+### Email support lookup
+
+Each intended recipient produces one `email delivery` structured log and one
+`email_delivery` record through the existing best-effort PostHog sink. No retries
+or inbox-delivery claims: `sent` means Email Service accepted it. Existing logging
+retention and PostHog configuration still apply; missing telemetry is not proof
+that no email was sent. No analytics key means logs only.
+
+Both carry `email_type` (`invite`, `access_request`, `signin_code`, `comment_thread`,
+`comment_reply`, `comment_resolved`), `document_key`, `recipient_hash`, `outcome`
+(`sent`, `failed`, `skipped_limit`, `skipped_no_owner_email`) and a fixed `reason`.
+No address, title, code, URL, content or exception text is included. A missing
+owner address has a null hash; sign-in with no document uses `no_document`.
+
+The hash is `email_v1_` + HMAC-SHA256 with `READER_SESSION_SECRET`, signing
+`email-recipient-v1.` + the address trimmed and lowercased, exactly as accounts
+normalize it. Do not remove dots or plus tags. Domain separation reuses the
+existing secret without making an email hash a credential. Rotation changes
+hashes; old records require the old secret. Never export that secret to PostHog.
+For a known address, load the appropriate secret and `EMAIL_LOOKUP` securely into
+the operator environment (not command arguments), then print only its lookup key:
+
+```sh
+node -e 'const {createHmac}=require("node:crypto"); console.log("email_v1_"+createHmac("sha256",process.env.READER_SESSION_SECRET).update("email-recipient-v1."+process.env.EMAIL_LOOKUP.trim().toLowerCase()).digest("hex"))'
+```
+
+Filter logs or `email_delivery` by that hash and the existing document analytics
+key, with `environment = production` in PostHog. Inspect `outcome` and `reason`.
+
+### Common envelope
 
 Every event is a POST to `{POSTHOG_HOST}/i/v0/e/` carrying exactly this:
 
@@ -64,7 +95,8 @@ carries `link_access` (`anyone` or `invited`) and `people`.
 ### The property allowlist
 
 Those five properties, plus `$raw_user_agent` on a view and `link_access` and
-`people` on `document_access_changed`, are the whole allowlist, and it is enforced
+`people` on `document_access_changed`, and the email fields above are the whole
+allowlist, enforced
 by construction rather than by a check. The sender builds `properties` itself from
 the typed event; there is no property bag, no `Record<string, unknown>`, and no
 `Request` anywhere in the module's interface. A call site that wanted to attach
@@ -72,7 +104,7 @@ a title has nowhere to put one. `test/analytics.test.ts` asserts the complete
 set of keys in the body of the events, so a field added anywhere in the
 payload builder fails a test rather than reaching PostHog.
 
-`$process_person_profile` is `false` for `document_viewed` and `true` for the
+`$process_person_profile` is `false` for views and email delivery, and `true` for the
 publication and access events. A reader must never become a PostHog person; the
 publisher already is an account this service resolved from a credential it
 validated, and "how many distinct publishers" is worth being able to ask.
@@ -427,9 +459,8 @@ America/Los_Angeles, where that offset is wrong for half the year.
 None of the following is sent, and none of it can be, because no event shape has
 a field for it:
 
-- reader identities of any kind, including invented or derived ones, and the
-  addresses of people invited to a document or asking to open it (`people` is a
-  count);
+- reader identities on view events, and plain email addresses on any event
+  (`people` is a count; email delivery uses only a keyed recipient hash);
 - IP addresses, `Referer`, cookies, and any other request-derived metadata
   other than a view's user agent;
 - public document ids, document urls, and document titles;

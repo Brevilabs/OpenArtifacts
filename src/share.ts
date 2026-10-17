@@ -50,6 +50,7 @@ import {
   declineRequest,
   getAccess,
   grantableRoles,
+  type InviteDelivery,
   planRefusal,
   removePerson,
   setMode,
@@ -62,7 +63,6 @@ import type { Publisher } from "./auth.js";
 import { MAX_INVITES_PER_DOC, MAX_NEW_INVITES_PER_OWNER_PER_DAY, type Env } from "./config.js";
 import { accountEmail, findReadableDoc } from "./db.js";
 import { COPILOT_HINT } from "./embed-scripts.js";
-import { emailConfigured } from "./email.js";
 import { accountPlan } from "./entitlement.js";
 import { sameOriginPost } from "./limits.js";
 import { writeManifest } from "./manifest.js";
@@ -158,7 +158,6 @@ export async function handleShare(
   url: URL,
   env: Env,
   analytics: AnalyticsSink,
-  ctx: ExecutionContext,
 ): Promise<Response> {
   const docId = shareRoute(url.pathname);
   const secret = readerSecret(env);
@@ -214,11 +213,12 @@ export async function handleShare(
   if (form === null) return READER_NOT_FOUND();
   const found = form.get("op") === "add" ? parseAddresses(form.get("email") ?? "") : null;
   if (found !== null && found.emails.length + found.bad.length > 1) {
-    return (await addMany(env, url, principal, docId, found, analytics, ctx)) ?? unavailable();
+    return (await addMany(env, url, principal, docId, found, analytics)) ?? unavailable();
   }
-  const result = await write(env, url, principal, docId, form, analytics, ctx);
+  const result = await write(env, url, principal, docId, form, analytics);
   if (result === null) return READER_NOT_FOUND();
   if (result.ok) {
+    if (result.state.inviteDelivery !== undefined) return await dialog(env, url, principal, docId, result.state, {});
     // Post, redirect, get: a reload shows the page and repeats nothing.
     return new Response(null, {
       status: 303,
@@ -281,7 +281,6 @@ async function write(
   docId: string,
   form: URLSearchParams,
   analytics: AnalyticsSink,
-  ctx: ExecutionContext,
 ): Promise<AccessResult | null> {
   const op = form.get("op");
   const raw = form.get("email") ?? "";
@@ -292,11 +291,11 @@ async function write(
     const mode = form.get("linkAccess");
     return mode === "anyone" || mode === "invited" ? await setMode(env, principal, docId, mode, analytics) : null;
   }
-  if (op === "add") return await addPerson(env, url, principal, docId, address, undefined, analytics, ctx);
+  if (op === "add") return await addPerson(env, url, principal, docId, address, undefined, analytics);
   if (op === "role") {
     // A role this Worker does not know parses to null and changes nothing: it is never rewritten.
     const role = parseInviteRole(form.get("role"));
-    return role === null ? null : await addPerson(env, url, principal, docId, address, role, analytics, ctx);
+    return role === null ? null : await addPerson(env, url, principal, docId, address, role, analytics);
   }
   if (op === "remove") return await removePerson(env, principal, docId, address, analytics);
   if (op === "decline") return await declineRequest(env, principal, docId, address);
@@ -322,23 +321,31 @@ async function addMany(
   docId: string,
   found: ReturnType<typeof parseAddresses>,
   analytics: AnalyticsSink,
-  ctx: ExecutionContext,
 ): Promise<Response | null> {
   let added = 0;
+  const sending: Promise<InviteDelivery>[] = [];
   let stop: DialogError | undefined;
   for (const address of found.emails) {
     // The batch snapshots the manifest once, after the loop.
-    const result = await addWithoutManifest(env, url, principal, docId, address, undefined, analytics, ctx);
-    if (result.ok) added += 1;
-    else if (result.refusal === "not_found") return null;
-    else {
+    const result = await addWithoutManifest(env, url, principal, docId, address, undefined, analytics);
+    if (result.ok) {
+      added += 1;
+      if (result.sending) sending.push(result.sending);
+    }
+    else if (result.refusal === "not_found") {
+      await Promise.all(sending);
+      return null;
+    } else {
       stop = result.refusal;
       break;
     }
   }
+  // Before the manifest, as for one person: a failed put cannot swallow them.
+  const deliveries = await Promise.all(sending);
   if (added > 0) await writeManifest(env, docId);
   const state = await getAccess(env, principal, docId);
   if (!state.ok) return null;
+  state.state.inviteDelivery = deliveries;
   const done = [
     ...(added > 0 ? [`Added ${added} ${added === 1 ? "person" : "people"}.`] : []),
     ...(found.bad.length > 0 ? [`Not added: ${found.bad.map((entry) => `${entry} (not an email address)`).join(", ")}.`] : []),
@@ -362,7 +369,6 @@ async function dialog(
     `<form method="post" action="${action}"${cls ? ` class="${cls}"` : ""}>${hidden("op", op)}${Object.entries(fields)
       .map(([name, value]) => hidden(name, value))
       .join("")}${body}</form>`;
-  const emailEnabled = emailConfigured(env);
   const mode = (value: "anyone" | "invited", label: string, hint: string) =>
     `<label class="choice"><input type="radio" name="linkAccess" value="${value}"${state.link_access === value ? " checked" : ""}><span><b>${label}</b><small>${hint}</small></span></label>`;
 
@@ -399,7 +405,7 @@ async function dialog(
   const people = state.people
     .map(
       (person) =>
-        `<li><span><b><bdi>${escapeHtml(person.email)}</bdi></b><small>${emailEnabled ? "Invited" : "Invited · send them the link"}</small></span><span class="pair">${roleForm(person)}${form("remove", { email: person.email }, `<button type="submit">Remove</button>`)}</span></li>`,
+        `<li><span><b><bdi>${escapeHtml(person.email)}</bdi></b><small>${state.inviteDelivery?.find((d) => d.email === person.email)?.outcome === "sent" ? "Invite email sent" : state.inviteDelivery?.some((d) => d.email === person.email) ? "Invite email not sent · copy the link and send it yourself" : "Has access"}</small></span><span class="pair">${roleForm(person)}${form("remove", { email: person.email }, `<button type="submit">Remove</button>`)}</span></li>`,
     )
     .join("");
   const requests = state.requests.length
@@ -427,7 +433,7 @@ ${mayAdd ? `<section><h2>Add people</h2>${form(
     `<div class="row"><textarea id="people" name="email" rows="2" placeholder="Emails, separated by commas" aria-label="Email addresses" autocomplete="off" required></textarea><button type="submit">Add</button></div>`,
   )}${helper}</section>` : ""}
 ${requests}
-<section><h2>Who has access</h2><ul><li><span><b>You</b><small>Owner</small></span></li>${people}</ul>${emailEnabled && mayAdd ? "<p>OpenArtifacts emails each invitation. If someone doesn’t get it, send them the link.</p>" : ""}</section>
+<section><h2>Who has access</h2><ul><li><span><b>You</b><small>Owner</small></span></li>${people}</ul></section>
 ${copyLinkSection(url)}`;
 
   return readerPage(

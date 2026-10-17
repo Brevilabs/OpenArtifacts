@@ -29,6 +29,7 @@
  * plan lapsed or a role lowered never costs anyone the ability to take back what
  * they wrote.
  */
+import { analyticsSink } from "../analytics.js";
 import { accountEmail, markHasThreads, setDisplayName, setDisplayNameIfUnset } from "../db.js";
 import { MAX_NAME, nameFromEmail, normalizeDisplayName } from "../display-name.js";
 import { writeManifest } from "../manifest.js";
@@ -273,7 +274,7 @@ export async function createThread(
       thread: result.thread as ThreadRecord,
       text: fields.body.trim(),
       version,
-    }),
+    }, analyticsSink(env, caller.ctx)),
   );
   return Response.json(
     { threadId: result.threadId, commentId: result.commentId, anchorStatus: result.anchorStatus },
@@ -319,7 +320,7 @@ export async function replyToThread(
       thread: result.thread as ThreadRecord,
       text: fields.body.trim(),
       version,
-    }),
+    }, analyticsSink(env, caller.ctx)),
   );
   return Response.json({ commentId: result.commentId }, { status: 201, headers: NO_STORE });
 }
@@ -370,7 +371,7 @@ export async function changeThreadState(
         thread,
         text: null,
         version,
-      }),
+      }, analyticsSink(env, caller.ctx)),
     );
   }
   const viewer: Viewer = {

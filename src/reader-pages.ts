@@ -186,13 +186,17 @@ export function notAvailablePage(email: string, docId: string, next: string): Re
 }
 
 /**
- * What every request to open a document answers: stored, repeated, unknown
- * id, deleted, public, already allowed, over the cap, rate limited. One status
- * and one set of words, so the route reveals nothing the not-available page
- * does not. Without email on the server the approval cannot be announced, so
- * the page says what will happen instead.
+ * Confirm only a recorded request or repeat. All unrecorded cases share one
+ * failure page, so a full list cannot reveal a document's existence. Without
+ * email, say how approval works rather than promising an email.
  */
-export function requestSentPage(email: string, docId: string, emailEnabled: boolean): Response {
+export function requestSentPage(email: string, docId: string, emailEnabled: boolean, recorded = true): Response {
+  if (!recorded) return readerPage({
+    title: "Request not sent",
+    heading: "Request not sent",
+    message: "We couldn’t record your request. Wait a minute and try again, or ask the owner for the link.",
+    actions: `<div class="actions"><a href="${OPEN_PREFIX}/${escapeHtml(docId)}">Try again</a></div>`,
+  }, 200);
   const address = `<b><bdi>${escapeHtml(email)}</bdi></b>`;
   return readerPage(
     {
