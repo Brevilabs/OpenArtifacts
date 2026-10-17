@@ -83,7 +83,7 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
     let data = null, active = false, shown = true, canComment = false, mode = "margin";
     let mhost = null, mframe = null, ready = false, sheet = false, button = null, tipHost = null, tip = null;
     let canon = null, dirty = true, ranges = new Map(), lost = [], draft = null, draftRange = null, focusId = "", timer = 0;
-    let need = 0, sheetH = 0, refreshSeq = 0, ownerHere = false, probed = false, probing = false;
+    let need = 0, sheetH = 0, refreshSeq = 0, ownerHere = false, probing = false;
     const out = {};
     const flag = link.getAttribute("data-comments");
 
@@ -634,13 +634,12 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
     };
     // The Share popover's click (embed-scripts accepts the event only from its own frame and the API origin): its viewer is the owner, for the rest of this tab.
     commentsSwitched = () => { ownerHere = true; refresh(); };
-    // While the page is inert, the first selection of the author's text asks the comments frame, once, whether this viewer may comment. The frame is built hidden for it and nothing shows unless the answer is yes; the page load itself asks nothing.
+    // While the page is inert, the first selection of the author's text asks the comments frame, once, whether this viewer may comment. The frame (built once; a page that went inert keeps its own) is built hidden for it and nothing shows unless the answer is yes; the page load itself asks nothing.
     document.addEventListener("selectionchange", () => {
-      if (active || probed) return;
+      if (active || mhost) return;
       const sel = window.getSelection();
       if (!sel || sel.isCollapsed || sel.rangeCount === 0) return;
       for (const n of [sel.anchorNode, sel.focusNode]) if (!n || !document.body.contains(n) || outermost(n)) return;
-      probed = true;
       probing = true;
       buildHost();
     });

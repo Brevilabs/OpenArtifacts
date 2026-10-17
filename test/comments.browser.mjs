@@ -1643,12 +1643,28 @@ test("the owner of a public page nobody can comment on gets Comment on the first
   await tab.goto(docUrl(docId));
   await tab.locator("a[data-openartifacts-share]").waitFor();
   assert.equal(await tab.locator("a[data-openartifacts-share]").getAttribute("data-comments"), "off");
-  await tab.waitForTimeout(500);
   assert.equal(requests.some((url) => url.includes("/embed/comments")), false, "the load itself asks nothing");
   assert.equal(await barButton(tab).count(), 0);
   await select(tab, "Staffing is unchanged");
   await until("the Comment button", () => tab.locator(".openartifacts-comment-tip").isVisible());
   await barButton(tab).waitFor();
+  await context.close();
+});
+
+test("a page that went inert builds no second comments frame when a reader selects text", { timeout: 120_000 }, async () => {
+  const docId = await publish("Went inert", REPORT);
+  const context = await newContext(null);
+  const tab = await context.newPage();
+  await tab.goto(docUrl(docId));
+  await barButton(tab).waitFor();
+  assert.equal(await tab.locator(".openartifacts-comments").count(), 1);
+  // The last person at Can comment is removed elsewhere; the next refresh finds nothing to show.
+  await db.prepare("DELETE FROM doc_invites WHERE doc_id = ?").bind(docId).run();
+  await tab.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await until("the button to go", async () => !(await barButton(tab).isVisible()));
+  await select(tab, "Staffing is unchanged");
+  await tab.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  assert.equal(await tab.locator(".openartifacts-comments").count(), 1, "the one frame the page already has");
   await context.close();
 });
 
@@ -1661,11 +1677,13 @@ test("a signed-out visitor to a public page nobody can comment on selects text a
   await tab.goto(docUrl(docId));
   await tab.locator("a[data-openartifacts-share]").waitFor();
   assert.equal(requests.some((url) => url.includes("/threads")), false, "the load makes no threads request");
+  const answered = tab.waitForResponse((response) => response.url().includes("/threads"));
   await select(tab, "Staffing is unchanged");
-  // The probe's frame is built, and answers no.
+  // The probe's frame is built, and answers no: its anonymous thread read has come back and a frame has been drawn since.
   const frame = await until("the hidden probe frame", () => commentsFrame(tab, docId));
   assert.ok(frame);
-  await tab.waitForTimeout(800);
+  await answered;
+  await tab.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   assert.equal(await tab.locator(".openartifacts-comment-tip").isVisible().catch(() => false), false);
   assert.equal(await barButton(tab).count(), 0);
   assert.equal(await hostBox(tab), null, "no visible margin");
