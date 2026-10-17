@@ -967,7 +967,7 @@ export const FRAME_SCRIPT = String.raw`(() => {
     });
     // A plan that grants no role has neither private sharing nor comments: one card says so, with Upgrade.
     const upsell = roles !== null && roles.length === 0;
-    const upgrade = upsell && typeof body.upgradeUrl === "string" && body.upgradeUrl.startsWith("https://") ? node("a", { class: "btn primary", href: body.upgradeUrl, target: "_blank", rel: "noopener noreferrer" }, ["Upgrade"]) : null;
+    const upgrade = upsell && typeof body.upgradeUrl === "string" && body.upgradeUrl.startsWith("https://") ? node("a", { class: "btn", href: body.upgradeUrl, target: "_blank", rel: "noopener noreferrer" }, ["Upgrade"]) : null;
     const card = upsell ? node("div", { class: "up" }, [
       node("strong", {}, [icon(LOCK_ICON), "Private sharing and comments"]),
       node("p", { class: "muted" }, ["Choose who can open this page, and let them comment on it. Included in paid plans."]),
