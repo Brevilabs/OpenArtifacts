@@ -1272,6 +1272,14 @@ describe("an invited-only document", () => {
         expect(moved.headers.get("location")).toBe(`${API}/open/${doc.docId}${suffix}`);
       }
       expect((await getFrom(`${legacy}/api/v1/docs`, {}, PRIVATE)).status).toBe(404);
+      // It reads nothing about the document: another publisher's id and one that never existed get the
+      // same redirect, and /open applies the usual checks (404 for anyone who may not read it).
+      const theirs = await privateDoc("theirs", KEY_Q);
+      for (const id of [theirs.docId, "z".repeat(16)]) {
+        const moved = await getFrom(`${legacy}/d/${id}`, {}, PRIVATE);
+        expect(moved.status).toBe(302);
+        expect(moved.headers.get("location")).toBe(`${API}/open/${id}`);
+      }
     });
 
     it("lets the Share and comments frames be embedded by the code origin, and by nothing before a code exists", async () => {
