@@ -1754,6 +1754,38 @@ test("on a private page only the owner view reports a size: an invitee, signed i
   await context.close();
 });
 
+test("a frame with no width yet reports no size: its first report is the one at the width it is given", { timeout: 180_000 }, async () => {
+  // Chrome sometimes runs the popover's frame before it has sized it, and the owner view measured at no
+  // width is thousands of pixels tall. Another of the publisher's private pages, on the same code origin,
+  // holds the frame at width 0 to make that moment last.
+  const Y = await publish("Zero width", "<p>Mine.</p>", "private-docs");
+  const context = await newContext(OWNER_ACCOUNT, 900);
+  await recordShareEvents(context);
+  const first = await ownerFrame(context, Y);
+  const codeOrigin = new URL(first.page.url()).origin;
+  await first.page.close();
+  const Z = await publish(
+    "Zero width embedder",
+    `<iframe id="f" src="https://${API}/embed/share?doc=${Y}&origin=${encodeURIComponent(codeOrigin)}" style="width:0;height:480px;border:0"></iframe>`,
+    "private-docs",
+  );
+  const page = await context.newPage();
+  await page.goto(docUrl(Z));
+  assert.equal(new URL(page.url()).origin, codeOrigin, "both documents are on the publisher's code host");
+  const frame = await until("the zero-width frame", () => frameOf(page, Y));
+  // The owner view is drawn, and the observer that measures it has run, before this returns.
+  await frame.locator("[role=radiogroup]").waitFor({ state: "attached" });
+  assert.equal(await frame.evaluate(() => window.innerWidth), 0);
+  await page.locator("#f").evaluate((element) => { element.style.width = "360px"; });
+  const sizes = await until("a size", async () => {
+    const found = await page.evaluate(() => window.__shareEvents.filter((data) => data.event === "size").map((data) => data.height));
+    return found.length > 0 ? found : null;
+  });
+  const content = await frame.evaluate(() => Math.ceil(document.querySelector("header").getBoundingClientRect().height + document.querySelector("main").scrollHeight));
+  assert.deepEqual(sizes, [content], "the first size is the content at 360 px");
+  await context.close();
+});
+
 /** Hold every write to `docId`'s access for `ms`, and count them by method and path. */
 const slowWrites = async (page, docId, ms = 1500) => {
   const writes = [];

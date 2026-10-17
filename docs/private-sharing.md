@@ -525,7 +525,9 @@ that must never be on a page whose scripts the author writes.
   loaded on the shared origin stays silent after the document goes private; one
   loaded on the code origin keeps reporting its owner view, to the same
   publisher's page, after it goes public; and a code origin cannot load the frame
-  for a public document at all.
+  for a public document at all. A frame the page has not yet given a width
+  reports nothing (its content measured at no width is thousands of pixels tall);
+  the resize that sizes it reports.
 - **Its layout** is the same in every view. A row at the top holds the link
   field, **Copy link** (an icon) and ×; it is the primary action, so it never scrolls away,
   and it belongs to the frame's shell, not to a view, so nothing a view draws moves
