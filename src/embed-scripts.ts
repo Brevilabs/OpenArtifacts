@@ -188,16 +188,6 @@ export const PAGE_SCRIPT = String.raw`(() => {
   "})();\n";
 
 /**
- * What the owner of a Copilot-published page sees when their license key is not
- * linked to a browser account: they can sign in to the popover, but the account
- * that signs in does not own the page. A constant sentence, so it says nothing
- * about the document. The frame receives it in a `data-` attribute rather than
- * holding its own copy.
- */
-export const COPILOT_HINT =
-  "Published from Copilot? Open the note in Copilot and run Publish file to OpenArtifacts to manage who can open it.";
-
-/**
  * The popup's done page script (`popupDonePage`): when the popup still has its
  * opener, post the token to it, then close. A constant, named by its hash in
  * the page's policy; the token and the document id come from `data-` attributes
@@ -1015,6 +1005,7 @@ export const FRAME_SCRIPT = String.raw`(() => {
         kids.push(node("p", { class: "muted help" }, [body.linkAccess === "anyone" ? "Anyone can view. Invitees can comment." : "Only people you add can open this page."]));
       }
     }
+    if (body.notificationNotice) kids.push(muted([body.notificationNotice]));
     kids.push(message);
     if (body.requests.length > 0) {
       kids.push(node("h2", {}, ["Requests"]), node("ul", {}, body.requests.map((request) => person(request.email, "Asked to open it", narrow ? [] : [

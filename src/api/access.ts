@@ -114,11 +114,16 @@ export function planRefusal(env: Env, publisher: Publisher, what = "Private shar
 export type InviteDelivery = { email: string; outcome: EmailOutcome };
 export type AccessState = NonNullable<Awaited<ReturnType<typeof readAccess>>> & { inviteDelivery?: InviteDelivery[] };
 
-function ownerEmailNotice(env: Env): string {
+export function ownerEmailNotice(env: Env): string {
   const fix = env.ACCOUNT_ACTION_URL?.trim()
     ? `Link your Copilot account at ${env.ACCOUNT_ACTION_URL.trim()} to enable these emails.`
     : "Ask your server operator to link your license to a verified account to enable these emails.";
   return `Access requests and new comment threads cannot reach you by email, and invitations do not name you. ${fix}`;
+}
+
+/** Conditional guidance, identical for every document, even when ownership is unknown. */
+export function copilotHint(env: Env): string {
+  return `Published from Copilot? If your license key is not linked to an OpenArtifacts account, we have no email address for you. ${ownerEmailNotice(env)} After linking, sign in here to manage access.`;
 }
 
 /**
