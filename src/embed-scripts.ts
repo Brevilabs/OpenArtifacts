@@ -52,8 +52,7 @@ import { PAGE_COMMENTS_SCRIPT } from "./comments-scripts.js";
  *   measured in Chrome at the popover's 360 px width, the paid owner view is
  *   285 px and a free owner's upgrade card 256 px. So
  *   an owner who has added nobody sees everything without a scrollbar, and a
- *   list of people scrolls. A change to the owner view or `FRAME_CSS` that
- *   makes it taller fails the browser test that holds this. There the frame
+ *   list of people scrolls. There the frame
  *   never reports its size: any page on that origin can embed the same frame
  *   for any document it knows, and the height of what the frame draws (owner
  *   controls, a list of people, or just Copy link) would tell that page, with
@@ -200,8 +199,7 @@ export const PAGE_SCRIPT = String.raw`(() => {
  * sends `same-origin`, so Chrome opens the popup in a new browsing context group
  * (and Google's sign-in pages, probably, cut the link the same way). The frame
  * collects its token from the server in that case, and this script costs
- * nothing. The message lands only when the frame is a top-level page, which
- * `test/share-popover.browser.mjs` checks alongside the poll.
+ * nothing. The message lands only when the frame is a top-level page.
  */
 export const POPUP_DONE_SCRIPT = String.raw`(function () {
   var done = document.getElementById("oa-done");

@@ -1933,8 +1933,7 @@ describe("an invited-only document", () => {
 
       // The script is the constant, sends exactly one kind of message call, and reports a size from one place,
       // only from the owner view where it fits: embedded by an origin that is set and is not the shared one.
-      // Every view is drawn through draw(), and only the owner view passes true. What a page on either origin
-      // sees is held by test/share-popover.browser.mjs.
+      // Every view is drawn through draw(), and only the owner view passes true.
       const html = await (await getFrom(frameUrl(doc.docId, doc.host), {}, OPEN)).text();
       expect(inlineScript(html)).toBe(FRAME_SCRIPT);
       expect(occurrences(FRAME_SCRIPT, "postMessage(")).toBe(1);

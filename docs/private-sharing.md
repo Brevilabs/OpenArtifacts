@@ -550,7 +550,6 @@ that must never be on a page whose scripts the author writes.
   that; it follows the content as people are added or removed and a line appears,
   and the frame is laid out while hidden, so the popover opens at its height.
   Every other view there has the fixed height.
-  `test/share-popover.browser.mjs` holds all of it.
 - **Its views** follow the table: the owner gets the **Link access** choice
   (Anyone with the link / Only those invited), the address field with **Add**, one
   helper line, one line at the popover's narrowest width ("Only people you add
