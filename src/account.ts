@@ -1,6 +1,7 @@
 import { parseBearerToken, type Publisher } from "./auth.js";
 import { setName } from "./comments/service.js";
 import type { Env } from "./config.js";
+import { emailConfigured } from "./email.js";
 import { errorResponse } from "./errors.js";
 import { sha256Hex } from "./hash.js";
 import { OWNER_SCOPE_SQL } from "./owners.js";
@@ -36,7 +37,9 @@ export function actionUrl(env: Env): URL | null {
 }
 
 const COPILOT_CLIENT = "obsidian-copilot";
-const LINK_MESSAGE = "Publish from other agents too? Link your Copilot for Obsidian account to OpenArtifacts to get one list of pages, your Copilot plan there, and emails for access requests and comments.";
+// Emails are named only where this server can send them.
+const linkMessage = (env: Env) =>
+  `Publish from other agents too? Link your Copilot for Obsidian account to OpenArtifacts to get one list of pages${emailConfigured(env) ? ", your Copilot plan there, and emails for access requests and comments" : " and your Copilot plan there"}.`;
 
 /** A display hint, never account proof. It must not fail or change a publish. */
 export async function linkGuidance(request: Request, env: Env, publisher: Publisher): Promise<{ message: string; url: string } | undefined> {
@@ -47,7 +50,7 @@ export async function linkGuidance(request: Request, env: Env, publisher: Publis
     if (!url) return undefined;
     const linked = await env.DB.prepare("SELECT 1 FROM owner_links WHERE external_owner = ?")
       .bind(publisher.owner).first();
-    return linked ? undefined : { message: LINK_MESSAGE, url: url.toString() };
+    return linked ? undefined : { message: linkMessage(env), url: url.toString() };
   } catch {
     return undefined;
   }

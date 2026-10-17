@@ -258,9 +258,15 @@ describe("POST /api/v1/docs", () => {
       send("POST", `/api/v1/${route}`, KEY_A, { html: page("<p>x</p>") }, withPrivateSharing,
         "https://api.openartifacts.ai", headers);
     const copilot = { "x-openartifacts-client": "obsidian-copilot" };
-    type Offered = PushResponse & { guidance?: { url: string } };
+    type Offered = PushResponse & { guidance?: { message: string; url: string } };
 
-    expect(((await pushedOk(await publish("docs", copilot), 201)) as Offered).guidance?.url).toBe(ACCOUNT_ACTION_URL);
+    const offered = (await pushedOk(await publish("docs", copilot), 201)) as Offered;
+    expect(offered.guidance?.url).toBe(ACCOUNT_ACTION_URL);
+    expect(offered.guidance?.message).toContain("emails for access requests and comments");
+    // A server that cannot send email does not promise any.
+    const quiet = (await pushedOk(await send("POST", "/api/v1/docs", KEY_A, { html: page("<p>x</p>") }, { ACCOUNT_ACTION_URL, EMAIL: undefined },
+      API_ORIGIN, copilot), 201)) as Offered;
+    expect(quiet.guidance?.message).not.toContain("email");
     expect(((await pushedOk(await publish("private-docs", copilot), 201)) as Offered).guidance?.url).toBe(ACCOUNT_ACTION_URL);
     expect(Object.keys(await pushedOk(await publish("docs"), 201)).sort()).toEqual(["docId", "linkAccess", "url", "version"]);
 
