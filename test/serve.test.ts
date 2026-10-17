@@ -1921,12 +1921,20 @@ describe("an invited-only document", () => {
       expect(new Set(refused).size).toBe(1);
       expect(refused[0]).toContain('data-origin=""');
 
-      // The script is the constant, sends exactly one kind of message call, and reports no size.
+      // The script is the constant, sends exactly one kind of message call, and reports a size from one place,
+      // only from the owner view where it fits: embedded by an origin that is set and is not the shared one.
+      // Every view is drawn through draw(), and only the owner view passes true. What a page on either origin
+      // sees is held by test/share-popover.browser.mjs.
       const html = await (await getFrom(frameUrl(doc.docId, doc.host), {}, OPEN)).text();
       expect(inlineScript(html)).toBe(FRAME_SCRIPT);
       expect(occurrences(FRAME_SCRIPT, "postMessage(")).toBe(1);
       expect(FRAME_SCRIPT).not.toContain("ResizeObserver");
-      expect(FRAME_SCRIPT).not.toContain('"size"');
+      expect(occurrences(FRAME_SCRIPT, '"size"')).toBe(1);
+      expect(FRAME_SCRIPT).toContain('const fits = parentOrigin !== "" && parentOrigin !== publicOrigin && window.parent !== window;');
+      expect(FRAME_SCRIPT).toContain("const height = fits && ownerDrawn ? ");
+      expect(occurrences(FRAME_SCRIPT, "ownerDrawn = ")).toBe(2); // its declaration, and draw()
+      expect(occurrences(FRAME_SCRIPT, "main.replaceChildren(")).toBe(1);
+      expect(occurrences(FRAME_SCRIPT, "draw(kids, true)")).toBe(1);
       expect(FRAME_SCRIPT).not.toContain("autofocus");
       // A focusable element carries no id, in the shell or in the views the script draws.
       // <main> counts: it scrolls, and a scroller takes focus when its content overflows.
@@ -2810,7 +2818,7 @@ describe("an invited-only document", () => {
 
       await env.DB.prepare("UPDATE docs SET link_access = 'anyone' WHERE id = ?").bind(doc.docId).run();
       const pub = await (await open(doc.docId, owner)).text();
-      expect(pub).toContain("Anyone with the link can view. Only people you add can comment.");
+      expect(pub).toContain("Anyone can view. Invitees can comment.");
       expect(pub).not.toContain("Only people you add can open this page");
     });
 

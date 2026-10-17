@@ -497,9 +497,9 @@ that must never be on a page whose scripts the author writes.
   (what the frame's `postMessage` and `frame-ancestors` need; it tells the caller
   only what it already named). With a token, a non-reader sees what an unknown id
   shows, never `403`.
-- **It tells the page around it nothing about its viewer.** It has one fixed
-  height for everyone (320 px, less on a short viewport) and scrolls inside it.
-  It posts the page exactly three messages: `ready`, once, before it reads its
+- **It tells a page on the shared origin nothing about its viewer.** There it
+  has one fixed height for everyone (320 px, less on a short viewport) and
+  scrolls inside it. It posts the page `ready`, once, before it reads its
   storage; `close`, only after a click or key press inside it; and `people`,
   only after the owner's own click
   inside it (an add, a role change, or closing it), so the page asks for its
@@ -508,6 +508,26 @@ that must never be on a page whose scripts the author writes.
   frame's storage partition, and any of them can embed the frame for any id it
   knows; a size report, a focus move or an early message would tell that page, with
   no click, whether its visitor holds a token.
+- **On a private document's own origin the owner view also reports its size**
+  (`size`, the height of its content), and the popover takes it. Only the owner
+  view: every other view (signed out, a reader, not found, the skeleton) keeps the
+  one fixed height there too and posts nothing. The page around the frame is the
+  publisher's, so the owner view's height tells its scripts only what their author
+  knows, but an invitee's would not: the reader view's "Signed in as {email}."
+  wraps by address, so its height would say which invitee is looking, and any
+  report from a view other than the signed-out one would say the visitor has
+  signed in to Share. Leaving the owner view posts `0`, the fixed height again,
+  which follows only from the owner's own view. The frame decides once, as it
+  loads, whether it may report at all: only when the origin it was embedded by is
+  set and is not the shared one. `frame-ancestors` admits only the document's
+  serving origin at load, so that origin is the publisher's
+  `{code}.openartifacts.site`, which runs only that publisher's scripts. A frame
+  loaded on the shared origin stays silent after the document goes private; one
+  loaded on the code origin keeps reporting its owner view, to the same
+  publisher's page, after it goes public; and a code origin cannot load the frame
+  for a public document at all. A frame the page has not yet given a width
+  reports nothing (its content measured at no width is thousands of pixels tall);
+  the resize that sizes it reports.
 - **Its layout** is the same in every view. A row at the top holds the link
   field, **Copy link** (an icon) and ×; it is the primary action, so it never scrolls away,
   and it belongs to the frame's shell, not to a view, so nothing a view draws moves
@@ -518,31 +538,40 @@ that must never be on a page whose scripts the author writes.
   the end of the link, `/d/{id}`, cutting the host from its start when the whole
   link does not fit; a click selects all of it, and **Copy link** copies the full
   url.
-- **Its height** is one for every viewer, so it says nothing about who is looking,
-  and is chosen so that the owner view with nobody added shows whole, with no
-  scrollbar, in each of its forms: public, private, a free owner's plan line, and
-  the refusal after a failed switch. The tallest of these, measured in Chrome at the
-  popover's 360 px width, is 309 px; the popover is 320 px, capped by the viewport.
-  A list of people scrolls. `test/share-popover.browser.mjs` holds both.
+- **Its height** on the shared origin is one for every viewer, so it says nothing
+  about who is looking, and is chosen so that the owner view with nobody added
+  shows whole, with no scrollbar, in each of its forms: public, private, a free
+  owner's plan line, and the refusal after a failed switch. The tallest of these,
+  measured in Chrome at the popover's 360 px width, is 309 px; the popover is
+  320 px, capped by the viewport. A list of people scrolls. On a private
+  document's own origin the owner view's popover is as tall as what the frame
+  shows, up to 720 px and the viewport below the bar less 8 px, and scrolls past
+  that; it follows the content as people are added or removed and a line appears,
+  and the frame is laid out while hidden, so the popover opens at its height.
+  Every other view there has the fixed height.
+  `test/share-popover.browser.mjs` holds all of it.
 - **Its views** follow the table: the owner gets the **Link access** choice
   (Anyone with the link / Only those invited), the address field with **Add**, one
-  helper line ("Only people you add can open this page." on a private page,
-  "Anyone with the link can view. Only people you add can comment." on a public
-  one), **Who has access** (**You**, **Owner**, then each person with a **Can view
+  helper line, one line at the popover's narrowest width ("Only people you add
+  can open this page." on a private page, "Anyone can view. Invitees can
+  comment." on a public one), **Who has access** (**You**, **Owner**, then each person with a **Can view
   / Can comment** select and **Remove**, see [comments.md](comments.md)), and
   **Requests** with **Approve** and **Decline** when some are pending; any other
   reader gets "Only the owner can change who can open this."; someone not yet
   signed in gets that sentence and **Sign in to manage**. Writes call the same
   operations as `/api/v1` and the share page, so the plan check and the `402`
   message, both invite caps, the invite email and `document_access_changed` are
-  identical on all three.
+  identical on all three. While a write is out, the control it came from shows a
+  spinner and every control under the row is disabled (the address field
+  read-only), so a second press sends nothing; the answer draws the new view, or
+  an error leaves what was typed in place.
 - **Loading.** A frame with a stored token never paints the signed-out view. The
   shell's views are hidden until the frame's script has chosen the first one: no
   token is the signed-out view at once; a token is a skeleton of the owner view
   (the real row, with a working **Copy link**, since the link needs no request,
   then muted blocks where Link access, Add people, the helper line and the owner's
-  row will be, pulsing gently except under reduced motion; the helper line holds
-  two lines in both views, so nothing below it moves) until the access read
+  row will be, pulsing gently except under reduced motion; the helper line is one
+  line in both views, so nothing below it moves) until the access read
   answers. What replaces it is the answer: the owner view, the reader view, the
   not-found view, or the signed-out view after a `401`. A frame whose script never
   runs never says `ready`, and the page script shows its plain share-page link
@@ -832,9 +861,12 @@ subdomain needs a paid certificate for `*.docs.example.net`.
   reader sign-in). Pressing **Sign in to manage** again then completes at once from
   the new session. Two that do not overlap are independent, because the popup's
   binding cookie is per handshake.
-- **The popover is one fixed height**, so its short views have room to spare; the
-  alternative is a frame that reports its size, which would tell any page that can
-  embed it whether its visitor manages the document.
+- **The popover is one fixed height on a public page**, so its short views have
+  room to spare and a long list scrolls in 320 px; the alternative is a frame that
+  reports its size there, which would tell any page that can embed it whether its
+  visitor manages the document. Only the owner view on a private page fits its
+  content; an invitee's view there stays fixed, since its height would say which
+  invitee is looking.
 - **Browsers with no Fetch Metadata** (Safari before 16.4) cannot sign in to the
   popover and use the share page.
 - **A popover token outlives sign-out** by up to 24 hours. It can do only what that
