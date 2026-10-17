@@ -554,7 +554,8 @@ have not been answered.
   lowercased and trimmed). The body is optional: `{"role": "view" | "comment"}`,
   default `comment`, or `view` on a plan that grants no higher role and on a server without comments; any other body, including an unknown role, is `400
   bad_request`. The call that adds an address sends it an invite email where the
-  server has email; a repeat does not, and a repeat that names a different role
+  server has email, after the response, so the answer never waits on the mail
+  service; a repeat does not, and a repeat that names a different role
   updates the role. At most 100 people per document; the 101st is `400`.
   An owner may add at most 100 new invites in a rolling 24 hours, across all
   their documents: past that, an add that would list a new address, approvals
@@ -1108,7 +1109,7 @@ also checks the origin.
 | frame → page | `viewer` | `{canComment}`, after every read of the frame's own: `false` when signed out, the server's answer when signed in |
 | frame → page | `changed` | none: refetch now |
 | frame → page | `focus` | `{threadId}` |
-| frame → page | `hover` | `{threadId}`: the card under the pointer (empty clears); its passage takes the active yellow |
+| frame → page | `hover` | `{threadId}`: the card under the pointer (empty clears), also sent empty when the pointer enters the frame, which the page may not otherwise learn; its passage takes the active yellow, and the passage the page lit itself is dropped |
 | frame → page | `cancel` | none: the frame dropped an empty draft; the page unmarks its passage, and closes the sheet |
 | frame → page | `close` | none: the reader closed the comments (the header's close button, or Escape on the sheet) |
 | frame → page | `size` | `{height}`: how tall the sidebar's stacked cards need the column to be (`margin` mode) |
