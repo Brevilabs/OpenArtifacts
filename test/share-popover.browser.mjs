@@ -723,6 +723,39 @@ async function ownerFrame(context, docId) {
   return { page, frame };
 }
 
+test("Share builds its frame on intent, a hover or a focus, and never on a bare page view", { timeout: 120_000 }, async () => {
+  const X = await publish("Intent", "<p>Mine.</p>");
+  const context = await newContext(null);
+  const page = await context.newPage();
+  const loads = [];
+  context.on("request", (request) => { if (frameUrl(X).test(request.url())) loads.push(request.url()); });
+  await page.goto(docUrl(X));
+  const share = page.locator("a[data-openartifacts-share]");
+  await share.waitFor();
+  await page.waitForTimeout(1000);
+  assert.deepEqual(loads, [], "a page view makes no frame request");
+
+  // The pointer on Share builds the frame, hidden, so the click finds it loaded.
+  await share.hover();
+  const frame = await until("the frame a hover built", () => frameOf(page, X));
+  // Loaded and drawn, though nothing of it is visible yet.
+  await frame.locator("main:not([hidden]) #oa-account button").waitFor({ state: "attached" });
+  assert.equal(await page.locator(".openartifacts-share-popover").isVisible(), false, "a hover opens nothing");
+  await share.click();
+  await page.locator(".openartifacts-share-popover").waitFor();
+  await frame.getByRole("button", { name: "Sign in to manage" }).waitFor();
+  assert.equal(loads.length, 1, "the click uses the frame the hover built");
+
+  // So does keyboard focus.
+  const keyboard = await context.newPage();
+  await keyboard.goto(docUrl(X));
+  await keyboard.locator("a[data-openartifacts-share]").focus();
+  await until("the frame a focus built", () => frameOf(keyboard, X));
+  assert.equal(await keyboard.locator(".openartifacts-share-popover").isVisible(), false, "a focus opens nothing");
+  assert.equal(loads.length, 2);
+  await context.close();
+});
+
 test("an owner view taller than the popover scrolls instead of squashing its controls", { timeout: 120_000 }, async () => {
   // The popover is a fixed height. With a request and a dozen invitees the owner
   // view is far taller, and `main` has to scroll: flex children that shrink would

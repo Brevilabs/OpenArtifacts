@@ -25,10 +25,12 @@ import { PAGE_COMMENTS_SCRIPT } from "./comments-scripts.js";
  *
  * Behaviour this fixes:
  *
- * - The frame is created on the **first** Share click only, so a page view
- *   costs no frame request, and is then hidden and shown, **never reloaded**.
- *   A mode switch made inside it can therefore not re-run the frame's
- *   `frame-ancestors` check against the page it is on.
+ * - The frame is created on the first sign of **intent**: the pointer entering
+ *   Share, Share taking focus, or the click itself. It is built hidden, so the
+ *   click usually finds it loaded, and a page view with no pointer or focus on
+ *   Share costs no frame request. It is then hidden and shown, **never
+ *   reloaded**. A mode switch made inside it can therefore not re-run the
+ *   frame's `frame-ancestors` check against the page it is on.
  * - The popover lives in a closed shadow root, so author CSS such as
  *   `iframe { display: none }` and author code such as
  *   `querySelectorAll("iframe")` cannot reach it. It hangs off `<html>`, not
@@ -135,6 +137,11 @@ export const PAGE_SCRIPT = String.raw`(() => {
     link.setAttribute("aria-expanded", "false");
     if (refocus) link.focus();
   };
+  // Intent to press Share (the pointer on it, or focus) builds the frame, hidden,
+  // so the click finds it loaded. Once built, these do nothing.
+  const intent = () => { if (host === null) build(); };
+  link.addEventListener("pointerenter", intent);
+  link.addEventListener("focus", intent);
   link.addEventListener("click", (event) => {
     if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     event.preventDefault();

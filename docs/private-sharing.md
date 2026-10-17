@@ -451,9 +451,11 @@ who is looking.
 **The page script.** `GET /embed/page.js` on the API host turns **Share** into a
 popover anchored under the button. It is a constant that holds no credential,
 reads no cookie and no storage, defines no global and binds only our own link. It
-creates the frame on the first click only, so a page view costs no frame request,
-then hides and shows it and never reloads it, so a switch made inside the frame
-can never re-run its `frame-ancestors` check against the page it is on. The
+creates the frame on the first sign of intent (the pointer entering **Share**,
+**Share** taking focus, or the click), hidden, so the click usually finds it
+loaded; a page view with no pointer or focus on **Share** costs no frame request.
+It then hides and shows the frame and never reloads it, so a switch made inside the
+frame can never re-run its `frame-ancestors` check against the page it is on. The
 popover sits in a closed shadow root hanging off `<html>`, out of reach of author
 CSS and of a transformed or flex `<body>`. A modified click (a new tab) keeps the
 plain link; if the frame does not say it is ready within four seconds (an author
