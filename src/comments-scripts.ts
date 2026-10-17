@@ -92,6 +92,8 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
     let version = pin ? Number(pin[1]) : Number(link.getAttribute("data-version")) || 0;
     // The sidebar's column, and the narrowest viewport that has one beside the page; narrower, the comments are a bottom sheet.
     const COLUMN = 320, WIDE = 880;
+    // The shortcut that opens the composer on a selection, as in Google Docs: ⌘⌥M on a Mac, Ctrl+Alt+M elsewhere.
+    const MAC = /Mac|iPhone|iPad/.test(navigator.platform);
     let data = null, active = false, open = false, canComment = false, mode = "margin";
     let mhost = null, mframe = null, ready = false, button = null, words = null, tipHost = null, tip = null;
     let canon = null, dirty = true, ranges = new Map(), lost = [], draft = null, draftRange = null, focusId = "", timer = 0;
@@ -252,7 +254,7 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       for (let el = first && first.node.parentElement; el && el !== document.body; el = el.parentElement) {
         if (el.id && el.id.length <= 128) { anchor.section = el.id; break; }
       }
-      return { a: a, b: b, anchor: anchor, rect: live.getClientRects()[live.getClientRects().length - 1] || live.getBoundingClientRect(), first: live.getClientRects()[0] || live.getBoundingClientRect() };
+      return { a: a, b: b, anchor: anchor, box: live.getBoundingClientRect(), rect: live.getClientRects()[live.getClientRects().length - 1] || live.getBoundingClientRect(), first: live.getClientRects()[0] || live.getBoundingClientRect() };
     };
 
     // ---- the frame ----------------------------------------------------------
@@ -451,12 +453,14 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
         bubble.setAttribute("d", "M21 11.5a8.4 8.4 0 0 1-9 8.4 8.6 8.6 0 0 1-3.7-.8L3 21l1.9-5.1A8.4 8.4 0 0 1 3 11.5 8.5 8.5 0 0 1 12 3a8.5 8.5 0 0 1 9 8.5z");
         icon.append(bubble);
         tip.append(icon, document.createTextNode("Comment"));
+        tip.title = "Comment (" + (MAC ? "⌘⌥M" : "Ctrl+Alt+M") + ")";
+        tip.setAttribute("aria-keyshortcuts", MAC ? "Meta+Alt+M" : "Control+Alt+M");
         tip.addEventListener("mousedown", (event) => event.preventDefault());
         tip.addEventListener("click", startDraft);
         root.append(tip);
         document.documentElement.append(tipHost);
       }
-      // Above the first line of the selection when there is room, else below the last: never over the text itself. On a phone the system's Copy menu is above the selection, so the button goes below the last line, centred, and 44px tall to be a touch target.
+      // Centred over the selection, above its first line when there is room, else below the last: never over the text itself. On a phone the system's Copy menu is above the selection, so the button goes below the last line, and 44px tall to be a touch target.
       const first = cap.first, last = cap.rect;
       const phone = mode === "overlay";
       tip.classList.toggle("tall", phone);
@@ -465,7 +469,7 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       const z = document.documentElement.currentCSSZoom || 1;
       tipHost.style.display = "block";
       const wide = tipHost.offsetWidth * z, high = tipHost.offsetHeight * z;
-      const x = phone ? (last.left + last.right) / 2 - wide / 2 : above ? first.left : last.right - wide;
+      const x = (cap.box.left + cap.box.right) / 2 - wide / 2;
       const y = phone ? Math.min(last.bottom + 8, window.innerHeight - high - 8) : above ? first.top - 44 : last.bottom + 8;
       tipHost.style.left = Math.round(Math.max(8, Math.min(x, viewport().clientWidth * z - wide - 8)) / z) + "px";
       tipHost.style.top = Math.round(y / z) + "px";
@@ -636,6 +640,13 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       link.addEventListener("click", () => { if (mode === "overlay") closePanel(); });
       // A draft is the frame's to end (it knows whether words are in it); a sheet without one closes. The sidebar stays open until its reader closes it.
       document.addEventListener("keydown", (event) => { if (open && event.key === "Escape") { if (draft) send({ event: "dismiss" }); else if (mode === "overlay") closePanel(); } }, true);
+      // ⌘⌥M (Ctrl+Alt+M elsewhere) opens the composer on the selection, as the Comment button does. It only opens it: posting still takes a click on Send.
+      document.addEventListener("keydown", (event) => {
+        if (event.code !== "KeyM" || !event.altKey || event.shiftKey || (MAC ? !event.metaKey || event.ctrlKey : !event.ctrlKey || event.metaKey)) return;
+        if (!active || !canComment || !capture()) return;
+        event.preventDefault();
+        startDraft();
+      });
       document.addEventListener("pointerdown", (event) => {
         const ours = event.target === mhost || event.target === tipHost || button.contains(event.target);
         // A click on the page itself closes a draft that has nothing typed in it (the frame decides); on a phone a touch is how the reader scrolls back to the passage.

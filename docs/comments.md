@@ -235,6 +235,9 @@ The model is a document editor's comment margin (Google Docs, Notion, Figma):
   Enter is a newline.
 - **A selection made before the reader may comment** (before signing in, say)
   gets its **Comment** button as soon as they may, without selecting again.
+- **Comment** sits centred over the selection (kept inside the viewport), and
+  ⌘⌥M (Ctrl+Alt+M elsewhere) does what it does: it opens the composer on the
+  selection and never posts.
 
 ## Plans, limits and abuse
 

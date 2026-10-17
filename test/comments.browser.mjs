@@ -1132,9 +1132,9 @@ test("html{zoom} and an inner scroller do not break the sidebar, and a fixed con
   const zoomTip = tab.locator(".openartifacts-comment-tip");
   await until("the Comment button", async () => await zoomTip.isVisible());
   const zoomTipBox = await zoomTip.boundingBox();
-  const selected = await tab.evaluate(() => { const r = window.getSelection().getRangeAt(0).getClientRects(); return { left: r[0].left, top: r[0].top }; });
+  const selected = await tab.evaluate(() => { const r = window.getSelection().getRangeAt(0).getClientRects(); return { mid: (r[0].left + r[0].right) / 2, top: r[0].top }; });
   assert.ok(zoomTipBox.y >= 0 && zoomTipBox.y + zoomTipBox.height <= 900, `the button (${zoomTipBox.y}) is inside the viewport`);
-  assert.ok(Math.abs(zoomTipBox.y - (selected.top - 44)) < 12 && Math.abs(zoomTipBox.x - selected.left) < 12, "the button is beside the selection");
+  assert.ok(Math.abs(zoomTipBox.y - (selected.top - 44)) < 12 && Math.abs(zoomTipBox.x + zoomTipBox.width / 2 - selected.mid) < 12, "the button is centred over the selection");
   await context.close();
 
   // 2. A page that scrolls in a 100vh container, not in the window, gets the sheet, not a column that cannot follow it.
@@ -2279,5 +2279,33 @@ test("a selection made before signing in gets its Comment button once the frame 
   await frame.getByText("Select text to comment.").waitFor();
   assert.equal(await tab.evaluate(() => window.getSelection().toString()), "Staffing is unchanged", "the selection is still there");
   await until("the Comment button, without selecting again", async () => await tip.isVisible());
+  await context.close();
+});
+
+test("the Comment button is centred over the selection, and ⌘⌥M (Ctrl+Alt+M elsewhere) opens the composer without posting", { timeout: 120_000 }, async () => {
+  const docId = await publish("Centred", REPORT);
+  const context = await newContext(ALICE, { signedInTo: docId });
+  const tab = await context.newPage();
+  await tab.goto(docUrl(docId));
+  await openSidebar(tab);
+  const frame = commentsFrame(tab, docId);
+  await frame.getByText("Select text to comment.").waitFor();
+  const tip = tab.locator(".openartifacts-comment-tip");
+  const quote = "Renewal risk is concentrated in three accounts";
+  await select(tab, quote);
+  await until("the Comment button", async () => await tip.isVisible());
+  const pill = await tip.boundingBox();
+  const passage = await rectOf(tab, quote);
+  assert.ok(Math.abs(pill.x + pill.width / 2 - (passage.x + passage.width / 2)) <= 2, `centred over the selection (${pill.x + pill.width / 2} vs ${passage.x + passage.width / 2})`);
+  assert.ok(pill.y + pill.height <= passage.y, "above it");
+
+  const mac = await tab.evaluate(() => /Mac|iPhone|iPad/.test(navigator.platform));
+  await tab.keyboard.press(`${mac ? "Meta" : "Control"}+Alt+KeyM`);
+  const field = frame.getByRole("textbox", { name: "Add a comment…" });
+  await field.waitFor();
+  await until("the composer to have focus", () => frame.evaluate(() => document.activeElement && document.activeElement.dataset.key === "draft"));
+  assert.deepEqual(await painted(tab, "openartifacts-draft"), [quote]);
+  await tab.waitForTimeout(300);
+  assert.equal((await threadsOf(docId)).length, 0, "the shortcut never posts");
   await context.close();
 });
