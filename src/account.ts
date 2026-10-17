@@ -39,7 +39,7 @@ export function actionUrl(env: Env): URL | null {
 const COPILOT_CLIENT = "obsidian-copilot";
 // Emails are named only where this server can send them.
 const linkMessage = (env: Env) =>
-  `Publish from other agents too? Link your Copilot for Obsidian account to OpenArtifacts to get one list of pages${emailConfigured(env) ? ", your Copilot plan there, and emails for access requests and comments" : " and your Copilot plan there"}.`;
+  `Publish from other agents too? Link your Copilot for Obsidian account to OpenArtifacts${emailConfigured(env) ? " to get an email when people you share with comment or ask for access" : ""}.`;
 
 /** A display hint, never account proof. It must not fail or change a publish. */
 export async function linkGuidance(request: Request, env: Env, publisher: Publisher): Promise<{ message: string; url: string } | undefined> {

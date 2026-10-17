@@ -262,7 +262,7 @@ describe("POST /api/v1/docs", () => {
 
     const offered = (await pushedOk(await publish("docs", copilot), 201)) as Offered;
     expect(offered.guidance?.url).toBe(ACCOUNT_ACTION_URL);
-    expect(offered.guidance?.message).toContain("emails for access requests and comments");
+    expect(offered.guidance?.message).toContain("get an email when people you share with comment or ask for access");
     // A server that cannot send email does not promise any.
     const quiet = (await pushedOk(await send("POST", "/api/v1/docs", KEY_A, { html: page("<p>x</p>") }, { ACCOUNT_ACTION_URL, EMAIL: undefined },
       API_ORIGIN, copilot), 201)) as Offered;
