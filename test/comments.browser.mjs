@@ -1932,20 +1932,25 @@ test("a header control the keyboard is on keeps focus when the frame redraws on 
   const head = frame.locator(".head");
   const focused = () => frame.evaluate(() => (document.activeElement ? document.activeElement.getAttribute("aria-label") || document.activeElement.textContent.trim() : ""));
   let width = 1280;
-  // Focus the control, mark its node, and reflow the page without any input to the frame: the page's new positions redraw the frame, which a node without the mark proves.
-  const survives = async (label, control) => {
+  // Focus the control, mark its node, and reflow the page without any input to the frame: the page's new positions redraw the frame, which a node without the mark proves. At 900px (still a sidebar, scrollbar or not) the text column is narrow enough that the first paragraph wraps whatever the fonts, so every passage below it moves.
+  // Undo is on a six-second clock, so on a slow machine its expiry can be the redraw; the count that replaces it then holds the focus (asserted on its own below).
+  const survives = async (label, control, orElse) => {
     await control.focus();
     await control.evaluate((el) => { el.dataset.before = "1"; });
-    width = width === 1280 ? 1000 : 1280;
+    width = width === 1280 ? 900 : 1280;
     await tab.setViewportSize({ width, height: 800 });
     await until(`the header redrawn under ${label}`, () => frame.evaluate(() => !document.querySelector(".head [data-before]")));
-    assert.equal(await focused(), label, `${label} keeps focus through a redraw`);
+    const now = await focused();
+    assert.ok(now === label || (orElse !== undefined && now === orElse), `${label} keeps focus through a redraw (got ${JSON.stringify(now.slice(0, 40))})`);
   };
 
   await cardFor(frame, "Is that deliberate?").getByRole("button", { name: "Resolve" }).click();
   await until("one card", async () => (await cards.count()) === 1);
-  await survives("Undo", head.getByRole("button", { name: "Undo" }));
+  await survives("Undo", head.getByRole("button", { name: "Undo" }), "1 resolved");
+  // The offer expiring under the keyboard hands the focus to the count that replaces it, never to the page.
+  if (await head.getByRole("button", { name: "Undo" }).count()) await head.getByRole("button", { name: "Undo" }).focus();
   await until("the Undo offer to go", async () => (await head.getByRole("button", { name: "Undo" }).count()) === 0, 12_000);
+  assert.equal(await focused(), "1 resolved", "the keyboard moves from Undo to the count");
   await survives("1 resolved", head.getByRole("button", { name: "1 resolved" }));
   await survives("Close comments", head.getByRole("button", { name: "Close comments" }));
   await owner.close();

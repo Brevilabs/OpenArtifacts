@@ -1258,7 +1258,12 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
   const resolveThread = (id) => act("t:" + id, () => call("POST", docPath("/threads/" + encodeURIComponent(id) + "/resolve"), { version: versionOf() || undefined }), () => {
     undoId = id;
     window.clearTimeout(undoTimer);
-    undoTimer = window.setTimeout(() => { undoId = ""; render(); }, 6000);
+    // When the offer goes, a keyboard on Undo moves to the count that takes its place, not to the page.
+    undoTimer = window.setTimeout(() => {
+      undoId = "";
+      if (document.activeElement && document.activeElement.dataset.key === "h:undo") focusKey = "h:resolved";
+      render();
+    }, 6000);
     if (focusId === id) { focusId = ""; post({ event: "focus", threadId: "" }); }
   });
   const reopenThread = (id) => act("t:" + id, () => call("POST", docPath("/threads/" + encodeURIComponent(id) + "/reopen"), { version: versionOf() || undefined }), () => { if (undoId === id) undoId = ""; });
