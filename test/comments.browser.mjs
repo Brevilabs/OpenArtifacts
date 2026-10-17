@@ -2509,6 +2509,14 @@ test("hovering a highlight or its card links them: the passage darkens and the c
   await until("the passage back", async () => (await painted(tab, "openartifacts-focus")).length === 0);
   await until("the card back", async () => !(await lifted()));
 
+  // Straight from the passage into an empty part of the sidebar, in one move: the page is told nothing, and only the frame sees the pointer arrive.
+  await tab.mouse.move(at.x + at.width / 2, at.y + at.height / 2);
+  await until("the passage in the active yellow again", async () => (await painted(tab, "openartifacts-focus")).length === 1);
+  const side = await hostBox(tab);
+  await tab.mouse.move(side.x + side.width / 2, 700);
+  await until("the passage back after a jump into the sidebar", async () => (await painted(tab, "openartifacts-focus")).length === 0);
+  await until("the card back after a jump into the sidebar", async () => !(await lifted()));
+
   const box = await card.boundingBox();
   await tab.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await until("the passage in the active yellow from the card", async () => (await painted(tab, "openartifacts-focus")).length === 1);
