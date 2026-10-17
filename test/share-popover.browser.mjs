@@ -1596,7 +1596,9 @@ const emailOn = (context, docId) =>
   context.route(new RegExp(`^https://${API.replaceAll(".", "\\.")}/embed/api/docs/${docId}/access`), async (route) => {
     const response = await route.fetch({ url: route.request().url().replace(`https://${API}`, `https://127.0.0.1:${mfPort}`), headers: { ...route.request().headers(), host: API } });
     const body = await response.json().catch(() => null);
-    await route.fulfill(body && body.viewer === "owner" ? { response, json: { ...body, email: true } } : { response });
+    // A server that can mail: it says so, and every invite it sent went out.
+    const sent = body && body.inviteDelivery ? { inviteDelivery: body.inviteDelivery.map((delivery) => ({ ...delivery, outcome: "sent" })) } : {};
+    await route.fulfill(body && body.viewer === "owner" ? { response, json: { ...body, email: true, ...sent } } : { response });
   });
 
 test("on a private page the popover fits its content: it hugs an owner with nobody added, shows six people whole, and scrolls past its maximum", { timeout: 240_000 }, async () => {
