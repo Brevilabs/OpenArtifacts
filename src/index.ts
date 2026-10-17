@@ -333,7 +333,7 @@ export default {
               !readerSignInConfigured(env)
                 ? READER_NOT_FOUND()
                 : pathIsUnder(url.pathname, SHARE_PREFIX)
-                  ? await handleShare(request, url, env, analytics)
+                  ? await handleShare(request, url, env, analytics, ctx)
                   : await handleReader(request, url, env, ctx),
             );
           }
