@@ -17,6 +17,10 @@
  * Scope: document state only (`docs`, `doc_invites`, `versions`, and the
  * `storage_usage` ledger rows that mirror `versions`). Accounts, sessions,
  * owner links, publishers, access requests and comments are not in R2.
+ * `has_threads` is the manifest's, or set where the listing holds the
+ * `threads.json` the comments object keeps, for a manifest written before it.
+ * `comments_enabled` is unread since the roles revision: the manifest still
+ * carries it for older rebuilds, and this one leaves the column at its default.
  */
 import type { DocManifest } from "./manifest.js";
 
@@ -37,7 +41,7 @@ export interface RebuiltRows {
     updated_at: number;
     deleted_at: number | null;
     link_access: "anyone" | "invited";
-    comments_enabled: 0 | 1;
+    has_threads: 0 | 1;
   };
   invites: Array<{ doc_id: string; email: string; role: "view" | "comment"; created_at: number }>;
   versions: Array<{ doc_id: string; n: number; size: number; title: null; created_at: number }>;
@@ -55,7 +59,7 @@ export function readable(manifest: unknown): manifest is DocManifest {
     isString(m.owner) &&
     isString(m.title) &&
     isString(m.linkAccess) &&
-    typeof m.commentsEnabled === "boolean" &&
+    (m.hasThreads === undefined || typeof m.hasThreads === "boolean") &&
     isNumber(m.createdAt) &&
     isNumber(m.updatedAt) &&
     isNumber(m.latestVersion) &&
@@ -108,7 +112,7 @@ export function rowsFromManifest(docId: string, manifest: unknown, objects: read
       updated_at: m.updatedAt,
       deleted_at: m.deletedAt,
       link_access: m.linkAccess === "anyone" ? "anyone" : "invited",
-      comments_enabled: m.commentsEnabled ? 1 : 0,
+      has_threads: m.hasThreads === true || objects.some((object) => object.key === `docs/${docId}/threads.json`) ? 1 : 0,
     },
     invites: m.people.map((person) => ({
       doc_id: docId,

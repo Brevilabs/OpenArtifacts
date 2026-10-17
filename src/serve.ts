@@ -300,8 +300,8 @@ function notModifiedConditions(from: Headers, suffix: string): Headers {
 /**
  * The suffix that turns an object's validator into a rendering's: when the
  * running Worker version was deployed, in milliseconds, as `.r{ms}`, then on
- * the shared link the comments switch (`.c0` or `.c1`), which the top bar
- * carries. A flip changes the validator, so a revalidation after it is a `200`
+ * the shared link whether the page has comments (`.c0` or `.c1`), which the top
+ * bar carries. A flip changes the validator, so a revalidation after it is a `200`
  * with the new bar rather than a `304` for the old one.
  *
  * The stored object's etag cannot notice a change to what is injected around
@@ -400,8 +400,8 @@ function matchesConditions(conditions: Headers, object: R2Object): boolean {
  *
  * Public and invited-only documents get the same bar, and it is the same for
  * every viewer: it names no identity, which is what keeps public pages
- * cacheable. On the shared link it also carries the document's comments switch,
- * so the page script does not ask the threads resource about a document that has
+ * cacheable. On the shared link it also carries whether the page has comments to
+ * show (a thread, or a person who can comment), so the page script does not ask the threads resource about a document that has
  * none, and the version served, so its comments follow the text on screen;
  * `comments` is null on a pinned url, which carries neither.
  */
@@ -433,15 +433,15 @@ async function serveObject(
   route: DocRoute,
   version: number,
   invitedOnly = false,
-  commentsEnabled = false,
+  hasComments = false,
 ): Promise<Response> {
-  // The comments switch enters the rendering only on the shared link. A pinned
+  // Whether the page has comments enters the rendering only on the shared link. A pinned
   // `/v{n}` is immutable for a year and may sit in a shared edge cache, so a
-  // flag baked into it would hide comments turned on later: it carries none, and
+  // flag baked into it would hide comments that arrived later: it carries none, and
   // the page script asks the threads resource there instead. The validator reads
   // the flag off the bar, so it moves only when the bytes do: no bar (no reader
   // sign-in) means no flag in either.
-  const bar = topBarFor(env, route, version, route.pinned === null ? commentsEnabled : null);
+  const bar = topBarFor(env, route, version, route.pinned === null ? hasComments : null);
   const suffix = renderingSuffix(env, bar?.comments ?? null);
   const key = versionObjectKey(route.docId, version);
   const headers = servingHeaders(
@@ -499,8 +499,8 @@ async function serveObject(
   // change to it is a deploy, which moves the deploy time (see `renderingSuffix`).
   //
   // And one input that does change per document and over time: on the shared
-  // link, the owner's comments switch, which the bar carries for the page
-  // script. It is in the validator (`renderingSuffix`), so a flip is a `200`
+  // link, whether the page has comments, which the bar carries for the page
+  // script. It is in the validator (`renderingSuffix`), so a flip (the first person at `comment`, the first thread) is a `200`
   // rather than a `304` for the old bar, and it reaches readers within the
   // route's 60 seconds.
   headers.set("etag", servedEtag(object.httpEtag, suffix));
@@ -576,7 +576,7 @@ export async function handleServing(
   }
   if (found.version === null) return noDocAt(request.method);
 
-  return await serveAndCount(request, env, route, found.version, analytics, atMs, false, found.comments_enabled === 1);
+  return await serveAndCount(request, env, route, found.version, analytics, atMs, false, found.has_comments === 1);
 }
 
 /**
@@ -596,9 +596,9 @@ export async function serveAndCount(
   analytics: AnalyticsSink,
   atMs: number,
   invitedOnly = false,
-  commentsEnabled = false,
+  hasComments = false,
 ): Promise<Response> {
-  const response = await serveObject(request, env, route, version, invitedOnly, commentsEnabled);
+  const response = await serveObject(request, env, route, version, invitedOnly, hasComments);
 
   // One view per GET that served the document: counted after R2 answered,
   // because a missing object still turns into a 404 here. `304` counts, since

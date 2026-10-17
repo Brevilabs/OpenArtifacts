@@ -89,7 +89,7 @@ describe("the comments client against the local Worker", () => {
     return response;
   };
 
-  // A paid account: comments are a plan feature, and turning them on is checked against the owner's plan.
+  // A paid account: comments are a plan feature, checked against the owner's plan.
   async function paidToken(): Promise<string> {
     const issued = await issueToken();
     await env.DB.prepare("UPDATE accounts SET plan = 'pro', plan_checked_at = ? WHERE id = ?")
@@ -97,19 +97,16 @@ describe("the comments client against the local Worker", () => {
     return issued.token;
   }
 
-  it("turns comments on, then adds, lists, replies, resolves, reopens and deletes", async () => {
+  it("adds, lists, replies, resolves, reopens and deletes", async () => {
     const client = createClient({ host: COMMENTS_HOST, token: await paidToken(), fetcher: readerFetch });
     const doc = await client.createDoc({
       title: "Review",
       html: "<!doctype html><html><head><title>Review</title></head><body><p>The quick brown fox jumps.</p></body></html>",
     });
 
-    // Off by default: the owner is told so, rather than given a 404.
-    await expect(client.listThreads(doc.docId)).rejects.toMatchObject({
-      status: 409,
-      code: "comments_off",
-    } satisfies Partial<APIError>);
-    expect(await client.setComments(doc.docId, true)).toEqual({ docId: doc.docId, comments: true });
+    // A new page has no comments and no switch to turn on: the owner's agent just comments.
+    expect(await client.listThreads(doc.docId)).toMatchObject({ threads: [], commentable: false });
+    expect(client).not.toHaveProperty("setComments");
     expect(await client.setDisplayName("Cli Tester")).toEqual({ displayName: "Cli Tester" });
 
     const added = await client.addThread(doc.docId, { anchor: { exact: "quick brown fox" }, body: "Which fox?" });
@@ -140,19 +137,11 @@ describe("the comments client against the local Worker", () => {
     expect((await client.listThreads(doc.docId)).threads[0].comments).toHaveLength(1);
     await client.deleteComment(doc.docId, added.commentId);
     expect((await client.listThreads(doc.docId)).threads).toEqual([]);
-
-    // Switching off keeps the owner's own answer on later reads.
-    expect(await client.setComments(doc.docId, false)).toEqual({ docId: doc.docId, comments: false });
-    await expect(client.addThread(doc.docId, { anchor: { exact: "quick" }, body: "x" })).rejects.toMatchObject({
-      status: 409,
-      code: "comments_off",
-    } satisfies Partial<APIError>);
   });
 
   it("reports a quote the version does not contain as anchor_not_found", async () => {
     const client = createClient({ host: COMMENTS_HOST, token: await paidToken(), fetcher: readerFetch });
     const doc = await client.createDoc({ title: "Review", html: "<!doctype html><body><p>Hello world</p></body>" });
-    await client.setComments(doc.docId, true);
     await client.setDisplayName("Cli Tester");
     await expect(client.addThread(doc.docId, { anchor: { exact: "absent text" }, body: "x" })).rejects.toMatchObject({
       status: 400,

@@ -260,18 +260,19 @@ Two predicates, named once, so every surface asks the same question. They live i
   it, through `findReadableDoc`. If any of them used a different rule, a reader
   could be sent from one to the other forever.
 - **`canManage(principal, doc)`**: the principal is in the owner scope. Access
-  changes, the share page, turning comments on, and resolving any thread.
+  changes and roles, the share page, and resolving any thread.
 
 **Every surface answers "not `canRead`" as `404`, never `403`**, and the label
 hosts, `/open`, `/share` and the request route all keep the convention that a
 document you may not see is indistinguishable from one that never existed.
 
-`canComment` is built (`src/comments/access.ts`): `canRead`, and comments are on
-for the document, and the owner's plan has them, and the principal is the owner or
-an invited account whose `role` is `comment` (on an `anyone` document, any
-signed-in reader, as [comments.md](comments.md) has it). `doc_invites.role` is
-`view` or `comment`, defaulting to `comment`; a `view` invitee reads the threads
-and cannot write. Both the popover and the share page set it per person.
+`canComment` is built (`src/comments/access.ts`): `canRead`, and the owner's plan
+has comments, and the principal is the owner or an account on the document's list
+whose `role` is at least `comment` (`src/roles.ts`; link access plays no part, as
+[comments.md](comments.md) has it). `doc_invites.role` is `view` or `comment`,
+defaulting to `comment`; a `view` invitee reads the threads and cannot write. Both
+the popover and the share page set it per person, from the roles the owner's plan
+grants (`Access.roles`).
 There is no edit role or manage role: the owner alone updates a document, through
 the push route.
 
@@ -481,8 +482,9 @@ that must never be on a page whose scripts the author writes.
 - **It tells the page around it nothing about its viewer.** It has one fixed
   height (at most 480 px) and scrolls inside it. It posts the page exactly three
   messages: `ready`, once, before it reads its storage; `close`, only after a
-  click or key press inside it; and `comments`, only after the owner flips the
-  Comments switch inside it, so the page asks for its threads again. That one
+  click or key press inside it; and `people`, only after the owner's own click
+  inside it (an add, a role change, or closing it), so the page asks for its
+  threads again. That one
   tells the page its visitor is the owner, but only on the owner's own click. Every public page on `openartifacts.site` shares the
   frame's storage partition, and any of them can embed the frame for any id it
   knows; a size report, a focus move or an early message would tell that page, with

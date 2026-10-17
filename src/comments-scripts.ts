@@ -22,14 +22,15 @@
  *
  * **Inert unless the threads resource answers, and it does not ask when the bar
  * says there is nothing to ask.** On the shared link the bar's Share link carries
- * `data-comments="on|off"`, the document's switch when the page was served: `off`
- * and the script makes no request at all. On `on`, or on a pinned `/v{n}` where
- * the attribute is absent (the page is immutable and must not freeze the switch),
- * its first act is `GET /d/{docId}/threads` on the page's own origin (`404` for
- * every document with comments off, or on a server without them), and on
- * anything but `200` it adds no button, no frame and no listener. The Share
- * popover tells it when its owner flips the switch (`comments` event), which
- * makes it ask again, so the margin appears or goes without a reload.
+ * `data-comments="on|off"`, whether the page had comments to show when it was
+ * served (a thread, or a person who can comment): `off` and the script makes no
+ * request at all. On `on`, or on a pinned `/v{n}` where the attribute is absent
+ * (the page is immutable and must not freeze it), its first act is
+ * `GET /d/{docId}/threads` on the page's own origin, and unless that answers
+ * `200` with a thread or `commentable: true` it adds no button, no frame and no
+ * listener. The Share popover tells it when its owner adds a person, changes a
+ * role or closes it (`people` event), which makes it ask again, so the margin
+ * appears without a reload.
  *
  * **It paints, it never writes.** Highlights are `CSS.highlights` over Ranges,
  * styled by an adopted stylesheet, so a chart, a React island or a Pyodide cell
@@ -479,6 +480,8 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       if (mine !== refreshSeq) return;
       if (response.status === 404 || response.status === 410) { if (active) deactivate(); return; }
       if (!body || !Array.isArray(body.threads)) return;
+      // The resource answers 200 for every page; one with no thread and nobody who can comment has nothing to show.
+      if (body.threads.length === 0 && body.commentable !== true) { if (active) deactivate(); return; }
       if (!version) version = body.version;
       data = body;
       if (!active) activate();

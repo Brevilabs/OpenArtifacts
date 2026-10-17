@@ -45,6 +45,7 @@ import { sha256Hex } from "./hash.js";
 import { accountPlan, type RefreshStatus } from "./entitlement.js";
 import { planLimits } from "./plans.js";
 import { SHARE_TOKEN_PREFIX, TOKEN_PREFIX } from "./ids.js";
+import { ROLE_PLAN_FLAG, type InviteRole } from "./roles.js";
 
 /** tRPC endpoint on the license server, appended to `LICENSE_API_URL`. */
 const VALIDATE_PATH = "/api/trpc/license.validateLicenseKey";
@@ -92,14 +93,24 @@ export function maySharePrivately(env: Env, publisher: Publisher): boolean {
  * Whether this publisher's plan includes comments. The same shape as
  * `maySharePrivately`: an account plan opts in with `"comments": true` in
  * `PLAN_LIMITS` (`pro` and `pro_lifetime` carry it, `free` does not), and a
- * license key qualifies through `PUBLISHING_PLANS`. Asked when an owner turns
- * comments on; the write path asks the same question of the document owner's
- * stored plan (`ownerHasComments` in `src/comments/access.ts`).
+ * license key qualifies through `PUBLISHING_PLANS`. Asked through `mayGrantRole`
+ * when granting `comment` or changing a person to it; the write path asks the same
+ * question of the document owner's stored plan (`ownerHasComments` in
+ * `src/comments/access.ts`).
  */
 export function mayComment(env: Env, publisher: Publisher): boolean {
   return publisher.authKind === "account"
     ? planLimits(env, publisher.plan).comments === true
     : PUBLISHING_PLANS.has(publisher.plan);
+}
+
+/**
+ * Whether this publisher's plan includes the flag `role` needs (`ROLE_PLAN_FLAG`):
+ * the check for granting a role, or changing a person to it. Every role puts a
+ * person on the list, which is private sharing, so a role's own flag is on top of it.
+ */
+export function mayGrantRole(env: Env, publisher: Publisher, role: InviteRole): boolean {
+  return maySharePrivately(env, publisher) && (ROLE_PLAN_FLAG[role] !== "comments" || mayComment(env, publisher));
 }
 
 /**
@@ -201,15 +212,14 @@ export function isPublishingRequest(request: Request): boolean {
 }
 
 /**
- * `PUT /api/v1/docs/{docId}/access`, `…/access/people/{email}` and
- * `…/settings`: the writes that need `privateSharing` or `comments`. Like
- * publishing, they read the plan fresh.
+ * `PUT /api/v1/docs/{docId}/access` and `…/access/people/{email}`: the writes
+ * that need `privateSharing` or `comments`. Like publishing, they read the plan fresh.
  */
 function isAccessWrite(request: Request): boolean {
   const [collection, , section, ...extra] = new URL(request.url).pathname
     .slice("/api/v1".length).split("/").filter(Boolean);
   return request.method === "PUT" && collection === "docs" &&
-    ((section === "access" && extra.length <= 2) || (section === "settings" && extra.length === 0));
+    section === "access" && extra.length <= 2;
 }
 
 export async function authenticateRequest(

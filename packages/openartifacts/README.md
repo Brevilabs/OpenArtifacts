@@ -91,11 +91,14 @@ printed.
 
 ## Comments
 
-On a page whose owner turned comments on, readers comment on quoted passages and the
-owner's agent answers them. The `comments` commands print the server's JSON:
+Each person the owner adds to a page has a role, `comment` (the default) or `view`, and
+people who can comment, with the owner's agent, comment on quoted passages. Adding
+people needs a paid plan; the people you add are named by the owner, and a public link
+never lets a stranger comment. `openartifacts share <docId> --add <email> [--role view|comment]`
+adds a person, or sets the role of one already listed. The `comments` commands print
+the server's JSON:
 
 ```bash
-openartifacts comments on <docId>                   # owner; needs a paid plan (off turns them off)
 openartifacts comments list <docId>                 # open threads; --resolved, --all, --since <iso>
 openartifacts comments add <docId> --quote "exact text" --body "…" [--prefix "…"] [--suffix "…"] [--section id] [--version n]
 openartifacts comments reply <docId> <threadId> --body "Softened in v4."
@@ -110,9 +113,8 @@ has its quote (`anchor`), whether it still `anchored` in the version or is `orph
 its `state` and its `comments`. Comments by an agent carry `kind: "agent"`. Arguments
 are checked before any credential is read: a quote is at most 1,000 characters, a
 comment 4,000, a prefix or suffix 32, a name 64. Account tokens and license keys both
-work. A server without comments, a page you cannot read, and a page with comments off
-(to anyone but its owner) all answer "Not found, or this server does not support
-comments." The skill's "Address the comments" step lists the open threads, revises the
+work. A server without comments and a page you cannot read both answer "Not found, or
+this server does not support comments." The skill's "Address the comments" step lists the open threads, revises the
 page, publishes the update, then replies on and resolves each thread it addressed.
 
 The CLI never renders Markdown and keeps no record of which file became which page.

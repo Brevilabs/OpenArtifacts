@@ -8,7 +8,6 @@
  * POST   /embed/api/docs/{docId}/threads
  * POST   /embed/api/docs/{docId}/threads/{threadId}/comments | resolve | reopen
  * DELETE /embed/api/docs/{docId}/comments/{commentId}
- * PUT    /embed/api/docs/{docId}/settings                      (the Share popover's switch)
  * PUT    /embed/api/account                                    (the display name)
  * ```
  *
@@ -49,7 +48,7 @@ export async function handleCommentsEmbed(
   const [first, docId, ...extra] = url.pathname.slice(EMBED_API_PREFIX.length + 1).split("/");
   const account = first === "account" && docId === undefined;
   const comments = first === "docs" && docId !== undefined && isDocId(docId) &&
-    (extra[0] === "threads" || extra[0] === "comments" || extra[0] === "settings");
+    (extra[0] === "threads" || extra[0] === "comments");
   if (!account && !comments) return null;
   if (readerSecret(env) === null || env.COMMENTS === undefined) return errorResponse("not_found", "No route.", NO_STORE);
 
@@ -65,11 +64,11 @@ export async function handleCommentsEmbed(
       : errorResponse("not_found", "No route.", NO_STORE);
   }
 
-  // The token's account as a publisher, as the Share popover builds it. The plan is read fresh only for
-  // the owner's switch, the one write that spends it; reading and commenting never touch the license server.
+  // The token's account as a publisher, as the Share popover builds it. Reading and commenting never
+  // touch the license server.
   const publisher: Publisher = {
     owner: identity.accountId,
-    plan: (await accountPlan(env, identity.accountId, { skipAccountRefresh: extra[0] !== "settings" })).plan,
+    plan: (await accountPlan(env, identity.accountId, { skipAccountRefresh: true })).plan,
     authKind: "account",
   };
   const caller: Caller = { publisher, kind: "human", ctx };

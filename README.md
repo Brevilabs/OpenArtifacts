@@ -32,8 +32,8 @@ It is a small API-first publishing service with inline comments on a quoted pass
   share page where scripts do not run).
   Private sharing is a paid-plan feature on the hosted service, and a self-hosted
   server needs a sign-in method configured to offer it.
-- **Comment on a passage.** The owner turns comments on (a paid-plan feature);
-  readers and agents select text, comment and reply, and the owner resolves the
+- **Comment on a passage.** The owner gives named people **Can comment** (a paid-plan
+  feature); they and the owner's agent select text, comment and reply, and the owner resolves the
   thread against the version that fixed it. Threads follow their quote across
   versions and are marked orphaned if the text goes. `openartifacts comments`
   does the same from a terminal.

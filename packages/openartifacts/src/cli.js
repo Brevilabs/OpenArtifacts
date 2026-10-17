@@ -258,7 +258,8 @@ Commands:
         [--link anyone|invited]
                      Show who can open a document, pending requests and its share page,
                      or change it; --add also approves a request, and --role sets whether
-                     the added person can comment (the default) or only view
+                     the person can comment (the default) or only view; on a person
+                     already listed, --add --role changes their role
   comments list <docId> [--open|--resolved|--all] [--since <iso>]
                      Print a document's comment threads as JSON (open ones by default)
   comments add <docId> --quote <text> --body <text> [--prefix <text>] [--suffix <text>]
@@ -269,8 +270,6 @@ Commands:
   comments reopen <docId> <threadId>
   comments delete <docId> <commentId>
                      Delete your own comment; deleting a thread's first comment deletes the thread
-  comments on <docId>, comments off <docId>
-                     Turn comments on or off for a document you own
   comments name <name>
                      Set the display name your comments carry
   list               List published documents and their link access
@@ -337,6 +336,12 @@ function manageUrl(host, docId) {
 }
 
 /**
+ * The roles a person on a document's list can hold, lowest first. A copy of
+ * `ROLES` in the server's `src/roles.ts`: a later `edit` is one more word here.
+ */
+const ROLES = ["view", "comment"];
+
+/**
  * The access changes `share` was asked for, in order, read before any
  * authentication. Each flag changes one thing: one address added (which also
  * approves its request), one removed, one request declined, or the link
@@ -344,12 +349,12 @@ function manageUrl(host, docId) {
  * remove everyone. `--role` is not a change of its own: it sets the role of the
  * address each `--add` in the same call adds, and means nothing without one.
  * @param {string[]} options
- * @returns {Array<["link" | "add" | "remove" | "decline", string, ("view" | "comment")?]>}
+ * @returns {Array<["link" | "add" | "remove" | "decline", string, string?]>}
  */
 export function prepareShare(options) {
-  /** @type {Array<["link" | "add" | "remove" | "decline", string, ("view" | "comment")?]>} */
+  /** @type {Array<["link" | "add" | "remove" | "decline", string, string?]>} */
   const changes = [];
-  /** @type {"view" | "comment" | undefined} */
+  /** @type {string | undefined} */
   let role;
   for (let index = 0; index < options.length; index += 2) {
     const [flag, value] = [options[index], options[index + 1]];
@@ -358,12 +363,12 @@ export function prepareShare(options) {
     else if (flag === "--remove") changes.push(["remove", value]);
     else if (flag === "--decline") changes.push(["decline", value]);
     else if (flag === "--link" && (value === "anyone" || value === "invited")) changes.push(["link", value]);
-    else if (flag === "--role" && role === undefined && (value === "view" || value === "comment")) role = value;
+    else if (flag === "--role" && role === undefined && ROLES.includes(value)) role = value;
     else throw new Error(HELP);
   }
   if (role !== undefined) {
     const adds = changes.filter(([change]) => change === "add");
-    if (!adds.length) throw new Error("--role applies to a person added in the same call. Use `openartifacts share <docId> --add <email> --role view|comment`.");
+    if (!adds.length) throw new Error("--role applies to a person added in the same call. Use `openartifacts share <docId> --add <email> --role view|comment`. On a person already listed it sets their role.");
     for (const change of adds) change[2] = role;
   }
   return changes;
@@ -385,7 +390,6 @@ const COMMENT_LIMITS = { body: 4000, quote: 1000, context: 32, section: 128, nam
  *   | {action: "resolve", docId: string, threadId: string, version?: number}
  *   | {action: "reopen", docId: string, threadId: string}
  *   | {action: "delete", docId: string, commentId: string}
- *   | {action: "on" | "off", docId: string}
  *   | {action: "name", name: string}} CommentsRequest */
 
 /**
@@ -494,10 +498,6 @@ export function prepareComments(action, extra) {
   if (action === "delete") {
     const { positional: [docId = "", commentId = ""] } = parse(2, []);
     return { action, docId, commentId: identifier(commentId, COMMENT_ID) };
-  }
-  if (action === "on" || action === "off") {
-    const { positional: [docId = ""] } = parse(1, []);
-    return { action, docId };
   }
   if (action === "name") {
     // The name is a positional that may contain spaces and any characters, so it
@@ -623,8 +623,8 @@ export async function main(args) {
     try {
       await runComments(client, comments);
     } catch (error) {
-      // Not yours to read, deleted, comments off for a non-owner, and a server that
-      // predates comments all answer 404, and the CLI cannot tell them apart.
+      // Not yours to read, deleted, and a server that predates comments all answer
+      // 404, and the CLI cannot tell them apart.
       if (error instanceof APIError && error.status === 404) {
         // `name` has no document: its 404 is either a missing route (a server without comments) or the
         // server's own "no account to name, sign in to link one", which the user must be told.
@@ -743,8 +743,6 @@ async function runComments(client, request) {
     console.log(`Deleted ${request.commentId}.`);
   } else if (request.action === "name") {
     print(await client.setDisplayName(request.name));
-  } else {
-    print(await client.setComments(request.docId, request.action === "on"));
   }
 }
 
@@ -766,9 +764,6 @@ export function presentError(error) {
     }
     if (error.code === "anchor_not_found") {
       console.error("The quote is not in that version of the page. Copy it exactly from `openartifacts get <docId>`, as visible text without tags, and add --prefix or --suffix if it is ambiguous.");
-    }
-    if (error.code === "comments_off") {
-      console.error("Comments are off for this document. Turn them on with `openartifacts comments on <docId>`.");
     }
     if (error.code === "name_required") {
       console.error("Set a display name first with `openartifacts comments name \"<name>\"`.");

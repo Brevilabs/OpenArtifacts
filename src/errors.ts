@@ -14,12 +14,9 @@ export type ErrorCode =
   | "limit_reached"
   | "internal"
   // Inline comments (docs/comments.md). `anchor_not_found`: the quoted text is
-  // not in the version the writer was reading. `comments_off`: sent only to a
-  // caller who manages the document; everyone else gets `not_found`.
-  // `name_required`: a person must give a display name before their first
-  // comment.
+  // not in the version the writer was reading. `name_required`: a person must
+  // give a display name before their first comment.
   | "anchor_not_found"
-  | "comments_off"
   | "name_required"
   // The four conditions RFC 8628 §3.5 defines for a device-flow poll. They keep
   // the RFC's names so a client written against the standard recognises them,
@@ -44,7 +41,6 @@ const ERROR_STATUS: Record<ErrorCode, number> = {
   limit_reached: 402,
   internal: 500,
   anchor_not_found: 400,
-  comments_off: 409,
   name_required: 409,
   // 400 for all four, as RFC 6749 §5.2 requires of a token endpoint. None of
   // them is a failure of the request: three are the state of an approval nobody

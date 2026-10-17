@@ -17,7 +17,7 @@
  * the apex serves only an `anyone` document and answers `404` for an invited-only
  * one (a JSON fetch cannot follow a sign-in redirect), and a publisher's origin
  * runs the grant, label and `canRead` chain it runs for the page. Here are only
- * the rest: no such version, comments off or unavailable → `404`; deleted →
+ * the rest: no such version or comments unavailable → `404`; deleted →
  * `410`, decided before the version so `?v=` cannot tell a deleted document
  * from one that never had that version.
  *
@@ -28,7 +28,7 @@ import type { Env } from "../config.js";
 import { findCommentableDoc, type CommentableDoc } from "../db.js";
 import { readerSignInConfigured } from "../reader-config.js";
 import { servingJson } from "../serve.js";
-import { commentsStub } from "./access.js";
+import { commentsStub, isCommentable } from "./access.js";
 import type { ThreadRecord } from "./object.js";
 import { presentThreads } from "./present.js";
 import { VERSION_PARAM } from "./service.js";
@@ -59,8 +59,15 @@ export async function threadsResource(
   if (verdict === "deleted") {
     return servingJson(method, 410, { error: { code: "gone", message: "This document was deleted." } });
   }
-  if (verdict !== "ok" || !doc.comments_enabled || doc.version === null) return threadsNotFound(method);
+  if (verdict !== "ok" || doc.version === null) return threadsNotFound(method);
 
+  const commentable = await isCommentable(env, doc, Date.now());
+  const at = { docId, title: doc.title, ownerAccount: doc.owner_account };
+  // A document that has never had a thread is answered from the row alone: a page with nothing to
+  // show costs no Durable Object request, on the shared link or on a pinned one.
+  if (!doc.has_threads) {
+    return servingJson(method, 200, await presentThreads(env, at, { version: doc.version, latestVersion: doc.latest_version, commentable, threads: [] }, null));
+  }
   const listed = await commentsStub(env, docId).list({
     docId,
     version: doc.version,
@@ -68,8 +75,8 @@ export async function threadsResource(
   if (!listed.ok) return threadsNotFound(method);
   const body = await presentThreads(
     env,
-    { docId, title: doc.title, ownerAccount: doc.owner_account },
-    { version: listed.version, latestVersion: doc.latest_version, threads: listed.threads as ThreadRecord[] },
+    at,
+    { version: listed.version, latestVersion: doc.latest_version, commentable, threads: listed.threads as ThreadRecord[] },
     null,
   );
   return servingJson(method, 200, body);

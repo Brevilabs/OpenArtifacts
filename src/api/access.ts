@@ -14,8 +14,7 @@
  * Everything is owner-only except `…/html`, which is open to anyone who can read
  * the document (an invited reviewer's agent needs the text to quote it), and a
  * document that is not yours is `404` exactly as it is everywhere else.
- * The comment routes under the same prefix (`…/threads`, `…/comments`,
- * `…/settings`) are `src/comments/routes.ts`. A client adds or removes **one address at a time**; it
+ * The comment routes under the same prefix (`…/threads`, `…/comments`) are `src/comments/routes.ts`. A client adds or removes **one address at a time**; it
  * never sends the whole list, so a retry cannot remove everyone by mistake and a
  * repeated `PUT` or `DELETE` answers `200` with the same list.
  *
@@ -40,7 +39,7 @@
  * between the two surfaces.
  */
 import type { AnalyticsSink } from "../analytics.js";
-import { maySharePrivately, type Publisher } from "../auth.js";
+import { maySharePrivately, mayGrantRole, type Publisher } from "../auth.js";
 import { MAX_INVITES_PER_DOC, MAX_NEW_INVITES_PER_OWNER_PER_DAY, type Env } from "../config.js";
 import {
   canManage,
@@ -53,7 +52,6 @@ import {
   readAccess,
   setInviteRole,
   setLinkAccess,
-  type InviteRole,
   type LinkAccess,
 } from "../db.js";
 import { commentRoute } from "../comments/routes.js";
@@ -64,7 +62,9 @@ import { isDocId } from "../ids.js";
 import { withinLimit } from "../limits.js";
 import { normalizeEmail } from "../approval/providers.js";
 import { writeManifest } from "../manifest.js";
-import { limitReached } from "../plans.js";
+import { limitReached, upgradeUrl as upgradeLink } from "../plans.js";
+import { DEFAULT_ROLE, parseInviteRole, ROLES, type InviteRole } from "../roles.js";
+import { accountPlan } from "../entitlement.js";
 import { grantUrl } from "../private.js";
 import { readBodyWithin } from "../quota.js";
 import { readerSignInConfigured } from "../reader-config.js";
@@ -80,11 +80,6 @@ const MAX_ADDRESS_LENGTH = 254;
 /** The only values `linkAccess` takes. */
 export function parseLinkAccess(value: unknown): LinkAccess | null {
   return value === "anyone" || value === "invited" ? value : null;
-}
-
-/** The only values `role` takes. */
-function parseInviteRole(value: unknown): InviteRole | null {
-  return value === "view" || value === "comment" ? value : null;
 }
 
 /**
@@ -107,11 +102,11 @@ function inviteAddress(raw: string): string | null {
  * their plan in Copilot, so they get a Copilot-specific message with no
  * OpenArtifacts command to run and no checkout to sell.
  */
-export function planRefusal(env: Env, publisher: Publisher): Response {
+export function planRefusal(env: Env, publisher: Publisher, what = "Private sharing", limit = "privateSharing"): Response {
   return publisher.authKind === "account"
-    ? limitReached(env, publisher, "privateSharing", "Private sharing needs a paid plan.")
-    : errorResponse("limit_reached", "Your Copilot plan does not include private sharing.", undefined, {
-      plan: publisher.plan, limit: "privateSharing",
+    ? limitReached(env, publisher, limit, `${what} needs a paid plan.`)
+    : errorResponse("limit_reached", `Your Copilot plan does not include ${what.toLowerCase()}.`, undefined, {
+      plan: publisher.plan, limit,
     });
 }
 
@@ -121,9 +116,12 @@ export type AccessState = NonNullable<Awaited<ReturnType<typeof readAccess>>>;
 /**
  * Why an operation did nothing. `not_found` covers a missing, deleted and
  * someone else's document alike; `full` is the 101st person; `invite_quota` is
- * the owner's daily cap on new invites.
+ * the owner's daily cap on new invites; `plan` is a switch to private the plan
+ * lacks, `plan_people` an add or role change on a plan without private sharing,
+ * and `plan_comments` one at `comment` on a plan with private sharing but not
+ * comments (the same `402`, worded for the operation and naming the flag).
  */
-export type AccessRefusal = "not_found" | "bad_email" | "full" | "plan" | "invite_quota";
+export type AccessRefusal = "not_found" | "bad_email" | "full" | "plan" | "plan_people" | "plan_comments" | "invite_quota";
 
 /**
  * What an operation did. `state` is read after the write, and `changed` says
@@ -237,9 +235,20 @@ export async function addWithoutManifest(
   if (listed && (role === undefined || role === listed.role) && !before.requests.some((r) => r.email === email)) {
     return { ok: true, state: before, changed: false };
   }
-  if (!maySharePrivately(env, principal)) return refused("plan");
+  // A role-less add takes the default where the plan grants it, else the highest rung the plan does
+  // grant: `view` on a plan with private sharing but not comments. Where the server has no comments
+  // no role is drawn, and an unseen grant is `view`, so turning comments on later makes no one a commenter.
+  const grantable = grantableRoles(env, principal);
+  const granted = role ?? (grantable?.includes(DEFAULT_ROLE) ? DEFAULT_ROLE : (grantable?.at(-1) ?? "view"));
+  // The flag of the role being granted, whether the person is new or already listed, and on a server
+  // without comments too, where a stored `comment` would grant commenting once they are bound: a change
+  // to a lower role goes through the same check as a higher one, since "Remove" already covers a demotion.
+  // Private sharing is what adding anyone needs, so it is the flag named unless the plan has it.
+  if (!mayGrantRole(env, principal, granted)) {
+    return refused(maySharePrivately(env, principal) ? "plan_comments" : "plan_people");
+  }
 
-  const added = await insertInvite(env.DB, docId, principal.owner, email, Date.now(), MAX_INVITES_PER_DOC, role);
+  const added = await insertInvite(env.DB, docId, principal.owner, email, Date.now(), MAX_INVITES_PER_DOC, granted);
   const roleChanged =
     !added && role !== undefined && (await setInviteRole(env.DB, docId, principal.owner, email, role));
 
@@ -251,7 +260,7 @@ export async function addWithoutManifest(
     return refused(state.people.length >= MAX_INVITES_PER_DOC ? "full" : "invite_quota");
   }
 
-  if (added) await invite(env, requestUrl, doc.publisher_id, docId, doc.title, email);
+  if (added) await invite(env, requestUrl, doc.publisher_id, docId, doc.title, email, granted);
   if (added || roleChanged) recordChange(analytics, docId, doc.publisher_id, state);
   return { ok: true, state, changed: added || roleChanged };
 }
@@ -331,36 +340,67 @@ async function invite(
   docId: string,
   title: string,
   email: string,
+  role: InviteRole,
 ): Promise<void> {
   try {
     if (!emailConfigured(env)) return;
     if (!(await withinLimit(env.INVITE_EMAIL_LIMITER, await sha256Hex(`invite:${publisherId}`)))) return;
     const sharer = await ownerEmail(env.DB, publisherId);
-    await sendEmail(env, email, inviteMessage(sharer, title, publicDocUrl(env, requestUrl, docId), email));
+    await sendEmail(env, email, inviteMessage(sharer, title, publicDocUrl(env, requestUrl, docId), email, role));
   } catch (error) {
     console.error("invite email failed", { error: error instanceof Error ? error.name : "unknown" });
   }
 }
 
 /**
+ * The roles `publisher` may grant now: the rungs of the ladder whose plan flag
+ * their plan has. `[]` for a free or lapsed owner, undefined where the server has
+ * no comments, and then no surface draws a role.
+ */
+export function grantableRoles(env: Env, publisher: Publisher): InviteRole[] | undefined {
+  return env.COMMENTS === undefined ? undefined : ROLES.filter((role) => mayGrantRole(env, publisher, role));
+}
+
+/**
+ * The account owner with the plan their Share view and their writes both go by:
+ * the effective plan (an expired one has lapsed), rechecked on the usual hour,
+ * and after `PLAN_RECHECK_MS`, unless the license server is backing off, when the
+ * cached plan grants no role. So an owner back from checkout sees Add people on
+ * their next open and can use it, a free owner's opens are not each a call to the
+ * license server, and a lapsed owner is never shown what the write refuses.
+ */
+export async function withCurrentPlan(env: Env, owner: Publisher): Promise<Publisher> {
+  if (owner.authKind !== "account") return owner;
+  const grantsNone = grantableRoles(env, owner)?.length === 0;
+  return { ...owner, plan: (await accountPlan(env, owner.owner, grantsNone ? { maxAgeMs: PLAN_RECHECK_MS } : {})).plan };
+}
+
+/** How old a plan that grants no role may be when its owner opens Share: shorter than any checkout. */
+const PLAN_RECHECK_MS = 30_000;
+
+/**
  * The frozen `Access` object: `url` is always the canonical link, never a grant.
  * The popover's owner view is this plus who is asking, so both surfaces name
  * the same fields.
  */
-export function accessBody(env: Env, requestUrl: URL, docId: string, state: AccessState) {
+export function accessBody(env: Env, requestUrl: URL, docId: string, state: AccessState, publisher: Publisher) {
+  const roles = grantableRoles(env, publisher);
   return {
     docId,
     url: publicDocUrl(env, requestUrl, docId),
     linkAccess: state.link_access,
-    comments: state.comments_enabled === 1,
+    // The roles the caller may grant now, in ladder order; left out where the server has no comments.
+    ...(roles === undefined ? {} : { roles }),
+    // Only an account has a checkout to go to; a license key's plan is managed in Copilot, as in `planRefusal`.
+    ...(roles?.length === 0 && publisher.authKind === "account" && upgradeLink(env) !== undefined ? { upgradeUrl: upgradeLink(env) } : {}),
     email: emailConfigured(env),
     people: state.people.map((person) => ({ email: person.email, role: person.role, addedAt: person.created_at })),
     requests: state.requests.map((request) => ({ email: request.email, requestedAt: request.created_at })),
   };
 }
 
-function accessResponse(env: Env, requestUrl: URL, docId: string, state: AccessState): Response {
-  return Response.json(accessBody(env, requestUrl, docId, state), { headers: NO_STORE });
+function accessResponse(env: Env, requestUrl: URL, publisher: Publisher, docId: string, state: AccessState): Response {
+  return Response.json(accessBody(env, requestUrl, docId, state, publisher), { headers: NO_STORE });
 }
 
 /** `%40` or a bare `@`: both arrive here, and a malformed escape is just a bad address. */
@@ -398,7 +438,7 @@ export async function roleOf(request: Request): Promise<InviteRole | undefined |
 /** Map a refusal to the frozen JSON errors; a success to the `Access`. */
 function jsonOf(env: Env, requestUrl: URL, publisher: Publisher, docId: string, result: AccessResult): Response {
   return result.ok
-    ? accessResponse(env, requestUrl, docId, result.state)
+    ? accessResponse(env, requestUrl, publisher, docId, result.state)
     : refusalResponse(env, publisher, docId, result.refusal);
 }
 
@@ -413,6 +453,10 @@ export function refusalResponse(env: Env, publisher: Publisher, docId: string, r
       return errorResponse("bad_request", `A document can be shared with at most ${MAX_INVITES_PER_DOC} people.`);
     case "plan":
       return planRefusal(env, publisher);
+    case "plan_people":
+      return planRefusal(env, publisher, "Adding people");
+    case "plan_comments":
+      return planRefusal(env, publisher, "Letting people comment", "comments");
     case "invite_quota":
       return errorResponse("quota_exceeded", `You have added ${MAX_NEW_INVITES_PER_OWNER_PER_DAY} new people in the last 24 hours. Try again later.`);
   }
@@ -443,7 +487,7 @@ export async function handleDocSection(
 
   // Comments, for an agent: an account token or a license key writes as an
   // agent acting for its account. This runs ahead of the access routes and
-  // claims only the exact comment shapes (threads, comments, settings), so it
+  // claims only the exact comment shapes (threads, comments), so it
   // never takes an access path; null hands the segments to the routes below. A
   // new comment shape must not overlap an access one, or it would shadow it.
   const comments = await commentRoute(request, url, env, { publisher, kind: "agent", ctx }, docId, extra);

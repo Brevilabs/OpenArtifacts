@@ -870,14 +870,14 @@ describe("private sharing through the owner's credential", () => {
     expect(await listOf(first)).toEqual(["alice@acme.com"]);
     expect(await listOf(again)).toEqual(["alice@acme.com"]);
 
-    // Exactly one invite, whoever retried: the title alone in the subject, the
-    // canonical link, the address to sign in with, and no credential.
+    // Exactly one invite, whoever retried: the title in the subject (a plain add is at the default role,
+    // so the invitation is to comment), the canonical link, the address to sign in with, and no credential.
     expect(sent).toHaveLength(1);
     expect(sent[0]!.to).toBe("alice@acme.com");
-    expect(sent[0]!.subject).toBe("\u201cQ3 client report\u201d was shared with you");
+    expect(sent[0]!.subject).toBe("You were invited to comment on \u201cQ3 client report\u201d");
     expect(sent[0]!.text).toContain(`https://openartifacts.site/d/${created.docId}`);
     expect(sent[0]!.text).toContain("Q3 client report");
-    expect(sent[0]!.text).toContain("Sign in with this address, alice@acme.com, to open it.");
+    expect(sent[0]!.text).toContain("Sign in with this address, alice@acme.com, to comment.");
     expect(sent[0]!.text).not.toContain("grant=");
 
     expect(await listOf(await send("DELETE", person, KEY_PLUS, undefined, hosts))).toEqual([]);
@@ -1151,7 +1151,7 @@ describe("access requests", () => {
       docId,
       url: `https://openartifacts.site/d/${docId}`,
       linkAccess: "invited",
-      comments: false,
+      roles: ["view", "comment"],
       email: true,
       people: [{ email: "alice@acme.com", role: "comment", addedAt: people.created_at }],
       requests: [{ email: "bob@other.com", requestedAt: 2000 }],
