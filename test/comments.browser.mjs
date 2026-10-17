@@ -2010,8 +2010,9 @@ test("on a phone the bar's button opens the list of open comments, and a row sho
   await context.close();
 });
 
-test("on a phone Comment follows the selection and a tap keeps its passage even if the live selection clears", { timeout: 180_000 }, async () => {
-  const docId = await publish("Phone pill", REPORT);
+test("on a phone Comment docks at the bottom centre, clear of the system's menu, and a tap keeps its passage even if the live selection clears", { timeout: 180_000 }, async () => {
+  const filler = Array.from({ length: 10 }, (_, i) => `<p>Filler paragraph ${i + 1}. It carries enough words to reach the bottom of a phone screen.</p>`).join("\n");
+  const docId = await publish("Phone pill", REPORT + filler);
   await agentThread(docId, { exact: "Closing remarks follow in the appendix" }, "Which appendix?");
   const context = await newContext(ALICE, { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, signedInTo: docId });
   const tab = await context.newPage();
@@ -2022,20 +2023,32 @@ test("on a phone Comment follows the selection and a tap keeps its passage even 
   assert.equal(await select(tab, quote), true);
   const tip = tab.locator(".openartifacts-comment-tip");
   await until("the Comment button", async () => (await tip.isVisible()) && (await tip.boundingBox()).width > 0);
+  // Not beside the selection, where iOS puts its Copy menu above or below as room allows: at the bottom centre of the viewport.
+  const docked = async () => {
+    const box = await tip.boundingBox();
+    return box.height >= 44 && box.y >= 844 - 80 && box.y + box.height <= 844 - 12 + 0.5 && Math.abs(box.x + box.width / 2 - 195) < 2;
+  };
+  assert.ok(await docked(), `the pill is docked at the bottom centre (${JSON.stringify(await tip.boundingBox())})`);
   const pill = await tip.boundingBox();
-  const passage = await rectOf(tab, quote);
-  assert.ok(pill.height >= 44, `the pill is ${pill.height}px tall`);
-  assert.ok(pill.y >= passage.y + passage.height, "below the last line, where the system's Copy menu is not");
-  assert.ok(Math.abs(pill.x + pill.width / 2 - (passage.x + passage.width / 2)) < 6, "centred under it");
   await shoot(tab, "phone-comment-pill");
 
-  // Selection handles change the passage; clearing it hides the button.
-  await select(tab, "Closing remarks follow in the appendix");
-  await until("the button to follow the selection", async () => (await tip.boundingBox()).y > pill.y + 10);
+  // Selection handles change the passage and the button stays docked; clearing it hides the button.
+  await select(tab, "Revenue grew 18%");
+  await tab.waitForTimeout(300);
+  assert.ok(await docked(), "a selection near the top leaves it docked");
+  // A selection that ends just above the dock would have the system's menu below it, over the button: it docks under the bar instead.
+  const low = "Filler paragraph 9.";
+  await tab.evaluate((y) => window.scrollBy(0, y), (await rectOf(tab, low)).y + 20 - (844 - 120));
+  await select(tab, low);
+  await until("the button under the bar", async () => {
+    const box = await tip.boundingBox();
+    return Math.abs(box.y - (48 + 12)) < 1 && Math.abs(box.x + box.width / 2 - 195) < 2;
+  });
+  await tab.evaluate(() => window.scrollTo(0, 0));
   await tab.evaluate(() => window.getSelection().removeAllRanges());
   await until("the button to hide", async () => !(await tip.isVisible()));
   await select(tab, quote);
-  await until("the button on the original passage", async () => (await tip.isVisible()) && Math.abs((await tip.boundingBox()).y - pill.y) < 2);
+  await until("the button back in its dock", async () => (await tip.isVisible()) && (await docked()));
 
   // The page changes text above the passage while the button is up, as a live clock would, and is re-measured (80ms later): the tap must still open on the passage, not on offsets into the old text.
   await tab.evaluate(() => document.querySelector("h1").firstChild.insertData(0, "Final "));
@@ -2057,6 +2070,14 @@ test("on a phone Comment follows the selection and a tap keeps its passage even 
   assert.equal((await threadsOf(docId))[1].anchor.exact, quote);
   await until("the posted passage to be highlighted", async () => (await painted(tab, "openartifacts-open")).includes(quote));
   await shoot(tab, "phone-comment-posted");
+
+  // With the sheet up, a new selection's button sits just above it, never over it.
+  await select(tab, "Revenue grew 18%");
+  await until("the button above the sheet", async () => {
+    if (!(await tip.isVisible())) return false;
+    const [box, sheet] = [await tip.boundingBox(), await hostBox(tab)];
+    return Math.abs(box.y + box.height - (sheet.y - 12)) < 1 && Math.abs(box.x + box.width / 2 - 195) < 2;
+  });
   await context.close();
 });
 

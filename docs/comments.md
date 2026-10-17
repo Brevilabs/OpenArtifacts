@@ -245,6 +245,15 @@ The model is a document editor's comment margin (Google Docs, Notion, Figma):
 - **Comment** sits centred over the selection (kept inside the viewport), and
   ⌘⌥M (Ctrl+Alt+M elsewhere) does what it does: it opens the composer on the
   selection and never posts.
+- **On a narrow screen Comment docks at the bottom centre** of the visible part
+  of the page, 44px tall and 12px above its bottom edge (above the sheet when
+  the sheet is open), and follows a pinch zoom or a toolbar that shows and
+  hides. A phone's own selection menu (Copy, Look Up) goes just above or just
+  below the selection, wherever it finds room, so any place beside the
+  selection can end up under it. A selection that ends within about 100px of
+  the dock would put that menu over the button, so Comment then docks at the
+  top instead, 12px below the bar. A tap keeps the passage it was shown for,
+  even if the browser clears the selection on the way.
 - **With nothing open** the column says "No comments yet. Select text to
   comment." in plain text, not a card ("No open comments." once every thread is
   resolved). The instruction shows only while no card is beside a passage, so it
