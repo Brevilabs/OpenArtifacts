@@ -526,9 +526,9 @@ that must never be on a page whose scripts the author writes.
   A list of people scrolls. `test/share-popover.browser.mjs` holds both.
 - **Its views** follow the table: the owner gets the **Link access** choice
   (Anyone with the link / Only those invited), the address field with **Add**, one
-  helper line ("Only people you add can open this page." on a private page,
-  "Anyone with the link can view. Only people you add can comment." on a public
-  one), **Who has access** (**You**, **Owner**, then each person with a **Can view
+  helper line, one line at the popover's narrowest width ("Only people you add
+  can open this page." on a private page, "Anyone can view. Invitees can
+  comment." on a public one), **Who has access** (**You**, **Owner**, then each person with a **Can view
   / Can comment** select and **Remove**, see [comments.md](comments.md)), and
   **Requests** with **Approve** and **Decline** when some are pending; any other
   reader gets "Only the owner can change who can open this."; someone not yet
@@ -541,8 +541,8 @@ that must never be on a page whose scripts the author writes.
   token is the signed-out view at once; a token is a skeleton of the owner view
   (the real row, with a working **Copy link**, since the link needs no request,
   then muted blocks where Link access, Add people, the helper line and the owner's
-  row will be, pulsing gently except under reduced motion; the helper line holds
-  two lines in both views, so nothing below it moves) until the access read
+  row will be, pulsing gently except under reduced motion; the helper line is one
+  line in both views, so nothing below it moves) until the access read
   answers. What replaces it is the answer: the owner view, the reader view, the
   not-found view, or the signed-out view after a `401`. A frame whose script never
   runs never says `ready`, and the page script shows its plain share-page link

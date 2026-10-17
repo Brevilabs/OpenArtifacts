@@ -922,7 +922,7 @@ test("the popover is one row and one scroll region, and an owner with nobody add
     assert.equal(await frame.getByText("OpenArtifacts emails each invitation").count(), 0, `${form}: no invitation line`);
     assert.equal(await frame.getByText("To remove people or answer requests").count(), 0, `${form}: no share-page line`);
   };
-  await frame.getByText("Anyone with the link can view. Only people you add can comment.").waitFor();
+  await frame.getByText("Anyone can view. Invitees can comment.").waitFor();
   await fits("public");
   await frame.getByRole("radio", { name: "Only those invited" }).click();
   await frame.getByText("Only people you add can open this page.").waitFor();
@@ -1269,7 +1269,7 @@ test("the owner sets a role from the popover: no Comments switch, the options co
   assert.equal("comments" in body, false);
   assert.equal(await frame.getByText("Comments", { exact: true }).count(), 0);
   assert.equal(await frame.getByRole("radio", { name: "On", exact: true }).count(), 0);
-  await frame.getByText("Anyone with the link can view. Only people you add can comment.").waitFor();
+  await frame.getByText("Anyone can view. Invitees can comment.").waitFor();
   await shoot(page, "popover-roles");
 
   // The role sits on the person's row, inside the panel.
@@ -1295,7 +1295,7 @@ test("the owner sets a role from the popover: no Comments switch, the options co
   // The helper line follows the link access.
   await frame.getByRole("radio", { name: "Only those invited" }).click();
   await frame.getByText("Only people you add can open this page.").waitFor();
-  assert.equal(await frame.getByText("Anyone with the link can view.").count(), 0);
+  assert.equal(await frame.getByText("Anyone can view.").count(), 0);
 
   // On a plan with no roles: the plan line replaces Add people, and each role is plain text.
   await db.prepare("UPDATE accounts SET plan = 'free' WHERE id = ?").bind(OWNER_ACCOUNT).run();
@@ -1481,5 +1481,29 @@ test("a role this Worker does not know is shown as its own option and is never w
   // Looking, and leaving, writes nothing.
   await page.keyboard.press("Escape");
   assert.deepEqual(writes, []);
+  await context.close();
+});
+
+test("the helper line under Add is one line in both modes, at the popover's widest and narrowest", { timeout: 180_000 }, async () => {
+  const X = await publish("Helper public", "<p>Mine.</p>");
+  const Y = await publish("Helper private", "<p>Mine.</p>", "private-docs");
+  const context = await newContext(OWNER_ACCOUNT);
+  for (const id of [X, Y]) await (await ownerFrame(context, id)).page.close();
+  const wording = { [X]: "Anyone can view. Invitees can comment.", [Y]: "Only people you add can open this page." };
+  for (const [viewport, width] of [[1280, 360], [320, 304]]) {
+    for (const id of [X, Y]) {
+      const page = await context.newPage();
+      await page.setViewportSize({ width: viewport, height: 800 });
+      await page.goto(docUrl(id));
+      await page.locator("a[data-openartifacts-share]").click();
+      assert.equal((await page.locator(".openartifacts-share-popover").boundingBox()).width, width);
+      const frame = await until("the Share frame", () => frameOf(page, id));
+      const help = frame.getByText(wording[id], { exact: true });
+      await help.waitFor();
+      const lines = await help.evaluate((element) => element.getBoundingClientRect().height / parseFloat(getComputedStyle(element).lineHeight));
+      assert.ok(lines < 1.5, `${wording[id]} at ${width}px takes ${lines.toFixed(2)} lines`);
+      await page.close();
+    }
+  }
   await context.close();
 });

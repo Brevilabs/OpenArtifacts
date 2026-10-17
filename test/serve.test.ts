@@ -2810,7 +2810,7 @@ describe("an invited-only document", () => {
 
       await env.DB.prepare("UPDATE docs SET link_access = 'anyone' WHERE id = ?").bind(doc.docId).run();
       const pub = await (await open(doc.docId, owner)).text();
-      expect(pub).toContain("Anyone with the link can view. Only people you add can comment.");
+      expect(pub).toContain("Anyone can view. Invitees can comment.");
       expect(pub).not.toContain("Only people you add can open this page");
     });
 

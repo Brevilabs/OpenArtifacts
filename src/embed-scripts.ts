@@ -237,9 +237,10 @@ export const POPUP_DONE_SCRIPT = String.raw`(function () {
  * **Loading.** `main` is `hidden` in the shell until the script has chosen the
  * first view, so a token holder's frame never paints the signed-out markup.
  * The skeleton (`.sk`) holds the owner view's places with muted blocks and pulses,
- * except under reduced motion. The helper line (`.help`) holds two lines in both,
- * since the public one wraps to two, so nothing under it moves when the owner
- * view lands (a free owner's plan line, which takes its place, still does).
+ * except under reduced motion. The helper line (`.help`) is one line in both,
+ * worded to fit the popover's narrowest width (304 px), so nothing under it
+ * moves when the owner view lands (a free owner's plan line, which takes its
+ * place, still does).
  *
  * Flex items do not collapse margins, so spacing is set in the margins, not the
  * structure. Children of `main` never shrink: an item with its own overflow rule
@@ -264,7 +265,7 @@ body.more .fade{opacity:1}
 :focus-visible{outline:2px solid #f6ae52;outline-offset:2px}
 h2{margin:16px 0 2px;font-size:11px;line-height:16px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:#8d94a0}
 p{margin:8px 0 0}
-.muted{color:#8d94a0}.help{min-height:3em}.err{margin-top:8px;color:#ff8a80}.err.warn{color:#f6ae52}.err:empty{display:none}
+.muted{color:#8d94a0}.help{font-size:13px}.err{margin-top:8px;color:#ff8a80}.err.warn{color:#f6ae52}.err:empty{display:none}
 a{color:#f6ae52;text-decoration:none}a:hover{text-decoration:underline;text-underline-offset:3px}
 button{font:inherit;font-size:13px;font-weight:500;line-height:1;cursor:pointer;height:28px;padding:0 12px;border:1px solid #2c313b;border-radius:8px;background:transparent;color:#e9ebee;display:inline-flex;align-items:center;justify-content:center;gap:6px;white-space:nowrap}
 button:hover{border-color:#3a404b;background:rgba(255,255,255,.04)}
@@ -873,7 +874,7 @@ export const FRAME_SCRIPT = String.raw`(() => {
     if (mayAdd) {
       kids.push(node("div", { class: "row" }, [input, button("Add", add, "primary tall")]));
       if (roles !== null && roles.includes("comment")) {
-        kids.push(node("p", { class: "muted help" }, [body.linkAccess === "anyone" ? "Anyone with the link can view. Only people you add can comment." : "Only people you add can open this page."]));
+        kids.push(node("p", { class: "muted help" }, [body.linkAccess === "anyone" ? "Anyone can view. Invitees can comment." : "Only people you add can open this page."]));
       }
     }
     kids.push(message);
