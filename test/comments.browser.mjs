@@ -2037,6 +2037,9 @@ test("on a phone Comment follows the selection and a tap keeps its passage even 
   await select(tab, quote);
   await until("the button on the original passage", async () => (await tip.isVisible()) && Math.abs((await tip.boundingBox()).y - pill.y) < 2);
 
+  // The page changes text above the passage while the button is up, as a live clock would, and is re-measured (80ms later): the tap must still open on the passage, not on offsets into the old text.
+  await tab.evaluate(() => document.querySelector("h1").firstChild.insertData(0, "Final "));
+  await tab.waitForTimeout(300);
   // Reproduce the mobile selection-loss ordering deterministically: the native
   // selection disappears before the button's click handler gets its turn.
   await tab.evaluate(() => {

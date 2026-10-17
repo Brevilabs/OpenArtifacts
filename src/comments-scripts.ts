@@ -229,10 +229,15 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
     const locate = (thread) => (thread.matchedText && find(thread, thread.matchedText)) || find(thread, thread.anchor.exact);
 
     // ---- selection ----------------------------------------------------------
-    const capture = () => {
-      const sel = window.getSelection();
-      if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return null;
-      const live = sel.getRangeAt(0);
+    // The live selection, or a Range held from it: a Range follows the page's edits, so offsets are always read from the current text.
+    const capture = (held) => {
+      let live = held;
+      if (!live) {
+        const sel = window.getSelection();
+        if (!sel || sel.rangeCount === 0) return null;
+        live = sel.getRangeAt(0);
+      }
+      if (live.collapsed) return null;
       const range = live.cloneRange();
       if (!document.body.contains(range.commonAncestorContainer)) return null;
       // A drag that starts in a byline or overshoots into the footer, or a triple-click on the last paragraph (which ends at the footer's start), is clamped to the author's side. A selection wholly inside one skipped subtree, or one that still covers our bar (select-all), is refused. Skipped scripts and styles need no refusal: boundary() already maps both ends onto the canonical text, which leaves them out.
@@ -506,7 +511,8 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
         document.documentElement.append(tipHost);
       }
       // The button belongs to this passage even if the browser clears its native selection before click.
-      tip.onclick = () => startDraft(cap);
+      const held = window.getSelection().getRangeAt(0).cloneRange();
+      tip.onclick = () => startDraft(held);
       // Centred over the selection, above its first line when there is room, else below the last: never over the text itself. On a phone the system's Copy menu is above the selection, so the button goes below the last line, and 44px tall to be a touch target.
       const first = cap.first, last = cap.rect;
       const phone = mode === "overlay";
@@ -521,9 +527,8 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       tipHost.style.left = Math.round(Math.max(8, Math.min(x, viewport().clientWidth * z - wide - 8)) / z) + "px";
       tipHost.style.top = Math.round(y / z) + "px";
     };
-    const startDraft = (selected) => {
-      if (!active || !canComment) return;
-      const cap = capture() || selected;
+    const startDraft = (held) => {
+      const cap = capture() || (held ? capture(held) : null);
       if (!cap) return;
       draftRange = toRange(cap.a, cap.b);
       draft = cap.anchor;
