@@ -2182,3 +2182,29 @@ test("the sidebar narrows a centred column, a full-width page and a dark page, a
     await context.close();
   }
 });
+
+test("a refused post shows the frame's own error and keeps the words, never a name prompt", { timeout: 120_000 }, async () => {
+  const docId = await publish("Refused", REPORT);
+  const context = await newContext(ALICE, { signedInTo: docId });
+  const tab = await context.newPage();
+  // The server no longer asks for a name; a client written against the old 409 must still treat it as an ordinary failure.
+  await tab.addInitScript((api) => {
+    if (location.host !== api || location.pathname !== "/embed/comments") return;
+    const original = window.fetch;
+    window.fetch = (input, init) =>
+      init && init.method === "POST" && String(input).endsWith("/threads")
+        ? Promise.resolve(new Response(JSON.stringify({ error: { code: "name_required", message: "Add a display name to comment." } }), { status: 409, headers: { "content-type": "application/json" } }))
+        : original(input, init);
+  }, API);
+  await tab.goto(docUrl(docId));
+  await openSidebar(tab);
+  const frame = commentsFrame(tab, docId);
+  await pressComment(tab, "Staffing is unchanged");
+  const field = frame.getByRole("textbox", { name: "Add a comment…" });
+  await field.fill("Who is staffed?");
+  await frame.getByRole("button", { name: "Send" }).click();
+  await frame.getByRole("alert").filter({ hasText: "Add a display name to comment." }).waitFor();
+  assert.equal(await frame.getByRole("textbox", { name: "Your name" }).count(), 0, "no name prompt");
+  assert.equal(await field.inputValue(), "Who is staffed?", "the words are kept");
+  await context.close();
+});

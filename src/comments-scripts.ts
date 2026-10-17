@@ -740,13 +740,10 @@ button.ic:focus-visible{outline:2px solid #16786a;outline-offset:1px}
 button.link.strong{font-weight:650;color:#18191d}
 button.link.toggle{font-size:12px;color:#6d6a62}
 .card.undo{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:12.5px}
-textarea,input{width:100%;font:inherit;border:1px solid #cbbfa8;border-radius:9px;padding:8px 10px;background:#f7f4ec;color:inherit}
-textarea{resize:vertical;min-height:34px}
-textarea:focus,input:focus{outline:2px solid #16786a;outline-offset:-1px;background:#fff}
 .composer{display:flex;align-items:flex-end;gap:6px;border:1px solid #cbbfa8;border-radius:20px;background:#fff;padding:3px 3px 3px 14px}
 .composer:focus-within{border-color:#16786a;box-shadow:0 0 0 2px #dcf0ea}
-.composer textarea{flex:1;min-width:0;width:auto;border:0;border-radius:0;background:transparent;padding:6px 0;min-height:22px;max-height:160px;overflow-y:auto;resize:none;line-height:1.45}
-.composer textarea:focus{outline:0;background:transparent}
+.composer textarea{flex:1;min-width:0;font:inherit;color:inherit;border:0;border-radius:0;background:transparent;padding:6px 0;min-height:22px;max-height:160px;overflow-y:auto;resize:none;line-height:1.45}
+.composer textarea:focus{outline:0}
 button.send{flex:none;display:grid;place-items:center;width:30px;height:30px;padding:0;border:0;border-radius:50%;background:#18191d;color:#fff;cursor:pointer}
 button.send:disabled{background:#d9d6cd;color:#fff;cursor:default}
 button.send.busy{background:#18191d;cursor:default}
@@ -756,19 +753,15 @@ button.send.busy::after{content:"";width:14px;height:14px;border:2px solid #fff;
 button.send:focus-visible{outline:2px solid #16786a;outline-offset:2px}
 .card.draft{padding:0;border:0;background:transparent;box-shadow:none}
 .card.draft .composer{box-shadow:0 1px 2px rgba(40,30,10,.12),0 14px 28px -14px rgba(40,30,10,.45)}
-.card.draft.name{padding:10px 12px;border:1px solid #cbbfa8;background:#fffdf8;box-shadow:0 1px 2px rgba(40,30,10,.12),0 14px 28px -20px rgba(40,30,10,.4)}
-.pending{margin:0 0 8px;padding-left:7px;border-left:2px solid #cbbfa8;white-space:pre-wrap;overflow-wrap:anywhere;max-height:6em;overflow:hidden}
 .list{display:grid;gap:6px;margin-top:6px}
 button.row{display:grid;gap:2px;width:100%;text-align:left;padding:9px 12px;border:1px solid #cbbfa8;border-radius:10px;background:#fffdf8;font:inherit;color:inherit;cursor:pointer;min-height:44px}
 button.row .rq{overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 button.row .rw{font-size:11.5px;color:#6d6a62}
-.btns{display:flex;justify-content:flex-end;gap:8px;margin-top:8px}
 button.b{font:inherit;font-size:12px;font-weight:650;padding:5px 11px;border-radius:8px;border:1px solid #cbbfa8;background:#fffdf8;color:#18191d;cursor:pointer}
 button.b:hover{border-color:#8f8670}button.b:disabled{cursor:default;opacity:.55}
 button.b.primary{background:#18191d;border-color:#18191d;color:#fff}
 .muted-text{font-size:11.5px;color:#6d6a62;margin:6px 0 0}
 .err{font-size:11.5px;color:#b4342b;margin:6px 0 0}.err:empty{display:none}
-.ask{font-size:12px;margin:0 0 6px}
 .card.topline{padding:8px 12px}.topline .muted-text{margin:0}.topline>*+*{margin-top:6px}
 `;
 
@@ -839,7 +832,7 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     for (const kid of kids || []) element.append(kid);
     return element;
   };
-  const button = (label, onclick, cls) => node("button", { type: "button", class: cls || "b", onclick: onclick }, [label]);
+  const button = (label, onclick, cls) => node("button", { type: "button", class: cls, onclick: onclick }, [label]);
   const icon = (d, stroke) => {
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     for (const [name, value] of [["viewBox", "0 0 24 24"], ["width", "16"], ["height", "16"], ["fill", "none"], ["stroke", "currentColor"], ["stroke-width", stroke], ["stroke-linecap", "round"], ["stroke-linejoin", "round"], ["aria-hidden", "true"]]) svg.setAttribute(name, value);
@@ -873,7 +866,7 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
   let mode = "margin", shown = true, relayed = null, own = null, anon = null, loaded = false, tops = null, lostIds = [], height = 0;
   let draft = null, draftTop = 0, focusId = "", loadSeq = 0, lastViewer = null, positionsKey = "";
   let signState = "", prepared = null, opened = null, generation = 0, wake = null;
-  let confirming = "", needName = "", nameText = "", pending = null;
+  let confirming = "";
   let showResolved = false, undoId = "", undoTimer = 0, menuId = "", posted = null;
   let modelKey = "", inFlight = false, lastLoad = 0, composing = false, owed = false, stacked = { head: [], flow: [] }, sentNeed = -1, revealOwed = false;
   const texts = {}, errors = {}, busy = {};
@@ -1027,7 +1020,7 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     refreshView();
   };
 
-  // Runs one write, then reloads the cards and tells the page. A human who has no display name yet is asked for it once and the write is retried.
+  // Runs one write, then reloads the cards and tells the page.
   const act = async (key, request, done) => {
     if (busy[key]) return;
     busy[key] = true;
@@ -1043,23 +1036,8 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
       if (focusId) post({ event: "focus", threadId: focusId });
       return;
     }
-    const error = result.body && result.body.error;
-    if (result.status === 409 && error && error.code === "name_required") {
-      needName = key;
-      pending = () => act(key, request, done);
-    } else errors[key] = failure(result);
+    errors[key] = failure(result);
     render();
-  };
-  const saveName = async () => {
-    const name = nameText.trim();
-    const key = needName;
-    if (name === "" || name.length > 64) { errors[key] = "Enter a name of up to 64 characters."; render(); return; }
-    const result = await call("PUT", "/embed/api/account", { displayName: name });
-    if (result.status !== 200) { errors[key] = failure(result); render(); return; }
-    const retry = pending;
-    needName = "";
-    pending = null;
-    if (retry) await retry();
   };
 
   // ---- drawing ----
@@ -1115,22 +1093,11 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
   // "Resolved · Undo", for a few seconds after a thread leaves the page.
   const undoCard = () => (undoId ? node("div", { class: "card topline undo" }, [node("span", {}, ["Resolved"]), button("Undo", () => reopenThread(undoId), "link strong")]) : null);
 
-  // The box a person writes in: a textarea and its Send button, the name field a first comment may ask for, or the reason there is none.
+  // The box a person writes in: a textarea and its Send button, or the reason there is none.
   const writer = (key, placeholder, submit) => {
     const v = viewer();
     if (v === null) return [];
     if (!v.canComment) return [muted("You can view this page.")];
-    if (needName === key) {
-      const input = node("input", { type: "text", maxlength: "64", placeholder: "Your name", "aria-label": "Your name", "data-key": key + ":name", autocomplete: "name" });
-      input.value = nameText;
-      input.addEventListener("input", () => { nameText = input.value; });
-      input.addEventListener("keydown", (event) => { if (event.key === "Enter") saveName(); });
-      const back = () => { needName = ""; pending = null; nameText = ""; errors[key] = ""; render(); };
-      input.addEventListener("keydown", (event) => { if (event.key === "Escape") { event.stopPropagation(); back(); } });
-      // The comment waits above the question, so it is plain that it has not gone yet.
-      const waiting = (texts[key] || "").trim() === "" ? [] : [node("div", { class: "pending" }, [texts[key]])];
-      return waiting.concat([node("p", { class: "ask" }, ["Add your name so people know who is commenting."]), input, node("div", { class: "btns" }, [button("Cancel", back), button("Save and post", saveName, "b primary")]), errorLine(key)]);
-    }
     const sending = !!busy[key];
     const area = node("textarea", { rows: "1", maxlength: "4000", placeholder: placeholder, "aria-label": placeholder, "data-key": key });
     area.value = texts[key] || "";
@@ -1247,12 +1214,11 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     draft = null;
     texts.draft = "";
     errors.draft = "";
-    needName = needName === "draft" ? "" : needName;
     render();
     post({ event: "cancel" });
   };
   const draftCard = () => {
-    const card = node("div", { class: "card draft" + (needName === "draft" ? " name" : ""), "data-thread": "" });
+    const card = node("div", { class: "card draft", "data-thread": "" });
     const submit = () => {
       const body = (texts.draft || "").trim();
       const snapshot = draft;
@@ -1394,10 +1360,6 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     if (key !== undefined) {
       const again = Array.from(cards.querySelectorAll("[data-key]")).find((element) => element.dataset.key === key);
       if (again) { again.focus({ preventScroll: true }); if (from) again.setSelectionRange(from[0], from[1]); }
-    } else if (needName !== "" && document.hasFocus()) {
-      // The name step follows the reader's own click on Send, in this frame, so it may take focus.
-      const ask = Array.from(cards.querySelectorAll("[data-key]")).find((element) => element.dataset.key === needName + ":name");
-      if (ask) ask.focus({ preventScroll: true });
     }
     if (mode === "overlay" && cards.firstChild) {
       sizes.observe(main);

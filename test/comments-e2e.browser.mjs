@@ -481,12 +481,10 @@ test("3. Alice selects a passage, signs in to the frame, and posts under her ema
   await box.fill(COMMENT);
   await shoot(tab, "03-alice-draft-card");
   await frame.getByRole("button", { name: "Send" }).click();
-  // Alice has no display name: she is not asked, and is named from her email before the @.
-
+  // Alice has no display name: she is named from her email before the @.
   const card = frame.locator("[data-thread]:not([data-thread=''])");
   await card.waitFor();
   assert.match(await card.innerText(), /alice/);
-  assert.equal(await frame.getByRole("textbox", { name: "Your name" }).count(), 0, "never asked for a name");
   assert.match(await card.innerText(), /This overstates the renewal risk/);
   await until("the bar to count one", () => counted(tab, 1));
   await until("the card to sit level with its passage", async () => {
