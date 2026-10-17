@@ -1108,7 +1108,7 @@ also checks the origin.
 | frame → page | `viewer` | `{canComment}`, after every read of the frame's own: `false` when signed out, the server's answer when signed in |
 | frame → page | `changed` | none: refetch now |
 | frame → page | `focus` | `{threadId}` |
-| frame → page | `hover` | `{threadId}`: the card under the pointer (empty clears); its passage takes the active yellow |
+| frame → page | `hover` | `{threadId}`: the card under the pointer (empty clears), also sent empty when the pointer enters the frame, which the page may not otherwise learn; its passage takes the active yellow, and the passage the page lit itself is dropped |
 | frame → page | `cancel` | none: the frame dropped an empty draft; the page unmarks its passage, and closes the sheet |
 | frame → page | `close` | none: the reader closed the comments (the header's close button, or Escape on the sheet) |
 | frame → page | `size` | `{height}`: how tall the sidebar's stacked cards need the column to be (`margin` mode) |

@@ -206,8 +206,9 @@ The model is a document editor's comment margin (Google Docs, Notion, Figma):
   closed on every page load: nothing is remembered.
 - **Highlights are always on.** Every open thread whose passage the page finds is
   one translucent yellow, whether or not the comments are open; the active thread
-  and the draft a stronger yellow. No underline, which reads as a link. Resolved
-  threads have none.
+  and the draft a stronger yellow. On a dark page the same yellows are fainter, so
+  the page's light text stays readable on them (4.5:1 or more for light-grey text on a near-black page; any visible tint lowers a page's own contrast, so a medium-dark page that starts near 4.5:1 dips slightly below it).
+  No underline, which reads as a link. Resolved threads have none.
 - **Wide screens get a sidebar.** Where the viewport is at least 880 px and the
   window is what scrolls the page, opening the comments narrows the page by a
   320 px column on its right (an adopted stylesheet pads `<html>` and sizes it `auto`, so the author's
