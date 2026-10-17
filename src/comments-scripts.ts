@@ -658,7 +658,8 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       document.addEventListener("pointermove", (event) => {
         if (!active || event.pointerType === "touch") return;
         const x = event.clientX, y = event.clientY;
-        const hit = Array.from(ranges).find((entry) => Array.from(entry[1].getClientRects()).some((r) => x >= r.left && x <= r.right && y >= r.top && y <= r.bottom));
+        // Over our own Comment button or bar, the pointer is on them, not on the passage beneath.
+        const hit = event.target === tipHost || link.parentNode.contains(event.target) ? null : Array.from(ranges).find((entry) => Array.from(entry[1].getClientRects()).some((r) => x >= r.left && x <= r.right && y >= r.top && y <= r.bottom));
         const next = hit ? hit[0] : "";
         if (next !== hoverPage || hoverFrame) { hoverPage = next; hoverFrame = ""; hover(); }
       }, { passive: true });
