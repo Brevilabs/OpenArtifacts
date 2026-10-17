@@ -1079,6 +1079,24 @@ test("a role change the server refuses puts the select back on the role the pers
   await context.close();
 });
 
+test("an owner shown the plan line who comes back to the tab after upgrading sees Add people", { timeout: 120_000 }, async () => {
+  const X = await publish("Upgraded", "<p>Mine.</p>");
+  await db.prepare("UPDATE accounts SET plan = 'free' WHERE id = ?").bind(OWNER_ACCOUNT).run();
+  try {
+    const context = await newContext(OWNER_ACCOUNT);
+    const { frame } = await ownerFrame(context, X);
+    await frame.getByText(/Private pages and comments need a paid plan/).waitFor();
+    assert.equal(await frame.getByRole("heading", { name: "Add people" }).count(), 0);
+    // Paid in the checkout tab; this tab becomes visible again.
+    await db.prepare("UPDATE accounts SET plan = 'pro' WHERE id = ?").bind(OWNER_ACCOUNT).run();
+    await frame.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+    await frame.getByRole("heading", { name: "Add people" }).waitFor();
+    await context.close();
+  } finally {
+    await db.prepare("UPDATE accounts SET plan = 'pro' WHERE id = ?").bind(OWNER_ACCOUNT).run();
+  }
+});
+
 test("a role the plan no longer grants stays as its own option, so the owner can lower the person", { timeout: 120_000 }, async () => {
   const X = await publish("Lapsed comments", "<p>Mine.</p>");
   const invitee = "kept@example.com";

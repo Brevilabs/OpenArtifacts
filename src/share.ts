@@ -188,14 +188,15 @@ export async function handleShare(
   }
 
   // The session account as a publisher: its documents are everything in its
-  // owner scope. A write asks for its current plan, refreshed like a bearer
-  // write, because the gate depends on it; a visit reads the cached plan,
-  // rechecked only for the owner's view (`withCurrentPlan`).
-  const principal: Publisher = {
+  // owner scope. A visit reads the cached plan; the owner's view and every write
+  // go by the current one (`withCurrentPlan`), so a reader never costs a
+  // license-server call and the owner sees what the write gate will say.
+  const cached: Publisher = {
     owner: accountId,
-    plan: (await accountPlan(env, accountId, { skipAccountRefresh: !writing })).plan,
+    plan: (await accountPlan(env, accountId, { skipAccountRefresh: true })).plan,
     authKind: "account",
   };
+  const principal = writing ? await withCurrentPlan(env, cached) : cached;
   const unavailable = () => notAvailablePage(email, docId, next);
 
   if (!writing) {

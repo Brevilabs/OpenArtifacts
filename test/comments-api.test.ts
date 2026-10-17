@@ -366,6 +366,15 @@ describe("the roles are the only control", () => {
     await setPlan("free", Date.now() + 60_000);
     expect(await roles()).toEqual([]);
     expect(calls).toBe(1);
+    // The first write after an upgrade goes by the same recheck, not the hour-old cache.
+    await setPlan("free");
+    const added = await send("PUT", `/embed/api/docs/${priv}/access/people/dee%40acme.com`, await frame(owner, priv), undefined, license);
+    expect(added.status).toBe(200);
+    expect(calls).toBe(2);
+    // A paid plan that has expired is shown as the write gate sees it: lapsed, with nothing to grant.
+    await env.DB.prepare("UPDATE accounts SET plan = 'pro', plan_expires_at = ?, plan_checked_at = ? WHERE id = ?").bind(Date.now() - 1000, Date.now(), owner.id).run();
+    answer = "default";
+    expect(await roles()).toEqual([]);
   });
 
   it("answers 404 everywhere when this deployment has no comments object", async () => {

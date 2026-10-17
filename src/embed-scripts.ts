@@ -410,6 +410,8 @@ export const FRAME_SCRIPT = String.raw`(() => {
   // owner whose plan grants Can comment: a free owner's page has no comments to bring up. Leaving
   // any other view says nothing more than close.
   let grantsComment = false;
+  // The owner view is showing the plan line: coming back to the tab reads it again.
+  let upgradeShown = false;
   const leave = () => { post("close"); if (grantsComment && main.querySelector(".fade")) post("people"); };
   const closeButton = (target) => target.addEventListener("click", leave);
   const copyButton = (target) => target.addEventListener("click", () => copyLink(target));
@@ -508,7 +510,11 @@ export const FRAME_SCRIPT = String.raw`(() => {
     timer = window.setTimeout(tick, 1000);
     wake = () => { if (mine === generation && document.visibilityState === "visible") tick(); };
   };
-  document.addEventListener("visibilitychange", () => { if (wake) wake(); });
+  // Back on this tab after the Upgrade link's checkout in another: an owner shown the plan line reads the view again.
+  document.addEventListener("visibilitychange", () => {
+    if (wake) wake();
+    else if (upgradeShown && document.visibilityState === "visible") refresh();
+  });
   window.addEventListener("focus", () => { if (wake) wake(); });
 
   const signIn = (fresh) => {
@@ -774,6 +780,7 @@ export const FRAME_SCRIPT = String.raw`(() => {
     const roles = Array.isArray(body.roles) ? body.roles : null;
     const mayAdd = roles === null || roles.length > 0;
     grantsComment = roles !== null && roles.includes("comment");
+    upgradeShown = roles !== null && roles.length === 0;
     const input = node("input", { type: "text", inputmode: "email", placeholder: "Emails, separated by commas", "aria-label": "Add people by email, separated by commas", autocomplete: "off" });
     const add = () => addMany(input.value);
     input.addEventListener("keydown", (event) => { if (event.key === "Enter") add(); });

@@ -362,15 +362,16 @@ export function grantableRoles(env: Env, publisher: Publisher): InviteRole[] | u
 }
 
 /**
- * The account owner as the Share popover and the share page show them their
- * document: what they may grant, and so whether they see Add people, comes from
- * their plan. A cached plan that grants nothing is checked again now, unless the
- * license server is backing off, so an owner who has just upgraded can add people
- * on their next open, not an hour later. A plan that grants a role keeps the cache.
+ * The account owner with the plan their Share view and their writes both go by:
+ * the effective plan (an expired one has lapsed), rechecked on the usual hour,
+ * and at once, unless the license server is backing off, when the cached plan
+ * grants no role. So an owner who has just upgraded sees Add people on their next
+ * open and can use it, and a lapsed owner is never shown what the write refuses.
  */
 export async function withCurrentPlan(env: Env, owner: Publisher): Promise<Publisher> {
-  if (owner.authKind !== "account" || grantableRoles(env, owner)?.length !== 0) return owner;
-  return { ...owner, plan: (await accountPlan(env, owner.owner, { maxAgeMs: 0 })).plan };
+  if (owner.authKind !== "account") return owner;
+  const grantsNone = grantableRoles(env, owner)?.length === 0;
+  return { ...owner, plan: (await accountPlan(env, owner.owner, grantsNone ? { maxAgeMs: 0 } : {})).plan };
 }
 
 /**

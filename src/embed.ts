@@ -397,14 +397,14 @@ async function frameApi(
   const email = identity.email;
 
   // The session account as a publisher, as the share page builds it: its
-  // documents are everything in its owner scope, and the plan gate reads its
-  // current plan. A GET reads the cached plan, rechecked only for the owner's
-  // view (`withCurrentPlan`).
-  const principal: Publisher = {
+  // documents are everything in its owner scope. A GET reads the cached plan;
+  // the owner's view and every write go by the current one (`withCurrentPlan`).
+  const cached: Publisher = {
     owner: accountId,
-    plan: (await accountPlan(env, accountId, { skipAccountRefresh: method === "GET" })).plan,
+    plan: (await accountPlan(env, accountId, { skipAccountRefresh: true })).plan,
     authKind: "account",
   };
+  const principal = method === "GET" ? cached : await withCurrentPlan(env, cached);
   // `changed` says whether a write changed anything. The frame needs it to tell
   // its own switch to private from a repeat on a stale view.
   const owner = (state: AccessState, changed = false, who = principal) =>
