@@ -538,7 +538,8 @@ that must never be on a page whose scripts the author writes.
   token is the signed-out view at once; a token is a skeleton of the owner view
   (the real row, with a working **Copy link**, since the link needs no request,
   then muted blocks where Link access, Add people, the helper line and the owner's
-  row will be, pulsing gently except under reduced motion) until the access read
+  row will be, pulsing gently except under reduced motion; the helper line holds
+  two lines in both views, so nothing below it moves) until the access read
   answers. What replaces it is the answer: the owner view, the reader view, the
   not-found view, or the signed-out view after a `401`. A frame whose script never
   runs never says `ready`, and the page script shows its plain share-page link

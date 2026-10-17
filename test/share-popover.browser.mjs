@@ -12,9 +12,9 @@
  * sees each request's real `Host` and its host allowlist runs as in production.
  * Chrome (the runner's own, through `channel: "chrome"`) is pointed at it with
  * `--host-resolver-rules`, so `openartifacts.site` and `api.openartifacts.ai` are
- * reached by name (the rule also maps `*.openartifacts.site`, but the test loads
- * only public documents on the apex; a document on its label host is covered by
- * `test/serve.test.ts` at the HTTP level only). Every request therefore goes
+ * reached by name (the rule also maps `*.openartifacts.site`, where the owner's
+ * private documents are served; their label host's own rules are covered by
+ * `test/serve.test.ts` at the HTTP level). Every request therefore goes
  * through Chrome's network stack, where Fetch Metadata, cookies, CSP,
  * `frame-ancestors`, the opener policy and storage partitioning are Chrome's.
  *
@@ -808,25 +808,37 @@ test("Share builds its frame on intent, a hover or a focus, and never on a bare 
 
 test("a token holder sees a skeleton of the owner view, never the signed-out view, while the access read is slow", { timeout: 180_000 }, async () => {
   const X = await publish("Slow read", "<p>Mine.</p>");
+  const Y = await publish("Slow private read", "<p>Mine.</p>", "private-docs");
   const context = await newContext(OWNER_ACCOUNT);
   await recordViews(context);
-  const first = await ownerFrame(context, X);
-  await first.page.close();
+  // Below the row, the places the skeleton holds for the owner view: Who has access and the owner's own row.
+  const places = (frame) => Promise.all([frame.locator("main h2"), frame.locator("main li").first()].map((locator) => locator.boundingBox()));
+  // A public page's helper line wraps to two lines at the popover's width and a private page's fits on one.
+  for (const [name, id] of [["public", X], ["private", Y]]) {
+    const first = await ownerFrame(context, id);
+    await first.page.close();
 
-  const page = await context.newPage();
-  await slowAccess(page, X);
-  await page.goto(docUrl(X));
-  await page.locator("a[data-openartifacts-share]").click();
-  const frame = await until("the Share frame", () => frameOf(page, X));
-  await frame.locator(".sk").first().waitFor();
-  await shoot(page, "popover-loading");
-  const skeletonRow = await topRow(frame);
-  await frame.getByRole("radio", { name: "Only those invited" }).waitFor();
-  assert.deepEqual(await frame.evaluate(() => window.__views), ["skeleton", "owner"]);
-  // Nothing above the skeleton moves when the owner view lands.
-  assert.deepEqual(await topRow(frame), skeletonRow);
-  // The link is known without a request, so Copy link works while the read is out.
-  assert.equal(await frame.locator(".field").innerText(), `${SERVING}/d/${X}`);
+    const page = await context.newPage();
+    await slowAccess(page, id);
+    await page.goto(docUrl(id));
+    await page.locator("a[data-openartifacts-share]").click();
+    const frame = await until("the Share frame", () => frameOf(page, id));
+    await frame.locator(".sk").first().waitFor();
+    if (name === "public") await shoot(page, "popover-loading");
+    const skeletonRow = await topRow(frame);
+    const skeletonPlaces = await places(frame);
+    await frame.getByRole("radio", { name: "Only those invited" }).waitFor();
+    assert.deepEqual(await frame.evaluate(() => window.__views), ["skeleton", "owner"], name);
+    // Nothing moves when the owner view lands: the row above, and the places below the helper line.
+    assert.deepEqual(await topRow(frame), skeletonRow, `${name}: the row`);
+    const ownerPlaces = await places(frame);
+    for (const [index, label] of ["Who has access", "the owner's row"].entries()) {
+      assert.ok(Math.abs(ownerPlaces[index].y - skeletonPlaces[index].y) < 0.5, `${name}: ${label} moved from y ${skeletonPlaces[index].y} to ${ownerPlaces[index].y}`);
+    }
+    // The link is known without a request, so Copy link works while the read is out.
+    assert.equal(await frame.locator(".field").innerText(), `${SERVING}/d/${id}`);
+    await page.close();
+  }
   await context.close();
 });
 
