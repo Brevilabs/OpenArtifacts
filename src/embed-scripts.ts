@@ -48,9 +48,9 @@ import { PAGE_COMMENTS_SCRIPT } from "./comments-scripts.js";
  * - **Height.** On the shared serving origin (`openartifacts.site`, a public
  *   document's page) the popover is **one fixed height** for every viewer
  *   (320 px, less on a short viewport) and the frame scrolls inside it. 320 is
- *   the tallest form of the owner view with nobody added, plus a small margin:
- *   measured in Chrome at the popover's 360 px width, a free owner's plan line
- *   and refusal after a failed switch, with their Upgrade links, is 309 px. So
+ *   the tallest form of the owner view with nobody added, plus a margin:
+ *   measured in Chrome at the popover's 360 px width, the paid owner view is
+ *   285 px and a free owner's upgrade card 256 px. So
  *   an owner who has added nobody sees everything without a scrollbar, and a
  *   list of people scrolls. A change to the owner view or `FRAME_CSS` that
  *   makes it taller fails the browser test that holds this. There the frame
@@ -247,8 +247,7 @@ export const POPUP_DONE_SCRIPT = String.raw`(function () {
  *
  * **Height.** On the shared serving origin, one for every viewer (see
  * `PAGE_SCRIPT`), set so that the owner view with nobody added, in each of its
- * forms (public, private, a free owner's plan line, the refusal after a failed
- * switch), shows whole without a scrollbar; a list of people scrolls. The short
+ * forms (public, private, a free owner's upgrade card), shows whole without a scrollbar; a list of people scrolls. The short
  * views (signed out, a reader, not found) pin `.bottom` (the account line and
  * the hint) to the floor above a divider, so the room between reads as layout.
  * On a private document's own origin the owner view's popover is its content's
@@ -260,8 +259,15 @@ export const POPUP_DONE_SCRIPT = String.raw`(function () {
  * The skeleton (`.sk`) holds the owner view's places with muted blocks and pulses,
  * except under reduced motion. The helper line (`.help`) is one line in both,
  * worded to fit the popover's narrowest width (304 px), so nothing under it
- * moves when the owner view lands (a free owner's plan line, which takes its
+ * moves when the owner view lands (a free owner's upgrade card, which takes its
  * place, still does).
+ *
+ * **Upgrade card** (`.up`). A plan that grants no role has neither private
+ * sharing nor comments, so one card says both, under the Link access choice,
+ * with an accent **Upgrade** link where the API gives one. On that plan **Only
+ * those invited** is `aria-disabled` with a lock: a press sends nothing, pulses
+ * the card's border (`.nudge`, a steady accent border under reduced motion) and
+ * focuses Upgrade.
  *
  * **Busy.** While a write is out, the control it came from shows a spinner
  * (`.busy`, or a `.spin` beside a select) in place of its label, and every
@@ -311,7 +317,7 @@ button.link:hover{background:none;text-decoration:underline;text-underline-offse
 header button.primary{width:36px;padding:0}header button.primary span{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 header .x{flex:none;width:28px;padding:0;border:0;font-size:20px;font-weight:400;color:#8d94a0}
 header .x:hover{background:rgba(255,255,255,.06);color:#f4f5f7}
-header svg{width:16px;height:16px;flex:none;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+svg{width:16px;height:16px;flex:none;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
 .field{flex:1;min-width:0;display:flex;align-items:center;height:36px;padding:0 12px;border:1px solid #20242c;border-radius:10px;background:#07080b;color:#c9ced6;font:12.5px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
 .field>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;user-select:all;direction:rtl;text-align:left}
 select{font:inherit;font-size:13px;height:28px;padding:0 6px;border:1px solid #2c313b;border-radius:8px;background:#07080b;color:#e9ebee;cursor:pointer}
@@ -325,6 +331,15 @@ input:focus-visible{outline:0;border-color:#f6ae52;box-shadow:0 0 0 3px rgba(246
 .seg button:hover{color:#e9ebee;background:transparent}
 .seg button[aria-checked="true"]{background:#20242c;color:#f4f5f7}
 .seg button:focus-visible{outline-offset:0}
+.seg button[aria-disabled="true"]{color:#5b626e}.seg button[aria-disabled="true"]:hover{color:#8d94a0}
+.seg svg,.up svg{width:13px;height:13px}
+.up{margin-top:12px;padding:12px;border:1px solid #20242c;border-radius:10px;background:#07080b}
+.up strong{display:flex;align-items:center;gap:6px;font-size:13px;font-weight:600;color:#f4f5f7}.up strong svg{color:#f6ae52}
+.up p{margin:4px 0 0;font-size:12.5px;line-height:1.45}
+a.btn{display:inline-flex;align-items:center;height:28px;margin-top:10px;padding:0 12px;border-radius:8px;font-size:13px;font-weight:600;background:#f6ae52;color:#0b0c10}
+a.btn:hover{text-decoration:none;background:#f8bd6e}
+.up.nudge{animation:nudge 1s ease-out}
+@keyframes nudge{0%,30%{border-color:#f6ae52;box-shadow:0 0 0 3px rgba(246,174,82,.18)}}
 ul{list-style:none;margin:0;padding:0}
 li{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 0;border-top:1px solid #1a1d24}
 h2+ul>li:first-child{border-top:0}
@@ -334,7 +349,7 @@ li button.link{font-size:12px;color:#8d94a0}li button.link:hover{color:#e9ebee}
 i.sk{display:inline-block;height:10px;border-radius:5px;vertical-align:middle}
 .sk-in{flex:1;height:36px;border-radius:10px}.sk-add{width:58px;height:36px;border-radius:10px}
 @keyframes pulse{50%{opacity:.45}}
-@media (prefers-reduced-motion:reduce){.sk{animation:none}}
+@media (prefers-reduced-motion:reduce){.sk,.up.nudge{animation:none}.up.nudge{border-color:#f6ae52}}
 .bottom{margin-top:auto;padding-top:12px;border-top:1px solid #20242c;font-size:13px;overflow-wrap:anywhere}
 .bottom p{margin:0}.bottom .err{margin:0 0 8px}.bottom .hint{margin-top:8px;font-size:12.5px}
 `;
@@ -513,6 +528,7 @@ export const FRAME_SCRIPT = String.raw`(() => {
   const SVG_NS = "http://www.w3.org/2000/svg";
   const LINK_ICON = ["M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71", "M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"];
   const CHECK_ICON = ["M20 6 9 17l-5-5"];
+  const LOCK_ICON = ["M6 11h12a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2z", "M8 11V7a4 4 0 0 1 8 0v4"];
   const icon = (paths) => {
     const svg = document.createElementNS(SVG_NS, "svg");
     svg.setAttribute("viewBox", "0 0 24 24");
@@ -546,7 +562,7 @@ export const FRAME_SCRIPT = String.raw`(() => {
   // owner whose plan grants Can comment: a free owner's page has no comments to bring up. Leaving
   // any other view says nothing more than close.
   let grantsComment = false;
-  // The owner view is showing the plan line: coming back to the tab reads it again.
+  // The owner view is showing the upgrade card: coming back to the tab reads it again.
   let upgradeShown = false;
   const leave = () => { post("close"); if (grantsComment && main.querySelector("[role=radiogroup]")) post("people"); };
   const closeButton = (target) => target.addEventListener("click", leave);
@@ -647,7 +663,7 @@ export const FRAME_SCRIPT = String.raw`(() => {
     timer = window.setTimeout(tick, 1000);
     wake = () => { if (mine === generation && document.visibilityState === "visible") tick(); };
   };
-  // Back on this tab after the Upgrade link's checkout in another: an owner shown the plan line reads the view again.
+  // Back on this tab after the Upgrade link's checkout in another: an owner shown the upgrade card reads the view again.
   document.addEventListener("visibilitychange", () => {
     if (wake) wake();
     else if (upgradeShown && document.visibilityState === "visible") refresh();
@@ -949,7 +965,22 @@ export const FRAME_SCRIPT = String.raw`(() => {
       event.preventDefault();
       input.setRangeText(lines.join(", "), input.selectionStart, input.selectionEnd, "end");
     });
-    const choice = (value, label) => node("button", { type: "button", role: "radio", "aria-checked": String(body.linkAccess === value), onclick: (event) => { if (body.linkAccess !== value) write("PUT", "/access", { linkAccess: value }, true, event.currentTarget); } }, [label]);
+    // A plan that grants no role has neither private sharing nor comments: one card says so, with Upgrade.
+    const upsell = roles !== null && roles.length === 0;
+    const upgrade = upsell && typeof body.upgradeUrl === "string" && body.upgradeUrl.startsWith("https://") ? node("a", { class: "btn primary", href: body.upgradeUrl, target: "_blank", rel: "noopener noreferrer" }, ["Upgrade"]) : null;
+    const card = upsell ? node("div", { class: "up" }, [
+      node("strong", {}, [icon(LOCK_ICON), "Private sharing and comments"]),
+      node("p", { class: "muted" }, ["Choose who can open this page, and let them comment on it. Included in paid plans."]),
+    ].concat(upgrade === null ? [] : [upgrade])) : null;
+    // Going private is the paid half, so on that plan it is locked: a press sends nothing and points at the card.
+    const locked = (value) => upsell && value === "invited" && body.linkAccess !== value;
+    const nudge = () => {
+      card.classList.remove("nudge");
+      void card.offsetWidth;
+      card.classList.add("nudge");
+      if (upgrade !== null) upgrade.focus();
+    };
+    const choice = (value, label) => node("button", { type: "button", role: "radio", "aria-checked": String(body.linkAccess === value), "aria-disabled": locked(value) ? "true" : null, onclick: (event) => { if (locked(value)) nudge(); else if (body.linkAccess !== value) write("PUT", "/access", { linkAccess: value }, true, event.currentTarget); } }, locked(value) ? [icon(LOCK_ICON), label] : [label]);
     const narrow = limited(body);
     const roleLabel = (role) => "Can " + role;
     const roleControl = (entry) => {
@@ -971,10 +1002,7 @@ export const FRAME_SCRIPT = String.raw`(() => {
     // No section labels where the control says what it is: the two choices, and an
     // address field beside Add.
     const kids = [node("div", { class: "seg", role: "radiogroup", "aria-label": "Link access" }, [choice("anyone", "Anyone with the link"), choice("invited", "Only those invited")])];
-    if (roles !== null && roles.length === 0) {
-      const upgrade = typeof body.upgradeUrl === "string" && body.upgradeUrl.startsWith("https://") ? body.upgradeUrl : null;
-      kids.push(muted(["Private pages and comments need a paid plan."].concat(upgrade === null ? [] : [" ", node("a", { href: upgrade, target: "_blank", rel: "noopener noreferrer" }, ["Upgrade"])])));
-    }
+    if (card !== null) kids.push(card);
     if (mayAdd) {
       kids.push(node("div", { class: "row" }, [input, addButton]));
       if (roles !== null && roles.includes("comment")) {
@@ -989,7 +1017,8 @@ export const FRAME_SCRIPT = String.raw`(() => {
       ].filter((kid) => kid !== null)))));
     }
     const invitationLabel = body.email ? "Invited" : "Invited · send them the link";
-    kids.push(node("h2", {}, ["Who has access"]), node("ul", {}, [person("You", "Owner", [])].concat(body.people.map((entry) => person(entry.email, invitationLabel, narrow ? [] : [
+    // On a plan that adds nobody, a list of just You says nothing the link access does not.
+    if (mayAdd || body.people.length > 0) kids.push(node("h2", {}, ["Who has access"]), node("ul", {}, [person("You", "Owner", [])].concat(body.people.map((entry) => person(entry.email, invitationLabel, narrow ? [] : [
       roleControl(entry),
       button("Remove", (event) => write("DELETE", "/access/people/" + encodeURIComponent(entry.email), undefined, false, event.currentTarget), "link"),
     ].filter((kid) => kid !== null))))));
