@@ -420,11 +420,13 @@ export async function insertVersion(db: D1Database, version: VersionRow): Promis
 }
 
 /**
- * Whether the page has comments to show, as SQL, for the serving reads: a thread
- * has been written, or a person on the list holds a role of at least `comment`.
- * Derived, never set; the owner has no switch.
+ * Whether someone may comment, as SQL: a person on the list holds a role of at
+ * least `comment`, or the page is invited-only, where every viewer is the owner
+ * or someone they invited and the owner can always comment (the owner's plan is
+ * checked after this, in `isCommentable`).
  */
-const COMMENTER_LISTED_SQL = `EXISTS (SELECT 1 FROM doc_invites i WHERE i.doc_id = d.id AND i.role IN ${rolesAtLeastSql("comment")})`;
+const COMMENTER_LISTED_SQL = `(d.link_access = 'invited' OR EXISTS (SELECT 1 FROM doc_invites i WHERE i.doc_id = d.id AND i.role IN ${rolesAtLeastSql("comment")}))`;
+/** Whether the page has comments to show, for the serving reads: a thread, or someone who may comment. Derived, never set. */
 const HAS_COMMENTS_SQL = `(d.has_threads = 1 OR ${COMMENTER_LISTED_SQL})`;
 
 /** What the serving path needs to know about a doc, in one read. */

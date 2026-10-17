@@ -423,7 +423,7 @@ test("2. the Share popover has no Comments switch, only roles, and the page has 
   const access = await (await request("owner", `/api/v1/docs/${DOC}/access`)).json();
   assert.deepEqual(access.roles, ["view", "comment"]);
   assert.equal("comments" in access, false);
-  await frame.getByText("Only people you add can open it. Can comment lets them comment too.").waitFor();
+  await frame.getByText("Only people you add can open this page. To let someone comment, add them with Can comment.").waitFor();
   // The invite list shows the roles the CLI set.
   assert.equal(await frame.getByLabel(`Access for ${PEOPLE.alice.email}`).inputValue(), "comment");
   assert.equal(await frame.getByLabel(`Access for ${PEOPLE.bob.email}`).inputValue(), "view");

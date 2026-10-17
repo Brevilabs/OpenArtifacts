@@ -395,7 +395,7 @@ async function dialog(
       ? `<p>Private pages and comments need a paid plan.${upgrade === undefined ? "" : ` <a href="${escapeHtml(upgrade)}">Upgrade</a>`}</p>`
       : "";
   const helper = roles?.includes("comment")
-    ? `<p class="hint">${state.link_access === "anyone" ? "Anyone with the link can view. Can comment lets a person you add comment." : "Only people you add can open it. Can comment lets them comment too."}</p>`
+    ? `<p class="hint">${state.link_access === "anyone" ? "Anyone with the link can view. To let someone comment, add them with Can comment." : "Only people you add can open this page. To let someone comment, add them with Can comment."}</p>`
     : "";
   // A lapsed or free owner adds nobody, and approving a request adds a person.
   const mayAdd = roles === undefined || roles.length > 0;

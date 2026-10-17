@@ -999,7 +999,10 @@ GET|HEAD https://{code}.openartifacts.site/d/{docId}/threads[?v={n}]      an inv
 The same `Threads` JSON, unauthenticated: no `viewer`, `canResolve` or `mine`, and
 the same bytes for every reader. Every `Threads` response carries `commentable`
 (an added field): `true` when the owner's plan includes comments and a person on the
-list holds a role of at least `comment`, the same for every viewer. A document that
+list holds a role of at least `comment`, the same for every viewer; for an
+invited-only document the owner counts, so it is `true` whenever the owner's plan
+includes comments (an addition: every viewer of such a page is the owner or someone
+they invited). A document that
 has never had a thread answers `200` with an empty `threads` list. It is what the page script reads to paint
 highlights, and what an agent can fetch without a credential for a public
 document. It counts no view, is `Cache-Control: no-store`, `Content-Type:
@@ -1058,7 +1061,7 @@ cookie.
 **The page script's comment half.** `/embed/page.js` also does the following,
 inertly where it cannot. On the shared link `/d/{docId}` the top bar's **Share**
 link carries `data-comments="on"` or `"off"` (whether the page had comments to show
-when it was served: a person at `comment` or above, or a thread; it is part of that page's validator and reaches readers within its 60
+when it was served: a person at `comment` or above, a thread, or an invited-only document; it is part of that page's validator and reaches readers within its 60
 seconds), and on `"off"` the script makes no request. Beside it the link carries
 `data-version="n"`, the version that page is, and the script reads and writes
 comments at that version, so they stay with the text on screen when a push lands
@@ -1067,7 +1070,12 @@ attribute, since it is immutable and its path names the version. Otherwise it fe
 `/d/{docId}/threads[?v=n]` same-origin, and does nothing more unless the answer
 lists a thread or says `commentable`. The Share popover tells the page when its
 owner adds a person, changes a role or closes it, and the page then asks again and,
-from then on in that tab, treats its viewer as the owner and stays active. Then it adds `💬 N` (open threads) beside **Share**,
+from then on in that tab, treats its viewer as the owner and stays active. A page
+that stays inert (a public page with no thread and nobody at `comment`) also asks
+once per page load, on the first selection of the author's text and not before:
+it builds the comments frame hidden and waits for `viewer`; on `canComment: true` it
+behaves as after the Share popover's event and shows **Comment** for that selection,
+otherwise nothing changes and it does not ask again. It adds no message. Then it adds `💬 N` (open threads) beside **Share**,
 paints highlights with `CSS.highlights` (it never changes the author's DOM), shows a
 **Comment** button over a selection, and embeds the comments frame: in the page's
 margin when at least 256 px are free beside the content, else as a bottom sheet

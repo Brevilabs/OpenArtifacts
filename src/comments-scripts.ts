@@ -28,7 +28,12 @@
  * (the page is immutable and must not freeze it), its first act is
  * `GET /d/{docId}/threads` on the page's own origin, and unless that answers
  * `200` with a thread or `commentable: true` it adds no button, no frame and no
- * listener. The Share popover tells it when its owner adds a person, changes a
+ * listener. A private (invited-only) page always says `on` and `commentable`
+ * (its viewers are the owner and the people they invited), so its owner can select
+ * text at once. A public page with nobody to comment stays inert until the first
+ * selection of the author's text: then, once per page load, the script builds the
+ * comments frame hidden and waits for its `viewer` message, and only a yes
+ * (the owner, signed in to the frame) makes it active and shows Comment. The Share popover tells it when its owner adds a person, changes a
  * role or closes it (`people` event), which makes it ask again, so the margin
  * appears without a reload; after that event the page treats its viewer as the
  * owner for the rest of the tab and stays active even with no thread and
@@ -78,7 +83,7 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
     let data = null, active = false, shown = true, canComment = false, mode = "margin";
     let mhost = null, mframe = null, ready = false, sheet = false, button = null, tipHost = null, tip = null;
     let canon = null, dirty = true, ranges = new Map(), lost = [], draft = null, draftRange = null, focusId = "", timer = 0;
-    let need = 0, sheetH = 0, refreshSeq = 0, ownerHere = false;
+    let need = 0, sheetH = 0, refreshSeq = 0, ownerHere = false, probed = false, probing = false;
     const out = {};
     const flag = link.getAttribute("data-comments");
 
@@ -260,6 +265,7 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       mframe.src = api + "/embed/comments?doc=" + docId + "&origin=" + encodeURIComponent(window.location.origin) + "&v=" + version;
       root.append(mframe);
       document.documentElement.append(mhost);
+      listen();
     };
     const contentRight = () => {
       let right = 0;
@@ -477,6 +483,52 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       paint();
     };
 
+    // The frame's messages. Registered when the frame is built, which is at the first activation or at the probe, so a message that comes before the page is active is not lost.
+    const listen = () => {
+    window.addEventListener("message", (event) => {
+      if (!mframe || event.source !== mframe.contentWindow || event.origin !== api) return;
+      const msg = event.data;
+      if (msg === null || typeof msg !== "object" || msg.type !== NS) return;
+      if (msg.event === "ready") {
+        ready = true;
+        schedule();
+        ["mode", "visible", "threads", "positions", "draft", "focus"].forEach((name) => { if (out[name]) deliver(out[name]); });
+      } else if (msg.event === "viewer") {
+        canComment = msg.canComment !== false;
+        if (!canComment) hideTip();
+        // The probe's answer: this viewer may comment, so the page is theirs to comment on, as after the Share popover's event.
+        if (probing) { probing = false; if (canComment) { ownerHere = true; refresh().then(refreshTip); } }
+      } else if (msg.event === "changed") {
+        if (draft) endDraft();
+        refresh();
+      } else if (msg.event === "focus" && typeof msg.threadId === "string") {
+        focusId = msg.threadId;
+        send({ event: "focus", threadId: focusId });
+        if (mode === "overlay") { openSheet(); reveal(ranges.get(focusId)); }
+        paint();
+      } else if (msg.event === "size" && Number.isFinite(msg.height)) {
+        const n = Math.max(0, Math.min(Math.round(msg.height), 1000000));
+        if (mode === "margin" && n !== need) { need = n; schedule(); }
+      } else if (msg.event === "height" && Number.isFinite(msg.px)) {
+        // A height while the sheet is closed would linger as sheetH and open the next sheet at the wrong height. Zero is a frame with nothing to show.
+        if (!sheet) return;
+        if (msg.px === 0) { closeSheet(); return; }
+        const n = Math.max(80, Math.min(Math.round(msg.px), 4000));
+        if (n !== sheetH || unsure) { sheetH = n; unsure = false; layout(); }
+      } else if (msg.event === "reveal" && Number.isFinite(msg.top) && Number.isFinite(msg.height)) {
+        if (mode !== "margin" || !shown) return;
+        const t = mhost.getBoundingClientRect().top + msg.top;
+        if (t < 48 || t + msg.height > window.innerHeight) window.scrollTo({ top: Math.max(0, t + window.pageYOffset - window.innerHeight * 0.15), behavior: "smooth" });
+      } else if (msg.event === "close") {
+        if (draft) endDraft();
+        focusId = "";
+        send({ event: "focus", threadId: "" });
+        if (mode === "overlay") closeSheet();
+        paint();
+      }
+    });
+    };
+
     // ---- data ---------------------------------------------------------------
     const refresh = async () => {
       const mine = ++refreshSeq;
@@ -512,7 +564,7 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       active = true;
       if (button) return;
       makeButton();
-      buildHost();
+      if (!mhost) buildHost();
       window.setInterval(() => { if (document.visibilityState === "visible") refresh(); }, 30000);
       document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") refresh(); });
       window.addEventListener("resize", schedule);
@@ -569,46 +621,6 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
           }
         }
       });
-      window.addEventListener("message", (event) => {
-        if (!mframe || event.source !== mframe.contentWindow || event.origin !== api) return;
-        const msg = event.data;
-        if (msg === null || typeof msg !== "object" || msg.type !== NS) return;
-        if (msg.event === "ready") {
-          ready = true;
-          schedule();
-          ["mode", "visible", "threads", "positions", "draft", "focus"].forEach((name) => { if (out[name]) deliver(out[name]); });
-        } else if (msg.event === "viewer") {
-          canComment = msg.canComment !== false;
-          if (!canComment) hideTip();
-        } else if (msg.event === "changed") {
-          if (draft) endDraft();
-          refresh();
-        } else if (msg.event === "focus" && typeof msg.threadId === "string") {
-          focusId = msg.threadId;
-          send({ event: "focus", threadId: focusId });
-          if (mode === "overlay") { openSheet(); reveal(ranges.get(focusId)); }
-          paint();
-        } else if (msg.event === "size" && Number.isFinite(msg.height)) {
-          const n = Math.max(0, Math.min(Math.round(msg.height), 1000000));
-          if (mode === "margin" && n !== need) { need = n; schedule(); }
-        } else if (msg.event === "height" && Number.isFinite(msg.px)) {
-          // A height while the sheet is closed would linger as sheetH and open the next sheet at the wrong height. Zero is a frame with nothing to show.
-          if (!sheet) return;
-          if (msg.px === 0) { closeSheet(); return; }
-          const n = Math.max(80, Math.min(Math.round(msg.px), 4000));
-          if (n !== sheetH || unsure) { sheetH = n; unsure = false; layout(); }
-        } else if (msg.event === "reveal" && Number.isFinite(msg.top) && Number.isFinite(msg.height)) {
-          if (mode !== "margin" || !shown) return;
-          const t = mhost.getBoundingClientRect().top + msg.top;
-          if (t < 48 || t + msg.height > window.innerHeight) window.scrollTo({ top: Math.max(0, t + window.pageYOffset - window.innerHeight * 0.15), behavior: "smooth" });
-        } else if (msg.event === "close") {
-          if (draft) endDraft();
-          focusId = "";
-          send({ event: "focus", threadId: "" });
-          if (mode === "overlay") closeSheet();
-          paint();
-        }
-      });
       if (painting) {
         try {
           const sheetCss = new CSSStyleSheet();
@@ -622,6 +634,16 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
     };
     // The Share popover's click (embed-scripts accepts the event only from its own frame and the API origin): its viewer is the owner, for the rest of this tab.
     commentsSwitched = () => { ownerHere = true; refresh(); };
+    // While the page is inert, the first selection of the author's text asks the comments frame, once, whether this viewer may comment. The frame is built hidden for it and nothing shows unless the answer is yes; the page load itself asks nothing.
+    document.addEventListener("selectionchange", () => {
+      if (active || probed) return;
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed || sel.rangeCount === 0) return;
+      for (const n of [sel.anchorNode, sel.focusNode]) if (!n || !document.body.contains(n) || outermost(n)) return;
+      probed = true;
+      probing = true;
+      buildHost();
+    });
     if (flag !== "off") refresh();
   })();
   } catch (error) {}

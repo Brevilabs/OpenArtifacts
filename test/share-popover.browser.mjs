@@ -936,7 +936,7 @@ test("the owner sets a role from the popover: no Comments switch, the options co
   assert.equal("comments" in body, false);
   assert.equal(await frame.getByText("Comments", { exact: true }).count(), 0);
   assert.equal(await frame.getByRole("radio", { name: "On", exact: true }).count(), 0);
-  await frame.getByText("Anyone with the link can view. Can comment lets a person you add comment.").waitFor();
+  await frame.getByText("Anyone with the link can view. To let someone comment, add them with Can comment.").waitFor();
   await shoot(page, "popover-roles");
 
   // The role sits on the person's row, inside the panel, and Copy link is in view without scrolling.
@@ -964,7 +964,7 @@ test("the owner sets a role from the popover: no Comments switch, the options co
 
   // The helper line follows the link access.
   await frame.getByRole("radio", { name: "Only those invited" }).click();
-  await frame.getByText("Only people you add can open it. Can comment lets them comment too.").waitFor();
+  await frame.getByText("Only people you add can open this page. To let someone comment, add them with Can comment.").waitFor();
   assert.equal(await frame.getByText("Anyone with the link can view.").count(), 0);
 
   // On a plan with no roles: the plan line replaces Add people, and each role is plain text.

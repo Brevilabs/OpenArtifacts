@@ -1718,9 +1718,21 @@ describe("an invited-only document", () => {
       const doc = await privateDoc("for invited eyes");
       const cookie = await cookieFor(doc, doc.owner);
       const latest = await getFrom(`${doc.host}/d/${doc.docId}`, { headers: { cookie } }, PRIVATE);
-      expect(await latest.text()).toContain('data-comments="off"');
+      expect(await latest.text()).toContain('data-comments="on"');
       const pinned = await getFrom(`${doc.host}/d/${doc.docId}/v1`, { headers: { cookie } }, PRIVATE);
       expect(await pinned.text()).not.toContain("data-comments");
+    });
+
+    it("serves an invited-only page with no thread and nobody at Can comment as comments on, and a public one as off", async () => {
+      const priv = await privateDoc("for invited eyes");
+      const cookie = await cookieFor(priv, priv.owner);
+      const flag = async (response: Response) => /data-comments="(on|off)"/.exec(await response.text())?.[1] ?? null;
+      const invited = await getFrom(`${priv.host}/d/${priv.docId}`, { headers: { cookie } }, PRIVATE);
+      expect(await flag(invited)).toBe("on");
+      expect(invited.headers.get("etag")).toMatch(/\.r\d+\.c1"$/);
+
+      const pub = await privateDoc("a public page", KEY, "anyone");
+      expect(await flag(await getFrom(`https://openartifacts.site/d/${pub.docId}`, {}, PRIVATE))).toBe("off");
     });
 
     // An open tab, or the shared link's 60-second cache, can show a version older
@@ -2805,7 +2817,7 @@ describe("an invited-only document", () => {
       const html = await (await open(doc.docId, owner)).text();
 
       expect(html).not.toMatch(/<h2>Comments<\/h2>|name="comments"|Needs a paid plan/);
-      expect(html).toContain("Only people you add can open it. Can comment lets them comment too.");
+      expect(html).toContain("Only people you add can open this page. To let someone comment, add them with Can comment.");
       expect(html).not.toContain("Private pages and comments need a paid plan.");
       expect(html).toContain('<option value="view">Can view</option><option value="comment" selected>Can comment</option>');
       expect(html).toContain('<option value="view" selected>Can view</option><option value="comment">Can comment</option>');
@@ -2813,7 +2825,7 @@ describe("an invited-only document", () => {
 
       await env.DB.prepare("UPDATE docs SET link_access = 'anyone' WHERE id = ?").bind(doc.docId).run();
       const pub = await (await open(doc.docId, owner)).text();
-      expect(pub).toContain("Anyone with the link can view. Can comment lets a person you add comment.");
+      expect(pub).toContain("Anyone with the link can view. To let someone comment, add them with Can comment.");
       expect(pub).not.toContain("Only people you add can open it. Can comment");
     });
 
@@ -2886,7 +2898,7 @@ describe("an invited-only document", () => {
       try {
         const html = await (await open(doc.docId, owner, { ...PRIVATE, LICENSE_API_URL: "https://license.test", LICENSE_API_KEY: "ours" })).text();
         expect(html).not.toContain("Private pages and comments need a paid plan.");
-        expect(html).toContain("Can comment lets them comment too.");
+        expect(html).toContain("To let someone comment, add them with Can comment.");
       } finally {
         vi.unstubAllGlobals();
       }

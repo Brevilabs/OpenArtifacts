@@ -1617,3 +1617,57 @@ test("a thread read that answers after a newer one does not paint over it", { ti
   assert.match(await button.innerText(), /1$/, "the older answer did not take the thread away");
   await context.close();
 });
+
+test("the owner of a private page nobody has been invited to selects text and gets Comment, without opening Share", { timeout: 120_000 }, async () => {
+  const docId = await publish("Private, alone", REPORT, { route: "private-docs", comments: false });
+  const context = await newContext(OWNER_ACCOUNT, { signedInTo: docId });
+  const tab = await context.newPage();
+  await tab.goto(`https://${API}/open/${docId}`);
+  await tab.waitForURL(new RegExp(`/d/${docId}`));
+  assert.equal(await tab.locator("a[data-openartifacts-share]").getAttribute("data-comments"), "on");
+  await barButton(tab).waitFor();
+  const frame = await until("the comments frame", () => commentsFrame(tab, docId));
+  await frame.getByText("Select text to comment.").waitFor();
+  await select(tab, "Staffing is unchanged");
+  await until("the Comment button", () => tab.locator(".openartifacts-comment-tip").isVisible());
+  await shoot(tab, "margin-private-owner-alone");
+  await context.close();
+});
+
+test("the owner of a public page nobody can comment on gets Comment on the first selection, found by one probe", { timeout: 120_000 }, async () => {
+  const docId = await publish("Public, alone", REPORT, { comments: false });
+  const context = await newContext(OWNER_ACCOUNT, { signedInTo: docId });
+  const tab = await context.newPage();
+  const requests = [];
+  tab.on("request", (request) => requests.push(request.url()));
+  await tab.goto(docUrl(docId));
+  await tab.locator("a[data-openartifacts-share]").waitFor();
+  assert.equal(await tab.locator("a[data-openartifacts-share]").getAttribute("data-comments"), "off");
+  await tab.waitForTimeout(500);
+  assert.equal(requests.some((url) => url.includes("/embed/comments")), false, "the load itself asks nothing");
+  assert.equal(await barButton(tab).count(), 0);
+  await select(tab, "Staffing is unchanged");
+  await until("the Comment button", () => tab.locator(".openartifacts-comment-tip").isVisible());
+  await barButton(tab).waitFor();
+  await context.close();
+});
+
+test("a signed-out visitor to a public page nobody can comment on selects text and sees nothing change", { timeout: 120_000 }, async () => {
+  const docId = await publish("Public, alone", REPORT, { comments: false });
+  const context = await newContext(null);
+  const tab = await context.newPage();
+  const requests = [];
+  tab.on("request", (request) => requests.push(request.url()));
+  await tab.goto(docUrl(docId));
+  await tab.locator("a[data-openartifacts-share]").waitFor();
+  assert.equal(requests.some((url) => url.includes("/threads")), false, "the load makes no threads request");
+  await select(tab, "Staffing is unchanged");
+  // The probe's frame is built, and answers no.
+  const frame = await until("the hidden probe frame", () => commentsFrame(tab, docId));
+  assert.ok(frame);
+  await tab.waitForTimeout(800);
+  assert.equal(await tab.locator(".openartifacts-comment-tip").isVisible().catch(() => false), false);
+  assert.equal(await barButton(tab).count(), 0);
+  assert.equal(await hostBox(tab), null, "no visible margin");
+  await context.close();
+});

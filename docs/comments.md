@@ -172,10 +172,15 @@ function of the stored version. So comments are a **separate resource**:
   same-origin and adds the comments button, the highlights, and the frame. It does
   not ask when the bar says the document has no comments: on the shared link the
   Share link carries `data-comments="on|off"`, derived in the `docs` read the serving
-  path already makes (`has_threads`, or a person at `comment` or above) and folded
+  path already makes (`has_threads`, a person at `comment` or above, or an
+  invited-only document, where the owner is always a possible commenter) and folded
   into that rendering's etag (`.c0` / `.c1` after the deploy time), so a page with no
   comments costs no second request and a flip reaches readers within the route's
-  60 seconds. A document that has never had a thread answers the resource from its
+  60 seconds. On a page that stays inert (public, no thread, nobody at `comment`)
+  the first text selection builds the frame hidden, once per page load, and the
+  frame's existing `viewer` message says whether this viewer may comment (the owner
+  signed in to the frame): if so the page activates and offers **Comment** without the
+  Share popover being opened. A document that has never had a thread answers the resource from its
   row alone, without reaching the object. The link also carries
   `data-version`, the version that rendering is, and the script reads and writes
   at it, so comments stay with the text on screen when a push lands while the page
