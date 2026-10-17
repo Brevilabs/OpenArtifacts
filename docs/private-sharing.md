@@ -551,7 +551,10 @@ that must never be on a page whose scripts the author writes.
   signed in gets that sentence and **Sign in to manage**. Writes call the same
   operations as `/api/v1` and the share page, so the plan check and the `402`
   message, both invite caps, the invite email and `document_access_changed` are
-  identical on all three.
+  identical on all three. While a write is out, the control it came from shows a
+  spinner and every control under the row is disabled (the address field
+  read-only), so a second press sends nothing; the answer draws the new view, or
+  an error leaves what was typed in place.
 - **Loading.** A frame with a stored token never paints the signed-out view. The
   shell's views are hidden until the frame's script has chosen the first one: no
   token is the signed-out view at once; a token is a skeleton of the owner view

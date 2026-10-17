@@ -35,8 +35,8 @@
  * a pull request are made.
  * It also saves `popover-roles.png` and `popover-plan-line.png`, for the role
  * dropdown and the free owner's plan line, `popover-loading.png`, the skeleton
- * a token holder sees while the access read is out, `popover-crowded.png` and `popover-private-six.png` (a
- * private page's popover sized to six people).
+ * a token holder sees while the access read is out, `popover-crowded.png`, `popover-private-six.png` (a private
+ * page's popover sized to six people) and `popover-busy-add.png` (Add while its request is out).
  */
 import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
@@ -1685,6 +1685,117 @@ test("a public page's popover keeps one fixed height for every viewer, and its f
   await embedded.getByText("pub6@example.com").waitFor();
   await other.waitForTimeout(1000);
   assert.deepEqual(await other.evaluate(() => window.__shareEvents.map((data) => data.event)), ["ready"]);
+  await context.close();
+});
+
+/** Hold every write to `docId`'s access for `ms`, and count them by method and path. */
+const slowWrites = async (page, docId, ms = 1500) => {
+  const writes = [];
+  await page.route(new RegExp(`^https://${API.replaceAll(".", "\\.")}/embed/api/docs/${docId}/access`), async (route) => {
+    const request = route.request();
+    if (request.method() === "GET") return route.continue();
+    writes.push(`${request.method()} ${new URL(request.url()).pathname.split("/access")[1] || "/"}`);
+    await new Promise((resolve) => setTimeout(resolve, ms));
+    await route.continue();
+  });
+  return writes;
+};
+
+test("Add shows a spinner at once, takes no second click or Enter, and clears the field only when the people land", { timeout: 180_000 }, async () => {
+  const X = await publish("Busy add", "<p>Mine.</p>");
+  const context = await newContext(OWNER_ACCOUNT);
+  const { page, frame } = await ownerFrame(context, X);
+  const writes = await slowWrites(page, X);
+  const field = frame.getByPlaceholder("Emails, separated by commas");
+  await field.evaluate((input) => { input.value = "dee@example.com"; });
+
+  // A click, then what the next painted frame shows; then a second click and an Enter while the first is out.
+  const pressed = await frame.evaluate(async () => {
+    const add = Array.from(document.querySelectorAll("main button")).find((element) => element.textContent === "Add");
+    const input = document.querySelector("main input");
+    const look = () => ({
+      busy: add.classList.contains("busy") && add.getAttribute("aria-busy") === "true",
+      spinning: getComputedStyle(add, "::after").animationName === "spin",
+      disabled: add.disabled,
+      readOnly: input.readOnly,
+    });
+    add.click();
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    const first = look();
+    add.click();
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    return first;
+  });
+  assert.deepEqual(pressed, { busy: true, spinning: true, disabled: true, readOnly: true }, "busy within one frame");
+  await shoot(page, "popover-busy-add");
+  await frame.getByText("dee@example.com").waitFor();
+  await page.waitForTimeout(300);
+  assert.deepEqual(writes, ["PUT /people/dee%40example.com"], "one request for three presses");
+  assert.equal(await field.inputValue(), "", "the field clears once the person is listed");
+  assert.equal(await field.evaluate((input) => input.readOnly), false);
+  assert.equal(await frame.getByRole("button", { name: "Add", exact: true }).isEnabled(), true);
+
+  // A write that fails ends the busy state and keeps what was typed.
+  await page.unroute(new RegExp(`^https://${API.replaceAll(".", "\\.")}/embed/api/docs/${X}/access`));
+  await page.route(`https://${API}/embed/api/docs/${X}/access/people/*`, async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    await route.fulfill({ status: 500, body: "" });
+  });
+  await field.evaluate((input) => { input.value = "err@example.com"; });
+  await frame.getByRole("button", { name: "Add", exact: true }).click();
+  assert.equal(await frame.getByRole("button", { name: "Add", exact: true }).isDisabled(), true, "busy while the failing write is out");
+  await frame.getByText("Something went wrong. Nothing was changed.").waitFor();
+  assert.equal(await field.inputValue(), "err@example.com", "the typed text stays");
+  assert.equal(await field.evaluate((input) => input.readOnly), false);
+  const add = frame.getByRole("button", { name: "Add", exact: true });
+  assert.equal(await add.isEnabled(), true);
+  assert.equal(await add.evaluate((element) => element.classList.contains("busy")), false);
+  await context.close();
+});
+
+test("a role change, Remove and the link access switch each show they are working, and nothing else can be pressed meanwhile", { timeout: 180_000 }, async () => {
+  const Y = await publish("Busy writes", "<p>Mine.</p>", "private-docs");
+  const invitee = "busy@example.com";
+  assert.equal((await api(`/api/v1/docs/${Y}/access/people/${encodeURIComponent(invitee)}`, { method: "PUT", body: "{}" })).status, 200);
+  const context = await newContext(OWNER_ACCOUNT);
+  const { page, frame } = await ownerFrame(context, Y);
+  const writes = await slowWrites(page, Y);
+  await frame.getByLabel(`Access for ${invitee}`).waitFor();
+
+  // What the next painted frame shows after `act`: the control's busy state, and whether any other control can be used.
+  const after = (act) =>
+    frame.evaluate(async (act) => {
+      const main = document.querySelector("main");
+      const select = main.querySelector("select");
+      const target = {
+        role: () => select,
+        remove: () => Array.from(main.querySelectorAll("button")).find((element) => element.textContent === "Remove"),
+        anyone: () => Array.from(main.querySelectorAll("[role=radio]")).find((element) => element.textContent === "Anyone with the link"),
+      }[act]();
+      if (act === "role") {
+        select.value = "view";
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+      } else target.click();
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      const spinner = act === "role" ? target.parentElement.querySelector(".spin") : target;
+      return {
+        busy: target.getAttribute("aria-busy") === "true",
+        spinning: spinner !== null && getComputedStyle(spinner, act === "role" ? null : "::after").animationName === "spin",
+        disabled: target.disabled,
+        othersLive: Array.from(main.querySelectorAll("button, select, input")).filter((element) => element !== target && !element.disabled && !element.readOnly).length,
+      };
+    }, act);
+  const busy = { busy: true, spinning: true, disabled: true, othersLive: 0 };
+
+  assert.deepEqual(await after("role"), busy, "a role change");
+  await until("the role to land", async () => (await frame.getByLabel(`Access for ${invitee}`).inputValue()) === "view" && (await frame.getByLabel(`Access for ${invitee}`).isEnabled()));
+
+  assert.deepEqual(await after("anyone"), busy, "the link access switch");
+  await until("the switch to land", async () => (await frame.getByRole("radio", { name: "Anyone with the link" }).getAttribute("aria-checked")) === "true");
+
+  assert.deepEqual(await after("remove"), busy, "Remove");
+  await until("the removal", async () => (await frame.getByText(invitee).count()) === 0);
+  assert.deepEqual(writes, [`PUT /people/${encodeURIComponent(invitee)}`, "PUT /", `DELETE /people/${encodeURIComponent(invitee)}`]);
   await context.close();
 });
 

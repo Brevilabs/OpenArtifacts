@@ -261,6 +261,10 @@ export const POPUP_DONE_SCRIPT = String.raw`(function () {
  * moves when the owner view lands (a free owner's plan line, which takes its
  * place, still does).
  *
+ * **Busy.** While a write is out, the control it came from shows a spinner
+ * (`.busy`, or a `.spin` beside a select) in place of its label, and every
+ * control in `main` is disabled or read-only (`FRAME_SCRIPT`'s `hold`).
+ *
  * Flex items do not collapse margins, so spacing is set in the margins, not the
  * structure. Children of `main` never shrink: an item with its own overflow rule
  * has no content minimum, so it would squash to a line instead of `main`
@@ -288,7 +292,12 @@ p{margin:8px 0 0}
 a{color:#f6ae52;text-decoration:none}a:hover{text-decoration:underline;text-underline-offset:3px}
 button{font:inherit;font-size:13px;font-weight:500;line-height:1;cursor:pointer;height:28px;padding:0 12px;border:1px solid #2c313b;border-radius:8px;background:transparent;color:#e9ebee;display:inline-flex;align-items:center;justify-content:center;gap:6px;white-space:nowrap}
 button:hover{border-color:#3a404b;background:rgba(255,255,255,.04)}
-button:disabled{cursor:default;opacity:.5}button:disabled:hover{border-color:#2c313b;background:transparent}
+button:disabled{cursor:default;opacity:.5}button:disabled:not(.busy):hover{border-color:#2c313b;background:transparent}
+button.busy{position:relative;color:transparent!important}button.busy:disabled{opacity:1}
+button.busy::after,.spin{content:"";position:absolute;inset:0;margin:auto;width:14px;height:14px;border:2px solid #e9ebee;border-right-color:transparent;border-radius:50%;animation:spin .7s linear infinite}
+button.primary.busy::after{border-color:#0b0c10;border-right-color:transparent}
+.spin{position:static;display:inline-block;flex:none}
+@keyframes spin{to{transform:rotate(1turn)}}
 button.primary{background:#f4f5f7;border-color:#f4f5f7;color:#0b0c10;font-weight:600}
 button.primary:hover{background:#fff;border-color:#fff}
 .row input:placeholder-shown+button.primary{background:transparent;border-color:#2c313b;color:#e9ebee}
@@ -758,11 +767,31 @@ export const FRAME_SCRIPT = String.raw`(() => {
     else showOwner(body);
   };
 
+  // While a write is out, the control it came from (a button, or the role select) shows a
+  // spinner, and every control in main is held, so nothing looks stuck and nothing is sent
+  // twice. The answer usually draws a new view, which replaces them all; the returned
+  // function gives back the ones a view that stays (a refusal, a failure) still shows.
+  const hold = (control) => {
+    const held = Array.from(main.querySelectorAll("button, input, select")).filter((element) => !element.disabled && !element.readOnly);
+    const set = (on) => { for (const element of held) { if (element.tagName === "INPUT") element.readOnly = on; else element.disabled = on; } };
+    set(true);
+    const spinner = control && control.tagName === "SELECT" ? node("span", { class: "spin", "aria-hidden": "true" }) : null;
+    if (spinner) control.before(spinner);
+    else if (control) control.classList.add("busy");
+    if (control) control.setAttribute("aria-busy", "true");
+    return () => {
+      set(false);
+      if (spinner) spinner.remove();
+      if (control) { control.classList.remove("busy"); control.removeAttribute("aria-busy"); }
+    };
+  };
+
   // One write at a time, checked first. The write itself is run.
-  const guarded = async (run) => {
+  const guarded = async (run, control) => {
     if (writing) return;
     writing = true;
     seq += 1;
+    const release = hold(control);
     try {
       if (!(await stillPublic())) return;
       await run();
@@ -770,11 +799,12 @@ export const FRAME_SCRIPT = String.raw`(() => {
       message.textContent = "Something went wrong. Nothing was changed.";
     } finally {
       writing = false;
+      release();
       if (deferred) { deferred = false; refresh(); }
     }
   };
 
-  const write = (method, path, body, modeAfter) => guarded(async () => {
+  const write = (method, path, body, modeAfter, control) => guarded(async () => {
     const response = await call(method, path, body);
     if (response === null) { showGuest("", false); return; }
     let parsed = null;
@@ -795,7 +825,7 @@ export const FRAME_SCRIPT = String.raw`(() => {
     } else {
       fail(message, response, parsed, path.startsWith("/access/people/") ? "Adding people needs a paid plan." : undefined);
     }
-  });
+  }, control);
 
   // The addresses in what the owner pasted, one PUT each, in order. The first
   // refusal that applies to every address (the plan, the daily quota, a full
@@ -816,14 +846,14 @@ export const FRAME_SCRIPT = String.raw`(() => {
     }
     return { emails: emails, bad: bad };
   };
-  const addMany = (text) => {
+  const addMany = (text, control) => {
     const found = parseAddresses(text);
     // One entry, or nothing with an "@" in it (the server then says what is
     // wrong), is the plain single write.
     const count = found.emails.length + found.bad.length;
     if (count <= 1) {
       const lone = count === 1 ? found.emails.concat(found.bad)[0] : text.trim();
-      return lone === "" ? undefined : write("PUT", "/access/people/" + encodeURIComponent(lone));
+      return lone === "" ? undefined : write("PUT", "/access/people/" + encodeURIComponent(lone), undefined, false, control);
     }
     return guarded(async () => {
       let added = 0;
@@ -871,7 +901,7 @@ export const FRAME_SCRIPT = String.raw`(() => {
       }
       // Some went in and some did not: amber, like the share page, not a failure.
       if (added > 0 && message.className === "err") message.className = "err warn";
-    });
+    }, control);
   };
 
   const showOwner = (body) => {
@@ -885,8 +915,9 @@ export const FRAME_SCRIPT = String.raw`(() => {
     grantsComment = roles !== null && roles.includes("comment");
     upgradeShown = roles !== null && roles.length === 0;
     const input = node("input", { type: "text", inputmode: "email", placeholder: "Emails, separated by commas", "aria-label": "Add people by email, separated by commas", autocomplete: "off" });
-    const add = () => addMany(input.value);
-    input.addEventListener("keydown", (event) => { if (event.key === "Enter") add(); });
+    // Enter in the field is a press of Add, and shows on Add.
+    const addButton = button("Add", () => addMany(input.value, addButton), "primary tall");
+    input.addEventListener("keydown", (event) => { if (event.key === "Enter") addMany(input.value, addButton); });
     // A text field drops line breaks from what it is given, which would glue a
     // pasted column into one address. Turn them into separators first.
     input.addEventListener("paste", (event) => {
@@ -896,7 +927,7 @@ export const FRAME_SCRIPT = String.raw`(() => {
       event.preventDefault();
       input.setRangeText(lines.join(", "), input.selectionStart, input.selectionEnd, "end");
     });
-    const choice = (value, label) => node("button", { type: "button", role: "radio", "aria-checked": String(body.linkAccess === value), onclick: () => { if (body.linkAccess !== value) write("PUT", "/access", { linkAccess: value }, true); } }, [label]);
+    const choice = (value, label) => node("button", { type: "button", role: "radio", "aria-checked": String(body.linkAccess === value), onclick: (event) => { if (body.linkAccess !== value) write("PUT", "/access", { linkAccess: value }, true, event.currentTarget); } }, [label]);
     const narrow = limited(body);
     const roleLabel = (role) => "Can " + role;
     const roleControl = (entry) => {
@@ -910,7 +941,7 @@ export const FRAME_SCRIPT = String.raw`(() => {
       // A select shows its new value before the write lands. A write that lands redraws the view with a new select; one that fails, or that another write turned away, leaves this one showing a role nobody has, so it goes back.
       select.addEventListener("change", () => {
         if (select.value === entry.role) return;
-        write("PUT", "/access/people/" + encodeURIComponent(entry.email), { role: select.value }).then(() => { select.value = entry.role; });
+        write("PUT", "/access/people/" + encodeURIComponent(entry.email), { role: select.value }, false, select).then(() => { select.value = entry.role; });
       });
       return select;
     };
@@ -923,7 +954,7 @@ export const FRAME_SCRIPT = String.raw`(() => {
       kids.push(muted(["Private pages and comments need a paid plan."].concat(upgrade === null ? [] : [" ", node("a", { href: upgrade, target: "_blank", rel: "noopener noreferrer" }, ["Upgrade"])])));
     }
     if (mayAdd) {
-      kids.push(node("div", { class: "row" }, [input, button("Add", add, "primary tall")]));
+      kids.push(node("div", { class: "row" }, [input, addButton]));
       if (roles !== null && roles.includes("comment")) {
         kids.push(node("p", { class: "muted help" }, [body.linkAccess === "anyone" ? "Anyone can view. Invitees can comment." : "Only people you add can open this page."]));
       }
@@ -931,14 +962,14 @@ export const FRAME_SCRIPT = String.raw`(() => {
     kids.push(message);
     if (body.requests.length > 0) {
       kids.push(node("h2", {}, ["Requests"]), node("ul", {}, body.requests.map((request) => person(request.email, "Asked to open it", narrow ? [] : [
-        mayAdd ? button("Approve", () => write("PUT", "/access/people/" + encodeURIComponent(request.email)), "primary") : null,
-        button("Decline", () => write("DELETE", "/access/requests/" + encodeURIComponent(request.email))),
+        mayAdd ? button("Approve", (event) => write("PUT", "/access/people/" + encodeURIComponent(request.email), undefined, false, event.currentTarget), "primary") : null,
+        button("Decline", (event) => write("DELETE", "/access/requests/" + encodeURIComponent(request.email), undefined, false, event.currentTarget)),
       ].filter((kid) => kid !== null)))));
     }
     const invitationLabel = body.email ? "Invited" : "Invited · send them the link";
     kids.push(node("h2", {}, ["Who has access"]), node("ul", {}, [person("You", "Owner", [])].concat(body.people.map((entry) => person(entry.email, invitationLabel, narrow ? [] : [
       roleControl(entry),
-      button("Remove", () => write("DELETE", "/access/people/" + encodeURIComponent(entry.email)), "link"),
+      button("Remove", (event) => write("DELETE", "/access/people/" + encodeURIComponent(entry.email), undefined, false, event.currentTarget), "link"),
     ].filter((kid) => kid !== null))))));
     // Both lines are about people on the list, so they wait for someone to be on it.
     const listed = body.people.length > 0 || body.requests.length > 0;
