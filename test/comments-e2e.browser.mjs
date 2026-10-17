@@ -84,7 +84,7 @@ function wranglerVars() {
   return JSON.parse(text).vars;
 }
 
-/** Obsidian Copilot's export shape: a 46rem column, centred, leaving room for the margin at 1280px. */
+/** Obsidian Copilot's export shape: a 46rem column, centred. */
 const page = (body) =>
   `<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n<meta name="viewport" content="width=device-width, initial-scale=1">\n<title>Q3 client report</title>\n` +
   `<style>body{margin:0;font:16px/1.6 Georgia,serif;color:#222;background:#fffdf8}main{width:min(100% - 2rem, 46rem);margin:0 auto;padding:1rem 0}h1{font-size:28px;margin:24px 0}p{margin:0 0 22px}</style>\n</head>\n<body>\n<main id="content">\n${body}\n</main>\n</body>\n</html>\n`;
@@ -192,6 +192,15 @@ const commentsFrame = (tab, docId) => tab.frames().find((frame) => frame.url().s
 const shareFrame = (tab, docId) => tab.frames().find((frame) => frame.url().startsWith(`https://${API}/embed/share?doc=${docId}`));
 const hostBox = (tab) => tab.locator(".openartifacts-comments").boundingBox();
 const barButton = (tab) => tab.locator(".openartifacts-bar button[aria-pressed]");
+/** The bar button's label: "Comments", then the open-thread count when there are any. */
+const counted = async (tab, n) => (await barButton(tab).textContent()).trim() === (n ? `Comments ${n}` : "Comments");
+
+/** Press Comments unless the sidebar is already open; the comments are closed on every page load. */
+async function openSidebar(tab) {
+  await barButton(tab).waitFor();
+  if ((await barButton(tab).getAttribute("aria-pressed")) !== "true") await barButton(tab).click();
+  await until("the sidebar", async () => (await hostBox(tab)) !== null);
+}
 
 /** The viewport rectangle of the first occurrence of `text` in the author's content. */
 const rectOf = (tab, text) =>
@@ -241,7 +250,7 @@ async function pressComment(tab, text, { touch = false } = {}) {
   else await tab.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
 }
 
-/** Press a sign-in button of the margin and let the popup finish; the session cookie is already in the context. */
+/** Press a sign-in button of the comments frame and let the popup finish; the session cookie is already in the context. */
 async function signInThroughPopup(context, button) {
   const [popup] = await Promise.all([context.waitForEvent("page"), button.click()]);
   await popup.waitForEvent("close").catch(() => {});
@@ -414,7 +423,7 @@ test("1. the owner publishes a private page with the CLI and invites Alice to co
   assert.equal((await request("bob", `/api/v1/docs/${DOC}/threads`)).status, 200);
 });
 
-test("2. the Share popover has no Comments switch, only roles, and the page has its 💬 0 button because Alice can comment", { timeout: 120_000 }, async () => {
+test("2. the Share popover has no Comments switch, only roles, and the page has its Comments button because Alice can comment", { timeout: 120_000 }, async () => {
   const context = await newContext("owner");
   const { tab, frame } = await ownerPopover(context, DOC, { private: true });
   // No switch anywhere: the roles are the control.
@@ -423,7 +432,7 @@ test("2. the Share popover has no Comments switch, only roles, and the page has 
   const access = await (await request("owner", `/api/v1/docs/${DOC}/access`)).json();
   assert.deepEqual(access.roles, ["view", "comment"]);
   assert.equal("comments" in access, false);
-  await frame.getByText("Only people you add can open it. Can comment lets them comment too.").waitFor();
+  await frame.getByText("Only people you add can open this page.").waitFor();
   // The invite list shows the roles the CLI set.
   assert.equal(await frame.getByLabel(`Access for ${PEOPLE.alice.email}`).inputValue(), "comment");
   assert.equal(await frame.getByLabel(`Access for ${PEOPLE.bob.email}`).inputValue(), "view");
@@ -432,7 +441,7 @@ test("2. the Share popover has no Comments switch, only roles, and the page has 
   // The page already has its button: someone can comment.
   const button = barButton(tab);
   await button.waitFor();
-  assert.match(await button.innerText(), /💬\s*0$/);
+  assert.equal(await counted(tab, 0), true);
   await shoot(tab, "02-owner-page-comments-button");
 
   // The dropdown writes the role at once.
@@ -452,7 +461,7 @@ test("3. Alice selects a passage, signs in to the frame, and posts under her ema
   const tab = await alice.newPage();
   await openPrivate(tab, DOC);
   const button = barButton(tab);
-  await button.waitFor();
+  await openSidebar(tab);
   const frame = await until("the comments frame", () => commentsFrame(tab, DOC));
   const authorBefore = await tab.locator("#content").innerHTML();
 
@@ -465,25 +474,23 @@ test("3. Alice selects a passage, signs in to the frame, and posts under her ema
   await signInThroughPopup(alice, signIn);
   await frame.getByText("Select text to comment.").waitFor();
   await pressComment(tab, QUOTE);
-  assert.equal(await frame.locator(".quote").first().innerText(), QUOTE);
+  assert.equal(await frame.locator("[data-thread=''] .quote").count(), 0, "the draft does not repeat the passage");
 
   const box = frame.getByRole("textbox", { name: "Add a comment…" });
   await box.waitFor();
   await box.fill(COMMENT);
   await shoot(tab, "03-alice-draft-card");
-  await frame.getByRole("button", { name: "Post" }).click();
-  // Alice has no display name: she is not asked, and is named from her email before the @.
-
+  await frame.getByRole("button", { name: "Send" }).click();
+  // Alice has no display name: she is named from her email before the @.
   const card = frame.locator("[data-thread]:not([data-thread=''])");
   await card.waitFor();
   assert.match(await card.innerText(), /alice/);
-  assert.equal(await frame.getByRole("textbox", { name: "Your name" }).count(), 0, "never asked for a name");
   assert.match(await card.innerText(), /This overstates the renewal risk/);
-  await until("the bar to count one", async () => /💬\s*1$/.test(await button.innerText()));
+  await until("the bar to count one", () => counted(tab, 1));
   await until("the card to sit level with its passage", async () => {
     const level = await rectOf(tab, QUOTE);
     const cardBox = await card.boundingBox();
-    return Math.abs(cardBox.y - level.y) < 24;
+    return Math.abs(cardBox.y - level.y) <= 2;
   });
   assert.deepEqual(await painted(tab, "openartifacts-open"), [QUOTE]);
   assert.equal(await tab.locator("#content").innerHTML(), authorBefore, "the author's DOM is untouched");
@@ -543,21 +550,24 @@ test("4. the agent lists the thread, publishes v2, replies and resolves; Alice i
 test("5. Alice reloads: the card is collapsed as resolved in v2, she can Reopen it, and resolve it again", { timeout: 180_000 }, async () => {
   const [tab] = alice.pages();
   await tab.reload();
+  await openSidebar(tab);
   const frame = await until("the comments frame", () => commentsFrame(tab, DOC));
-  const line = frame.getByRole("button", { name: /Resolved in v2 by Logan's agent/ });
-  await line.waitFor();
-  await until("the bar to count none open", async () => /💬\s*0$/.test(await barButton(tab).innerText()));
+  const toggle = frame.getByRole("button", { name: "1 resolved" });
+  await toggle.waitFor();
+  await until("the bar to count none open", () => counted(tab, 0));
+  assert.equal(await frame.locator("[data-thread]").count(), 0, "a resolved thread has no card on the page");
   await shoot(tab, "05-alice-resolved-card-collapsed");
 
-  await line.click();
+  await toggle.click();
   const card = frame.locator("[data-thread].resolved");
   await card.getByText("Softened in v2").waitFor();
+  assert.match(await card.locator(".where").innerText(), /^Resolved in v2 by Logan's agent$/);
   assert.equal(await card.locator(".who .badge", { hasText: "agent" }).count(), 1, "the agent's reply is badged");
   await shoot(tab, "06-alice-resolved-card-expanded");
   // Alice started the thread, so Reopen is hers.
   await card.getByRole("button", { name: "Reopen" }).click();
   await until("the thread to be open", async () => (await (await request("owner", `/api/v1/docs/${DOC}/threads?state=open`)).json()).threads.length === 1);
-  await until("the bar to count one", async () => /💬\s*1$/.test(await barButton(tab).innerText()));
+  await until("the bar to count one", () => counted(tab, 1));
 
   // Open again, and its text no longer on the page: it waits at the top, and Alice can resolve it from the browser.
   const open = frame.locator("[data-thread]").first();
@@ -565,19 +575,20 @@ test("5. Alice reloads: the card is collapsed as resolved in v2, she can Reopen 
   await until("resolved again", async () => (await (await request("owner", `/api/v1/docs/${DOC}/threads?state=resolved`)).json()).threads.length === 1);
   const [thread] = (await (await request("owner", `/api/v1/docs/${DOC}/threads?state=resolved`)).json()).threads;
   assert.deepEqual(thread.resolution.by, { name: "alice", kind: "human" });
-  await until("the bar to count none", async () => /💬\s*0$/.test(await barButton(tab).innerText()));
+  await until("the bar to count none", () => counted(tab, 0));
 });
 
-test("6. v3 deletes a sentence another thread quotes: that card moves under 'On text that changed in v3'", { timeout: 180_000 }, async () => {
+test("6. v3 deletes a sentence another thread quotes: that card moves under 'On text that changed'", { timeout: 180_000 }, async () => {
   const [tab] = alice.pages();
   await tab.reload();
+  await openSidebar(tab);
   const frame = await until("the comments frame", () => commentsFrame(tab, DOC));
-  await frame.locator("[data-thread]").first().waitFor();
+  await frame.getByRole("button", { name: "1 resolved" }).waitFor();
   await pressComment(tab, STAFFING);
   const box = frame.getByRole("textbox", { name: "Add a comment…" });
   await box.waitFor();
   await box.fill("Is staffing really unchanged after the migration?");
-  await frame.getByRole("button", { name: "Post" }).click();
+  await frame.getByRole("button", { name: "Send" }).click();
   await until("the second thread", async () => (await (await request("owner", `/api/v1/docs/${DOC}/threads?state=open`)).json()).threads.length === 1);
   threadTwo = (await (await request("owner", `/api/v1/docs/${DOC}/threads?state=open`)).json()).threads[0].threadId;
   await until("its highlight", async () => (await painted(tab, "openartifacts-open")).includes(STAFFING));
@@ -585,15 +596,16 @@ test("6. v3 deletes a sentence another thread quotes: that card moves under 'On 
   const published = await cli("owner", ["publish", htmlFile(page(V3)), "--doc-id", DOC]);
   assert.equal(published.json().version, 3);
   await tab.reload();
+  await openSidebar(tab);
   const again = await until("the comments frame", () => commentsFrame(tab, DOC));
-  await again.getByText("On text that changed in v3").waitFor();
+  await again.getByText("On text that changed", { exact: true }).waitFor();
   const orphan = again.locator("[data-thread].muted:not(.resolved)");
   await orphan.waitFor();
   assert.match(await orphan.innerText(), new RegExp(STAFFING));
   assert.match(await orphan.innerText(), /Is staffing really unchanged/);
   assert.equal(await orphan.evaluate((el) => getComputedStyle(el).opacity), "1");
   // Still open, still counted.
-  await until("the bar to count it", async () => /💬\s*1$/.test(await barButton(tab).innerText()));
+  await until("the bar to count it", () => counted(tab, 1));
   assert.deepEqual(await painted(tab, "openartifacts-open"), []);
   await shoot(tab, "07-alice-orphaned-card-v3");
   await alice.close();
@@ -603,18 +615,20 @@ test("7. Bob (Can view) sees the cards, no reply box and no Comment button, and 
   const context = await newContext("bob");
   const tab = await context.newPage();
   await openPrivate(tab, DOC);
+  await openSidebar(tab);
   const frame = await until("the comments frame", () => commentsFrame(tab, DOC));
   const card = frame.locator("[data-thread]:not(.resolved)");
   await card.waitFor();
   assert.match(await card.innerText(), /Is staffing really unchanged/);
-  assert.equal(await frame.locator("[data-thread].resolved").count(), 1, "the resolved thread is there, collapsed");
+  assert.equal(await frame.locator("[data-thread].resolved").count(), 0, "the resolved thread waits behind its count");
+  await frame.getByRole("button", { name: "1 resolved" }).waitFor();
   // The frame learns who he is when he signs in; a card offers that, and never a box to type in.
   assert.equal(await frame.getByRole("textbox").count(), 0);
   await signInThroughPopup(context, frame.getByRole("button", { name: "Continue to see names and comment." }));
   await frame.getByText("You can view this page.").waitFor();
   assert.equal(await frame.getByText("Select text to comment.").count(), 0);
   assert.equal(await frame.getByRole("textbox").count(), 0);
-  assert.equal(await frame.getByRole("button", { name: "Post" }).count(), 0);
+  assert.equal(await frame.getByRole("button", { name: "Send" }).count(), 0);
 
   await select(tab, "Closing remarks follow in the appendix");
   await tab.waitForTimeout(600);
@@ -693,6 +707,7 @@ test("9. a signed-out reader of a public page sees read-only cards, signs in, an
   const context = await newContext(null);
   const tab = await context.newPage();
   await tab.goto(docUrl(PUBLIC));
+  await openSidebar(tab);
   const frame = await until("the comments frame", () => commentsFrame(tab, PUBLIC));
   const card = frame.locator("[data-thread]").first();
   await card.waitFor();
@@ -700,7 +715,7 @@ test("9. a signed-out reader of a public page sees read-only cards, signs in, an
   assert.match(await card.innerText(), /agent/);
   await until("its highlight", async () => (await painted(tab, "openartifacts-open")).includes(STAFFING));
   assert.equal(await card.getByRole("textbox").count(), 0);
-  // Erin may comment, so the margin invites her to sign in; the card itself stays read-only.
+  // Erin may comment, so the sidebar invites her to sign in; the card itself stays read-only.
   const signIn = frame.getByRole("button", { name: "Invited to comment? Sign in." });
   await signIn.waitFor();
   await select(tab, STAFFING);
@@ -711,10 +726,11 @@ test("9. a signed-out reader of a public page sees read-only cards, signs in, an
   // Signing in is the one thing the context did not have; with it the same line leads to a reply box.
   await context.addCookies([sessionCookie(PEOPLE.erin.id)]);
   await signInThroughPopup(context, signIn);
+  await card.locator(".txt").first().click();
   const reply = frame.getByRole("textbox", { name: "Reply…" });
   await reply.waitFor();
   await reply.fill("Three engineers, same as Q2.");
-  await frame.getByRole("button", { name: "Post" }).click();
+  await frame.getByRole("button", { name: "Send" }).click();
   await until("the reply", async () => (await card.innerText()).includes("Three engineers, same as Q2."));
   const [thread] = (await (await request("owner", `/api/v1/docs/${PUBLIC}/threads`)).json()).threads;
   assert.deepEqual(thread.comments[1].author, { name: "Erin", kind: "human" });
@@ -753,7 +769,7 @@ test("11. on a phone a tapped highlight opens a bottom sheet with the card, and 
   await tab.goto(docUrl(PUBLIC));
   const frame = await until("the comments frame", () => commentsFrame(tab, PUBLIC));
   await until("the highlight", async () => (await painted(tab, "openartifacts-open")).includes(STAFFING));
-  // Narrow page: no margin, so nothing is drawn until a highlight is tapped.
+  // Narrow page: no sidebar, so nothing is drawn until a highlight is tapped.
   assert.equal(await hostBox(tab), null);
   await tab.evaluate(() => document.getElementById("staffing").scrollIntoView({ block: "center" }));
   await tab.waitForTimeout(300);
@@ -762,9 +778,11 @@ test("11. on a phone a tapped highlight opens a bottom sheet with the card, and 
   const sheet = await until("the bottom sheet", () => hostBox(tab));
   assert.ok(sheet.y + sheet.height >= 844 - 2 && sheet.height < 844 * 0.55 + 2 && sheet.width >= 388, `a bottom sheet (${JSON.stringify(sheet)})`);
   await frame.getByText("Who is staffed?").waitFor();
-  // Erin's phone has not signed in to the frame yet: the sheet carries the margin's one line, and the popup answers.
+  // Erin's phone has not signed in to the frame yet: the sheet carries the sidebar's one line, and the popup answers.
   await signInThroughPopup(context, frame.getByRole("button", { name: "Invited to comment? Sign in." }));
-  await frame.getByText("Select text to comment.").waitFor();
+  // Signed in, the card offers its reply box; over one thread the sheet carries no instruction line.
+  await frame.getByRole("textbox", { name: "Reply…" }).waitFor();
+  assert.equal(await frame.getByText("Select text to comment.").count(), 0);
   await shoot(tab, "12-phone-bottom-sheet-card");
   await frame.getByRole("button", { name: "Close" }).click();
   await until("the sheet to close", async () => (await hostBox(tab)) === null);
@@ -775,7 +793,7 @@ test("11. on a phone a tapped highlight opens a bottom sheet with the card, and 
   const area = frame.getByRole("textbox", { name: "Add a comment…" });
   await area.fill("What is the base for 18%?");
   await shoot(tab, "13-phone-new-comment-sheet");
-  await frame.getByRole("button", { name: "Post" }).tap();
+  await frame.getByRole("button", { name: "Send" }).tap();
   await until("the new thread", async () => (await (await request("owner", `/api/v1/docs/${PUBLIC}/threads`)).json()).threads.length === 2);
   await until("the new card", async () => (await frame.getByText("What is the base for 18%?").count()) === 1);
   const threads = (await (await request("owner", `/api/v1/docs/${PUBLIC}/threads`)).json()).threads;

@@ -25,7 +25,7 @@
  * account that can neither manage nor read gets the not-available page `/open`
  * shows, never `403`. `?signin` asks a visitor to a public document for the
  * sign-in page, which is where **Is this your page? Sign in to manage** leads;
- * like `?notice`, it only selects a page.
+ * it only selects a page.
  *
  * **It writes through the same operations as `/api/v1`** (`api/access.ts`), with
  * the session account as the principal, so the plan gate, the invite email,
@@ -33,8 +33,7 @@
  * two. Approving a request is `op=add`; declining is `op=decline`.
  *
  * **A write rides a cookie, so it is held to the strictest origin check**
- * (`sameOriginPost`). `GET` never writes and no query parameter changes state:
- * `?notice=private` only selects a constant line of copy.
+ * (`sameOriginPost`). `GET` never writes and no query parameter changes state.
  *
  * **Roles.** Each person has a role from the ladder (`roles.ts`). The dialog
  * draws **Add people** only for an owner whose plan grants some role
@@ -83,9 +82,6 @@ import {
 import { signIn } from "./reader.js";
 import { readSession } from "./session.js";
 import { publicDocUrl } from "./urls.js";
-
-/** The one line shown after a public document is switched to invited-only. */
-const COPY_NOTICE = "People who opened it while it was public may have kept a copy.";
 
 /**
  * Room for the longest list the page can be asked to add. At worst that is
@@ -202,9 +198,7 @@ export async function handleShare(
   if (!writing) {
     const result = await getAccess(env, principal, docId);
     if (result.ok) {
-      return await dialog(env, url, await withCurrentPlan(env, principal), docId, result.state, {
-        notice: url.searchParams.get("notice") === "private",
-      });
+      return await dialog(env, url, await withCurrentPlan(env, principal), docId, result.state, {});
     }
     // Not the owner. A reader who may open the document sees its link, nothing
     // more; anyone else sees what `/open` shows them.
@@ -225,11 +219,10 @@ export async function handleShare(
   if (result === null) return READER_NOT_FOUND();
   if (result.ok) {
     // Post, redirect, get: a reload shows the page and repeats nothing.
-    const switchedToPrivate = result.changed && form.get("op") === "link" && form.get("linkAccess") === "invited";
     return new Response(null, {
       status: 303,
       headers: {
-        location: switchedToPrivate ? `${next}?notice=private` : next,
+        location: next,
         "cache-control": "no-store",
         "referrer-policy": "no-referrer",
       },
@@ -359,7 +352,7 @@ async function dialog(
   principal: Publisher,
   docId: string,
   state: AccessState,
-  shown: { notice?: boolean; error?: DialogError; report?: string; quiet?: boolean },
+  shown: { error?: DialogError; report?: string; quiet?: boolean },
 ): Promise<Response> {
   const action = `${SHARE_PREFIX}/${docId}`;
   const form = (op: string, fields: Record<string, string>, body: string, cls = "") =>
@@ -395,7 +388,7 @@ async function dialog(
       ? `<p>Private pages and comments need a paid plan.${upgrade === undefined ? "" : ` <a href="${escapeHtml(upgrade)}">Upgrade</a>`}</p>`
       : "";
   const helper = roles?.includes("comment")
-    ? `<p class="hint">${state.link_access === "anyone" ? "Anyone with the link can view. Can comment lets a person you add comment." : "Only people you add can open it. Can comment lets them comment too."}</p>`
+    ? `<p class="hint">${state.link_access === "anyone" ? "Anyone with the link can view. Only people you add can comment." : "Only people you add can open this page."}</p>`
     : "";
   // A lapsed or free owner adds nobody, and approving a request adds a person.
   const mayAdd = roles === undefined || roles.length > 0;
@@ -419,7 +412,6 @@ async function dialog(
   const url = publicDocUrl(env, requestUrl, docId);
   const detail = `${SHARE_STYLE}
 ${message === null ? "" : `<p${shown.quiet === true ? "" : ' class="err"'} role="alert">${message}</p>`}
-${shown.notice === true ? `<p>${COPY_NOTICE}</p>` : ""}
 <section><h2>Link access</h2>${form(
     "link",
     {},

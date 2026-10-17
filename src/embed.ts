@@ -5,7 +5,7 @@
  * ```
  * GET|HEAD /embed/page.js                         the script every served page loads
  * GET      /embed/share?doc=&origin=              the popover's frame
- * GET      /embed/comments?doc=&origin=[&v=]      the margin's frame (src/comments/frame.ts)
+ * GET      /embed/comments?doc=&origin=[&v=]      the comments frame (src/comments/frame.ts)
  * GET      /embed/sign-in?doc=&h=[&switch=1]      the popup that signs the frame in
  * POST     /embed/token  {doc, nonce}             the frame collects its token
  * GET|PUT|DELETE /embed/api/docs/{docId}/access…  the frame's JSON, behind the token

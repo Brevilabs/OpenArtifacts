@@ -221,8 +221,8 @@ after(async () => {
   await mf?.dispose();
 });
 
-const newContext = (account) =>
-  browser.newContext({ ignoreHTTPSErrors: true, viewport: { width: 1280, height: 800 } }).then(async (context) => {
+const newContext = (account, height = 800) =>
+  browser.newContext({ ignoreHTTPSErrors: true, viewport: { width: 1280, height } }).then(async (context) => {
     if (account) await context.addCookies([sessionCookie(account)]);
     return context;
   });
@@ -334,10 +334,10 @@ window.setInterval(() => { if (document.activeElement !== document.body) window.
   assert.equal(await hostile.evaluate(() => window.__focusMoved), undefined);
   await hostile.close();
 
-  // Back on the first page: switching to private shows the notice and lands.
+  // Back on the first page: switching to private lands, with no line about copies.
   await invitedOnly.click();
-  await frame.getByText("People who opened it while it was public may have kept a copy.").waitFor();
-  assert.equal(await invitedOnly.getAttribute("aria-checked"), "true");
+  await until("the switch to land", async () => (await invitedOnly.getAttribute("aria-checked")) === "true");
+  assert.equal(await frame.getByText("may have kept a copy").count(), 0);
   const access = await api(`/api/v1/docs/${X}/access`);
   assert.equal(access.status, 200);
   assert.equal((await access.json()).linkAccess, "invited");
@@ -396,7 +396,7 @@ test("a frame a hostile page embedded while the document was public shows no con
 
   // The owner makes X private from X's own page, whose frame made the switch.
   await invitedOnly.click();
-  await frame.getByText("People who opened it while it was public may have kept a copy.").waitFor();
+  await until("the switch to land", async () => (await invitedOnly.getAttribute("aria-checked")) === "true");
   assert.equal((await (await api(`/api/v1/docs/${X}/access`)).json()).linkAccess, "invited");
 
   // A click on the first hostile page's stale view is checked against the
@@ -438,7 +438,7 @@ test("a frame a hostile page embedded while the document was public shows no con
   // The owner's own frame keeps its view after a refresh of its own. A token
   // written by a hostile page's frame reaches it as a storage event while X is
   // private, which is the case the first write inside the owner's frame never
-  // exercises. It keeps the mode control and the notice, but not the one-click
+  // exercises. It keeps the mode control, but not the one-click
   // writes on the private document: a switch made in a frame is not proof that
   // the page around it is the owner's.
   await stale.evaluate((name) => {
@@ -448,28 +448,26 @@ test("a frame a hostile page embedded while the document was public shows no con
   }, key);
   await until("the owner's frame to redraw", async () => (await frame.getByText("To remove people or answer requests,").count()) > 0);
   assert.equal(await invitedOnly.getAttribute("aria-checked"), "true");
-  await frame.getByText("People who opened it while it was public may have kept a copy.").waitFor();
+  assert.equal(await frame.getByText("may have kept a copy").count(), 0);
   assert.equal(await frame.getByRole("button", { name: "Remove" }).count(), 0);
   // Nor a role, which the limited view leaves to the share page.
   assert.equal(await frame.getByLabel(`Access for ${invitee}`).count(), 0);
   assert.equal(await frame.getByText(invitee).count(), 1, "the list is still shown");
   assert.equal(await frame.getByPlaceholder("Emails, separated by commas").count(), 1);
 
-  // Switching back to public from inside the frame ends the notice.
+  // Switching back to public from inside the frame brings the full view back.
   await frame.getByRole("radio", { name: "Anyone with the link" }).click();
   await until("the owner's frame to show the public document", async () =>
     (await frame.getByRole("radio", { name: "Anyone with the link" }).getAttribute("aria-checked")) === "true",
   );
-  assert.equal(await frame.getByText("People who opened it while it was public may have kept a copy.").count(), 0);
   assert.equal((await (await api(`/api/v1/docs/${X}/access`)).json()).linkAccess, "anyone");
   assert.equal(await frame.getByRole("button", { name: "Remove" }).count(), 1, "the full view is back while the document is public");
   assert.equal(await frame.getByLabel(`Access for ${invitee}`).count(), 1, "and so is the role");
   await invitedOnly.click();
-  await frame.getByText("People who opened it while it was public may have kept a copy.").waitFor();
+  await until("the switch to land", async () => (await invitedOnly.getAttribute("aria-checked")) === "true");
 
-  // Then X is made public again from elsewhere. The frame's notice is about a
-  // switch to private and must not outlive it: the next refresh (a token written
-  // by another page's frame) draws the public document without it.
+  // Then X is made public again from elsewhere: the next refresh (a token written
+  // by another page's frame) draws the public document.
   const reopened = await api(`/api/v1/docs/${X}/access`, { method: "PUT", body: JSON.stringify({ linkAccess: "anyone" }) });
   assert.equal(reopened.status, 200);
   await refreshed.evaluate((name) => {
@@ -480,7 +478,6 @@ test("a frame a hostile page embedded while the document was public shows no con
   await until("the owner's frame to show the public document", async () =>
     (await frame.getByRole("radio", { name: "Anyone with the link" }).getAttribute("aria-checked")) === "true",
   );
-  assert.equal(await frame.getByText("People who opened it while it was public may have kept a copy.").count(), 0);
   await context.close();
 });
 
@@ -727,7 +724,7 @@ async function ownerFrame(context, docId) {
 }
 
 test("an owner view taller than the popover scrolls instead of squashing its controls", { timeout: 120_000 }, async () => {
-  // The frame is a fixed 480px tall. With a request and a dozen invitees the owner
+  // The popover is a fixed height. With a request and a dozen invitees the owner
   // view is far taller, and `main` has to scroll: flex children that shrink would
   // flatten the Link access control to a line and clip Copy link off the bottom.
   const X = await publish("Crowded", "<p>Mine.</p>");
@@ -762,6 +759,59 @@ test("an owner view taller than the popover scrolls instead of squashing its con
     `Copy link (y ${copyBox.y}..${copyBox.y + copyBox.height}) is inside the frame (y ${frameBox.y}..${frameBox.y + view.height}) once main is scrolled to the bottom`,
   );
   await context.close();
+});
+
+test("the owner view with nobody added fits the popover without a scrollbar, and a crowded one scrolls", { timeout: 180_000 }, async () => {
+  // The popover is one fixed height, so its tallest owner view with nobody added has to fit it: the private page's
+  // helper line wrapping, the copy notice, and the free owner's plan line.
+  const X = await publish("Roomy", "<p>Mine.</p>");
+  const context = await newContext(OWNER_ACCOUNT, 900);
+  const { page, frame } = await ownerFrame(context, X);
+  const sizes = async () => frame.evaluate(() => {
+    const element = document.querySelector("main");
+    return { scrollHeight: element.scrollHeight, clientHeight: element.clientHeight };
+  });
+  const fits = async (label) => {
+    const main = await until(label, async () => {
+      const size = await sizes();
+      return size.clientHeight > 0 ? size : null;
+    });
+    assert.ok(main.scrollHeight <= main.clientHeight, `${label}: main needs ${main.scrollHeight}px in ${main.clientHeight}px`);
+  };
+  await fits("public, nobody added");
+
+  await frame.getByRole("radio", { name: "Only those invited" }).click();
+  await frame.getByText("Only people you add can open this page.").waitFor();
+  assert.equal(await frame.getByText("may have kept a copy").count(), 0);
+  await fits("private with the helper line");
+  await shoot(page, "popover-owner-nobody");
+
+  await db.prepare("UPDATE accounts SET plan = 'free' WHERE id = ?").bind(OWNER_ACCOUNT).run();
+  try {
+    await frame.getByRole("radio", { name: "Anyone with the link" }).click();
+    await until("the free owner view", async () => (await frame.getByText("Private pages and comments need a paid plan.").count()) > 0);
+    await fits("free owner, plan line");
+    await frame.getByRole("radio", { name: "Only those invited" }).click();
+    await frame.getByText("Private sharing needs a paid plan. Nothing was changed.").waitFor();
+    await fits("free owner, plan line and refusal");
+  } finally {
+    await db.prepare("UPDATE accounts SET plan = 'pro' WHERE id = ?").bind(OWNER_ACCOUNT).run();
+  }
+  await context.close();
+
+  const Y = await publish("Eight", "<p>Mine.</p>");
+  for (let n = 0; n < 8; n++) {
+    assert.equal((await api(`/api/v1/docs/${Y}/access/people/${encodeURIComponent(`person${n}@example.com`)}`, { method: "PUT", body: "{}" })).status, 200);
+  }
+  const other = await newContext(OWNER_ACCOUNT, 900);
+  const crowded = await ownerFrame(other, Y);
+  await crowded.frame.getByText("person7@example.com").waitFor();
+  const main = await crowded.frame.evaluate(() => {
+    const element = document.querySelector("main");
+    return { scrollHeight: element.scrollHeight, clientHeight: element.clientHeight };
+  });
+  assert.ok(main.scrollHeight > main.clientHeight, `eight people scroll (${main.scrollHeight} > ${main.clientHeight})`);
+  await other.close();
 });
 
 test("an owner pastes a column of addresses and adds them all at once", { timeout: 120_000 }, async () => {
@@ -884,11 +934,10 @@ test("a read that resolves after the owner's own switch does not undo it", { tim
   }, key);
   await until("the read to be held", () => taken);
   await frame.getByRole("radio", { name: "Only those invited" }).click();
-  await frame.getByText("People who opened it while it was public may have kept a copy.").waitFor();
+  await until("the switch to land", async () => (await frame.getByRole("radio", { name: "Only those invited" }).getAttribute("aria-checked")) === "true");
   release();
   await page.waitForTimeout(500);
   assert.equal(await frame.getByRole("radio", { name: "Only those invited" }).getAttribute("aria-checked"), "true");
-  assert.equal(await frame.getByText("People who opened it while it was public may have kept a copy.").count(), 1);
   await context.close();
 });
 
@@ -936,7 +985,7 @@ test("the owner sets a role from the popover: no Comments switch, the options co
   assert.equal("comments" in body, false);
   assert.equal(await frame.getByText("Comments", { exact: true }).count(), 0);
   assert.equal(await frame.getByRole("radio", { name: "On", exact: true }).count(), 0);
-  await frame.getByText("Anyone with the link can view. Can comment lets a person you add comment.").waitFor();
+  await frame.getByText("Anyone with the link can view. Only people you add can comment.").waitFor();
   await shoot(page, "popover-roles");
 
   // The role sits on the person's row, inside the panel, and Copy link is in view without scrolling.
@@ -964,7 +1013,7 @@ test("the owner sets a role from the popover: no Comments switch, the options co
 
   // The helper line follows the link access.
   await frame.getByRole("radio", { name: "Only those invited" }).click();
-  await frame.getByText("Only people you add can open it. Can comment lets them comment too.").waitFor();
+  await frame.getByText("Only people you add can open this page.").waitFor();
   assert.equal(await frame.getByText("Anyone with the link can view.").count(), 0);
 
   // On a plan with no roles: the plan line replaces Add people, and each role is plain text.

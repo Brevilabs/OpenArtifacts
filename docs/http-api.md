@@ -693,7 +693,7 @@ stale-while-revalidate=86400`, an `ETag` (`If-None-Match` answers `304`),
 **Its address is permanent**: pinned `/v{n}` pages are served `immutable` for a
 year and carry the tag, so the path never moves or changes meaning, and a fix to
 the script reaches pages through that cache lifetime. It turns **Share** into a
-popover and, where comments are available, runs the comments margin (see [Comments](#comments)). It holds no credential and reads no cookie or
+popover and, where comments are available, runs the comments sidebar (see [Comments](#comments)). It holds no credential and reads no cookie or
 storage. Where a page's own policy blocks it, or scripts do not run, **Share** is
 still the plain link to the share page.
 
@@ -778,7 +778,7 @@ request email's **Review request** and the url `share` prints.
 | --- | --- |
 | No session, a live public document | The title, "Only the owner can change who can open this.", **Copy link**, and "Is this your page? **Sign in to manage**" (`?signin` selects the sign-in page) |
 | No session, anything else, or `?signin` | The sign-in page, the same bytes for an invited-only, an unknown and a deleted id, returning to `/share/{docId}` |
-| A signed-in account that owns the document | **Link access**, **Add people**, **Requests** with **Approve** and **Decline**, **Who has access** with **Remove** and, where the plan grants two or more roles, a role select beside each person (a plan that grants none sees a plan line instead of **Add people**, **Approve** and the select), **Copy link**, and, after a switch from public to private, the line "People who opened it while it was public may have kept a copy." |
+| A signed-in account that owns the document | **Link access**, **Add people**, **Requests** with **Approve** and **Decline**, **Who has access** with **Remove** and, where the plan grants two or more roles, a role select beside each person (a plan that grants none sees a plan line instead of **Add people**, **Approve** and the select), and **Copy link** |
 | A signed-in account that may read it | The title, the same sentence, **Copy link**, **Use another account** and a line telling a Copilot owner to manage access in Copilot |
 | A signed-in account that may not, unknown, deleted | The unavailable page as `/open`, `404`, never `403` |
 
@@ -1067,11 +1067,24 @@ attribute, since it is immutable and its path names the version. Otherwise it fe
 `/d/{docId}/threads[?v=n]` same-origin, and does nothing more unless the answer
 lists a thread or says `commentable`. The Share popover tells the page when its
 owner adds a person, changes a role or closes it, and the page then asks again and,
-from then on in that tab, treats its viewer as the owner and stays active. Then it adds `💬 N` (open threads) beside **Share**,
-paints highlights with `CSS.highlights` (it never changes the author's DOM), shows a
-**Comment** button over a selection, and embeds the comments frame: in the page's
-margin when at least 256 px are free beside the content, else as a bottom sheet
-shown on a highlight tap or **Comment**. It holds no credential, polls the threads
+from then on in that tab, treats its viewer as the owner and stays active. A page
+that stays inert (no thread and nobody at `comment`, public or invited-only) also asks
+once per page load, on the first selection of the author's text and not before:
+it builds the comments frame hidden and waits for `viewer`; on `canComment: true` it
+behaves as after the Share popover's event and shows **Comment** for that selection,
+otherwise nothing changes and it does not ask again. It adds no message. Then it adds a
+**Comments** button (with the open-thread count, `Comments 3`; the bubble and the
+count at phone width) just left of **Share**, paints every open thread's passage
+with `CSS.highlights` (it never changes the author's DOM) whether or not the
+comments are open, shows a **Comment** button over a selection, and embeds the
+comments frame, closed on every page load. **Comments**, a highlight or
+**Comment** opens it: where the viewport is at least 880 px wide and the window
+scrolls the page, as a 320 px sidebar for which the page narrows (an adopted
+stylesheet pads `<html>` on the right while it is open), with each card level with
+its passage and the threads whose text changed at the top; elsewhere as a bottom
+sheet that lists the open threads, or shows the one tapped, or the draft. A
+resolved thread has no highlight and no card: the frame lists it behind an
+`N resolved` count in its header, and offers Undo for a few seconds after a resolve. It holds no credential, polls the threads
 resource every 30 seconds while the tab is visible, and learns of the viewer only
 that `canComment` flag.
 
@@ -1082,20 +1095,25 @@ also checks the origin.
 
 | Direction | `event` | Payload |
 | --- | --- | --- |
-| page → frame | `mode` | `{mode: "margin" \| "overlay"}` |
-| page → frame | `visible` | `{shown}`: the margin is shown or the sheet is open |
+| page → frame | `mode` | `{mode: "margin" \| "overlay"}`: the sidebar, or the bottom sheet |
+| page → frame | `theme` | `{dark}`: whether the page's own background is dark, so the cards are drawn to match |
+| page → frame | `visible` | `{shown}`: the sidebar or the sheet is open |
 | page → frame | `threads` | `{data, version}`: the threads resource JSON |
 | page → frame | `positions` | `{tops, lost, height}`: each placed thread's top in document coordinates, the ids it could not place, and the document height |
 | page → frame | `draft` | `{anchor \| null, top}`: a selection awaiting its comment |
 | page → frame | `focus` | `{threadId}` (empty clears) |
+| page → frame | `hover` | `{threadId}`: the thread whose passage or card is under the pointer (empty clears); its card lifts |
+| page → frame | `dismiss` | none: a click on the page; the frame drops the draft if nothing is typed in it |
 | frame → page | `ready` | none |
 | frame → page | `viewer` | `{canComment}`, after every read of the frame's own: `false` when signed out, the server's answer when signed in |
 | frame → page | `changed` | none: refetch now |
 | frame → page | `focus` | `{threadId}` |
-| frame → page | `close` | none: hide the sheet or cancel the draft |
-| frame → page | `size` | `{height}`: how tall the margin's stacked cards need the column to be (margin mode) |
-| frame → page | `height` | `{px}`: the height of the overlay sheet's content (overlay mode); `0` means the frame has nothing to show and the page closes the sheet |
-| frame → page | `reveal` | `{top, height}`: where the focused card sits in the margin, so the page can scroll it into view |
+| frame → page | `hover` | `{threadId}`: the card under the pointer (empty clears); its passage takes the active yellow |
+| frame → page | `cancel` | none: the frame dropped an empty draft; the page unmarks its passage, and closes the sheet |
+| frame → page | `close` | none: the reader closed the comments (the header's close button, or Escape on the sheet) |
+| frame → page | `size` | `{height}`: how tall the sidebar's stacked cards need the column to be (`margin` mode) |
+| frame → page | `height` | `{px}`: the height of the sheet's content (`overlay` mode) |
+| frame → page | `reveal` | `{top, height}`: where the active card sits in the sidebar, so the page can scroll it into view |
 
 The frame prefers its own read (its token's, else the anonymous one a public
 document answers) to the `threads` the page relays, and an own read always replaces
@@ -1106,11 +1124,10 @@ could invent a commenter. A hostile page on the document's own serving origin ca
 learn, from `viewer`, whether this visitor holds a token for the document and may
 comment. The layout messages (`size`, `height`, `reveal`) carry only heights, but
 those depend on what the frame draws for this visitor, so the page can also infer
-whether they may resolve a thread, whether a comment is theirs and whether they
-have set a display name. It learns nothing else about them, and no message in
+whether they may resolve a thread and whether a comment is theirs. It learns nothing else about them, and no message in
 either direction carries a credential.
 
-**Signing in.** The margin's sign-in line runs the Share popover's flow
+**Signing in.** The comments frame's sign-in line runs the Share popover's flow
 (`/embed/sign-in`, `POST /embed/token`) and keeps the token under the same storage
 key, so one sign-in serves both frames. The Share popover's owner view draws a
 select on each person whose options are `Access.roles` (`PUT …/access/people/{email}`
