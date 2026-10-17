@@ -71,7 +71,8 @@
  * too. Where the viewport is at least `WIDE` and the window is what scrolls the
  * page (`innerScrolled`), it is a sidebar: while it is open an adopted
  * stylesheet pads `<html>` by `COLUMN` on the right, the author's layout reflows
- * into what is left, and the frame is that column, as tall as the document (or as
+ * into what is left (the text the reader was looking at stays where it was on
+ * screen), and the frame is that column, as tall as the document (or as
  * its stacked cards need, if that is taller), so it scrolls with the page. The
  * page re-measures each passage whenever the geometry can change (opening, a
  * resize, fonts and images loading, a resize of the document or of a card) and
@@ -293,27 +294,50 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       }
       return false;
     };
+    // The text at a point of the viewport, as a collapsed Range.
+    const caretAt = (x, y) => {
+      if (document.caretPositionFromPoint) {
+        const p = document.caretPositionFromPoint(x, y);
+        if (!p) return null;
+        const range = document.createRange();
+        range.setStart(p.offsetNode, p.offset);
+        return range;
+      }
+      return document.caretRangeFromPoint ? document.caretRangeFromPoint(x, y) : null;
+    };
     // The column the open sidebar takes from the page: an adopted stylesheet pads <html> on the right, so the author's own layout (a centred column, a full-width page) reflows into what is left, and the canvas, which carries the page's own background, fills the column. Nothing in the author's DOM changes, and nothing else ever changes the page's width.
     let narrow = null, narrowed = "";
     const setNarrow = (px) => {
       const css = px ? ":root{padding-right:" + px + "px!important}" : "";
       if (css === narrowed) return;
       narrowed = css;
+      // A padding change on <html> turns the browser's scroll anchoring off, and the reflow would move the text out from under the reader. So the place is kept by hand: the passage being commented on, else the active thread's, else the text in the middle of the window, stays where it was on screen.
+      const anchor = draftRange || ranges.get(focusId) || caretAt(window.innerWidth / 2, window.innerHeight / 2);
+      const topOf = () => { const r = anchor && anchor.getClientRects()[0]; return r ? r.top : null; };
+      const before = topOf();
       try {
         if (!narrow) { narrow = new CSSStyleSheet(); document.adoptedStyleSheets = document.adoptedStyleSheets.concat([narrow]); }
         narrow.replaceSync(css);
       } catch (error) {}
+      const after = topOf();
+      if (before !== null && after !== null) window.scrollBy({ top: after - before, behavior: "instant" });
     };
-    // Whether the page's own background is dark: the first that is not transparent from <body> up to <html> (the canvas takes it from them in that order), white if neither has one. The frame draws its cards in the matching theme.
-    let dark = null;
-    const pageIsDark = () => {
-      for (const el of [document.body, document.documentElement]) {
-        const c = (getComputedStyle(el).backgroundColor.match(/[0-9.]+/g) || []).map(Number);
-        if (c.length < 3 || c[3] === 0) continue;
-        const lin = (v) => (v / 255 <= 0.04045 ? v / 255 / 12.92 : Math.pow((v / 255 + 0.055) / 1.055, 2.4));
-        return 0.2126 * lin(c[0]) + 0.7152 * lin(c[1]) + 0.0722 * lin(c[2]) < 0.179;
+    // The page's own background: <body>'s, else <html>'s (the canvas takes it from them in that order), else, when both are transparent, what paints the page's left edge halfway down the window (a wrapper that fills the page). Our own hosts and bar are not the page. A wrapper's colour is returned as fill too: the canvas behind the column is white, so the column paints it itself.
+    const backdrop = () => {
+      const ours = (el) => el === mhost || el === tipHost || link.parentNode.contains(el);
+      const stack = [document.body, document.documentElement].concat(document.elementsFromPoint(0, window.innerHeight / 2).filter((el) => !ours(el)));
+      for (const el of stack) {
+        const css = getComputedStyle(el).backgroundColor;
+        const c = (css.match(/[0-9.]+/g) || []).map(Number);
+        if (c.length >= 3 && c[3] !== 0) return { rgb: c, fill: el === document.body || el === document.documentElement ? "" : css };
       }
-      return false;
+      return null;
+    };
+    // Whether that background is dark. The frame draws its cards in the matching theme.
+    let dark = null, fill = "";
+    const isDark = (c) => {
+      const lin = (v) => (v / 255 <= 0.04045 ? v / 255 / 12.92 : Math.pow((v / 255 + 0.055) / 1.055, 2.4));
+      return 0.2126 * lin(c[0]) + 0.7152 * lin(c[1]) + 0.0722 * lin(c[2]) < 0.179;
     };
     let visible = null;
     const layout = () => {
@@ -323,7 +347,9 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       const vw = viewport().clientWidth;
       const next = vw >= WIDE && !innerScrolled() ? "margin" : "overlay";
       if (next !== mode) { mode = next; need = 0; sheetH = 0; send({ event: "mode", mode: mode }); }
-      const d = pageIsDark();
+      const back = backdrop();
+      const d = back ? isDark(back.rgb) : false;
+      fill = back ? back.fill : "";
       if (d !== dark) { dark = d; send({ event: "theme", dark: d }); }
       if (button) label();
       // The host is a child of <html>, so an html{zoom} would multiply every length written below; cancel it.
@@ -336,7 +362,7 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       if (mode === "margin") {
         // As tall as the document, so the cards scroll with the page; the cards may need more, and the host then extends the page, so they can be reached by scrolling it.
         const height = Math.round(Math.max(document.documentElement.scrollHeight, document.body.scrollHeight) * z);
-        mhost.setAttribute("style", flat + "display:block;position:absolute;top:0;left:" + Math.round(vw - COLUMN + window.pageXOffset) + "px;width:" + COLUMN + "px;height:" + Math.max(height, need) + "px");
+        mhost.setAttribute("style", flat + "display:block;position:absolute;top:0;left:" + Math.round(vw - COLUMN + window.pageXOffset) + "px;width:" + COLUMN + "px;height:" + Math.max(height, need) + "px" + (fill ? ";background:" + fill : ""));
       } else {
         const phone = vw <= 600;
         mhost.setAttribute("style", flat + "display:block;position:fixed;bottom:0;height:" + (sheetH ? "min(" + sheetH + "px,55vh,560px)" : "min(55vh,560px)") + ";opacity:" + (unsure && !sheetH ? "0" : "1") +
@@ -355,7 +381,7 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
         const placed = Array.from(ranges).sort((a, b) => a[1].compareBoundaryPoints(Range.START_TO_START, b[1]));
         for (const [id, range] of placed) {
           const rects = range.getClientRects();
-          if (rects.length) tops[id] = Math.round(rects[0].top + window.pageYOffset - top); else none.push(id);
+          if (rects.length) tops[id] = rects[0].top + window.pageYOffset - top; else none.push(id);
         }
         send({ event: "positions", tops: tops, lost: none, height: Math.round(mhost.getBoundingClientRect().height) });
       }
@@ -498,7 +524,7 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       openPanel();
       reveal(draftRange);
       const top = draftRange.getClientRects()[0] || draftRange.getBoundingClientRect();
-      send({ event: "draft", focus: true, anchor: draft, top: Math.round(top.top + window.pageYOffset - (mhost.getBoundingClientRect().top + window.pageYOffset)) });
+      send({ event: "draft", focus: true, anchor: draft, top: top.top - mhost.getBoundingClientRect().top });
       paint();
     };
     const endDraft = () => { draft = null; draftRange = null; send({ event: "draft", anchor: null, top: 0 }); paint(); };
@@ -684,15 +710,8 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
         if (!active || event.button !== 0 || event.target === tipHost || link.parentNode.contains(event.target)) return;
         const sel = window.getSelection();
         if (sel && !sel.isCollapsed) return;
-        let node, offset;
-        if (document.caretPositionFromPoint) {
-          const p = document.caretPositionFromPoint(event.clientX, event.clientY);
-          if (p) { node = p.offsetNode; offset = p.offset; }
-        } else if (document.caretRangeFromPoint) {
-          const r = document.caretRangeFromPoint(event.clientX, event.clientY);
-          if (r) { node = r.startContainer; offset = r.startOffset; }
-        }
-        const hit = node && node.nodeType === 3 ? Array.from(ranges).find((entry) => entry[1].isPointInRange(node, offset)) : null;
+        const caret = caretAt(event.clientX, event.clientY);
+        const hit = caret && caret.startContainer.nodeType === 3 ? Array.from(ranges).find((entry) => entry[1].isPointInRange(caret.startContainer, caret.startOffset)) : null;
         if (hit) {
           // A highlight opens the comments on its thread, closed or not. The frame learns the thread before it is shown, so its first drawing is that thread (a sheet drawn as the list first would resize under the reader's finger).
           if (draft) endDraft();
@@ -796,13 +815,12 @@ button.ic:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
 .menu{position:absolute;right:0;top:100%;z-index:3;min-width:150px;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:4px;box-shadow:var(--lift)}
 .menu .item{display:block;width:100%;text-align:left;border:0;background:none;padding:7px 10px;border-radius:7px;font:inherit;font-size:12.5px;font-weight:400;color:var(--danger);cursor:pointer}
 .menu .item:hover,.menu .item:focus-visible{background:var(--hover);outline:0}
-.replies{font-size:11.5px;color:var(--muted);margin:2px 0 0 26px}
 .card:not(.focus) .replybox{display:none}
-.card.focus .replies{display:none}
-button.link.strong{font-weight:650;color:var(--ink)}
+.card:focus-visible{outline:0}
+button.link.strong{font-size:12px;font-weight:650;color:var(--ink)}
 button.link.toggle{font-size:12px;color:var(--muted)}
 button.link:focus-visible,button.row:focus-visible,button.b:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-.card.undo{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:12.5px}
+.head .done{font-size:12px;color:var(--muted)}
 .composer{display:flex;align-items:flex-end;gap:6px;border:1px solid var(--edge);border-radius:20px;background:var(--field);padding:3px 3px 3px 14px}
 .composer:focus-within{border-color:var(--accent);box-shadow:0 0 0 2px var(--ring)}
 .composer textarea{flex:1;min-width:0;font:inherit;color:inherit;border:0;border-radius:0;background:transparent;padding:6px 0;min-height:22px;max-height:160px;overflow-y:auto;resize:none;line-height:1.45}
@@ -826,7 +844,6 @@ button.b:hover{border-color:var(--muted)}button.b:disabled{cursor:default;opacit
 button.b.primary{background:var(--send);border-color:var(--send);color:var(--send-ink)}
 .muted-text{font-size:11.5px;color:var(--muted);margin:6px 0 0}
 .err{font-size:11.5px;color:var(--danger);margin:6px 0 0}.err:empty{display:none}
-.card.topline{padding:8px 12px}
 .line{padding:2px 4px}.line .muted-text{margin:0}.line>*+*{margin-top:6px}
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 `;
@@ -853,8 +870,9 @@ button.b.primary{background:var(--send);border-color:var(--send);color:var(--sen
  * comment? Sign in." only on its own anonymous read's `commentable`, "Continue to
  * see names and comment." over relayed cards, "Select text to comment." for a
  * viewer who may, after "No comments yet." (or "No open comments." when every
- * thread is resolved) when nothing is open; the sheet carries it too, but over
- * one thread only the way to sign in.
+ * thread is resolved) when nothing is open. Beside cards (the sidebar's placed
+ * cards, the sheet's one thread) only the way to sign in, so the line never pushes
+ * the cards at the top of the page below their passages.
  * Relayed data is only ever drawn as text; the title shown above a new comment
  * is the server's whenever the frame has a token, and nothing a page sends can
  * post: every write goes to `/embed/api` for this one document.
@@ -1155,26 +1173,25 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     return relayed ? signInBlock("Continue to see names and comment.") : null;
   };
   const resolvedOf = () => threadsOf().filter((t) => t.state === "resolved");
-  // The line under the header, plain text rather than a card: "No comments yet." when nothing is open (so an open sidebar or list is never blank), the instruction to a viewer who may comment, and the way to sign in. Over one thread (the sheet's thread view) only the way to sign in.
-  const lineCard = (overThread) => {
+  // The line under the header, plain text rather than a card: "No comments yet." when nothing is open (so an open sidebar or list is never blank), the instruction to a viewer who may comment, and the way to sign in. Beside cards (the sidebar's placed cards, the sheet's one thread) only the way to sign in: the line would push the cards at the top of the page below their passages.
+  const lineCard = (besideCards) => {
     const words = [];
-    if (!overThread && loaded && !draft && !threadsOf().some((t) => t.state !== "resolved")) words.push(threadsOf().length ? "No open comments." : "No comments yet.");
-    if (!overThread && viewer() && viewer().canComment) words.push("Select text to comment.");
+    if (!besideCards && loaded && !draft && !threadsOf().some((t) => t.state !== "resolved")) words.push(threadsOf().length ? "No open comments." : "No comments yet.");
+    if (!besideCards && viewer() && viewer().canComment) words.push("Select text to comment.");
     const kids = words.length ? [muted(words.join(" "))] : [];
     const way = signInLine();
     if (way) kids.push(way);
     return kids.length ? node("div", { class: "line" }, kids) : null;
   };
-  // The title, the resolved threads (off the page, waiting behind their count) and the close button, in the sidebar and the sheet alike.
+  // The title, the resolved threads (off the page, waiting behind their count; for a few seconds after a resolve, "Resolved · Undo" in its place) and the close button, in the sidebar and the sheet alike. Undo lives in this row so it never pushes the cards down.
   const header = () => {
     const n = loaded ? resolvedOf().length : 0;
     const kids = [node("span", { class: "title" }, ["Comments"])];
-    if (n) kids.push(node("button", { type: "button", class: "link toggle", "aria-expanded": String(showResolved), onclick: () => { showResolved = !showResolved; render(); } }, [n + " resolved"]));
+    if (undoId) kids.push(node("span", { class: "done" }, ["Resolved ·"]), button("Undo", () => reopenThread(undoId), "link strong"));
+    else if (n) kids.push(node("button", { type: "button", class: "link toggle", "aria-expanded": String(showResolved), onclick: () => { showResolved = !showResolved; render(); } }, [n + " resolved"]));
     kids.push(iconButton("Close comments", "M6 6l12 12M18 6L6 18", () => post({ event: "close" })));
     return node("div", { class: "head" }, kids);
   };
-  // "Resolved · Undo", for a few seconds after a thread leaves the page.
-  const undoCard = () => (undoId ? node("div", { class: "card topline undo" }, [node("span", {}, ["Resolved"]), button("Undo", () => reopenThread(undoId), "link strong")]) : null);
 
   // The box a person writes in: a textarea and its Send button, or the reason there is none.
   const writer = (key, placeholder, submit) => {
@@ -1265,9 +1282,11 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     // Typed, not concatenated: a relayed atVersion is the page's, and a string there could write its own "by" into the summary.
     const at = res && Number.isInteger(res.atVersion) && res.atVersion > 0 ? res.atVersion : 0;
     const summary = res ? (at ? "Resolved in v" + at : "Resolved") + (relayedOnly() ? "" : " by " + by) : "Resolved";
-    const card = node("div", { class: "card" + (resolved ? " resolved" : "") + (orphan ? " muted" : "") + (focusId === id ? " focus" : "") + (hoverId === id ? " hover" : ""), "data-thread": id });
+    const card = node("div", { class: "card" + (resolved ? " resolved" : "") + (orphan ? " muted" : "") + (focusId === id ? " focus" : "") + (hoverId === id ? " hover" : ""), "data-thread": id, tabindex: "0" });
     // A click, not a press: the card moves to its passage when it becomes active, and a press that moved it would lose the click it began (on Resolve, say).
     card.addEventListener("click", () => focusThread(id));
+    // Tab reaches every card, and a card reached from the keyboard becomes active, which shows its reply box. Only keyboard focus (focus-visible): a press focuses the card too, and must leave that to the click.
+    card.addEventListener("focusin", (event) => { if (event.target.matches(":focus-visible")) focusThread(id); });
     // The pointer over a card marks its passage, as the passage under the pointer lifts its card.
     card.addEventListener("pointerenter", (event) => { if (event.pointerType !== "touch") post({ event: "hover", threadId: id }); });
     card.addEventListener("pointerleave", (event) => { if (event.pointerType !== "touch") post({ event: "hover", threadId: "" }); });
@@ -1282,9 +1301,7 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     const firstId = first ? text(first.commentId) : "";
     if (firstId && errors["c:" + firstId]) card.append(errorLine("c:" + firstId));
     if (!resolved) {
-      // A reply box on every card made them tall: only the focused card shows its box (the stylesheet), the others say how many replies they hold.
-      const replies = Math.max(0, comments.length - 1);
-      if (replies) card.append(node("div", { class: "replies" }, [replies + (replies === 1 ? " reply" : " replies")]));
+      // A reply box on every card made them tall: only the focused card shows its box (the stylesheet).
       const reply = () => {
         const body = (texts["r:" + id] || "").trim();
         if (body) act("r:" + id, () => call("POST", docPath("/threads/" + encodeURIComponent(id) + "/comments"), { body: body, version: versionOf() || undefined }), () => { texts["r:" + id] = ""; focusKey = "r:" + id; announce("Comment posted"); });
@@ -1328,22 +1345,11 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     return m && Array.isArray(m.threads) ? m.threads.filter((t) => t && typeof t === "object" && typeof t.threadId === "string") : [];
   };
 
-  // The sidebar: what belongs at the top (the header, Undo, the one line, resolved and orphaned threads) stacked from the top, then a card beside each passage the page placed, and the draft.
+  // The sidebar: what belongs at the top (the header, the one line, resolved and orphaned threads) stacked from the top, then a card beside each passage the page placed, and the draft.
   const renderSide = () => {
-    const head = [header()];
-    const undo = undoCard();
-    if (undo) head.push(undo);
-    const line = lineCard();
-    if (line) head.push(line);
-    if (showResolved) for (const t of resolvedOf()) head.push(threadCard(t, false));
     const threads = threadsOf().filter((t) => t.state !== "resolved");
     const lost = new Set(lostIds);
     const orphaned = (t) => t.anchorStatus !== "anchored" || lost.has(t.threadId);
-    const orphans = threads.filter(orphaned);
-    if (orphans.length) {
-      head.push(node("div", { class: "heading" }, ["On text that changed"]));
-      for (const t of orphans) head.push(threadCard(t, true));
-    }
     const flow = [];
     for (const t of threads) {
       if (orphaned(t)) continue;
@@ -1351,6 +1357,15 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
       if (at !== null) flow.push({ el: threadCard(t, false), want: at, thread: t.threadId });
     }
     if (draft) flow.push({ el: draftCard(), want: draftTop, thread: "" });
+    const head = [header()];
+    const line = lineCard(flow.length > 0);
+    if (line) head.push(line);
+    if (showResolved) for (const t of resolvedOf()) head.push(threadCard(t, false));
+    const orphans = threads.filter(orphaned);
+    if (orphans.length) {
+      head.push(node("div", { class: "heading" }, ["On text that changed"]));
+      for (const t of orphans) head.push(threadCard(t, true));
+    }
     // In passage order: the page sends the positions in it, so passages that share a line keep the order they are read in.
     const order = tops !== null ? Object.keys(tops) : [];
     flow.sort((a, b) => a.want - b.want || order.indexOf(a.thread) - order.indexOf(b.thread));
@@ -1362,7 +1377,7 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     for (const el of all) sizes.observe(el);
   };
 
-  // Lays the column out as a document editor's margin does. The top items stack from under the bar. Then the cards, in passage order, GAP apart: the active card (the draft, else the focused thread) exactly level with its passage, the cards above it pushed up and the ones below pushed down only as far as they must; with none active, each card is level with its passage unless the one above reaches past it. Then it tells the page how tall that needs the column to be (it can then extend the document, so the last card is reached by scrolling the page, never the frame). Run again whenever a card's height changes: the reply box appearing on the active card, or growing as it is typed in.
+  // Lays the column out as a document editor's margin does. The top items stack from under the bar. Then the cards, in passage order, GAP apart: the active card (the draft, else the focused thread) exactly level with its passage, even over the top items, the cards above it pushed up and the ones below pushed down only as far as they must; with none active, each card is level with its passage unless the one above reaches past it. Then it tells the page how tall that needs the column to be (it can then extend the document, so the last card is reached by scrolling the page, never the frame). Run again whenever a card's height changes: the reply box appearing on the active card, or growing as it is typed in.
   const GAP = 8;
   const restack = () => {
     if (mode !== "margin") return;
@@ -1374,10 +1389,7 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     const flow = stacked.flow, h = flow.map((item) => item.el.offsetHeight), at = [];
     const k = draft ? flow.findIndex((item) => item.thread === "") : focusId ? flow.findIndex((item) => item.thread === focusId) : -1;
     if (k >= 0) {
-      // Level with its passage, unless the cards above it would not fit between it and the top.
-      let room = floor;
-      for (let i = 0; i < k; i++) room += h[i] + GAP;
-      at[k] = Math.max(flow[k].want, room);
+      at[k] = flow[k].want;
       for (let i = k - 1; i >= 0; i--) at[i] = Math.min(flow[i].want, at[i + 1] - GAP - h[i]);
     }
     for (let i = k + 1; i < flow.length; i++) at[i] = Math.max(flow[i].want, i > 0 ? at[i - 1] + h[i - 1] + GAP : floor);
@@ -1414,8 +1426,6 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     const kids = [header()];
     if (draft) kids.push(draftCard());
     else {
-      const undo = undoCard();
-      if (undo) kids.push(undo);
       const thread = threadsOf().find((t) => t.threadId === focusId && t.state !== "resolved");
       const line = lineCard(!!thread);
       if (line) kids.push(line);

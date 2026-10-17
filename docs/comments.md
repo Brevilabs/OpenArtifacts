@@ -213,18 +213,25 @@ The model is a document editor's comment margin (Google Docs, Notion, Figma):
   window is what scrolls the page, opening the comments narrows the page by a
   320 px column on its right (an adopted stylesheet pads `<html>`, so the author's
   own layout reflows and the page's own background fills the column), and closing
-  them gives the width back. Nothing else changes the page's width. The column has
-  a header (the title, the `N resolved` toggle and a close button), then the
+  them gives the width back. Nothing else changes the page's width, and the text
+  the reader was looking at (the passage being commented on, the active thread's,
+  else the line in the middle of the window) stays where it was on screen while
+  the page reflows. The column has
+  a header (the title, the `N resolved` toggle, which reads "Resolved · Undo" for a
+  few seconds after a resolve, and a close button), then the
   threads whose text changed, under "On text that changed" with their quotes, then
   a card level with the first line of each passage.
 - **Cards follow Google Docs when they collide**: in passage order, 8 px apart, the
   active card (the draft, else the focused thread) exactly level with its passage,
-  the ones above pushed up and the ones below pushed down only as far as they must.
+  even over the threads listed at the top, the ones above pushed up and the ones
+  below pushed down only as far as they must.
   The page re-measures whenever the geometry can change: opening or closing,
   resizing, fonts and images loading, the document resizing, or a card growing.
 - **Cards follow the page's theme.** The page reads its own background (the first
-  that is not transparent from `<body>` up to `<html>`, white if neither has one)
-  and the frame draws light cards (white, dark text, a hairline border and a soft
+  that is not transparent from `<body>` up to `<html>`; when both are transparent,
+  what paints the page's left edge halfway down the window, a wrapper that fills
+  the page, whose colour the column then paints too; white if nothing does) and
+  the frame draws light cards (white, dark text, a hairline border and a soft
   shadow) on a light page and dark-grey cards with light text on a dark one; the
   header, menus, composer, buttons and focus rings follow.
 - **Narrow screens get a bottom sheet** from the same button: the list of open
@@ -240,7 +247,11 @@ The model is a document editor's comment margin (Google Docs, Notion, Figma):
   selection and never posts.
 - **With nothing open** the column says "No comments yet. Select text to
   comment." in plain text, not a card ("No open comments." once every thread is
-  resolved); the sheet's thread view carries no such line.
+  resolved). The instruction shows only while no card is beside a passage, so it
+  never pushes the cards at the top of the page down; the sheet's thread view
+  carries no such line.
+- **The keyboard reaches every card**: Tab stops on each card, a card reached that
+  way becomes the active one, and the next Tab is in its reply field.
 - **Times** read `now`, `5m`, `3h`, `2d`, then a short date (`Oct 9`) after a
   week, with the exact local date and time on hover.
 - **After a post** focus moves to the reply field of what was posted, and a

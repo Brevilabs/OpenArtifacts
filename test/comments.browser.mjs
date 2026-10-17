@@ -1728,7 +1728,7 @@ test("pressing Comment under another thread's highlight starts a draft and leave
   const frame = await until("the comments frame", () => commentsFrame(tab, docId));
   await until("the highlight", async () => (await painted(tab, "openartifacts-open")).length === 1);
   await openSidebar(tab);
-  await frame.getByText("Select text to comment.").waitFor();
+  await cardFor(frame, "Above the pill.").waitFor();
 
   await select(tab, "Bravo bravo bravo");
   const tip = tab.locator(".openartifacts-comment-tip");
@@ -1807,7 +1807,9 @@ test("resolving takes the thread off the page and offers Undo; resolved threads 
   await until("one card", async () => (await cards.count()) === 1);
   await until("the highlight to go", async () => (await painted(tab, "openartifacts-open")).length === 1);
   assert.deepEqual(await painted(tab, "openartifacts-resolved"), []);
-  await frame.getByText("Resolved", { exact: true }).waitFor();
+  // In the header row, in place of the count, so it never pushes the cards down.
+  await frame.locator(".head").getByRole("button", { name: "Undo" }).waitFor();
+  assert.match(await frame.locator(".head").innerText(), /Resolved ·\s*Undo/);
   await shoot(tab, "sidebar-resolved-undo");
 
   // Undo brings it back where it was.
@@ -1853,14 +1855,14 @@ test("a thread card has no Open badge, a Resolve icon, one menu per comment, and
   assert.equal(await frame.locator(".badge.open").count(), 0, "open is the default and says nothing");
   assert.equal(await first.getByRole("button", { name: "Resolve" }).count(), 1, "one Resolve, on the first comment");
   assert.equal(await frame.locator(".quote").count(), 0, "the card sits beside its passage, so it does not repeat it");
-  // A reply box on every card made them tall; only the focused card has one, the others say how many replies they hold.
+  // A reply box on every card made them tall; only the focused card has one. Every card shows its replies, and no count of them under them.
   assert.equal(await first.getByRole("textbox").isVisible(), false);
   assert.equal(await second.getByRole("textbox").isVisible(), false);
-  assert.match(await first.innerText(), /1 reply/);
+  assert.match(await first.innerText(), /Softened in v1\./);
+  assert.doesNotMatch(await first.innerText(), /1 repl/, "the reply is shown, so nothing counts it");
   await first.locator(".txt").first().click();
   await until("the reply box on the focused card", async () => await first.getByRole("textbox", { name: "Reply…" }).isVisible());
   assert.equal(await second.getByRole("textbox").isVisible(), false);
-  assert.doesNotMatch(await first.innerText(), /1 reply/);
   await shoot(tab, "sidebar-card-focused");
 
   // Two comments, two menus, each naming what it deletes; both ask first.
@@ -1987,6 +1989,12 @@ const allLevel = (tab, frame, pairs) => async () => {
   for (const [remark, passage] of pairs) if (Math.abs(await offsetOf(tab, frame, remark, passage)) > 2) return false;
   return true;
 };
+/** Wait for each card to be within `within` px of its passage, and fail with the offsets if they never are. */
+async function assertLevel(tab, frame, pairs, label, within = 2) {
+  const offsets = () => Promise.all(pairs.map(([remark, passage]) => offsetOf(tab, frame, remark, passage)));
+  const ok = await until(label, async () => (await offsets()).every((o) => Math.abs(o) <= within), 5000).catch(() => false);
+  if (!ok) assert.fail(`${label}: offsets ${(await offsets()).map((o) => o.toFixed(2)).join(", ")}, not within ${within}px`);
+}
 
 /** The colour of one screen pixel, read from a 1x1 PNG (with one pixel every filter type leaves the bytes as they are). */
 async function pixelAt(tab, x, y) {
@@ -2132,7 +2140,8 @@ test("highlights show with the sidebar closed, in one yellow without an underlin
   await until("the sidebar", async () => (await hostBox(tab)) !== null);
   assert.equal(await barButton(tab).getAttribute("aria-pressed"), "true");
   const frame = commentsFrame(tab, docId);
-  await until("the card, focused and level", async () => (await cardFor(frame, "Is this still true?").getAttribute("class")).includes("focus") && Math.abs(await offsetOf(tab, frame, "Is this still true?", quote)) <= 2);
+  await until("the card, focused", async () => (await cardFor(frame, "Is this still true?").getAttribute("class")).includes("focus"));
+  await assertLevel(tab, frame, [["Is this still true?", quote]], "the active card", 0.1);
   assert.deepEqual(await painted(tab, "openartifacts-focus"), [quote]);
   await context.close();
 });
@@ -2150,7 +2159,10 @@ test("Comment on a selection opens the sidebar with the composer level with the 
   const field = frame.getByRole("textbox", { name: "Add a comment…" });
   await field.waitFor();
   await until("the composer to have focus", () => frame.evaluate(() => document.activeElement && document.activeElement.dataset.key === "draft"));
-  await until("the composer level with the selection", async () => Math.abs((await frame.locator("[data-thread='']").boundingBox()).y - (await rectOf(tab, quote)).y) <= 2);
+  // The active card is exactly level: no rounding on the way.
+  const composerOffset = async () => (await frame.locator("[data-thread='']").boundingBox()).y - (await rectOf(tab, quote)).y;
+  const settled = await until("the composer level with the selection", async () => Math.abs(await composerOffset()) <= 0.1, 5000).catch(() => false);
+  assert.ok(settled, `the composer is ${(await composerOffset()).toFixed(2)}px off its selection`);
   assert.deepEqual(await painted(tab, "openartifacts-draft"), [quote]);
   await context.close();
 });
@@ -2161,6 +2173,8 @@ test("the sidebar narrows a centred column, a full-width page and a dark page, a
     ["centred", page(REPORT), [255, 253, 248]],
     ["full-width", widePage(REPORT), [255, 255, 255]],
     ["dark", page(REPORT, "<style>body{background:#111316;color:#e8e6e1}</style>"), [17, 19, 22]],
+    // <html> and <body> transparent, the page painted by a wrapper: the canvas is white, so the column takes the wrapper's colour.
+    ["dark-wrapper", widePage(REPORT, "<style>body{padding:0}#content{background:#0f172a;color:#e2e8f0;min-height:100vh;padding:1px 24px}</style>"), [15, 23, 42]],
   ];
   for (const [name, html, background] of styles) {
     const docId = await publish(name, REPORT, { html });
@@ -2218,6 +2232,7 @@ test("cards follow the page's theme: white on a light page, dark grey on a dark 
     ["light", page(REPORT), false],
     ["dark body", page(REPORT, "<style>body{background:#111316;color:#e8e6e1}</style>"), true],
     ["dark html", page(REPORT, "<style>html{background:#0b0c0f}body{background:transparent;color:#e8e6e1}</style>"), true],
+    ["dark wrapper", widePage(REPORT, "<style>body{padding:0}#content{background:#0f172a;color:#e2e8f0;min-height:100vh;padding:1px 24px}</style>"), true],
   ];
   for (const [name, html, dark] of cases) {
     const docId = await publish(name, REPORT, { html });
@@ -2457,5 +2472,105 @@ test("each person's avatar has their initial and one colour, picked from their n
   const [agent, alice, carol, alice2] = avatars.map(([, colour]) => colour);
   assert.equal(alice, alice2, "one colour per person");
   assert.equal(new Set([agent, alice, carol]).size, 3, `three people, three colours (${agent}, ${alice}, ${carol})`);
+  await context.close();
+});
+
+test("on a full-width page, opening and closing the sidebar keeps the text the reader is looking at where it is", { timeout: 180_000 }, async () => {
+  const filler = (n) => Array.from({ length: n }, () => `<p>${LONG.repeat(3)}</p>`).join("\n");
+  const body = `<h1>Steady</h1>\n${filler(8)}\n<p>Button passage, read while the comments open.</p>\n${filler(8)}\n<p>Pill passage, about to be commented on.</p>\n` +
+    `${filler(8)}\n<p>Highlight passage, with a thread on it.</p>\n${filler(8)}`;
+  const docId = await publish("Steady", body, { html: widePage(body) });
+  await agentThread(docId, { exact: "Highlight passage, with a thread on it" }, "A remark.");
+  const context = await newContext(ALICE, { viewport: { width: 1440, height: 900 }, signedInTo: docId });
+  const tab = await context.newPage();
+  await tab.goto(docUrl(docId));
+  const frame = await until("the comments frame", () => commentsFrame(tab, docId));
+  await until("the highlight", async () => (await painted(tab, "openartifacts-open")).length === 1);
+  /** Scroll a passage to viewport y, and return where it landed. */
+  const bring = async (text, y) => {
+    const at = await rectOf(tab, text);
+    await tab.evaluate((dy) => window.scrollBy({ top: dy, behavior: "instant" }), at.y - y);
+    return (await rectOf(tab, text)).y;
+  };
+  const steady = async (text, was, label) => {
+    const now = (await rectOf(tab, text)).y;
+    assert.ok(Math.abs(now - was) <= 1, `${label}: the passage moved from ${was} to ${now}`);
+  };
+  const closed = async () => {
+    await barButton(tab).click();
+    await until("the sidebar to close", async () => (await hostBox(tab)) === null);
+  };
+
+  // The bar's button: the line in the middle of the window stays where it was, opening and closing.
+  let was = await bring("Button passage", 440);
+  await openSidebar(tab);
+  await cardFor(frame, "A remark.").waitFor();
+  await steady("Button passage", was, "opening");
+  await closed();
+  await steady("Button passage", was, "closing");
+
+  // Comment on a selection: the selection stays where it was, and the composer opens beside it.
+  was = await bring("Pill passage", 440);
+  await pressComment(tab, "Pill passage");
+  await frame.getByRole("textbox", { name: "Add a comment…" }).waitFor();
+  await steady("Pill passage", was, "Comment");
+  await closed();
+
+  // A highlight: the passage stays under the pointer that clicked it.
+  was = await bring("Highlight passage", 300);
+  const at = await rectOf(tab, "Highlight passage");
+  await tab.mouse.click(at.x + at.width / 3, at.y + at.height / 2);
+  await until("the card, focused", async () => ((await cardFor(frame, "A remark.").getAttribute("class")) || "").includes("focus"));
+  await steady("Highlight passage", was, "a highlight");
+  await context.close();
+});
+
+test("cards for passages at the top of the page sit level with them, while Undo is offered too, and an active card is level under the resolved list", { timeout: 180_000 }, async () => {
+  const body = `<h1>Q3 client report</h1>\n<p>${LONG.repeat(2)}Revenue grew 18% quarter over quarter.</p>\n<p>${LONG.repeat(3)}</p>\n<p>Closing remarks follow in the appendix.</p>`;
+  const docId = await publish("Top", body);
+  await agentThread(docId, { exact: "Q3 client report" }, "A sharper title?");
+  await agentThread(docId, { exact: "Revenue grew 18%" }, "Against which quarter?");
+  await agentThread(docId, { exact: "Closing remarks follow" }, "Which appendix?");
+  const owner = await newContext(OWNER_ACCOUNT, { signedInTo: docId });
+  const tab = await owner.newPage();
+  await tab.goto(docUrl(docId));
+  const frame = await until("the comments frame", () => commentsFrame(tab, docId));
+  await until("three highlights", async () => (await painted(tab, "openartifacts-open")).length === 3);
+  await openSidebar(tab);
+  await until("three cards", async () => (await frame.locator("[data-thread]").count()) === 3);
+  const top = [["A sharper title?", "Q3 client report"], ["Against which quarter?", "Revenue grew 18%"]];
+  await assertLevel(tab, frame, top, "on opening");
+
+  await cardFor(frame, "Which appendix?").getByRole("button", { name: "Resolve" }).click();
+  await frame.getByRole("button", { name: "Undo" }).waitFor();
+  await assertLevel(tab, frame, top, "while Undo is offered");
+
+  await until("the Undo offer to go", async () => (await frame.getByRole("button", { name: "Undo" }).count()) === 0, 12_000);
+  await frame.getByRole("button", { name: "1 resolved" }).click();
+  await frame.locator("[data-thread].resolved").waitFor();
+  await cardFor(frame, "A sharper title?").locator(".txt").click();
+  await until("the title card, focused", async () => (await cardFor(frame, "A sharper title?").getAttribute("class")).includes("focus"));
+  await assertLevel(tab, frame, [top[0]], "the active card under the resolved list", 0.1);
+  await owner.close();
+});
+
+test("a keyboard user can Tab to a card, which becomes active, and on to its reply field", { timeout: 120_000 }, async () => {
+  const docId = await publish("Keyboard", REPORT);
+  const quote = "Renewal risk is concentrated in three accounts";
+  const threadId = await agentThread(docId, { exact: quote, section: "risk" }, "Is this still true?");
+  const context = await newContext(ALICE, { signedInTo: docId });
+  const tab = await context.newPage();
+  await tab.goto(docUrl(docId));
+  await openSidebar(tab);
+  const frame = commentsFrame(tab, docId);
+  const card = cardFor(frame, "Is this still true?");
+  await card.waitFor();
+  await frame.getByRole("button", { name: "Close comments" }).focus();
+  await tab.keyboard.press("Tab");
+  const active = await until("the card to take focus and become active", async () => (await card.evaluate((el) => document.activeElement === el)) && (await card.getAttribute("class")).includes("focus"), 3000).catch(() => false);
+  assert.ok(active, `Tab from Close went to ${await frame.evaluate(() => document.activeElement && document.activeElement.outerHTML.slice(0, 80))}`);
+  assert.deepEqual(await painted(tab, "openartifacts-focus"), [quote]);
+  await tab.keyboard.press("Tab");
+  await until("the reply field to have focus", () => frame.evaluate((id) => document.activeElement && document.activeElement.dataset.key === "r:" + id, threadId), 3000);
   await context.close();
 });
