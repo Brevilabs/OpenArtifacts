@@ -210,7 +210,7 @@ The model is a document editor's comment margin (Google Docs, Notion, Figma):
   threads have none.
 - **Wide screens get a sidebar.** Where the viewport is at least 880 px and the
   window is what scrolls the page, opening the comments narrows the page by a
-  320 px column on its right (an adopted stylesheet pads `<html>`, so the author's
+  320 px column on its right (an adopted stylesheet pads `<html>` and sizes it `auto`, so the author's
   own layout reflows and the page's own background fills the column), and closing
   them gives the width back. Nothing else changes the page's width, and the text
   the reader was looking at (the passage being commented on, the active thread's,

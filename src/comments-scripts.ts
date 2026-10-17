@@ -303,10 +303,10 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       }
       return document.caretRangeFromPoint ? document.caretRangeFromPoint(x, y) : null;
     };
-    // The column the open sidebar takes from the page: an adopted stylesheet pads <html> on the right, so the author's own layout (a centred column, a full-width page) reflows into what is left, and the canvas, which carries the page's own background, fills the column. Nothing in the author's DOM changes, and nothing else ever changes the page's width.
+    // The column the open sidebar takes from the page: an adopted stylesheet pads <html> on the right (and sizes it auto, or a reset's html{width:100%} would widen it instead), so the author's own layout (a centred column, a full-width page) reflows into what is left, and the canvas, which carries the page's own background, fills the column. Nothing in the author's DOM changes, and nothing else ever changes the page's width.
     let narrow = null, narrowed = "";
     const setNarrow = (px) => {
-      const css = px ? ":root{padding-right:" + px + "px!important}" : "";
+      const css = px ? ":root{padding-right:" + px + "px!important;width:auto!important}" : "";
       if (css === narrowed) return;
       narrowed = css;
       // A padding change on <html> turns the browser's scroll anchoring off, and the reflow would move the text out from under the reader. So the place is kept by hand: the passage being commented on, else the active thread's, else the text in the middle of the window, stays where it was on screen.
@@ -320,14 +320,23 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       const after = topOf();
       if (before !== null && after !== null) window.scrollBy({ top: after - before, behavior: "instant" });
     };
+    // A computed colour in any syntax (rgb(), Tailwind's oklch(), color(display-p3 …)) as sRGB [r, g, b, a] from 0 to 255: painted on a detached 1×1 canvas and read back, so the browser does the conversion.
+    let swatch = null;
+    const srgb = (css) => {
+      if (!swatch) { const canvas = document.createElement("canvas"); canvas.width = canvas.height = 1; swatch = canvas.getContext("2d", { willReadFrequently: true }); }
+      swatch.clearRect(0, 0, 1, 1);
+      swatch.fillStyle = css;
+      swatch.fillRect(0, 0, 1, 1);
+      return Array.from(swatch.getImageData(0, 0, 1, 1).data);
+    };
     // The page's own background: <body>'s, else <html>'s (the canvas takes it from them in that order), else, when both are transparent, what paints the page's left edge halfway down the window (a wrapper that fills the page). Our own hosts and bar are not the page. A wrapper's colour is returned as fill too: the canvas behind the column is white, so the column paints it itself.
     const backdrop = () => {
       const ours = (el) => el === mhost || el === tipHost || link.parentNode.contains(el);
       const stack = [document.body, document.documentElement].concat(document.elementsFromPoint(0, window.innerHeight / 2).filter((el) => !ours(el)));
       for (const el of stack) {
         const css = getComputedStyle(el).backgroundColor;
-        const c = (css.match(/[0-9.]+/g) || []).map(Number);
-        if (c.length >= 3 && c[3] !== 0) return { rgb: c, fill: el === document.body || el === document.documentElement ? "" : css };
+        const c = srgb(css);
+        if (c[3] !== 0) return { rgb: c, fill: el === document.body || el === document.documentElement ? "" : css };
       }
       return null;
     };

@@ -2224,6 +2224,8 @@ test("the sidebar narrows a centred column, a full-width page and a dark page, a
     ["dark", page(REPORT, "<style>body{background:#111316;color:#e8e6e1}</style>"), [17, 19, 22]],
     // <html> and <body> transparent, the page painted by a wrapper: the canvas is white, so the column takes the wrapper's colour.
     ["dark-wrapper", widePage(REPORT, "<style>body{padding:0}#content{background:#0f172a;color:#e2e8f0;min-height:100vh;padding:1px 24px}</style>"), [15, 23, 42]],
+    // A reset that sizes the root: padding alone would widen it rather than narrow its content.
+    ["sized-root", page(REPORT, "<style>html,body{width:100%;height:100%}</style>"), [255, 253, 248]],
   ];
   for (const [name, html, background] of styles) {
     const docId = await publish(name, REPORT, { html });
@@ -2282,6 +2284,9 @@ test("cards follow the page's theme: white on a light page, dark grey on a dark 
     ["dark body", page(REPORT, "<style>body{background:#111316;color:#e8e6e1}</style>"), true],
     ["dark html", page(REPORT, "<style>html{background:#0b0c0f}body{background:transparent;color:#e8e6e1}</style>"), true],
     ["dark wrapper", widePage(REPORT, "<style>body{padding:0}#content{background:#0f172a;color:#e2e8f0;min-height:100vh;padding:1px 24px}</style>"), true],
+    // Tailwind v4's palette: the computed colour keeps its oklch() syntax.
+    ["oklch light", page(REPORT, "<style>body{background:oklch(0.985 0.002 247.839)}</style>"), false],
+    ["oklch dark", page(REPORT, "<style>body{background:oklch(0.21 0.034 264.665);color:#e8e6e1}</style>"), true],
   ];
   for (const [name, html, dark] of cases) {
     const docId = await publish(name, REPORT, { html });
