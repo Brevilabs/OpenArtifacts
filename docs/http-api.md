@@ -1079,7 +1079,9 @@ otherwise nothing changes and it does not ask again. It adds no message. Then it
 paints highlights with `CSS.highlights` (it never changes the author's DOM), shows a
 **Comment** button over a selection, and embeds the comments frame: in the page's
 margin when at least 256 px are free beside the content, else as a bottom sheet
-shown on a highlight tap or **Comment**. It holds no credential, polls the threads
+shown on a highlight tap or **Comment**; on a phone `💬 N` opens that sheet with the open threads as rows. A resolved
+thread has no highlight and no card: the frame lists it behind an `N resolved` count, and
+offers Undo for a few seconds after a resolve. It holds no credential, polls the threads
 resource every 30 seconds while the tab is visible, and learns of the viewer only
 that `canComment` flag.
 

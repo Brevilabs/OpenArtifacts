@@ -423,7 +423,7 @@ test("2. the Share popover has no Comments switch, only roles, and the page has 
   const access = await (await request("owner", `/api/v1/docs/${DOC}/access`)).json();
   assert.deepEqual(access.roles, ["view", "comment"]);
   assert.equal("comments" in access, false);
-  await frame.getByText("Only people you add can open this page. To let someone comment, add them with Can comment.").waitFor();
+  await frame.getByText("Only people you add can open this page, and they can comment. You can change that below.").waitFor();
   // The invite list shows the roles the CLI set.
   assert.equal(await frame.getByLabel(`Access for ${PEOPLE.alice.email}`).inputValue(), "comment");
   assert.equal(await frame.getByLabel(`Access for ${PEOPLE.bob.email}`).inputValue(), "view");
@@ -544,14 +544,16 @@ test("5. Alice reloads: the card is collapsed as resolved in v2, she can Reopen 
   const [tab] = alice.pages();
   await tab.reload();
   const frame = await until("the comments frame", () => commentsFrame(tab, DOC));
-  const line = frame.getByRole("button", { name: /Resolved in v2 by Logan's agent/ });
-  await line.waitFor();
+  const toggle = frame.getByRole("button", { name: "1 resolved" });
+  await toggle.waitFor();
   await until("the bar to count none open", async () => /💬\s*0$/.test(await barButton(tab).innerText()));
+  assert.equal(await frame.locator("[data-thread]").count(), 0, "a resolved thread has no card on the page");
   await shoot(tab, "05-alice-resolved-card-collapsed");
 
-  await line.click();
+  await toggle.click();
   const card = frame.locator("[data-thread].resolved");
   await card.getByText("Softened in v2").waitFor();
+  assert.match(await card.locator(".where").innerText(), /^Resolved in v2 by Logan's agent$/);
   assert.equal(await card.locator(".who .badge", { hasText: "agent" }).count(), 1, "the agent's reply is badged");
   await shoot(tab, "06-alice-resolved-card-expanded");
   // Alice started the thread, so Reopen is hers.
@@ -572,7 +574,7 @@ test("6. v3 deletes a sentence another thread quotes: that card moves under 'On 
   const [tab] = alice.pages();
   await tab.reload();
   const frame = await until("the comments frame", () => commentsFrame(tab, DOC));
-  await frame.locator("[data-thread]").first().waitFor();
+  await frame.getByRole("button", { name: "1 resolved" }).waitFor();
   await pressComment(tab, STAFFING);
   const box = frame.getByRole("textbox", { name: "Add a comment…" });
   await box.waitFor();
@@ -607,7 +609,8 @@ test("7. Bob (Can view) sees the cards, no reply box and no Comment button, and 
   const card = frame.locator("[data-thread]:not(.resolved)");
   await card.waitFor();
   assert.match(await card.innerText(), /Is staffing really unchanged/);
-  assert.equal(await frame.locator("[data-thread].resolved").count(), 1, "the resolved thread is there, collapsed");
+  assert.equal(await frame.locator("[data-thread].resolved").count(), 0, "the resolved thread waits behind its count");
+  await frame.getByRole("button", { name: "1 resolved" }).waitFor();
   // The frame learns who he is when he signs in; a card offers that, and never a box to type in.
   assert.equal(await frame.getByRole("textbox").count(), 0);
   await signInThroughPopup(context, frame.getByRole("button", { name: "Continue to see names and comment." }));
@@ -711,6 +714,7 @@ test("9. a signed-out reader of a public page sees read-only cards, signs in, an
   // Signing in is the one thing the context did not have; with it the same line leads to a reply box.
   await context.addCookies([sessionCookie(PEOPLE.erin.id)]);
   await signInThroughPopup(context, signIn);
+  await card.locator(".txt").first().click();
   const reply = frame.getByRole("textbox", { name: "Reply…" });
   await reply.waitFor();
   await reply.fill("Three engineers, same as Q2.");

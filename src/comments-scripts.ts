@@ -347,12 +347,11 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
     const schedule = () => { if (!timer) timer = window.setTimeout(measure, 80); };
 
     // ---- highlights ---------------------------------------------------------
-    const byId = (id) => (data ? data.threads.find((t) => t.threadId === id) : undefined);
     const paint = () => {
       if (!painting) return;
-      const groups = { "openartifacts-open": [], "openartifacts-resolved": [], "openartifacts-focus": [], "openartifacts-draft": [] };
+      const groups = { "openartifacts-open": [], "openartifacts-focus": [], "openartifacts-draft": [] };
       if (active && shown) {
-        ranges.forEach((range, id) => groups[byId(id).state === "resolved" ? "openartifacts-resolved" : "openartifacts-open"].push(range));
+        ranges.forEach((range) => groups["openartifacts-open"].push(range));
         if (focusId && ranges.has(focusId)) groups["openartifacts-focus"].push(ranges.get(focusId));
         if (draftRange) groups["openartifacts-draft"].push(draftRange);
       }
@@ -367,8 +366,9 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       if (dirty || !canon) build();
       ranges = new Map();
       lost = [];
+      // A resolved thread is off the page: no highlight, no card beside it; the frame lists it behind its count.
       for (const thread of data ? data.threads : []) {
-        if (thread.anchorStatus !== "anchored") continue;
+        if (thread.anchorStatus !== "anchored" || thread.state === "resolved") continue;
         const range = locate(thread);
         if (range) ranges.set(thread.threadId, range); else lost.push(thread.threadId);
       }
@@ -380,14 +380,16 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       const n = data ? data.threads.filter((t) => t.state === "open" && (mode !== "overlay" || ranges.has(t.threadId))).length : 0;
       button.textContent = String.fromCodePoint(0x1F4AC) + " " + n;
       button.setAttribute("aria-label", "Comments, " + n + " open");
-      button.setAttribute("aria-pressed", String(shown));
-      button.title = shown ? "Hide comments" : "Show comments";
+      // Pressed is what the button would undo: the highlights on a wide page, the open sheet on a phone.
+      const on = mode === "overlay" ? sheet : shown;
+      button.setAttribute("aria-pressed", String(on));
+      button.title = on ? "Hide comments" : "Show comments";
       // Pressed is Share's own pill (#1d2027), released the strip's own colour
       // (#0b0c10), painted rather than transparent: page.js is short-cached but a
       // pinned /v{n} is immutable for a year, so this button also lands on bars
       // rendered before the dark strip (light, #fbfbfa) and must read there too.
-      button.style.background = shown ? "#1d2027" : "#0b0c10";
-      button.style.color = shown ? "#f4f5f7" : "#c9ced6";
+      button.style.background = on ? "#1d2027" : "#0b0c10";
+      button.style.color = on ? "#f4f5f7" : "#c9ced6";
     };
     const makeButton = () => {
       button = document.createElement("button");
@@ -398,10 +400,9 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       button.className = "openartifacts-comments-button";
       button.setAttribute("style", "all:initial;flex:none;box-sizing:border-box;display:inline-flex;align-items:center;gap:6px;height:34px;padding:0 14px;margin-left:auto;border:1px solid rgba(255,255,255,0.08);border-radius:999px;color:#c9ced6;cursor:pointer;white-space:nowrap;-webkit-font-smoothing:antialiased;" + FONT.replace("13px/1.25", "14px/1"));
       button.addEventListener("click", () => {
-        // In overlay mode a page with no thread to tap has nothing to hide, whether it has none, an update orphaned them all, their text is not drawn (a closed <details>), or this browser cannot paint highlights: the button opens the sheet, which carries the margin's one line. The focus message makes the frame redraw and report its height, and a frame with nothing to show reports 0 and the page closes the sheet again.
-        if (mode === "overlay" && data && (!painting || ![...ranges.values()].some((range) => range.getClientRects().length > 0))) {
+        // On a phone there is no margin to hide, so the button opens the sheet: the list of open comments, whose rows scroll to their passages, or the margin's one line where there is nothing to list. The focus message makes the frame redraw and report its height, and a frame with nothing to show reports 0 and the page closes the sheet again.
+        if (mode === "overlay" && data) {
           if (sheet) closeSheet(); else { shown = true; openSheet(); send({ event: "focus", threadId: "" }); }
-          label();
           paint();
           return;
         }
@@ -426,7 +427,7 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
         tipHost.setAttribute("style", "all:initial;position:fixed;z-index:2147483646;display:none");
         const root = rootOf(tipHost);
         hostOnly(root, "@media print{:host{display:none!important}}");
-        hostOnly(root, ".t{all:initial;box-sizing:border-box;display:inline-flex;align-items:center;gap:7px;height:36px;padding:0 14px 0 12px;border-radius:11px;background:#1f2024;color:#fff;border:1px solid rgba(255,255,255,.14);box-shadow:0 6px 18px rgba(0,0,0,.28),0 1px 3px rgba(0,0,0,.2);cursor:pointer;user-select:none;white-space:nowrap;font:500 14px/1 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif}.t:hover{background:#2c2d33}.t:focus-visible{outline:2px solid #7cc4ff;outline-offset:2px}.t svg{flex:none}");
+        hostOnly(root, ".t{all:initial;box-sizing:border-box;display:inline-flex;align-items:center;gap:7px;height:36px;padding:0 14px 0 12px;border-radius:11px;background:#1f2024;color:#fff;border:1px solid rgba(255,255,255,.14);box-shadow:0 6px 18px rgba(0,0,0,.28),0 1px 3px rgba(0,0,0,.2);cursor:pointer;user-select:none;white-space:nowrap;font:500 14px/1 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif}.t.tall{height:44px}.t:hover{background:#2c2d33}.t:focus-visible{outline:2px solid #7cc4ff;outline-offset:2px}.t svg{flex:none}");
         tip = document.createElement("button");
         tip.type = "button";
         tip.className = "t";
@@ -442,16 +443,19 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
         root.append(tip);
         document.documentElement.append(tipHost);
       }
-      // Above the first line of the selection when there is room, else below the last: never over the text itself.
+      // Above the first line of the selection when there is room, else below the last: never over the text itself. On a phone the system's Copy menu is above the selection, so the button goes below the last line, centred, and 44px tall to be a touch target.
       const first = cap.first, last = cap.rect;
-      const above = first.top - 44 >= 48;
+      const phone = mode === "overlay";
+      tip.classList.toggle("tall", phone);
+      const above = !phone && first.top - 44 >= 48;
       // The tip is a child of <html>: under html{zoom} its lengths are multiplied, so convert viewport px to zoomed px.
       const z = document.documentElement.currentCSSZoom || 1;
       tipHost.style.display = "block";
-      const wide = tipHost.offsetWidth * z;
-      const x = above ? first.left : last.right - wide;
+      const wide = tipHost.offsetWidth * z, high = tipHost.offsetHeight * z;
+      const x = phone ? (last.left + last.right) / 2 - wide / 2 : above ? first.left : last.right - wide;
+      const y = phone ? Math.min(last.bottom + 8, window.innerHeight - high - 8) : above ? first.top - 44 : last.bottom + 8;
       tipHost.style.left = Math.round(Math.max(8, Math.min(x, viewport().clientWidth * z - wide - 8)) / z) + "px";
-      tipHost.style.top = Math.round((above ? first.top - 44 : last.bottom + 8) / z) + "px";
+      tipHost.style.top = Math.round(y / z) + "px";
     };
     const startDraft = () => {
       const cap = capture();
@@ -461,8 +465,9 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       hideTip();
       window.getSelection().removeAllRanges();
       const top = draftRange.getClientRects()[0] || draftRange.getBoundingClientRect();
-      send({ event: "draft", focus: true, anchor: draft, top: Math.round(top.top + window.pageYOffset - (mhost.getBoundingClientRect().top + window.pageYOffset)) });
+      // The sheet is told it is shown before the draft arrives: a frame that is not shown draws nothing, so a draft that came first found no field to focus.
       if (mode === "overlay") { openSheet(); reveal(draftRange); }
+      send({ event: "draft", focus: true, anchor: draft, top: Math.round(top.top + window.pageYOffset - (mhost.getBoundingClientRect().top + window.pageYOffset)) });
       paint();
     };
     const endDraft = () => { draft = null; draftRange = null; send({ event: "draft", anchor: null, top: 0 }); paint(); };
@@ -474,6 +479,7 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       if (!sheet && !sheetH) { unsure = true; window.setTimeout(() => { unsure = false; layout(); }, 300); }
       sheet = true;
       layout();
+      if (button) label();
     };
     // Scroll the passage out from under the sheet, unless it is already clear of it. Call after openSheet, whose layout sets the height this reads.
     const reveal = (range) => {
@@ -489,6 +495,7 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       sheetH = 0;
       focusId = "";
       layout();
+      if (button) label();
       send({ event: "focus", threadId: "" });
       paint();
     };
@@ -509,8 +516,9 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
         // The probe's answer: this viewer may comment, so the page is theirs to comment on, as after the Share popover's event.
         if (probing) { probing = false; if (canComment) { ownerHere = true; refresh().then(refreshTip); } }
       } else if (msg.event === "changed") {
-        if (draft) endDraft();
-        refresh();
+        // The draft's passage stays marked until the read that draws its thread has landed, so a sent comment is never nowhere.
+        const mine = draft;
+        refresh().then(() => { if (mine && draft === mine) endDraft(); });
       } else if (msg.event === "focus" && typeof msg.threadId === "string") {
         focusId = msg.threadId;
         send({ event: "focus", threadId: focusId });
@@ -602,7 +610,8 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       let settle = 0;
       document.addEventListener("selectionchange", () => { window.clearTimeout(settle); settle = window.setTimeout(refreshTip, 150); });
       link.addEventListener("click", closeSheet);
-      document.addEventListener("keydown", (event) => { if (sheet && event.key === "Escape") { endDraft(); closeSheet(); } }, true);
+      // A draft is the frame's to end (it knows whether words are in it); a sheet without one closes.
+      document.addEventListener("keydown", (event) => { if (sheet && event.key === "Escape") { if (draft) send({ event: "dismiss" }); else closeSheet(); } }, true);
       document.addEventListener("pointerdown", (event) => {
         // A click on the page itself closes a draft that has nothing typed in it (the frame decides); on a phone a touch is how the reader scrolls back to the passage.
         if (draft && mode !== "overlay" && event.target !== tipHost && event.target !== mhost) send({ event: "dismiss" });
@@ -610,7 +619,8 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
         if (sheet && !draft && event.target !== mhost && event.target !== tipHost && event.target !== button) closeSheet();
       }, true);
       document.addEventListener("click", (event) => {
-        if (!active || !shown || event.button !== 0 || ranges.size === 0) return;
+        // A press on the Comment button is the button's: the passage under it (the line above the selection) is not what was clicked.
+        if (!active || !shown || event.button !== 0 || ranges.size === 0 || event.target === tipHost) return;
         const sel = window.getSelection();
         if (sel && !sel.isCollapsed) return;
         let node, offset;
@@ -637,7 +647,6 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
         try {
           const sheetCss = new CSSStyleSheet();
           sheetCss.replaceSync("::highlight(openartifacts-open){background-color:rgba(94,200,160,.28);text-decoration:underline;text-decoration-color:#16786a;text-decoration-thickness:2px}" +
-            "::highlight(openartifacts-resolved){background-color:rgba(140,140,140,.18);text-decoration:underline;text-decoration-color:rgba(110,110,110,.7)}" +
             "::highlight(openartifacts-focus){background-color:rgba(94,200,160,.5)}" +
             "::highlight(openartifacts-draft){background-color:rgba(255,179,138,.45)}");
           document.adoptedStyleSheets = document.adoptedStyleSheets.concat([sheetCss]);
@@ -696,29 +705,47 @@ main.overlay{background:#f6f2e9;padding:6px 14px 18px}
 .av.agent{background:#c9b8f0}
 .badge{font:9.5px/1.4 ui-monospace,"SF Mono",Menlo,Consolas,monospace;letter-spacing:.05em;text-transform:uppercase;padding:1px 6px;border-radius:999px;font-weight:600;background:#fbe3d8;color:#b03d1b}
 .badge{white-space:nowrap}
-.badge.done{background:#ece7da;color:#6d6a62;border:1px solid #ddd5c4}
-.badge.open{background:#dcf0ea;color:#16786a}
 .txt{margin:3px 0 8px 26px;white-space:pre-wrap;overflow-wrap:anywhere}
 .acts{display:flex;flex-wrap:wrap;align-items:center;gap:4px 10px;margin:0 0 6px;font-size:11.5px;color:#6d6a62}
 .acts button,button.link{border:0;background:none;padding:0;font:inherit;color:inherit;cursor:pointer}
 .acts button:hover,button.link:hover{color:#18191d;text-decoration:underline}
 .acts button.danger{color:#b4342b;font-weight:600}
-.who button.link{margin-left:auto;font-weight:400;font-size:11.5px;color:#6d6a62}
-.line{display:flex;align-items:center;gap:6px;width:100%;border:0;background:none;padding:0;font:inherit;font-size:12px;color:#6d6a62;cursor:pointer;text-align:left}
-.line span{min-width:0;overflow-wrap:anywhere}
-.line .badge{flex:none}
+.who{position:relative}
+.tools{margin-left:auto;display:inline-flex;align-items:center;gap:2px}
+button.ic{display:grid;place-items:center;min-width:26px;height:26px;padding:0;border:0;border-radius:50%;background:none;color:#6d6a62;font:inherit;font-size:16px;line-height:1;cursor:pointer}
+button.ic:hover{background:#ece7da;color:#18191d}
+button.ic:focus-visible{outline:2px solid #16786a;outline-offset:1px}
+.menu{position:absolute;right:0;top:100%;z-index:3;min-width:150px;background:#fff;border:1px solid #cbbfa8;border-radius:10px;padding:4px;box-shadow:0 8px 24px rgba(40,30,10,.25)}
+.menu .item{display:block;width:100%;text-align:left;border:0;background:none;padding:7px 10px;border-radius:7px;font:inherit;font-size:12.5px;font-weight:400;color:#b4342b;cursor:pointer}
+.menu .item:hover,.menu .item:focus-visible{background:#f6f2e9}
+.replies{font-size:11.5px;color:#6d6a62;margin:2px 0 0 26px}
+.card:not(.focus) .replybox{display:none}
+.card.focus .replies{display:none}
+button.link.strong{font-weight:650;color:#18191d}
+button.link.toggle{display:block;margin-top:2px;font-size:12px}
+.card.undo{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:12.5px}
 textarea,input{width:100%;font:inherit;border:1px solid #cbbfa8;border-radius:9px;padding:8px 10px;background:#f7f4ec;color:inherit}
 textarea{resize:vertical;min-height:34px}
 textarea:focus,input:focus{outline:2px solid #16786a;outline-offset:-1px;background:#fff}
 .composer{display:flex;align-items:flex-end;gap:6px;border:1px solid #cbbfa8;border-radius:20px;background:#fff;padding:3px 3px 3px 14px}
 .composer:focus-within{border-color:#16786a;box-shadow:0 0 0 2px #dcf0ea}
-.composer textarea{flex:1;min-width:0;width:auto;border:0;border-radius:0;background:transparent;padding:6px 0;min-height:0;max-height:160px;overflow-y:auto;resize:none;line-height:1.45}
+.composer textarea{flex:1;min-width:0;width:auto;border:0;border-radius:0;background:transparent;padding:6px 0;min-height:22px;max-height:160px;overflow-y:auto;resize:none;line-height:1.45}
 .composer textarea:focus{outline:0;background:transparent}
 button.send{flex:none;display:grid;place-items:center;width:30px;height:30px;padding:0;border:0;border-radius:50%;background:#18191d;color:#fff;cursor:pointer}
 button.send:disabled{background:#d9d6cd;color:#fff;cursor:default}
+button.send.busy{background:#18191d;cursor:default}
+button.send.busy svg{display:none}
+button.send.busy::after{content:"";width:14px;height:14px;border:2px solid #fff;border-top-color:transparent;border-radius:50%;animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
 button.send:focus-visible{outline:2px solid #16786a;outline-offset:2px}
 .card.draft{padding:0;border:0;background:transparent;box-shadow:none}
 .card.draft .composer{box-shadow:0 1px 2px rgba(40,30,10,.12),0 14px 28px -14px rgba(40,30,10,.45)}
+.card.draft.name{padding:10px 12px;border:1px solid #cbbfa8;background:#fffdf8;box-shadow:0 1px 2px rgba(40,30,10,.12),0 14px 28px -20px rgba(40,30,10,.4)}
+.pending{margin:0 0 8px;padding-left:7px;border-left:2px solid #cbbfa8;white-space:pre-wrap;overflow-wrap:anywhere;max-height:6em;overflow:hidden}
+.list{display:grid;gap:6px;margin-top:6px}
+button.row{display:grid;gap:2px;width:100%;text-align:left;padding:9px 12px;border:1px solid #cbbfa8;border-radius:10px;background:#fffdf8;font:inherit;color:inherit;cursor:pointer;min-height:44px}
+button.row .rq{overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+button.row .rw{font-size:11.5px;color:#6d6a62}
 .btns{display:flex;justify-content:flex-end;gap:8px;margin-top:8px}
 button.b{font:inherit;font-size:12px;font-weight:650;padding:5px 11px;border-radius:8px;border:1px solid #cbbfa8;background:#fffdf8;color:#18191d;cursor:pointer}
 button.b:hover{border-color:#8f8670}button.b:disabled{cursor:default;opacity:.55}
@@ -795,6 +822,14 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     return element;
   };
   const button = (label, onclick, cls) => node("button", { type: "button", class: cls || "b", onclick: onclick }, [label]);
+  const icon = (d, stroke) => {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    for (const [name, value] of [["viewBox", "0 0 24 24"], ["width", "16"], ["height", "16"], ["fill", "none"], ["stroke", "currentColor"], ["stroke-width", stroke], ["stroke-linecap", "round"], ["stroke-linejoin", "round"], ["aria-hidden", "true"]]) svg.setAttribute(name, value);
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", d);
+    svg.append(path);
+    return svg;
+  };
 
   let memory = null;
   const readToken = () => {
@@ -821,8 +856,9 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
   let draft = null, draftTop = 0, focusId = "", loadSeq = 0, lastViewer = null, positionsKey = "";
   let signState = "", prepared = null, opened = null, generation = 0, wake = null;
   let confirming = "", needName = "", nameText = "", pending = null;
+  let showResolved = false, undoId = "", undoTimer = 0, menuId = "", posted = null;
   let modelKey = "", inFlight = false, lastLoad = 0, composing = false, owed = false, stacked = [], sentNeed = -1;
-  const expanded = new Set(), texts = {}, errors = {}, busy = {};
+  const texts = {}, errors = {}, busy = {};
 
   // Its own read (a token's, else the anonymous one a public document answers) wins; the page's relay is drawn only when neither answered, and then without names.
   const model = () => own || anon || (loaded ? relayed : null);
@@ -1037,18 +1073,28 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
   };
 
   // The one line at the top, by state, drawn only where it can lead somewhere: an invitation to sign in when its own anonymous read says someone can comment, the way on when the cards are the page's relayed ones (a private page before the token), the instruction when this viewer may comment, and nothing otherwise.
-  const topLine = () => {
+  const notice = () => {
     if (!loaded) return [];
     if (own !== null) return viewer() && viewer().canComment ? [muted("Select text to comment.")] : [];
     if (anon !== null) return anon.commentable === true ? [signInBlock("Invited to comment? Sign in.")] : [];
     return relayed ? [signInBlock("Continue to see names and comment.")] : [];
   };
+  const resolvedOf = () => threadsOf().filter((t) => t.state === "resolved");
+  // Resolved threads are off the page; they wait behind their count, here.
+  const topLine = () => {
+    const kids = notice();
+    const n = loaded ? resolvedOf().length : 0;
+    if (n) kids.push(node("button", { type: "button", class: "link toggle", "aria-expanded": String(showResolved), onclick: () => { showResolved = !showResolved; render(); } }, [n + " resolved"]));
+    return kids;
+  };
   const lineCard = () => {
     const kids = topLine();
     return kids.length ? node("div", { class: "card topline" }, kids) : null;
   };
+  // "Resolved · Undo", for a few seconds after a thread leaves the page.
+  const undoCard = () => (undoId ? node("div", { class: "card topline undo" }, [node("span", {}, ["Resolved"]), button("Undo", () => reopenThread(undoId), "link strong")]) : null);
 
-  // The box a person writes in: a textarea and its buttons, the name field a first comment may ask for, or the reason there is none.
+  // The box a person writes in: a textarea and its Send button, the name field a first comment may ask for, or the reason there is none.
   const writer = (key, placeholder, submit) => {
     const v = viewer();
     if (v === null) return [];
@@ -1060,24 +1106,22 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
       input.addEventListener("keydown", (event) => { if (event.key === "Enter") saveName(); });
       const back = () => { needName = ""; pending = null; nameText = ""; errors[key] = ""; render(); };
       input.addEventListener("keydown", (event) => { if (event.key === "Escape") { event.stopPropagation(); back(); } });
-      return [node("p", { class: "ask" }, ["Add your name so people know who is commenting."]), input, node("div", { class: "btns" }, [button("Cancel", back), button("Save and post", saveName, "b primary")]), errorLine(key)];
+      // The comment waits above the question, so it is plain that it has not gone yet.
+      const waiting = (texts[key] || "").trim() === "" ? [] : [node("div", { class: "pending" }, [texts[key]])];
+      return waiting.concat([node("p", { class: "ask" }, ["Add your name so people know who is commenting."]), input, node("div", { class: "btns" }, [button("Cancel", back), button("Save and post", saveName, "b primary")]), errorLine(key)]);
     }
+    const sending = !!busy[key];
     const area = node("textarea", { rows: "1", maxlength: "4000", placeholder: placeholder, "aria-label": placeholder, "data-key": key });
     area.value = texts[key] || "";
-    const svgns = "http://www.w3.org/2000/svg";
-    const arrow = document.createElementNS(svgns, "svg");
-    for (const [name, value] of [["viewBox", "0 0 24 24"], ["width", "16"], ["height", "16"], ["fill", "none"], ["stroke", "currentColor"], ["stroke-width", "2.5"], ["stroke-linecap", "round"], ["stroke-linejoin", "round"], ["aria-hidden", "true"]]) arrow.setAttribute(name, value);
-    const shaft = document.createElementNS(svgns, "path");
-    shaft.setAttribute("d", "M12 19V5M5 12l7-7 7 7");
-    arrow.append(shaft);
+    area.readOnly = sending;
     // Posting takes a click on Send: a keystroke that lands in this frame some other way must never send, so Enter is a newline.
-    const send = node("button", { type: "button", class: "send", "aria-label": "Send", onclick: submit });
-    send.append(arrow);
+    const send = node("button", { type: "button", class: "send" + (sending ? " busy" : ""), "aria-label": "Send", onclick: submit });
+    send.append(icon("M12 19V5M5 12l7-7 7 7", "2.5"));
     const sync = () => { send.disabled = area.value.trim() === "" || !!busy[key]; fit(area); };
     area.addEventListener("input", () => { texts[key] = area.value; sync(); });
     area.addEventListener("compositionstart", () => { composing = true; });
     area.addEventListener("compositionend", () => { composing = false; if (owed) { owed = false; render(); } });
-    send.disabled = area.value.trim() === "" || !!busy[key];
+    send.disabled = area.value.trim() === "" || sending;
     return [node("div", { class: "composer" }, [area, send]), errorLine(key)];
   };
   // The field is one line and grows with what is typed, up to the cap, then scrolls.
@@ -1091,72 +1135,82 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     if (focusId === id) return;
     focusId = id;
     for (const element of cards.querySelectorAll("[data-thread]")) element.classList.toggle("focus", element.dataset.thread === id);
+    // The focused card's reply box was hidden, so it was fitted at no height.
+    fitAll();
     post({ event: "focus", threadId: id });
   };
 
-  // One comment: who and when (a reply's Delete sits there, after the time), then its text. A first comment's Delete belongs to the thread's action row.
-  const commentRow = (thread, comment, index) => {
+  const resolveThread = (id) => act("t:" + id, () => call("POST", docPath("/threads/" + encodeURIComponent(id) + "/resolve"), { version: versionOf() || undefined }), () => {
+    undoId = id;
+    window.clearTimeout(undoTimer);
+    undoTimer = window.setTimeout(() => { undoId = ""; render(); }, 6000);
+    if (focusId === id) { focusId = ""; post({ event: "focus", threadId: "" }); }
+  });
+  const reopenThread = (id) => act("t:" + id, () => call("POST", docPath("/threads/" + encodeURIComponent(id) + "/reopen"), { version: versionOf() || undefined }), () => { if (undoId === id) undoId = ""; });
+
+  // One comment: who and when, then its text. The first comment of a thread you may resolve carries the check at the right; a comment of yours carries a menu with its Delete, named for what it deletes, and asks first.
+  const commentRow = (thread, comment, index, mayResolve) => {
     const w = who(comment.author, comment.createdAt);
-    if (index === 0 && thread.state !== "resolved") w.insertBefore(node("span", { class: "badge open" }, ["open"]), w.querySelector("small"));
     const id = text(comment.commentId);
+    const what = index === 0 ? "thread" : "comment";
     const kids = [w];
     // Only the authenticated read may enable a write control: relayed data is the page's, and the page is not trusted.
-    if (own !== null && comment.mine && index > 0) {
-      w.append(button("Delete", () => act("c:" + id, () => call("DELETE", docPath("/comments/" + encodeURIComponent(id))), null), "link"));
+    if (own !== null) {
+      const tools = node("span", { class: "tools" });
+      if (mayResolve) tools.append(iconButton("Resolve", "M5 12.5l4.5 4.5L19 7.5", () => resolveThread(text(thread.threadId))));
+      if (comment.mine === true) {
+        tools.append(node("button", { type: "button", class: "ic more", "aria-label": "More actions", title: "More actions", "aria-haspopup": "menu", "aria-expanded": String(menuId === id), onclick: () => { menuId = menuId === id ? "" : id; render(); } }, ["⋯"]));
+        if (menuId === id) w.append(node("div", { class: "menu", role: "menu" }, [node("button", { type: "button", role: "menuitem", class: "item", onclick: () => { menuId = ""; confirming = id; render(); } }, ["Delete " + what])]));
+      }
+      if (tools.firstChild) w.append(tools);
+      if (comment.mine === true && confirming === id) {
+        const del = button("Delete", () => { confirming = ""; act("c:" + id, () => call("DELETE", docPath("/comments/" + encodeURIComponent(id))), null); }, "link danger");
+        del.setAttribute("aria-label", "Delete " + what);
+        kids.push(node("div", { class: "acts" }, ["Delete this " + what + "?", del, button("Keep", () => { confirming = ""; render(); }, "link")]));
+      }
     }
     kids.push(node("div", { class: "txt" }, [text(comment.body)]));
     if (index > 0 && errors["c:" + id]) kids.push(errorLine("c:" + id));
     return kids;
   };
+  const iconButton = (label, d, onclick) => {
+    const b = node("button", { type: "button", class: "ic", "aria-label": label, title: label, onclick: onclick });
+    b.append(icon(d, "2.2"));
+    return b;
+  };
 
-  const threadCard = (thread, orphan, alone) => {
+  // A card beside its passage shows no quote, since the highlight is the quote; one that is not (an orphan, a resolved thread, the phone's sheet) does.
+  const threadCard = (thread, orphan) => {
     const id = text(thread.threadId);
     const resolved = thread.state === "resolved";
     const res = resolved && thread.resolution ? thread.resolution : null;
     const by = res ? authorOf(res.by).name : "";
     // Typed, not concatenated: a relayed atVersion is the page's, and a string there could write its own "by" into the summary.
     const at = res && Number.isInteger(res.atVersion) && res.atVersion > 0 ? res.atVersion : 0;
-    const resolvedIn = at ? "Resolved in v" + at : "Resolved";
-    const summary = res ? resolvedIn + (relayedOnly() ? "" : " by " + by) : "Resolved";
+    const summary = res ? (at ? "Resolved in v" + at : "Resolved") + (relayedOnly() ? "" : " by " + by) : "Resolved";
     const card = node("div", { class: "card" + (resolved ? " resolved" : "") + (orphan ? " muted" : "") + (focusId === id ? " focus" : ""), "data-thread": id });
     card.addEventListener("mousedown", () => focusThread(id));
-    if (resolved && !expanded.has(id) && !alone) {
-      card.append(button("", () => { expanded.add(id); render(); }, "line"));
-      card.firstChild.replaceChildren(node("span", { class: "badge done" }, ["✓"]), node("span", {}, [summary]));
-      return card;
-    }
-    const quote = text(thread.anchor && thread.anchor.exact);
-    card.append(node("div", { class: "quote" }, [quote]));
+    if (orphan || resolved || mode === "overlay") card.append(node("div", { class: "quote" }, [text(thread.anchor && thread.anchor.exact)]));
+    if (resolved) card.append(node("p", { class: "where" }, [summary]));
     const comments = Array.isArray(thread.comments) ? thread.comments : [];
-    comments.forEach((comment, index) => card.append(...commentRow(thread, comment, index)));
+    const mayResolve = own !== null && !resolved && thread.canResolve === true;
+    comments.forEach((comment, index) => card.append(...commentRow(thread, comment, index, mayResolve && index === 0)));
+    if (resolved && own !== null && thread.canResolve === true) card.append(node("div", { class: "acts" }, [button("Reopen", () => reopenThread(id), "link")]));
+    if (errors["t:" + id]) card.append(errorLine("t:" + id));
     const first = comments[0];
     const firstId = first ? text(first.commentId) : "";
-    const canDelete = own !== null && !!first && first.mine === true;
-    const canResolve = own !== null && thread.canResolve === true;
-    const acts = [];
-    if (canDelete && confirming === firstId) {
-      acts.push("Delete this thread?",
-        button("Delete", () => { confirming = ""; act("c:" + firstId, () => call("DELETE", docPath("/comments/" + encodeURIComponent(firstId))), null); }, "link danger"),
-        button("Keep", () => { confirming = ""; render(); }, "link"));
-    } else {
-      if (resolved) {
-        acts.push(node("span", { class: "badge done" }, [resolvedIn]));
-        if (canResolve) acts.push(button("Reopen", () => act("t:" + id, () => call("POST", docPath("/threads/" + encodeURIComponent(id) + "/reopen"), { version: versionOf() || undefined }), null), "link"));
-        if (!alone) acts.push(button("Hide", () => { expanded.delete(id); render(); }, "link"));
-      } else if (canResolve) {
-        acts.push(button("Resolve", () => act("t:" + id, () => call("POST", docPath("/threads/" + encodeURIComponent(id) + "/resolve"), { version: versionOf() || undefined }), null), "link"));
-      }
-      if (canDelete) acts.push(button("Delete", () => { confirming = firstId; render(); }, "link"));
-    }
-    if (acts.length) card.append(node("div", { class: "acts" }, acts));
-    if (errors["t:" + id]) card.append(errorLine("t:" + id));
     if (firstId && errors["c:" + firstId]) card.append(errorLine("c:" + firstId));
     if (!resolved) {
+      // A reply box on every card made them tall: only the focused card shows its box (the stylesheet), the others say how many replies they hold.
+      const replies = Math.max(0, comments.length - 1);
+      if (replies) card.append(node("div", { class: "replies" }, [replies + (replies === 1 ? " reply" : " replies")]));
       const reply = () => {
         const body = (texts["r:" + id] || "").trim();
         if (body) act("r:" + id, () => call("POST", docPath("/threads/" + encodeURIComponent(id) + "/comments"), { body: body, version: versionOf() || undefined }), () => { texts["r:" + id] = ""; });
       };
-      card.append(...writer("r:" + id, "Reply…", reply));
+      const box = writer("r:" + id, "Reply…", reply);
+      // Only a box to type in hides with the card's focus; the line that says there is none stays.
+      if (viewer() !== null && viewer().canComment) card.append(node("div", { class: "replybox" }, box)); else card.append(...box);
     }
     return card;
   };
@@ -1170,17 +1224,18 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     post({ event: "close" });
   };
   const draftCard = () => {
-    const card = node("div", { class: "card draft", "data-thread": "" });
+    const card = node("div", { class: "card draft" + (needName === "draft" ? " name" : ""), "data-thread": "" });
     const submit = () => {
       const body = (texts.draft || "").trim();
       const snapshot = draft;
       if (!body || !snapshot) return;
       const request = { anchor: snapshot, body: body };
       if (pinned) request.version = pinned;
+      // The composer stays, read-only with a spinner in Send, until the write has landed; then the new thread is drawn where the draft was until the page reports where its passage is.
       act("draft", () => call("POST", docPath("/threads"), request), (result) => {
         draft = null;
         texts.draft = "";
-        if (result && typeof result.threadId === "string") focusId = result.threadId;
+        if (result && typeof result.threadId === "string") { focusId = result.threadId; posted = { thread: result.threadId, top: draftTop }; }
       });
     };
     card.append(...writer("draft", "Add a comment…", submit));
@@ -1194,9 +1249,12 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
 
   const renderMargin = () => {
     const items = [];
+    const undo = undoCard();
+    if (undo) items.push({ el: undo, want: BAR, gap: 8 });
     const top = lineCard();
     if (top) items.push({ el: top, want: BAR, gap: 8 });
-    const threads = threadsOf();
+    if (showResolved) for (const t of resolvedOf()) items.push({ el: threadCard(t, false), want: 0, gap: 8 });
+    const threads = threadsOf().filter((t) => t.state !== "resolved");
     const lost = new Set(lostIds);
     const orphans = threads.filter((t) => t.anchorStatus !== "anchored" || lost.has(t.threadId));
     if (orphans.length) {
@@ -1204,10 +1262,10 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
       for (const t of orphans) items.push({ el: threadCard(t, true), want: 0, gap: 8 });
     }
     const flow = [];
-    if (tops !== null) {
-      for (const t of threads) {
-        if (t.anchorStatus === "anchored" && !lost.has(t.threadId) && typeof tops[t.threadId] === "number") flow.push({ el: threadCard(t, false), want: tops[t.threadId], gap: 8 });
-      }
+    for (const t of threads) {
+      if (t.anchorStatus !== "anchored" || lost.has(t.threadId)) continue;
+      const at = tops !== null && typeof tops[t.threadId] === "number" ? tops[t.threadId] : posted !== null && posted.thread === t.threadId ? posted.top : null;
+      if (at !== null) flow.push({ el: threadCard(t, false), want: at, gap: 8 });
     }
     if (draft) flow.push({ el: draftCard(), want: draftTop, gap: 8 });
     flow.sort((a, b) => a.want - b.want);
@@ -1238,16 +1296,27 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
   // The sheet is as tall as its card, up to the page's cap, so it reports the content's height.
   const reportSheet = () => post({ event: "height", px: Math.ceil(main.scrollHeight) });
 
+  // The sheet's list: one row per open thread, its passage and who is in it. A tap opens the card and scrolls to the passage.
+  const rows = () => threadsOf().filter((t) => t.state !== "resolved").map((t) => {
+    const comments = Array.isArray(t.comments) ? t.comments : [];
+    const replies = Math.max(0, comments.length - 1);
+    const line = authorOf(comments[0] && comments[0].author).name + (replies ? " · " + replies + (replies === 1 ? " reply" : " replies") : "");
+    return node("button", { type: "button", class: "row", onclick: () => { focusId = text(t.threadId); render(); post({ event: "focus", threadId: focusId }); } }, [node("span", { class: "rq" }, [text(t.anchor && t.anchor.exact)]), node("span", { class: "rw" }, [line])]);
+  });
   const renderOverlay = () => {
     const close = button("×", () => { if (draft) cancelDraft(); else post({ event: "close" }); }, "x");
     close.setAttribute("aria-label", "Close");
     const kids = [];
     if (draft) kids.push(draftCard());
     else {
+      const undo = undoCard();
+      if (undo) kids.push(undo);
       const top = lineCard();
       if (top) kids.push(top);
-      const thread = threadsOf().find((t) => t.threadId === focusId);
-      if (thread) kids.push(threadCard(thread, thread.anchorStatus !== "anchored", true));
+      if (showResolved) kids.push(...resolvedOf().map((t) => threadCard(t, false)));
+      const thread = threadsOf().find((t) => t.threadId === focusId && t.state !== "resolved");
+      if (thread) kids.push(threadCard(thread, thread.anchorStatus !== "anchored"));
+      else if (rows().length) kids.push(node("div", { class: "list" }, rows()));
     }
     // Nothing to show, so no sheet: the page closes it on a height of 0. Before the first read the page's own fallback covers the wait.
     if (!kids.length) {
@@ -1278,6 +1347,10 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     if (key !== undefined) {
       const again = Array.from(cards.querySelectorAll("[data-key]")).find((element) => element.dataset.key === key);
       if (again) { again.focus({ preventScroll: true }); if (from) again.setSelectionRange(from[0], from[1]); }
+    } else if (needName !== "" && document.hasFocus()) {
+      // The name step follows the reader's own click on Send, in this frame, so it may take focus.
+      const ask = Array.from(cards.querySelectorAll("[data-key]")).find((element) => element.dataset.key === needName + ":name");
+      if (ask) ask.focus({ preventScroll: true });
     }
     if (mode === "overlay" && cards.firstChild) {
       sizes.observe(main);
@@ -1318,6 +1391,7 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
       }
       positionsKey = key;
       tops = next;
+      if (posted !== null && typeof next[posted.thread] === "number") posted = null;
       lostIds = listed(msg.lost) ? msg.lost : [];
       height = nextHeight;
       render();
@@ -1361,10 +1435,21 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     if (event.target instanceof Element && event.target.closest('[data-thread=""]')) return;
     cancelDraft();
   });
+  // Escape closes an empty draft; one with words in it is kept, and Escape only leaves the field.
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") return;
-    if (draft) cancelDraft();
-    else if (mode === "overlay") post({ event: "close" });
+    if (menuId) { menuId = ""; render(); return; }
+    if (draft) {
+      if ((texts.draft || "").trim() === "") cancelDraft();
+      else if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+    } else if (mode === "overlay") post({ event: "close" });
+  });
+  // A press outside an open menu closes it without redrawing, so the press that closed it still lands on what it was aimed at.
+  document.addEventListener("pointerdown", (event) => {
+    if (!menuId || (event.target instanceof Element && event.target.closest(".menu, .more"))) return;
+    menuId = "";
+    for (const element of cards.querySelectorAll(".menu")) element.remove();
+    for (const element of cards.querySelectorAll(".more")) element.setAttribute("aria-expanded", "false");
   });
 
   try { prepare().catch(() => {}); } catch (error) {}

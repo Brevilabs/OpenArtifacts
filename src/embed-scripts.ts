@@ -830,7 +830,7 @@ export const FRAME_SCRIPT = String.raw`(() => {
     if (mayAdd) {
       kids.push(node("h2", {}, ["Add people"]), node("div", { class: "row" }, [input, button("Add", add, "primary tall")]));
       if (roles !== null && roles.includes("comment")) {
-        kids.push(muted([body.linkAccess === "anyone" ? "Anyone with the link can view. To let someone comment, add them with Can comment." : "Only people you add can open this page. To let someone comment, add them with Can comment."]));
+        kids.push(muted([body.linkAccess === "anyone" ? "Anyone with the link can view. People you add can comment. You can change that below." : "Only people you add can open this page, and they can comment. You can change that below."]));
       }
     }
     kids.push(message);
