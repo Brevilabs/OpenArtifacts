@@ -83,24 +83,40 @@ documents that publisher already owns.
 | --- | --- | --- |
 | `openartifacts.site` | Public documents, unchanged. A redirect for invited-only ones. | None, ever |
 | `api.openartifacts.ai` | The bearer API, reader sign-in, `/open/{docId}`, `/open/{docId}/request`, the share page, the top bar's script and the Share popover (`/embed/*`) | The reader session cookie |
-| `{label}.openartifacts.site` | One publisher's invited-only documents, every version of each. Later, the publisher's custom domain takes this seat. | That publisher's read-only grant cookie |
+| `{code}.openartifacts.site` | One publisher's invited-only documents, every version of each. Later, the publisher's custom domain takes this seat. | That publisher's read-only grant cookie |
 
-`label` is the first 16 bytes of `SHA-256("openartifacts-origin-v1:" + docs.owner)`
-in lowercase Crockford base32: 26 characters, derived from the owner id the
-serving path already reads, and never stored. It is one-way, so the hostname in
-DNS and TLS SNI reveals neither the owner nor the document.
+`code` is 6 random characters from `23456789bcdfghjkmnpqrstvwxz` (no vowels, so
+no words; no `0`, `1`, `o`, `l` or `i`), drawn once per `docs.owner` the first
+time a publisher origin is needed and stored in `publisher_origins` (migration
+`0017`; `src/origin-code.ts`). `owner` is the primary key and `code` is `UNIQUE`:
+a random collision fails the insert and allocation draws again, a few times at
+most. Rows are never updated or deleted, not when the account or its documents go,
+so **a code is never reassigned** and a stale link can never reach another
+publisher. The code is random, so the hostname in DNS and TLS SNI reveals neither
+the owner nor the document, and it is **an address, not a password**: knowing it
+grants nothing, because every request still needs a grant cookie and passes
+`canRead`. Each document's manifest records its owner's code (`originCode`) so a
+rebuilt D1 maps every owner to the same code.
+
+This replaced a 26-character label that was a one-way hash of the owner id, never
+stored. The old hosts keep working while links are in the wild: a `GET` or `HEAD`
+of `/d/{docId}[/v{n}]` on one is `302` to `/open`, which mints the code host, and
+anything else on one is the `404` of an unknown host. That branch is removed in a
+later cleanup. Changing the hostname is a new browser origin, so a cookie or local
+storage from the old one does not carry over; the reader is signed in again by one
+redirect.
 
 - **`docs.owner` never changes**, not even when a license key is later linked to
   an account (`owner_links` joins scopes and rewrites no row), so a document's
   origin is stable for life. A linked publisher whose documents sit under two
-  owner ids has two label hosts, which costs them one extra sign-in redirect and
+  owner ids has two code hosts, which costs them one extra sign-in redirect and
   nothing else.
-- **The label comes from the document's owner, never from the caller.** `/open`
-  and the owner route read `docs.owner` from the document's own row. A label
-  derived from the reader's account or the caller's key would send a linked
+- **The code comes from the document's owner, never from the caller.** `/open`
+  and the owner route read `docs.owner` from the document's own row. A code
+  taken from the reader's account or the caller's key would send a linked
   publisher to a host that answers `404`.
-- **A label host answers `404` for any document whose owner does not hash to its
-  label**, before it reveals anything else about the document, so a host never
+- **A code host answers `404` for any document whose owner's code is not its
+  own** (one join in the read the host already makes), before it reveals anything else about the document, so a host never
   serves, or even confirms, another publisher's document. The same rule, "this
   host serves this publisher's documents only", is what a custom hostname will
   enforce through a verified host-to-owner mapping.
@@ -117,9 +133,9 @@ DNS and TLS SNI reveals neither the owner nor the document.
 ```
 reader  → openartifacts.site/d/{docId}        302, no-store → api.openartifacts.ai/open/{docId}
 reader  → api.openartifacts.ai/open/{docId}   session? canRead?
-                                              302 → {label}.openartifacts.site/d/{docId}?grant=…   (valid 60 s)
-reader  → {label}.openartifacts.site/d/…?grant=…   303 + Set-Cookie (1 h), to the clean url
-reader  → {label}.openartifacts.site/d/{docId}     200, private, no-store
+                                              302 → {code}.openartifacts.site/d/{docId}?grant=…   (valid 60 s)
+reader  → {code}.openartifacts.site/d/…?grant=…   303 + Set-Cookie (1 h), to the clean url
+reader  → {code}.openartifacts.site/d/{docId}     200, private, no-store
 ```
 
 ### What each host does, in order
@@ -138,7 +154,7 @@ pinned `/v{n}` that does not exist reads the same as one that does.
 2. A session, and the document is live and now `anyone`: `302` to the canonical
    public url.
 3. A session, and `canRead` says allowed: `302` to
-   `https://{label}.{SERVING_HOST}/d/{docId}[/v{n}]?grant=…`, the label being
+   `https://{code}.{SERVING_HOST}/d/{docId}[/v{n}]?grant=…`, the code being
    that of the document's own owner.
 4. Anything else (not on the list, removed, deleted, never existed): `404` with
    **This document isn't available to {email}**, **Request access** and **Use
@@ -146,24 +162,24 @@ pinned `/v{n}` that does not exist reads the same as one that does.
    page, so there is exactly one copy of the **Request access** form, and it
    posts with the session cookie.
 
-**`{label}.openartifacts.site/d/{docId}[/v{n}]`** (`GET` and `HEAD`; anything else
+**`{code}.openartifacts.site/d/{docId}[/v{n}]`** (`GET` and `HEAD`; anything else
 is `404`):
 
-1. A `?grant=` that verifies for this label sets `__Host-oa_grant` and answers a
+1. A `?grant=` that verifies for this code sets `__Host-oa_grant` and answers a
    bodiless `303` to the same path without the query. This step reads no
-   database. A grant that is bad, expired or for another label answers `302` to
+   database. A grant that is bad, expired or for another code answers `302` to
    `https://{API_HOST}/open/{docId}[/v{n}]`.
 2. No cookie, or an invalid or expired one: the same `302` to `/open`, again with
    no database read.
 3. A valid cookie: one D1 read returns the document, its owner, and whether the
    cookie's principal passes `canRead`. Then, in this order: unknown id is `404`;
-   an owner that does not hash to this label is `404`; deleted is `410`; `anyone`
+   an owner whose code is not this one is `404`; deleted is `410`; `anyone`
    is `302` to the public url; not allowed is `302` to `/open`; an allowed
    document with no version is `404`; otherwise `200`.
 
-A label host never renders the not-available page: it must post with the session
+A code host never renders the not-available page: it must post with the session
 cookie, which this origin can never hold. No loop is possible, because `/open`
-redirects to a label host only when `canRead` says allowed, the same predicate
+redirects to a code host only when `canRead` says allowed, the same predicate
 this host applies. A reader with a cookie for this origin who opens a second
 document from the same publisher gets it in one request if invited, with no
 redirect.
@@ -173,7 +189,7 @@ with the same CSP and robots headers as every served document, plus
 `Cache-Control: private, no-store` (pinned versions included),
 `Cross-Origin-Opener-Policy: same-origin-allow-popups` and
 `Cross-Origin-Resource-Policy: same-origin`. The two isolation headers are set on
-every response from a label host, errors and redirects included, and a `500`
+every response from a code host, errors and redirects included, and a `500`
 carries them too.
 
 ### The three lifetimes
@@ -181,7 +197,7 @@ carries them too.
 | | Lifetime | Holds |
 | --- | --- | --- |
 | Reader session `__Host-oa_session`, on the API host | 30 days | An account id |
-| URL grant `?grant=` | 60 seconds | A publisher's origin label and a principal |
+| URL grant `?grant=` | 60 seconds | A publisher's origin code and a principal |
 | Origin cookie `__Host-oa_grant`, on that publisher's origin | 1 hour | The same grant, re-signed |
 
 All three are `HttpOnly; Secure; SameSite=Lax; Path=/` with no `Domain`, so each

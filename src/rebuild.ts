@@ -14,7 +14,8 @@
  *
  * Apply the result to an empty database only (see `rebuildSql`).
  *
- * Scope: document state only (`docs`, `doc_invites`, `versions`, and the
+ * Scope: document state only (`docs`, `doc_invites`, `versions`, `publisher_origins` from the
+ * manifests' `originCode`, and the
  * `storage_usage` ledger rows that mirror `versions`). Accounts, sessions,
  * owner links, publishers, access requests and comments are not in R2.
  * `has_threads` is the manifest's, or set where the listing holds the
@@ -23,6 +24,7 @@
  * carries it for older rebuilds, and this one leaves the column at its default.
  */
 import type { DocManifest } from "./manifest.js";
+import { ORIGIN_CODE } from "./origin-code.js";
 
 /** What R2 reports for one object under the doc's prefix. `uploaded` is epoch ms. */
 export interface ListedObject {
@@ -43,6 +45,8 @@ export interface RebuiltRows {
     link_access: "anyone" | "invited";
     has_threads: 0 | 1;
   };
+  /** The owner's origin code and when its first document was created, or null when the manifest has none. */
+  origin: { owner: string; code: string; created_at: number } | null;
   invites: Array<{ doc_id: string; email: string; role: "view" | "comment"; created_at: number }>;
   versions: Array<{ doc_id: string; n: number; size: number; title: null; created_at: number }>;
 }
@@ -60,6 +64,7 @@ export function readable(manifest: unknown): manifest is DocManifest {
     isString(m.title) &&
     isString(m.linkAccess) &&
     (m.hasThreads === undefined || typeof m.hasThreads === "boolean") &&
+    (m.originCode === undefined || m.originCode === null || (isString(m.originCode) && ORIGIN_CODE.test(m.originCode))) &&
     isNumber(m.createdAt) &&
     isNumber(m.updatedAt) &&
     isNumber(m.latestVersion) &&
@@ -79,6 +84,7 @@ const CLOSED: Omit<DocManifest, "schema" | "docId"> = {
   title: "Untitled",
   linkAccess: "invited",
   commentsEnabled: false,
+  originCode: null,
   createdAt: 0,
   updatedAt: 0,
   deletedAt: null,
@@ -114,6 +120,7 @@ export function rowsFromManifest(docId: string, manifest: unknown, objects: read
       link_access: m.linkAccess === "anyone" ? "anyone" : "invited",
       has_threads: m.hasThreads === true || objects.some((object) => object.key === `docs/${docId}/threads.json`) ? 1 : 0,
     },
+    origin: m.owner !== "" && isString(m.originCode) ? { owner: m.owner, code: m.originCode, created_at: m.createdAt } : null,
     invites: m.people.map((person) => ({
       doc_id: docId,
       email: person.email,
@@ -145,6 +152,38 @@ const insert = (table: string, columns: string[], values: Array<string | number 
   `INSERT INTO ${table} (${columns.join(", ")}) VALUES (${values.map(quote).join(", ")});`;
 
 /**
+ * The `publisher_origins` rows the manifests agree on, and what they disagree
+ * about. Fail closed: the first manifest to name an owner's code (or a code's
+ * owner) wins, and a later one that contradicts it is dropped and reported, so a
+ * rebuilt D1 never maps an owner to two codes or a code to two owners.
+ */
+export function originRows(rebuilt: readonly RebuiltRows[]): {
+  rows: Array<{ owner: string; code: string; created_at: number }>;
+  conflicts: string[];
+} {
+  const byOwner = new Map<string, { owner: string; code: string; created_at: number }>();
+  const owners = new Map<string, string>();
+  const conflicts: string[] = [];
+  for (const { doc, origin } of rebuilt) {
+    if (origin === null) continue;
+    const held = byOwner.get(origin.owner);
+    if (held !== undefined) {
+      if (held.code !== origin.code) {
+        conflicts.push(`${doc.id}: owner ${origin.owner} has code ${origin.code} but ${held.code} was kept`);
+      }
+      continue;
+    }
+    if (owners.has(origin.code)) {
+      conflicts.push(`${doc.id}: code ${origin.code} belongs to ${owners.get(origin.code)}, not ${origin.owner}`);
+      continue;
+    }
+    byOwner.set(origin.owner, origin);
+    owners.set(origin.code, origin.owner);
+  }
+  return { rows: [...byOwner.values()], conflicts };
+}
+
+/**
  * SQL for `wrangler d1 execute --file`. Apply it to an empty database: the
  * rebuild is for a lost D1, and a partial loss is restored with D1 Time Travel,
  * not with this. Plain `INSERT`, so a non-empty database fails instead of
@@ -159,6 +198,13 @@ export function rebuildSql(rebuilt: readonly RebuiltRows[]): string {
     for (const version of versions) lines.push(insert("versions", Object.keys(version), Object.values(version)));
   }
   // The quota ledger mirrors `versions`, as migrations/0013 builds it.
+  const { rows, conflicts } = originRows(rebuilt);
+  for (const conflict of conflicts) lines.push(`-- origin code conflict, ignored: ${conflict.replaceAll(/[\r\n]/g, " ")}`);
+  for (const row of rows) {
+    lines.push(
+      insert("publisher_origins", Object.keys(row), Object.values(row)).replace("INSERT INTO", "INSERT OR IGNORE INTO"),
+    );
+  }
   lines.push("INSERT INTO storage_usage (doc_id, n, size) SELECT doc_id, n, size FROM versions WHERE size > 0;");
   return lines.join("\n") + "\n";
 }

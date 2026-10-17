@@ -88,7 +88,7 @@ only to return `410 Gone` for every request before authentication.
 
 `workers_dev` is `false` and stays that way. With any host var set, the router
 uses an explicit allowlist and fails closed on unknown hosts; the allowlist
-includes `{26-character label}.{SERVING_HOST}`, the publisher origins below, and
+includes `{6-character code}.{SERVING_HOST}`, the publisher origins below (and the retired 26-character label hosts, which only redirect to `/open`), and
 no other subdomain. Path-prefix fallback exists only for local development, when
 all four vars are empty.
 
@@ -123,15 +123,14 @@ sufficient, because a hostile public document can `window.open` a private one an
 read the grant off the popup once it returns to a shared origin. So the rule
 becomes: **no origin that runs more than one publisher's scripts ever holds a
 credential.** Private documents are served from one origin per *publisher*,
-`{label}.openartifacts.site`, where only that publisher's scripts run. The label
-is a one-way hash of the document's `docs.owner`, not of the document id, so the
-hostname never reveals the owner or the document. A label host holds one
+`{code}.openartifacts.site`, where only that publisher's scripts run. The code
+is 6 random characters stored per `docs.owner` (`publisher_origins`), not derived from the document id, so the
+hostname never reveals the owner or the document. A code host holds one
 read-only grant cookie and checks each document against its access list on every
-request, and it answers `404` for any document whose owner does not hash to its
-label. A publisher's custom domain takes the same seat later.
+request, and it answers `404` for any document whose owner does not have its code. A publisher's custom domain takes the same seat later.
 
-Label hosts are subdomains of the sacrificial domain, never of the brand domain,
-so "Why a subdomain does not work" is untouched: a listing against a label host
+Code hosts are subdomains of the sacrificial domain, never of the brand domain,
+so "Why a subdomain does not work" is untouched: a listing against a code host
 lands on `openartifacts.site`, which is the domain that exists to absorb it. They
 are also never cache-rule targets, as the Cache Rule above says.
 

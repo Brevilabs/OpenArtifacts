@@ -1,7 +1,7 @@
 # Data model
 
 Every place this Worker keeps state, on one page: D1 tables, R2 keys, Durable
-Object storage, and the small rest. Current as of migration `0016_has_threads.sql`.
+Object storage, and the small rest. Current as of migration `0017_publisher_origins.sql`.
 
 > **Update this file in the same PR as any migration or storage-key change.**
 
@@ -118,6 +118,25 @@ Share popover sign-in handoff, one minute and one use. PK `h` (hash of a nonce
 only the frame knows). Columns: `h`, `doc_id`, `account_id`, `expires_at`. Swept
 by the next popup that writes one.
 
+### Publisher origins
+
+#### `publisher_origins`
+
+A publisher's permanent origin code: the 6-character subdomain
+(`{code}.openartifacts.site`) its invited-only pages are served from. Migration
+`0017`.
+
+| Column | Type | Constraints | Notes |
+| --- | --- | --- | --- |
+| `owner` | TEXT | PRIMARY KEY | A `docs.owner`, never a caller's id |
+| `code` | TEXT | NOT NULL, UNIQUE | 6 characters from `23456789bcdfghjkmnpqrstvwxz`, drawn with `crypto.getRandomValues`; a collision fails the insert and allocation draws again |
+| `created_at` | INTEGER | NOT NULL | Epoch ms |
+
+- Written by: `originCode` (`src/origin-code.ts`), the first time `/open`, the owner's open route or a grant needs the owner's origin. Publishers with no invited-only page have no row.
+- **Never updated, never deleted**, not when the account or its documents go: a code is never reassigned.
+- Read in the same query as the document (`findReadableDoc`), so a code host compares its code to the owner's without a second round trip.
+- Rebuildable: each document's manifest carries `originCode`, and `src/rebuild.ts` emits `INSERT OR IGNORE` rows (the first manifest wins and a contradiction is reported, never applied).
+
 ### Identity and credentials
 
 #### `accounts`
@@ -227,7 +246,7 @@ only keys are under one prefix per doc.
 | Key | Content | Written | Deleted | Content type |
 | --- | --- | --- | --- | --- |
 | `docs/{docId}/v{n}.html` | The publisher's own bytes for version `n`, no injections | Once per push, before the `versions` row | Withdrawal (prefix scan) or a push that lost a race with it | `text/html; charset=utf-8` |
-| `docs/{docId}/manifest.json` | Snapshot of the doc's D1 state: `{ schema: 1, docId, owner, title, linkAccess, commentsEnabled, hasThreads, createdAt, updatedAt, deletedAt, latestVersion, people: [{ email, role, createdAt }] }` (`src/manifest.ts`); `commentsEnabled` is unread since the roles revision and kept for older rebuilds, and this rebuild ignores it | Rewritten from D1 and awaited after access and invite writes, whose request fails if the put does; best effort (logged) on create and update; the tombstone on delete | Withdrawal leaves it as the tombstone, and removes it only if the tombstone put fails | `application/json` |
+| `docs/{docId}/manifest.json` | Snapshot of the doc's D1 state: `{ schema: 1, docId, owner, title, linkAccess, commentsEnabled, hasThreads, originCode, createdAt, updatedAt, deletedAt, latestVersion, people: [{ email, role, createdAt }] }` (`src/manifest.ts`); `commentsEnabled` is unread since the roles revision and kept for older rebuilds, and this rebuild ignores it | Rewritten from D1 and awaited after access and invite writes, whose request fails if the put does; best effort (logged) on create and update; the tombstone on delete | Withdrawal leaves it as the tombstone, and removes it only if the tombstone put fails | `application/json` |
 | `docs/{docId}/threads.json` | Snapshot of the comment threads: `{ docId, schema: 1, threads }`, each thread with its comments and per-version anchors | Overwritten by `DocComments` after every mutation, best effort | Withdrawal (same prefix scan) | `application/json` |
 
 - Version objects are immutable: never rewritten, `n` is reserved atomically in D1 first. The robots meta, favicon, social card and bylines are injected on the way out by `renderServedHtml`, never stored.
@@ -266,6 +285,6 @@ carries only `docs.has_threads`. Source: `src/comments/object.ts`.
 
 ## What is the system of record
 
-- **Document state is rebuildable from R2**: `manifest.json` carries owner, title, timestamps, deletion, access and the invite list, the version objects carry the version log, and `has_threads` comes from the manifest or, for one written before it, from a `threads.json` under the prefix. `src/rebuild.ts` turns them back into `docs`, `doc_invites`, `versions` and `storage_usage` rows, and fails closed (`docs/deploying.md`).
+- **Document state is rebuildable from R2**: `manifest.json` carries owner, title, timestamps, deletion, access and the invite list, the version objects carry the version log, and `has_threads` comes from the manifest or, for one written before it, from a `threads.json` under the prefix. `src/rebuild.ts` turns them back into `docs`, `doc_invites`, `versions`, `publisher_origins` (from `originCode`) and `storage_usage` rows, and fails closed (`docs/deploying.md`).
 - **D1 is still the only record** of accounts, sessions, owner links, the publishers cache and pending access requests; D1 Time Travel (30 days) covers them. Only `publishers` (and the plan columns on `accounts`) cache something held elsewhere.
 - **The Durable Object is the only live record of comments**; `threads.json` is its backup.

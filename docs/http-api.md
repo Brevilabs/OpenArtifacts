@@ -15,7 +15,7 @@ The surfaces:
 | --- | --- | --- | --- |
 | API | `/api/v1/*` | required | Publisher-facing. JSON in, JSON out. |
 | Serving | `/d/*` | none | Reader-facing. Public HTML on `openartifacts.site`, which never sets a cookie. |
-| Private serving | `/d/*` on `{label}.openartifacts.site` | grant cookie | One publisher's invited-only documents per origin. Sets one read-only grant cookie. See [Private documents](#private-documents). |
+| Private serving | `/d/*` on `{code}.openartifacts.site` | grant cookie | One publisher's invited-only documents per origin. Sets one read-only grant cookie. See [Private documents](#private-documents). |
 | Reader | `/open/*` (`GET`, and `POST /open/{docId}/request`), `/signin/*`, `/share/*`, `/embed/sign-in` | session | Human-facing HTML pages on the API host: sign in, the door a private document opens through, requesting access, the share page, and the Share popover's sign-in popup. Not a client surface. |
 | Embed | `/embed/page.js`, `/embed/share`, `/embed/sign-in`, `/embed/token`, `/embed/api/*` | none, the session (sign-in only) or the popover token | The top bar's page script, the Share popover frame, its sign-in popup and the routes the frame calls, on the API host. Not a client surface. See [The top bar, the Share popover and the share page](#the-top-bar-the-share-popover-and-the-share-page). |
 | Comments | `/api/v1/docs/{docId}/threads…`, `/d/{docId}/threads`, `/embed/comments`, `/embed/api/docs/{docId}/threads…` | token, none, or the popover token | Inline comments: the agent routes, the unauthenticated threads resource on the serving origin, and the frame and its JSON. See [Comments](#comments). |
@@ -631,7 +631,7 @@ and the full serving header policy. Unknown ids are still `404` and deleted ones
    that is public now redirects to the canonical url; a reader who may read an
    invited-only one (the owner's account, or an account whose address is on the
    list) is redirected to
-   `https://{label}.{serving host}/d/{docId}[/v{n}]?grant=…`; anyone else, and every
+   `https://{code}.{serving host}/d/{docId}[/v{n}]?grant=…`; anyone else, and every
    unknown or deleted id, gets `404` with **This document isn't available to
    {email}**, **Request access** and **Use another account**, and no title or
    content. The same page serves not invited, removed, deleted and never existed.
@@ -642,22 +642,30 @@ and the full serving header policy. Unknown ids are still `404` and deleted ones
    or the id is unknown, deleted, public or already allowed. At most one row is
    stored per document and address, and the owner is emailed once per new row
    when the server has their address. It is rate limited per account.
-3. **`GET /d/{docId}[/v{n}]` on `{label}.{serving host}`.** The label is a one-way
-   hash of the *document owner's* id, so a label host belongs to one publisher
-   and answers `404` for any document whose owner does not hash to its label.
+3. **`GET /d/{docId}[/v{n}]` on `{code}.{serving host}`.** The code is 6 random
+   characters from `23456789bcdfghjkmnpqrstvwxz`, allocated once for the
+   *document owner's* id, stored, and never changed or reassigned. (This replaces
+   the earlier 26-character label, a one-way hash of the owner id; the wording
+   changed from a derived hash to a stored random code.) A code host belongs to
+   one publisher and answers `404` for any document whose owner's code is not its
+   own. The code is an address, not a password: it grants nothing and reveals
+   nothing about the owner. The retired 26-character label hosts still answer a
+   `GET` or `HEAD` of `/d/{docId}[/v{n}]` with `302` to `/open` on the API host,
+   which sends the reader to their code host; every other request to one is the
+   `404` an unknown host gets. That legacy branch is removed in a later cleanup.
    A valid `?grant=` is swapped for a cookie with a bodiless `303` to the clean
    path. A missing, expired or foreign grant or cookie is `302` to
    `https://{API host}/open/{docId}[/v{n}]`. With a valid cookie: deleted is
    `410`, a document that is public now is `302` to the public url, a reader who
-   is not allowed is `302` to `/open` (a label host never renders the unavailable
+   is not allowed is `302` to `/open` (a code host never renders the unavailable
    page), and an allowed one is served.
 
 | | Lifetime | Holds |
 | --- | --- | --- |
 | Reader session `__Host-oa_session`, on the API host | 30 days | An account id. Read only by `/open/*`, `/share/*`, `/signin/*` and `/embed/sign-in`; `/api/v1` ignores it. |
 | Popover token, in the Share frame's own storage | 24 hours | An account id and one document id; prefixed `oas_`, which `/api/v1` refuses. Accepted only by `/embed/api/docs/{docId}/…` for that document, and by `PUT /embed/api/account` (the display name) with a token for any document. |
-| URL grant `?grant=` | 60 seconds | An origin label and a principal. Never stays in the address bar. |
-| Origin cookie `__Host-oa_grant`, on the publisher's origin | 1 hour | An origin label and a principal. Every document is checked again on every request. |
+| URL grant `?grant=` | 60 seconds | An origin code and a principal. Never stays in the address bar. |
+| Origin cookie `__Host-oa_grant`, on the publisher's origin | 1 hour | An origin code and a principal. Every document is checked again on every request. |
 
 Each cookie is `HttpOnly; Secure; SameSite=Lax; Path=/` with no `Domain`. The
 grant names an origin, not a document, so one cookie opens every invited-only
@@ -665,7 +673,7 @@ document of that publisher the reader may read, and the invite list is read agai
 on every request. Removing a person takes effect on their next request; copies a
 reader already fetched cannot be recalled.
 
-Responses from a label host that serve a document are `Cache-Control: private,
+Responses from a code host that serve a document are `Cache-Control: private,
 no-store`, pinned versions included, with `Cross-Origin-Opener-Policy:
 same-origin-allow-popups` and `Cross-Origin-Resource-Policy: same-origin`
 (present on every response from that host, errors and redirects too), and carry
@@ -696,10 +704,10 @@ writes. `origin` is the page's own origin, which the script fills in.
 
 - *Per-document `frame-ancestors`.* A public document may be framed by
   `https://{serving host}`; an invited-only one by its publisher's own origin
-  `https://{label}.{serving host}` only; an unknown or deleted one by nobody
+  `https://{code}.{serving host}` only; an unknown or deleted one by nobody
   (`'none'`). The policy names that origin only when the caller's `origin`
   parameter equals it, so the header echoes what the caller already named and
-  never publishes an invited-only document's label. The browser checks it against
+  never publishes an invited-only document's code. The browser checks it against
   the real ancestor, so a forged `origin` frames nothing.
 - *The frame reveals nothing to non-readers.* Anyone can load it with any id.
   Until a token shows the viewer can read the document, the body is the same for
@@ -979,7 +987,7 @@ recipient an email and nothing else.
 
 ```http
 GET|HEAD https://openartifacts.site/d/{docId}/threads[?v={n}]            a public document
-GET|HEAD https://{label}.openartifacts.site/d/{docId}/threads[?v={n}]    an invited-only one
+GET|HEAD https://{code}.openartifacts.site/d/{docId}/threads[?v={n}]      an invited-only one
 ```
 
 The same `Threads` JSON, unauthenticated: no `viewer`, `canResolve` or `mine`, and
@@ -995,7 +1003,7 @@ on the apex.
 - On the apex only a public document answers. An invited-only one is `404` JSON,
   never the redirect to `/open` a page request gets, since a script cannot follow a
   sign-in. Without reader sign-in on the server, the apex answers `404` too.
-- On a publisher's origin the grant cookie is required, and the label, deleted,
+- On a publisher's origin the grant cookie is required, and the code, deleted,
   public and `canRead` chain is the page's own. `?grant=` is never swapped here. No
   cookie or an unreadable document is `404` JSON.
 - An unknown id, comments unavailable, a malformed `v` and a version

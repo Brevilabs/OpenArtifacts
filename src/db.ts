@@ -1508,6 +1508,8 @@ export async function countLiveTokens(db: D1Database, accountId: string): Promis
 export interface ReadableDoc {
   /** The document's owner id, which names its publisher's origin. */
   owner: string;
+  /** The owner's stored origin code, or null before one is allocated. */
+  origin_code: string | null;
   /** For the Share popover's reader view, shown only once a token has proved `canRead`. */
   title: string;
   deleted_at: number | null;
@@ -1546,6 +1548,7 @@ export async function findReadableDoc(
     .prepare(
       `${OWNER_SCOPE_SQL}
        SELECT d.owner AS owner, d.title AS title, d.deleted_at AS deleted_at, d.link_access AS link_access,
+              (SELECT code FROM publisher_origins po WHERE po.owner = d.owner) AS origin_code,
               ${HAS_COMMENTS_SQL} AS has_comments,
               (SELECT MAX(v.n) FROM versions v
                 WHERE v.doc_id = d.id AND (? IS NULL OR v.n = ?)) AS version,
@@ -1568,6 +1571,8 @@ export async function findReadableDoc(
 export interface CommentableDoc {
   /** The document's owner id, which names its publisher's origin. */
   owner: string;
+  /** The owner's stored origin code, or null before one is allocated. */
+  origin_code: string | null;
   title: string;
   deleted_at: number | null;
   link_access: LinkAccess;
@@ -1633,6 +1638,7 @@ export async function findCommentableDoc(
     .prepare(
       `${OWNER_SCOPE_SQL}
        SELECT d.owner AS owner, d.title AS title, d.deleted_at AS deleted_at, d.link_access AS link_access,
+              (SELECT code FROM publisher_origins po WHERE po.owner = d.owner) AS origin_code,
               d.has_threads AS has_threads,
               ${COMMENTER_LISTED_SQL} AS commentable,
               (SELECT MAX(v.n) FROM versions v
