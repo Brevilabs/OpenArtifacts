@@ -229,10 +229,15 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
     const locate = (thread) => (thread.matchedText && find(thread, thread.matchedText)) || find(thread, thread.anchor.exact);
 
     // ---- selection ----------------------------------------------------------
-    const capture = () => {
-      const sel = window.getSelection();
-      if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return null;
-      const live = sel.getRangeAt(0);
+    // The live selection, or a Range held from it: a Range follows the page's edits, so offsets are always read from the current text.
+    const capture = (held) => {
+      let live = held;
+      if (!live) {
+        const sel = window.getSelection();
+        if (!sel || sel.rangeCount === 0) return null;
+        live = sel.getRangeAt(0);
+      }
+      if (live.collapsed) return null;
       const range = live.cloneRange();
       if (!document.body.contains(range.commonAncestorContainer)) return null;
       // A drag that starts in a byline or overshoots into the footer, or a triple-click on the last paragraph (which ends at the footer's start), is clamped to the author's side. A selection wholly inside one skipped subtree, or one that still covers our bar (select-all), is refused. Skipped scripts and styles need no refusal: boundary() already maps both ends onto the canonical text, which leaves them out.
@@ -511,26 +516,38 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
         tip.title = "Comment (" + (MAC ? "⌘⌥M" : "Ctrl+Alt+M") + ")";
         tip.setAttribute("aria-keyshortcuts", MAC ? "Meta+Alt+M" : "Control+Alt+M");
         tip.addEventListener("mousedown", (event) => event.preventDefault());
-        tip.addEventListener("click", startDraft);
         root.append(tip);
         document.documentElement.append(tipHost);
       }
-      // Centred over the selection, above its first line when there is room, else below the last: never over the text itself. On a phone the system's Copy menu is above the selection, so the button goes below the last line, and 44px tall to be a touch target.
+      // The button belongs to this passage even if the browser clears its native selection before click.
+      const held = window.getSelection().getRangeAt(0).cloneRange();
+      tip.onclick = () => startDraft(held);
+      // Centred over the selection, above its first line when there is room, else below the last: never over the text itself.
+      // On a phone the system's own menu (Copy, Look Up) goes just above or just below the selection, wherever it finds room, so no place beside the selection is safe: the button docks at the bottom centre of what is visible, above the sheet when it is open, 44px tall to be a touch target. A selection that ends near that dock would put the menu, or its own handle, under the button, so it then docks at the top, below the bar.
       const first = cap.first, last = cap.rect;
       const phone = mode === "overlay";
       tip.classList.toggle("tall", phone);
-      const above = !phone && first.top - 44 >= 48;
       // The tip is a child of <html>: under html{zoom} its lengths are multiplied, so convert viewport px to zoomed px.
       const z = document.documentElement.currentCSSZoom || 1;
       tipHost.style.display = "block";
       const wide = tipHost.offsetWidth * z, high = tipHost.offsetHeight * z;
+      if (phone) {
+        // The visual viewport, not the window: a pinch zoom shows only part of the page, and the button stays on the part shown.
+        const vv = window.visualViewport;
+        const floor = Math.min(vv.offsetTop + vv.height, open ? mhost.getBoundingClientRect().top : Infinity) - 12 - high;
+        tipHost.style.left = Math.round((vv.offsetLeft + vv.width / 2 - wide / 2) / z) + "px";
+        if (last.bottom > floor - 100) {
+          const bar = link.closest(".openartifacts-bar");
+          tipHost.style.top = Math.round((Math.max(vv.offsetTop, bar ? bar.getBoundingClientRect().bottom : 0) + 12) / z) + "px";
+        } else tipHost.style.top = "calc(" + Math.round(floor / z) + "px - env(safe-area-inset-bottom, 0px))";
+        return;
+      }
       const x = (cap.box.left + cap.box.right) / 2 - wide / 2;
-      const y = phone ? Math.min(last.bottom + 8, window.innerHeight - high - 8) : above ? first.top - 44 : last.bottom + 8;
       tipHost.style.left = Math.round(Math.max(8, Math.min(x, viewport().clientWidth * z - wide - 8)) / z) + "px";
-      tipHost.style.top = Math.round(y / z) + "px";
+      tipHost.style.top = Math.round((first.top - 44 >= 48 ? first.top - 44 : last.bottom + 8) / z) + "px";
     };
-    const startDraft = () => {
-      const cap = capture();
+    const startDraft = (held) => {
+      const cap = capture() || (held ? capture(held) : null);
       if (!cap) return;
       draftRange = toRange(cap.a, cap.b);
       draft = cap.anchor;
@@ -668,7 +685,11 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") refresh(); });
       window.addEventListener("resize", schedule);
       window.addEventListener("load", schedule);
-      window.addEventListener("scroll", () => { if (tipHost && tipHost.style.display === "block") refreshTip(); }, { passive: true });
+      const follow = () => { if (tipHost && tipHost.style.display === "block") refreshTip(); };
+      window.addEventListener("scroll", follow, { passive: true });
+      // A pinch zoom, or Safari's toolbar showing and hiding, moves the visible part of the page, and a phone's button with it.
+      window.visualViewport.addEventListener("resize", follow);
+      window.visualViewport.addEventListener("scroll", follow);
       // With html,body{height:100%} the body's own box never changes, so the author's top-level boxes are watched too; a <details> opening, a late image and a class or style flip move text without touching the body.
       if (window.ResizeObserver) {
         const watch = new ResizeObserver(schedule);
