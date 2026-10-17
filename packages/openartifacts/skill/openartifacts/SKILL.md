@@ -128,7 +128,6 @@ openartifacts share <docId> --decline bob@other.com
 openartifacts share <docId>
 ```
 
-- After `--link invited` on a page that was public, say: "People who opened it while it was public may have kept a copy."
 - After `--link anyone`, say that anyone with the link can now open it, and that the list of invited people is kept in case the user switches back.
 - When the user asks who has access, run `share <docId>` and report `people` and the pending `requests`, with the `manageUrl`. Approve a request with `--add <email>` ("let bob@other.com in") and decline it with `--decline <email>` ("decline bob@other.com"), only when the user says so. Approving adds them as an invitee (OpenArtifacts emails the invitation when `email` is true); declining tells the requester nothing.
 - An added person can comment by default. `--role view` makes them a reader who cannot, and adding the same address again with the other `--role` changes it. `--role` only goes with `--add`. When the user asks to let someone comment, run `share <docId> --add <email>`; when they ask to stop someone commenting, run `--add <email> --role view`, or `--remove`. Commenters are people the user names: there is no switch for a whole page, and a public link never lets a stranger comment.
