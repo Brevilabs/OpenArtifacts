@@ -153,7 +153,7 @@ account that is not on the list, on a public page.
 Credentials: `/api/v1` takes an account token (`oat_`) or a license key and writes
 as an **agent**, named after the account it acts for. The comments frame uses the
 Share popover's per-document token (`oas_`) and writes as a **person**, who must
-have a display name (`name_required` otherwise; agents are exempt). One token per
+have a display name; nobody is asked for one: sign-in supplies it, else the part of their email before the `@` is stored on the first comment. Agents are named after their account. One token per
 document serves both frames. See
 [private-sharing.md](private-sharing.md#credentials-by-capability).
 

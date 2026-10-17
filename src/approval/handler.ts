@@ -40,6 +40,7 @@ import {
   holdProvenIdentity,
   isOtherFlowsToken,
   resolveAccountForIdentity,
+  setDisplayNameIfUnset,
   startDeviceHandshake,
 } from "../db.js";
 import { newAccountId, newHandshakeToken } from "../ids.js";
@@ -455,6 +456,7 @@ async function prove(
   // The subject, not the email, is what brings someone back to an account. An
   // address can be reassigned to a new person; a provider's subject cannot,
   // which is why this can refuse rather than merge.
+  const name = asserted.name ?? null;
   const account = await resolveAccountForIdentity(
     env.DB,
     handshake.provider,
@@ -465,6 +467,9 @@ async function prove(
     defaultPlan(env),
     false,
   );
+  // The provider's name only fills a blank: one the person chose is never replaced. A new
+  // account gets it when Terms are accepted (`pending_name`).
+  if (account !== null && name !== null) await setDisplayNameIfUnset(env.DB, account.id, name);
   if (
     account === null &&
     (await env.DB.prepare("SELECT 1 FROM accounts WHERE email = ?").bind(email).first())
@@ -493,7 +498,7 @@ async function prove(
       account?.id ?? null,
       confirmToken,
       now,
-      account === null ? { subject: asserted.subject, email } : undefined,
+      account === null ? { subject: asserted.subject, email, name: name ?? undefined } : undefined,
     ))
   ) {
     return browser || reader ? await failure() : page(EXPIRED, 400);

@@ -886,7 +886,7 @@ export async function startDeviceHandshake(
       `UPDATE device_codes
           SET provider = ?, state = ?, verifier = ?,
               account_id = NULL, confirm_token = NULL,
-              pending_subject = NULL, pending_email = NULL
+              pending_subject = NULL, pending_email = NULL, pending_name = NULL
         WHERE user_code = ? AND confirm_token IS NULL
           AND approved_at IS NULL AND denied_at IS NULL AND expires_at > ?
         RETURNING user_code`,
@@ -959,12 +959,12 @@ export async function holdProvenIdentity(
   accountId: string | null,
   confirmToken: string,
   nowMs: number,
-  identity?: { subject: string; email: string },
+  identity?: { subject: string; email: string; name?: string },
 ): Promise<boolean> {
   const held = await db
     .prepare(
       `UPDATE device_codes
-          SET account_id = ?, confirm_token = ?, verifier = NULL, pending_subject = ?, pending_email = ?
+          SET account_id = ?, confirm_token = ?, verifier = NULL, pending_subject = ?, pending_email = ?, pending_name = ?
         WHERE state = ?
           AND verifier IS NOT NULL
           AND approved_at IS NULL
@@ -972,7 +972,7 @@ export async function holdProvenIdentity(
           AND expires_at > ?
         RETURNING user_code`,
     )
-    .bind(accountId, confirmToken, identity?.subject ?? null, identity?.email ?? null, state, nowMs)
+    .bind(accountId, confirmToken, identity?.subject ?? null, identity?.email ?? null, identity?.name ?? null, state, nowMs)
     .first<{ user_code: string }>();
 
   return held !== null;
@@ -1016,8 +1016,8 @@ export async function confirmDeviceApproval(
     db
       .prepare(
         `INSERT INTO accounts
-      (id, email, created_at, plan, plan_checked_at, newsletter_opt_in, newsletter_choice_at)
-      SELECT ?, pending_email, ?, ?, ?, ?, ? FROM device_codes d
+      (id, email, created_at, plan, plan_checked_at, newsletter_opt_in, newsletter_choice_at, display_name)
+      SELECT ?, pending_email, ?, ?, ?, ?, ?, pending_name FROM device_codes d
       WHERE ${live} AND NOT EXISTS (
         SELECT 1 FROM identities i WHERE i.provider = d.provider AND i.subject = d.pending_subject
       ) ON CONFLICT DO NOTHING`,
@@ -1053,7 +1053,7 @@ export async function confirmDeviceApproval(
       .prepare(
         `UPDATE device_codes
       SET approved_at = ?, state = NULL, confirm_token = NULL,
-          pending_subject = NULL, pending_email = NULL
+          pending_subject = NULL, pending_email = NULL, pending_name = NULL
       WHERE confirm_token = ? AND approved_at IS NULL AND denied_at IS NULL
         AND account_id IS NOT NULL AND expires_at > ?
         AND (pending_subject IS NULL OR ? = 1)
@@ -1112,7 +1112,7 @@ export async function denyDeviceApproval(
     .prepare(
       `UPDATE device_codes
           SET denied_at = ?, state = NULL, confirm_token = NULL, verifier = NULL,
-              pending_subject = NULL, pending_email = NULL
+              pending_subject = NULL, pending_email = NULL, pending_name = NULL
         WHERE confirm_token = ?
           AND approved_at IS NULL
           AND denied_at IS NULL
@@ -1697,6 +1697,14 @@ export async function setDisplayName(db: D1Database, owner: string, name: string
     .bind(name, owner, owner)
     .first();
   return updated !== null;
+}
+
+/** Name an account only if it has no name yet, so a name a person chose is never overwritten. */
+export async function setDisplayNameIfUnset(db: D1Database, accountId: string, name: string): Promise<void> {
+  await db
+    .prepare("UPDATE accounts SET display_name = ? WHERE id = ? AND display_name IS NULL")
+    .bind(name, accountId)
+    .run();
 }
 
 /** D1 allows 100 bound parameters a statement; names and emails are read in chunks under it. */
