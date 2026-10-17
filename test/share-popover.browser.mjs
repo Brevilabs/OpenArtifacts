@@ -221,8 +221,8 @@ after(async () => {
   await mf?.dispose();
 });
 
-const newContext = (account) =>
-  browser.newContext({ ignoreHTTPSErrors: true, viewport: { width: 1280, height: 800 } }).then(async (context) => {
+const newContext = (account, height = 800) =>
+  browser.newContext({ ignoreHTTPSErrors: true, viewport: { width: 1280, height } }).then(async (context) => {
     if (account) await context.addCookies([sessionCookie(account)]);
     return context;
   });
@@ -727,7 +727,7 @@ async function ownerFrame(context, docId) {
 }
 
 test("an owner view taller than the popover scrolls instead of squashing its controls", { timeout: 120_000 }, async () => {
-  // The frame is a fixed 480px tall. With a request and a dozen invitees the owner
+  // The popover is a fixed height. With a request and a dozen invitees the owner
   // view is far taller, and `main` has to scroll: flex children that shrink would
   // flatten the Link access control to a line and clip Copy link off the bottom.
   const X = await publish("Crowded", "<p>Mine.</p>");
@@ -762,6 +762,59 @@ test("an owner view taller than the popover scrolls instead of squashing its con
     `Copy link (y ${copyBox.y}..${copyBox.y + copyBox.height}) is inside the frame (y ${frameBox.y}..${frameBox.y + view.height}) once main is scrolled to the bottom`,
   );
   await context.close();
+});
+
+test("the owner view with nobody added fits the popover without a scrollbar, and a crowded one scrolls", { timeout: 180_000 }, async () => {
+  // The popover is one fixed height, so its tallest owner view with nobody added has to fit it: the private page's
+  // helper line wrapping, the copy notice, and the free owner's plan line.
+  const X = await publish("Roomy", "<p>Mine.</p>");
+  const context = await newContext(OWNER_ACCOUNT, 900);
+  const { page, frame } = await ownerFrame(context, X);
+  const sizes = async () => frame.evaluate(() => {
+    const element = document.querySelector("main");
+    return { scrollHeight: element.scrollHeight, clientHeight: element.clientHeight };
+  });
+  const fits = async (label) => {
+    const main = await until(label, async () => {
+      const size = await sizes();
+      return size.clientHeight > 0 ? size : null;
+    });
+    assert.ok(main.scrollHeight <= main.clientHeight, `${label}: main needs ${main.scrollHeight}px in ${main.clientHeight}px`);
+  };
+  await fits("public, nobody added");
+
+  await frame.getByRole("radio", { name: "Only those invited" }).click();
+  await frame.getByText("People who opened it while it was public may have kept a copy.").waitFor();
+  await frame.getByText("Only people you add can open this page.").waitFor();
+  await fits("private with the notice and the helper line");
+  await shoot(page, "popover-owner-nobody");
+
+  await db.prepare("UPDATE accounts SET plan = 'free' WHERE id = ?").bind(OWNER_ACCOUNT).run();
+  try {
+    await frame.getByRole("radio", { name: "Anyone with the link" }).click();
+    await until("the free owner view", async () => (await frame.getByText("Private pages and comments need a paid plan.").count()) > 0);
+    await fits("free owner, plan line");
+    await frame.getByRole("radio", { name: "Only those invited" }).click();
+    await frame.getByText("Private sharing needs a paid plan. Nothing was changed.").waitFor();
+    await fits("free owner, plan line and refusal");
+  } finally {
+    await db.prepare("UPDATE accounts SET plan = 'pro' WHERE id = ?").bind(OWNER_ACCOUNT).run();
+  }
+  await context.close();
+
+  const Y = await publish("Eight", "<p>Mine.</p>");
+  for (let n = 0; n < 8; n++) {
+    assert.equal((await api(`/api/v1/docs/${Y}/access/people/${encodeURIComponent(`person${n}@example.com`)}`, { method: "PUT", body: "{}" })).status, 200);
+  }
+  const other = await newContext(OWNER_ACCOUNT, 900);
+  const crowded = await ownerFrame(other, Y);
+  await crowded.frame.getByText("person7@example.com").waitFor();
+  const main = await crowded.frame.evaluate(() => {
+    const element = document.querySelector("main");
+    return { scrollHeight: element.scrollHeight, clientHeight: element.clientHeight };
+  });
+  assert.ok(main.scrollHeight > main.clientHeight, `eight people scroll (${main.scrollHeight} > ${main.clientHeight})`);
+  await other.close();
 });
 
 test("an owner pastes a column of addresses and adds them all at once", { timeout: 120_000 }, async () => {

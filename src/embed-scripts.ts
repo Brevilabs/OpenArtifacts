@@ -40,8 +40,12 @@ import { PAGE_COMMENTS_SCRIPT } from "./comments-scripts.js";
  *   plain `target="_blank"` link the design requires.
  * - Messages are accepted only from that iframe's window and the API origin,
  *   and carry no credential in either direction.
- * - The popover is **one fixed height** (at most 480 px, less on a short
- *   viewport) and the frame scrolls inside it. The frame never reports its
+ * - The popover is **one fixed height** (at most 640 px, less on a short
+ *   viewport) and the frame scrolls inside it. 640 is the tallest owner view
+ *   with nobody added (measured at the popover's 360 px: 605 px for a private
+ *   page with the copy notice and the wrapped helper line; the free owner's plan
+ *   line is shorter) plus a margin, so that view has no scrollbar; a list of
+ *   people scrolls. The frame never reports its
  *   size: on a public document any page on `openartifacts.site` can embed the
  *   same frame for any document it knows, and the height of what the frame
  *   draws (owner controls, a list of people, or just Copy link) would tell that
@@ -93,7 +97,7 @@ export const PAGE_SCRIPT = String.raw`(() => {
     host.style.width = width + "px";
     host.style.top = top + "px";
     host.style.left = Math.round(Math.max(8, Math.min(box.right - width, view.clientWidth - width - 8))) + "px";
-    host.style.height = Math.max(120, Math.min(480, view.clientHeight - top - 8)) + "px";
+    host.style.height = Math.max(120, Math.min(640, view.clientHeight - top - 8)) + "px";
   };
   const build = () => {
     host = document.createElement("div");

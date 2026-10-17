@@ -354,15 +354,18 @@ test("a selection offers Comment, the frame posts after sign-in, and the card si
 
   // 4. Comment opens a draft card at the selection, with the quote.
   await tab.mouse.click(tipBox.x + tipBox.width / 2, tipBox.y + tipBox.height / 2);
-  await frame.getByText("Comment on “Q3 client report”").waitFor();
-  assert.equal(await frame.locator(".quote").first().innerText(), quote);
+  const composer = frame.getByRole("textbox", { name: "Add a comment…" });
+  await composer.waitFor();
+  assert.equal(await frame.getByText("Comment on “Q3 client report”").count(), 0, "no header");
+  assert.equal(await frame.locator("[data-thread=''] .quote").count(), 0, "no quoted passage");
+  assert.equal(await frame.getByRole("button", { name: "Cancel" }).count(), 0, "no Cancel");
 
   // 5. The composer is there. Carol has no name: she is not asked, and is named from her email.
   const box = frame.getByRole("textbox", { name: "Add a comment…" });
   await box.waitFor();
   await shoot(tab, "margin-draft-card");
   await box.fill("This overstates the renewal risk; two of the three accounts already renewed.");
-  await frame.getByRole("button", { name: "Post" }).click();
+  await frame.locator("[data-thread='']").getByRole("button", { name: "Send" }).click();
 
   // 6. The card stays beside the passage, the highlight is painted, the count is 1.
   const card = frame.locator("[data-thread]:not([data-thread=''])");
@@ -403,7 +406,7 @@ test("a selection offers Comment, the frame posts after sign-in, and the card si
   // 9. Replying in the card posts under it, and the count does not change.
   const reply = frame.getByRole("textbox", { name: "Reply…" });
   await reply.fill("Fixed in my draft.");
-  await frame.getByRole("button", { name: "Post" }).click();
+  await frame.getByRole("button", { name: "Send" }).click();
   await until("the reply", async () => (await card.innerText()).includes("Fixed in my draft."));
   assert.equal((await threadsOf(docId))[0].comments.length, 2);
   await context.close();
@@ -570,7 +573,7 @@ test("a Can-view reader sees the cards with no reply box and no Comment button",
     } else {
       await frame.getByText("You can view this page.").waitFor();
       assert.equal(await frame.getByRole("textbox").count(), 0);
-      assert.equal(await frame.getByRole("button", { name: "Post" }).count(), 0);
+      assert.equal(await frame.getByRole("button", { name: "Send" }).count(), 0);
       // Selecting text shows no Comment button once the frame has said so.
       await select(tab, "Staffing is unchanged");
       await tab.waitForTimeout(600);
@@ -632,7 +635,7 @@ test("a narrow page draws no margin; a tapped highlight or Comment opens a botto
   const area = frame.getByRole("textbox", { name: "Add a comment…" });
   await until("the sheet to fit its card", async () => (await hostBox(tab)).height < 844 * 0.55 - 20);
   await area.fill("Who is staffed?");
-  await frame.getByRole("button", { name: "Post" }).click();
+  await frame.locator("[data-thread='']").getByRole("button", { name: "Send" }).click();
   await until("the new thread", async () => (await threadsOf(docId)).length === 2);
   await until("the new thread to show", async () => (await frame.getByText("Who is staffed?").count()) === 1);
   assert.equal((await threadsOf(docId))[1].anchor.exact, "Staffing is unchanged");
@@ -807,7 +810,7 @@ const postedTo = (tab) => {
   return seen;
 };
 
-test("a message from the page never moves focus into the frame, and nothing posts without a click on Post", { timeout: 180_000 }, async () => {
+test("a message from the page never moves focus into the frame, and nothing posts without a click on Send", { timeout: 180_000 }, async () => {
   const victim = await publish("Victim", REPORT);
   const hostileBody = `<h1>Survey</h1><p>Type your name:</p><input id="name" style="font-size:20px">
 <script>
@@ -856,9 +859,8 @@ document.getElementById("name").addEventListener("input", () => {
   await page2.mouse.click(tipBox.x + tipBox.width / 2, tipBox.y + tipBox.height / 2);
   const draft = frame.getByRole("textbox", { name: "Add a comment…" });
   await draft.waitFor();
-  assert.equal(await frame.evaluate(() => document.activeElement.tagName), "BODY", "no textarea took the focus");
-  assert.notEqual(await page2.evaluate(() => document.activeElement.tagName), "IFRAME");
-  await draft.click();
+  // The Comment click itself puts the cursor in the box, so the reader types at once.
+  await until("the box to hold the focus", () => frame.evaluate(() => document.activeElement.tagName === "TEXTAREA"));
   await page2.keyboard.type("typed by hand");
   assert.equal(await draft.inputValue(), "typed by hand");
   assert.equal(await frame.getByRole("textbox", { name: "Reply…" }).inputValue(), "");
@@ -866,7 +868,7 @@ document.getElementById("name").addEventListener("input", () => {
   await page2.keyboard.press("Control+Enter");
   await page2.waitForTimeout(800);
   assert.equal((await threadsOf(docId)).length, 1, "Ctrl+Enter does not post");
-  await frame.getByRole("button", { name: "Post" }).click();
+  await frame.locator("[data-thread='']").getByRole("button", { name: "Send" }).click();
   await until("the post", async () => (await threadsOf(docId)).length === 2);
   await own.close();
 });
@@ -955,10 +957,10 @@ test("an empty reply box shows no buttons, and typing, or dragging the box talle
     const b = await cards.nth(1).boundingBox();
     return b.y >= a.y + a.height - 1;
   };
-  assert.equal(await cards.nth(0).locator(".btns").evaluate((el) => getComputedStyle(el).display), "none", "no Post row while the box is empty");
+  assert.equal(await cards.nth(0).getByRole("button", { name: "Send" }).isDisabled(), true, "Send is off while the box is empty");
   assert.equal(await clear(), true);
   await cards.nth(0).getByRole("textbox").fill("A reply");
-  assert.equal(await cards.nth(0).locator(".btns").evaluate((el) => getComputedStyle(el).display), "flex");
+  assert.equal(await cards.nth(0).getByRole("button", { name: "Send" }).isDisabled(), false);
   await until("the second card to stay clear", clear);
   await cards.nth(0).getByRole("textbox").evaluate((el) => { el.style.height = "220px"; });
   await until("the second card to make room", clear);
@@ -1092,7 +1094,7 @@ test("a selection that ends in our footer, or crosses a body-level script, still
   const box = await tip.boundingBox();
   await tab.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
   await frame.getByRole("textbox", { name: "Add a comment…" }).fill("Across the script");
-  await frame.getByRole("button", { name: "Post" }).click();
+  await frame.locator("[data-thread='']").getByRole("button", { name: "Send" }).click();
   await until("the thread", async () => (await threadsOf(docId)).length === 1);
   const [thread] = await threadsOf(docId);
   assert.equal(thread.anchorStatus, "anchored");
@@ -1129,13 +1131,13 @@ test("a quote that runs into a <pre> posts, and text drawn by the page's own scr
   };
   await pick("p", 11, "log", 12);
   await frame.getByRole("textbox", { name: "Add a comment…" }).fill("Spans into the pre.");
-  await frame.getByRole("button", { name: "Post" }).click();
+  await frame.locator("[data-thread='']").getByRole("button", { name: "Send" }).click();
   await until("the thread", async () => (await threadsOf(docId)).length === 1);
   assert.equal((await threadsOf(docId))[0].anchorStatus, "anchored");
 
   await pick("drawn", 0, "drawn", 18);
   await frame.getByRole("textbox", { name: "Add a comment…" }).fill("On drawn text.");
-  await frame.getByRole("button", { name: "Post" }).click();
+  await frame.locator("[data-thread='']").getByRole("button", { name: "Send" }).click();
   await frame.getByText(/isn’t in the document itself/).waitFor();
   assert.equal(await frame.getByText(/Quote it exactly as that version reads/).count(), 0);
   assert.equal((await threadsOf(docId)).length, 1);
@@ -1188,9 +1190,9 @@ test("html{zoom}, an inner scroller and a fixed contents list do not break the m
   const zoomTip = tab.locator(".openartifacts-comment-tip");
   await until("the Comment button", async () => await zoomTip.isVisible());
   const zoomTipBox = await zoomTip.boundingBox();
-  const selected = await tab.evaluate(() => { const r = window.getSelection().getRangeAt(0).getClientRects(); const last = r[r.length - 1]; return { right: last.right, top: last.top }; });
+  const selected = await tab.evaluate(() => { const r = window.getSelection().getRangeAt(0).getClientRects(); return { left: r[0].left, top: r[0].top }; });
   assert.ok(zoomTipBox.y >= 0 && zoomTipBox.y + zoomTipBox.height <= 900, `the button (${zoomTipBox.y}) is inside the viewport`);
-  assert.ok(Math.abs(zoomTipBox.y - (selected.top - 40)) < 12 && Math.abs(zoomTipBox.x - (selected.right - 40)) < 12, "the button is beside the selection");
+  assert.ok(Math.abs(zoomTipBox.y - (selected.top - 44)) < 12 && Math.abs(zoomTipBox.x - selected.left) < 12, "the button is beside the selection");
   await context.close();
 
   // 2. A page that scrolls in a 100vh container, not in the window, gets the sheet, not a margin that cannot follow.
@@ -1247,7 +1249,7 @@ test("an inner scroller that starts with its passage in view switches to the she
   await context.close();
 });
 
-test("a positions message that only changes the host height does not rebuild the reply box being dragged", { timeout: 120_000 }, async () => {
+test("a positions message that only changes the host height does not rebuild the reply box being typed in", { timeout: 120_000 }, async () => {
   const docId = await publish("LastLine", `<p>First line.</p><p id="last">The very last line of text.</p>`);
   await agentThread(docId, { exact: "The very last line of text", section: "last" }, "Last?");
   const context = await newContext(ALICE, { viewport: { width: 1280, height: 700 }, signedInTo: docId });
@@ -1257,13 +1259,13 @@ test("a positions message that only changes the host height does not rebuild the
   const card = frame.locator("[data-thread]");
   await card.waitFor();
   const box = card.getByRole("textbox");
-  await box.fill("a reply");
-  await box.evaluate((el) => { el.style.height = "600px"; });
+  await box.fill("a reply\n".repeat(12));
+  await until("the field to grow to its cap", async () => (await box.boundingBox()).height >= 150);
+  const grown = (await box.boundingBox()).height;
   const handle = await box.elementHandle();
   await tab.waitForTimeout(1500);
   assert.equal(await handle.evaluate((el) => el.isConnected), true, "the same textarea is still in the frame");
-  assert.ok((await box.boundingBox()).height >= 590, "it keeps the height it was dragged to");
-  assert.ok((await hostBox(tab)).height > 700, "the host grew past the document to hold the card");
+  assert.equal((await box.boundingBox()).height, grown, "it keeps the height it grew to");
   await context.close();
 });
 
@@ -1570,7 +1572,7 @@ test("a page served before a push reads and writes comments at the version on sc
   const box = frame.getByRole("textbox", { name: "Add a comment…" });
   await box.waitFor();
   await box.fill("Written against the first version.");
-  await frame.getByRole("button", { name: "Post" }).click();
+  await frame.locator("[data-thread='']").getByRole("button", { name: "Send" }).click();
   await frame.getByText("Written against the first version.").waitFor();
 
   const at = async (v) => (await (await api(`/api/v1/docs/${docId}/threads?v=${v}`)).json()).threads;
@@ -1687,5 +1689,71 @@ test("a signed-out visitor to a public page nobody can comment on selects text a
   assert.equal(await tab.locator(".openartifacts-comment-tip").isVisible().catch(() => false), false);
   assert.equal(await barButton(tab).count(), 0);
   assert.equal(await hostBox(tab), null, "no visible margin");
+  await context.close();
+});
+
+test("the composer is one field with a Send arrow: grey until there are words, Enter is a newline, an empty draft closes on a click outside", { timeout: 180_000 }, async () => {
+  const docId = await publish("Composer", REPORT);
+  const context = await newContext(ALICE, { signedInTo: docId });
+  const tab = await context.newPage();
+  await tab.goto(docUrl(docId));
+  const frame = await until("the comments frame", () => commentsFrame(tab, docId));
+  await frame.getByText("Select text to comment.").waitFor();
+  const tip = tab.locator(".openartifacts-comment-tip");
+  const open = async () => {
+    await select(tab, "Staffing is unchanged");
+    await until("the Comment button", async () => await tip.isVisible());
+    const box = await tip.boundingBox();
+    await tab.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+    const field = frame.getByRole("textbox", { name: "Add a comment…" });
+    await field.waitFor();
+    return field;
+  };
+
+  // The button: a dark pill, above the selection and clear of it.
+  await select(tab, "Staffing is unchanged");
+  await until("the Comment button", async () => await tip.isVisible());
+  const pill = await tip.boundingBox();
+  const passage = await rectOf(tab, "Staffing is unchanged");
+  assert.ok(pill.height >= 34 && pill.height <= 40, `the pill is ${pill.height}px tall`);
+  assert.ok(pill.y + pill.height <= passage.y, "the pill is above the text, not over it");
+  await shoot(tab, "comment-tip");
+
+  let field = await open();
+  const send = frame.getByRole("button", { name: "Send" });
+  assert.equal(await send.isDisabled(), true, "grey until there are words");
+  await shoot(tab, "composer-empty");
+  await field.fill("   ");
+  assert.equal(await send.isDisabled(), true, "spaces are not words");
+  const one = (await field.boundingBox()).height;
+  await field.click();
+  await tab.keyboard.type("first line");
+  assert.equal(await send.isDisabled(), false);
+  await tab.keyboard.press("Enter");
+  await tab.keyboard.type("second line");
+  await tab.waitForTimeout(300);
+  assert.equal((await threadsOf(docId)).length, 0, "Enter did not post");
+  assert.ok((await field.boundingBox()).height > one, "the field grew with its text");
+  assert.match(await field.inputValue(), /second line$/);
+  // Words stay through a click outside, and Escape cancels them.
+  await tab.mouse.click(20, 400);
+  await tab.waitForTimeout(300);
+  assert.equal(await frame.getByRole("textbox", { name: "Add a comment…" }).count(), 1, "a draft with words stays");
+  await field.press("Escape");
+  await until("the draft to close", async () => (await frame.getByRole("textbox", { name: "Add a comment…" }).count()) === 0);
+
+  // An empty draft closes on a click on the page, and on Escape.
+  field = await open();
+  await tab.mouse.click(20, 400);
+  await until("the empty draft to close on a page click", async () => (await frame.getByRole("textbox", { name: "Add a comment…" }).count()) === 0);
+  field = await open();
+  await field.press("Escape");
+  await until("the empty draft to close on Escape", async () => (await frame.getByRole("textbox", { name: "Add a comment…" }).count()) === 0);
+
+  // Send posts.
+  field = await open();
+  await field.fill("Is this right?");
+  await send.click();
+  await until("the post", async () => (await threadsOf(docId)).length === 1);
   await context.close();
 });

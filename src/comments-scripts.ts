@@ -240,7 +240,7 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       for (let el = first && first.node.parentElement; el && el !== document.body; el = el.parentElement) {
         if (el.id && el.id.length <= 128) { anchor.section = el.id; break; }
       }
-      return { a: a, b: b, anchor: anchor, rect: live.getClientRects()[live.getClientRects().length - 1] || live.getBoundingClientRect() };
+      return { a: a, b: b, anchor: anchor, rect: live.getClientRects()[live.getClientRects().length - 1] || live.getBoundingClientRect(), first: live.getClientRects()[0] || live.getBoundingClientRect() };
     };
 
     // ---- the frame ----------------------------------------------------------
@@ -426,22 +426,32 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
         tipHost.setAttribute("style", "all:initial;position:fixed;z-index:2147483646;display:none");
         const root = rootOf(tipHost);
         hostOnly(root, "@media print{:host{display:none!important}}");
+        hostOnly(root, ".t{all:initial;box-sizing:border-box;display:inline-flex;align-items:center;gap:7px;height:36px;padding:0 14px 0 12px;border-radius:11px;background:#1f2024;color:#fff;border:1px solid rgba(255,255,255,.14);box-shadow:0 6px 18px rgba(0,0,0,.28),0 1px 3px rgba(0,0,0,.2);cursor:pointer;user-select:none;white-space:nowrap;font:500 14px/1 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif}.t:hover{background:#2c2d33}.t:focus-visible{outline:2px solid #7cc4ff;outline-offset:2px}.t svg{flex:none}");
         tip = document.createElement("button");
         tip.type = "button";
-        tip.textContent = "Comment";
-        tip.setAttribute("style", "all:initial;box-sizing:border-box;display:block;padding:7px 12px;border-radius:9px;background:#18191d;color:#fff;cursor:pointer;user-select:none;box-shadow:0 4px 14px rgba(0,0,0,.3);" + FONT);
+        tip.className = "t";
+        const svgns = "http://www.w3.org/2000/svg";
+        const icon = document.createElementNS(svgns, "svg");
+        for (const [name, value] of [["viewBox", "0 0 24 24"], ["width", "16"], ["height", "16"], ["fill", "none"], ["stroke", "currentColor"], ["stroke-width", "2"], ["stroke-linecap", "round"], ["stroke-linejoin", "round"], ["aria-hidden", "true"]]) icon.setAttribute(name, value);
+        const bubble = document.createElementNS(svgns, "path");
+        bubble.setAttribute("d", "M21 11.5a8.4 8.4 0 0 1-9 8.4 8.6 8.6 0 0 1-3.7-.8L3 21l1.9-5.1A8.4 8.4 0 0 1 3 11.5 8.5 8.5 0 0 1 12 3a8.5 8.5 0 0 1 9 8.5z");
+        icon.append(bubble);
+        tip.append(icon, document.createTextNode("Comment"));
         tip.addEventListener("mousedown", (event) => event.preventDefault());
         tip.addEventListener("click", startDraft);
         root.append(tip);
         document.documentElement.append(tipHost);
       }
-      const r = cap.rect;
-      const above = r.top - 40 >= 48;
+      // Above the first line of the selection when there is room, else below the last: never over the text itself.
+      const first = cap.first, last = cap.rect;
+      const above = first.top - 44 >= 48;
       // The tip is a child of <html>: under html{zoom} its lengths are multiplied, so convert viewport px to zoomed px.
       const z = document.documentElement.currentCSSZoom || 1;
-      tipHost.style.left = Math.round(Math.max(8, Math.min(r.right - 40, viewport().clientWidth * z - 100)) / z) + "px";
-      tipHost.style.top = Math.round((above ? r.top - 40 : r.bottom + 8) / z) + "px";
       tipHost.style.display = "block";
+      const wide = tipHost.offsetWidth * z;
+      const x = above ? first.left : last.right - wide;
+      tipHost.style.left = Math.round(Math.max(8, Math.min(x, viewport().clientWidth * z - wide - 8)) / z) + "px";
+      tipHost.style.top = Math.round((above ? first.top - 44 : last.bottom + 8) / z) + "px";
     };
     const startDraft = () => {
       const cap = capture();
@@ -451,7 +461,7 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       hideTip();
       window.getSelection().removeAllRanges();
       const top = draftRange.getClientRects()[0] || draftRange.getBoundingClientRect();
-      send({ event: "draft", anchor: draft, top: Math.round(top.top + window.pageYOffset - (mhost.getBoundingClientRect().top + window.pageYOffset)) });
+      send({ event: "draft", focus: true, anchor: draft, top: Math.round(top.top + window.pageYOffset - (mhost.getBoundingClientRect().top + window.pageYOffset)) });
       if (mode === "overlay") { openSheet(); reveal(draftRange); }
       paint();
     };
@@ -594,6 +604,8 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       link.addEventListener("click", closeSheet);
       document.addEventListener("keydown", (event) => { if (sheet && event.key === "Escape") { endDraft(); closeSheet(); } }, true);
       document.addEventListener("pointerdown", (event) => {
+        // A click on the page itself closes a draft that has nothing typed in it (the frame decides); on a phone a touch is how the reader scrolls back to the passage.
+        if (draft && mode !== "overlay" && event.target !== tipHost && event.target !== mhost) send({ event: "dismiss" });
         // A draft is the reader's own words and the sheet covers half the page: a touch on the page above it (to scroll back to the passage) must not throw them away. Cancel, the close button, Escape and a post end it.
         if (sheet && !draft && event.target !== mhost && event.target !== tipHost && event.target !== button) closeSheet();
       }, true);
@@ -698,6 +710,15 @@ main.overlay{background:#f6f2e9;padding:6px 14px 18px}
 textarea,input{width:100%;font:inherit;border:1px solid #cbbfa8;border-radius:9px;padding:8px 10px;background:#f7f4ec;color:inherit}
 textarea{resize:vertical;min-height:34px}
 textarea:focus,input:focus{outline:2px solid #16786a;outline-offset:-1px;background:#fff}
+.composer{display:flex;align-items:flex-end;gap:6px;border:1px solid #cbbfa8;border-radius:20px;background:#fff;padding:3px 3px 3px 14px}
+.composer:focus-within{border-color:#16786a;box-shadow:0 0 0 2px #dcf0ea}
+.composer textarea{flex:1;min-width:0;width:auto;border:0;border-radius:0;background:transparent;padding:6px 0;min-height:0;max-height:160px;overflow-y:auto;resize:none;line-height:1.45}
+.composer textarea:focus{outline:0;background:transparent}
+button.send{flex:none;display:grid;place-items:center;width:30px;height:30px;padding:0;border:0;border-radius:50%;background:#18191d;color:#fff;cursor:pointer}
+button.send:disabled{background:#d9d6cd;color:#fff;cursor:default}
+button.send:focus-visible{outline:2px solid #16786a;outline-offset:2px}
+.card.draft{padding:0;border:0;background:transparent;box-shadow:none}
+.card.draft .composer{box-shadow:0 1px 2px rgba(40,30,10,.12),0 14px 28px -14px rgba(40,30,10,.45)}
 .btns{display:flex;justify-content:flex-end;gap:8px;margin-top:8px}
 button.b{font:inherit;font-size:12px;font-weight:650;padding:5px 11px;border-radius:8px;border:1px solid #cbbfa8;background:#fffdf8;color:#18191d;cursor:pointer}
 button.b:hover{border-color:#8f8670}button.b:disabled{cursor:default;opacity:.55}
@@ -1028,7 +1049,7 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
   };
 
   // The box a person writes in: a textarea and its buttons, the name field a first comment may ask for, or the reason there is none.
-  const writer = (key, placeholder, submit, cancel) => {
+  const writer = (key, placeholder, submit) => {
     const v = viewer();
     if (v === null) return [];
     if (!v.canComment) return [muted("You can view this page.")];
@@ -1041,18 +1062,30 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
       input.addEventListener("keydown", (event) => { if (event.key === "Escape") { event.stopPropagation(); back(); } });
       return [node("p", { class: "ask" }, ["Add your name so people know who is commenting."]), input, node("div", { class: "btns" }, [button("Cancel", back), button("Save and post", saveName, "b primary")]), errorLine(key)];
     }
-    const area = node("textarea", { rows: cancel ? "3" : "1", maxlength: "4000", placeholder: placeholder, "aria-label": placeholder, "data-key": key });
+    const area = node("textarea", { rows: "1", maxlength: "4000", placeholder: placeholder, "aria-label": placeholder, "data-key": key });
     area.value = texts[key] || "";
-    const send = button("Post", submit, "b primary");
-    const actions = node("div", { class: "btns" }, cancel ? [button("Cancel", cancel), send] : [send]);
-    // The box's height changes when the buttons appear; the card observer re-stacks. Posting takes a click on Post: a keystroke that lands in this frame some other way must never send.
-    const sync = () => { send.disabled = area.value.trim() === "" || !!busy[key]; actions.hidden = !cancel && area.value === ""; };
+    const svgns = "http://www.w3.org/2000/svg";
+    const arrow = document.createElementNS(svgns, "svg");
+    for (const [name, value] of [["viewBox", "0 0 24 24"], ["width", "16"], ["height", "16"], ["fill", "none"], ["stroke", "currentColor"], ["stroke-width", "2.5"], ["stroke-linecap", "round"], ["stroke-linejoin", "round"], ["aria-hidden", "true"]]) arrow.setAttribute(name, value);
+    const shaft = document.createElementNS(svgns, "path");
+    shaft.setAttribute("d", "M12 19V5M5 12l7-7 7 7");
+    arrow.append(shaft);
+    // Posting takes a click on Send: a keystroke that lands in this frame some other way must never send, so Enter is a newline.
+    const send = node("button", { type: "button", class: "send", "aria-label": "Send", onclick: submit });
+    send.append(arrow);
+    const sync = () => { send.disabled = area.value.trim() === "" || !!busy[key]; fit(area); };
     area.addEventListener("input", () => { texts[key] = area.value; sync(); });
     area.addEventListener("compositionstart", () => { composing = true; });
     area.addEventListener("compositionend", () => { composing = false; if (owed) { owed = false; render(); } });
-    sync();
-    return [area, actions, errorLine(key)];
+    send.disabled = area.value.trim() === "" || !!busy[key];
+    return [node("div", { class: "composer" }, [area, send]), errorLine(key)];
   };
+  // The field is one line and grows with what is typed, up to the cap, then scrolls.
+  const fit = (area) => {
+    area.style.height = "auto";
+    area.style.height = Math.min(area.scrollHeight, 160) + "px";
+  };
+  const fitAll = () => { for (const area of cards.querySelectorAll("textarea")) fit(area); };
 
   const focusThread = (id) => {
     if (focusId === id) return;
@@ -1123,7 +1156,7 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
         const body = (texts["r:" + id] || "").trim();
         if (body) act("r:" + id, () => call("POST", docPath("/threads/" + encodeURIComponent(id) + "/comments"), { body: body, version: versionOf() || undefined }), () => { texts["r:" + id] = ""; });
       };
-      card.append(...writer("r:" + id, "Reply…", reply, null));
+      card.append(...writer("r:" + id, "Reply…", reply));
     }
     return card;
   };
@@ -1137,12 +1170,7 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     post({ event: "close" });
   };
   const draftCard = () => {
-    const card = node("div", { class: "card focus", "data-thread": "" });
-    const name = titleOf();
-    card.append(node("p", { class: "where" }, [name ? "Comment on “" + name + "”" : "New comment"]));
-    const v = viewer();
-    if (v && text(v.name) !== "") card.append(who({ name: v.name, kind: "human" }));
-    card.append(node("div", { class: "quote" }, [text(draft.exact)]));
+    const card = node("div", { class: "card draft", "data-thread": "" });
     const submit = () => {
       const body = (texts.draft || "").trim();
       const snapshot = draft;
@@ -1155,7 +1183,7 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
         if (result && typeof result.threadId === "string") focusId = result.threadId;
       });
     };
-    card.append(...writer("draft", "Add a comment…", submit, cancelDraft));
+    card.append(...writer("draft", "Add a comment…", submit));
     return card;
   };
 
@@ -1185,12 +1213,13 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     flow.sort((a, b) => a.want - b.want);
     const all = items.concat(flow);
     cards.replaceChildren(...all.map((item) => item.el));
+    fitAll();
     stacked = all;
     restack();
     for (const item of all) sizes.observe(item.el);
   };
 
-  // Lay the cards out by their wants, each pushed below the one before it, and tell the page how tall that needs the column to be (it can then extend the document, so the last card is reached by scrolling the page, never the frame). Run again whenever a card's height changes: a reply box dragged taller, the Post row appearing on the first keystroke.
+  // Lay the cards out by their wants, each pushed below the one before it, and tell the page how tall that needs the column to be (it can then extend the document, so the last card is reached by scrolling the page, never the frame). Run again whenever a card's height changes: a reply box growing as it is typed in.
   const restack = () => {
     let floor = BAR;
     for (const item of stacked) {
@@ -1227,6 +1256,7 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
       return;
     }
     cards.replaceChildren(node("div", { class: "grab" }, [node("i"), close]), ...kids);
+    fitAll();
     cards.style.height = "";
   };
 
@@ -1278,7 +1308,7 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
       const nextHeight = typeof msg.height === "number" ? msg.height : 0;
       const key = JSON.stringify([next, msg.lost]);
       if (key === positionsKey) {
-        // Only the host's height moved (often in answer to our own size message): re-lay the cards, never rebuild them, or a reply box being dragged is replaced under the pointer.
+        // Only the host's height moved (often in answer to our own size message): re-lay the cards, never rebuild them, or a reply box being typed in is replaced under the pointer.
         if (nextHeight !== height) {
           height = nextHeight;
           if (mode === "margin" && stacked.length) restack();
@@ -1299,12 +1329,18 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
         draftTop = typeof msg.top === "number" ? msg.top : 0;
         texts.draft = "";
         errors.draft = "";
-        // No focus() here: a page message must never move focus into this frame, or any page on the shared serving origin could capture the reader's keystrokes. The reader clicks into the box.
         render();
+        // Only the page script's Comment click asks for focus, so a bare draft message (which any page on the serving origin can send) never moves it.
+        if (msg.focus === true) {
+          const field = Array.from(cards.querySelectorAll("textarea")).find((element) => element.dataset.key === "draft");
+          if (field) field.focus({ preventScroll: true });
+        }
       } else if (draft) {
         draft = null;
         render();
       }
+    } else if (msg.event === "dismiss") {
+      if (draft && (texts.draft || "").trim() === "") cancelDraft();
     } else if (msg.event === "focus") {
       focusId = typeof msg.threadId === "string" ? msg.threadId : "";
       if (mode === "overlay") render();
@@ -1318,6 +1354,12 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
         if (target) post({ event: "reveal", top: target.offsetTop, height: target.offsetHeight });
       }
     }
+  });
+  // A click anywhere else in the frame closes a draft that has nothing typed in it; one with words stays until it is sent or Escape.
+  document.addEventListener("pointerdown", (event) => {
+    if (!draft || (texts.draft || "").trim() !== "") return;
+    if (event.target instanceof Element && event.target.closest('[data-thread=""]')) return;
+    cancelDraft();
   });
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") return;

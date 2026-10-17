@@ -465,13 +465,13 @@ test("3. Alice selects a passage, signs in to the frame, and posts under her ema
   await signInThroughPopup(alice, signIn);
   await frame.getByText("Select text to comment.").waitFor();
   await pressComment(tab, QUOTE);
-  assert.equal(await frame.locator(".quote").first().innerText(), QUOTE);
+  assert.equal(await frame.locator("[data-thread=''] .quote").count(), 0, "the draft does not repeat the passage");
 
   const box = frame.getByRole("textbox", { name: "Add a comment…" });
   await box.waitFor();
   await box.fill(COMMENT);
   await shoot(tab, "03-alice-draft-card");
-  await frame.getByRole("button", { name: "Post" }).click();
+  await frame.getByRole("button", { name: "Send" }).click();
   // Alice has no display name: she is not asked, and is named from her email before the @.
 
   const card = frame.locator("[data-thread]:not([data-thread=''])");
@@ -577,7 +577,7 @@ test("6. v3 deletes a sentence another thread quotes: that card moves under 'On 
   const box = frame.getByRole("textbox", { name: "Add a comment…" });
   await box.waitFor();
   await box.fill("Is staffing really unchanged after the migration?");
-  await frame.getByRole("button", { name: "Post" }).click();
+  await frame.getByRole("button", { name: "Send" }).click();
   await until("the second thread", async () => (await (await request("owner", `/api/v1/docs/${DOC}/threads?state=open`)).json()).threads.length === 1);
   threadTwo = (await (await request("owner", `/api/v1/docs/${DOC}/threads?state=open`)).json()).threads[0].threadId;
   await until("its highlight", async () => (await painted(tab, "openartifacts-open")).includes(STAFFING));
@@ -614,7 +614,7 @@ test("7. Bob (Can view) sees the cards, no reply box and no Comment button, and 
   await frame.getByText("You can view this page.").waitFor();
   assert.equal(await frame.getByText("Select text to comment.").count(), 0);
   assert.equal(await frame.getByRole("textbox").count(), 0);
-  assert.equal(await frame.getByRole("button", { name: "Post" }).count(), 0);
+  assert.equal(await frame.getByRole("button", { name: "Send" }).count(), 0);
 
   await select(tab, "Closing remarks follow in the appendix");
   await tab.waitForTimeout(600);
@@ -714,7 +714,7 @@ test("9. a signed-out reader of a public page sees read-only cards, signs in, an
   const reply = frame.getByRole("textbox", { name: "Reply…" });
   await reply.waitFor();
   await reply.fill("Three engineers, same as Q2.");
-  await frame.getByRole("button", { name: "Post" }).click();
+  await frame.getByRole("button", { name: "Send" }).click();
   await until("the reply", async () => (await card.innerText()).includes("Three engineers, same as Q2."));
   const [thread] = (await (await request("owner", `/api/v1/docs/${PUBLIC}/threads`)).json()).threads;
   assert.deepEqual(thread.comments[1].author, { name: "Erin", kind: "human" });
@@ -775,7 +775,7 @@ test("11. on a phone a tapped highlight opens a bottom sheet with the card, and 
   const area = frame.getByRole("textbox", { name: "Add a comment…" });
   await area.fill("What is the base for 18%?");
   await shoot(tab, "13-phone-new-comment-sheet");
-  await frame.getByRole("button", { name: "Post" }).tap();
+  await frame.getByRole("button", { name: "Send" }).tap();
   await until("the new thread", async () => (await (await request("owner", `/api/v1/docs/${PUBLIC}/threads`)).json()).threads.length === 2);
   await until("the new card", async () => (await frame.getByText("What is the base for 18%?").count()) === 1);
   const threads = (await (await request("owner", `/api/v1/docs/${PUBLIC}/threads`)).json()).threads;
