@@ -211,7 +211,7 @@ async function shareFrame(request: Request, url: URL, env: Env): Promise<Respons
 <style>${FRAME_CSS}</style>
 </head>
 <body>
-<header><div class="field"><span>${escapeHtml(bareLink)}</span></div><button type="button" class="primary tall">${LINK_ICON_SVG}<span>Copy link</span></button><button type="button" class="x" aria-label="Close">×</button></header>
+<header><div class="field"><span><bdi>${escapeHtml(bareLink)}</bdi></span></div><button type="button" class="primary tall">${LINK_ICON_SVG}<span>Copy link</span></button><button type="button" class="x" aria-label="Close">×</button></header>
 <main data-doc="${escapeHtml(doc)}" data-link="${escapeHtml(link)}" data-origin="${origin === null ? "" : escapeHtml(origin)}" data-hint="${escapeHtml(COPILOT_HINT)}" hidden>
 <p class="muted">Only the owner can change who can open this.</p>
 <div class="bottom"><p id="oa-msg" class="err" role="alert"></p><p class="muted" id="oa-account">Is this your page? <button type="button" class="link" disabled>Sign in to manage</button></p><p class="muted hint">${escapeHtml(COPILOT_HINT)}</p></div>

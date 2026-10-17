@@ -941,6 +941,67 @@ test("the popover is one row and one scroll region, and an owner with nobody add
   await context.close();
 });
 
+test("the link field always shows the whole document id, with as much of the host as fits", { timeout: 180_000 }, async () => {
+  const X = await publish("Public link", "<p>Mine.</p>");
+  const Y = await publish("Private link", "<p>Mine.</p>", "private-docs");
+  const context = await newContext(OWNER_ACCOUNT);
+  await context.grantPermissions(["clipboard-write"], { origin: `https://${API}` });
+  // Where the last `tail.length` characters of the field's text sit against the box that clips it. Once the
+  // text overflows, an ellipsis takes the clipped side's first character cell.
+  const tailPlace = (frame, tail) =>
+    frame.evaluate((tail) => {
+      const span = document.querySelector(".field > span");
+      const text = document.createTreeWalker(span, NodeFilter.SHOW_TEXT).nextNode();
+      const range = document.createRange();
+      range.setStart(text, text.data.length - tail.length);
+      range.setEnd(text, text.data.length);
+      const shown = range.getBoundingClientRect();
+      const box = span.getBoundingClientRect();
+      const cell = shown.width / tail.length;
+      return { left: shown.left, right: shown.right, from: box.left + (span.scrollWidth > span.clientWidth ? cell : 0), to: box.right };
+    }, tail);
+  const setText = (frame, value) =>
+    frame.evaluate((value) => { document.createTreeWalker(document.querySelector(".field > span"), NodeFilter.SHOW_TEXT).nextNode().data = value; }, value);
+  for (const [viewport, width] of [[1280, 360], [320, 304]]) {
+    for (const [name, id] of [["public", X], ["private", Y]]) {
+      const page = await context.newPage();
+      await page.setViewportSize({ width: viewport, height: 800 });
+      await page.goto(docUrl(id));
+      await page.locator("a[data-openartifacts-share]").click();
+      assert.equal((await page.locator(".openartifacts-share-popover").boundingBox()).width, width);
+      const frame = await until("the Share frame", () => frameOf(page, id));
+      await frame.locator("main:not([hidden])").waitFor();
+      const label = `${name} at ${width}px`;
+      // A private page is served on its publisher's code host, and the field still shows the canonical link.
+      if (name === "private") assert.notEqual(new URL(page.url()).host, SERVING);
+      const bare = `${SERVING}/d/${id}`;
+      assert.equal(await frame.locator(".field").innerText(), bare, label);
+      const tail = `/d/${id}`;
+      const shown = await tailPlace(frame, tail);
+      assert.ok(shown.left >= shown.from - 0.5 && shown.right <= shown.to + 0.5, `${label}: ${tail} spans ${shown.left}..${shown.right} in ${shown.from}..${shown.to}`);
+      // A click on the field selects the whole link, and Copy link copies it with its scheme.
+      await frame.locator(".field").click();
+      assert.equal(await frame.evaluate(() => window.getSelection().toString()), bare, `${label}: a click selects it all`);
+      // The frame may only write the clipboard, so what it writes is read where it is written.
+      await frame.evaluate(() => {
+        const write = navigator.clipboard.writeText.bind(navigator.clipboard);
+        navigator.clipboard.writeText = (text) => { window.__copied = text; return write(text); };
+      });
+      await frame.getByRole("button", { name: "Copy link" }).click();
+      await frame.getByRole("button", { name: "Copied" }).waitFor();
+      assert.equal(await frame.evaluate(() => window.__copied), `https://${bare}`, `${label}: Copy link`);
+      // The same box holds a longer host, such as the page's own code host, and still shows the whole id.
+      if (name === "private") {
+        await setText(frame, `${new URL(page.url()).host}${tail}`);
+        const longer = await tailPlace(frame, tail);
+        assert.ok(longer.left >= longer.from - 0.5 && longer.right <= longer.to + 0.5, `${label}, a code host: ${tail} spans ${longer.left}..${longer.right} in ${longer.from}..${longer.to}`);
+      }
+      await page.close();
+    }
+  }
+  await context.close();
+});
+
 test("an owner view taller than the popover scrolls under the row instead of squashing its controls", { timeout: 120_000 }, async () => {
   // The frame has one fixed height. With a request and a dozen invitees the owner
   // view is far taller, and `main` has to scroll: flex children that shrink would

@@ -509,12 +509,15 @@ that must never be on a page whose scripts the author writes.
   knows; a size report, a focus move or an early message would tell that page, with
   no click, whether its visitor holds a token.
 - **Its layout** is the same in every view. A row at the top holds the link
-  field, **Copy link** and ×; it is the primary action, so it never scrolls away,
+  field, **Copy link** (an icon) and ×; it is the primary action, so it never scrolls away,
   and it belongs to the frame's shell, not to a view, so nothing a view draws moves
   it. There is no title row. Everything else is one scroll region under it, never a
   nested scroll box; the row gets a hairline divider only once content has scrolled
   under it, and a fade at the foot shows only while there is more below. Escape and
-  a click outside close the popover.
+  a click outside close the popover. The field drops the scheme and always shows
+  the end of the link, `/d/{id}`, cutting the host from its start when the whole
+  link does not fit; a click selects all of it, and **Copy link** copies the full
+  url.
 - **Its height** is one for every viewer, so it says nothing about who is looking,
   and is chosen so that the owner view with nobody added shows whole, with no
   scrollbar, in each of its forms: public, private, a free owner's plan line, and

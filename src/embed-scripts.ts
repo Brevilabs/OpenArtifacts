@@ -220,6 +220,13 @@ export const POPUP_DONE_SCRIPT = String.raw`(function () {
  * `.fade` over the foot of the frame shows only while there is more below
  * (`body.more`), both set by the frame script. There is no title row.
  *
+ * **The link field** always shows the end of the link, `/d/{id}`, and as much
+ * of the host before it as fits: its text runs right to left inside an LTR
+ * isolate (`<bdi>`), so the ellipsis takes the start of the host, and a click
+ * still selects the whole link. Copy link is an icon, with its label kept for
+ * assistive technology, because with a worded button the id alone would not fit
+ * at the popover's 360 px width, let alone 304.
+ *
  * **Height.** One for every viewer (see `PAGE_SCRIPT`), set so that the owner
  * view with nobody added, in each of its forms (public, private, a free
  * owner's plan line, the refusal after a failed switch), shows whole without a
@@ -270,11 +277,12 @@ button.tall{height:36px;padding:0 14px;border-radius:10px;font-size:14px}
 button.link{display:inline;height:auto;padding:0;border:0;background:none;color:#f6ae52;font-size:inherit;font-weight:inherit;line-height:inherit;white-space:normal}
 button.link.block{display:block;margin-top:2px}
 button.link:hover{background:none;text-decoration:underline;text-underline-offset:3px}
+header button.primary{width:36px;padding:0}header button.primary span{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 header .x{flex:none;width:28px;padding:0;border:0;font-size:20px;font-weight:400;color:#8d94a0}
 header .x:hover{background:rgba(255,255,255,.06);color:#f4f5f7}
 header svg{width:16px;height:16px;flex:none;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
 .field{flex:1;min-width:0;display:flex;align-items:center;height:36px;padding:0 12px;border:1px solid #20242c;border-radius:10px;background:#07080b;color:#c9ced6;font:12.5px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-.field span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;user-select:all}
+.field>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;user-select:all;direction:rtl;text-align:left}
 select{font:inherit;font-size:13px;height:28px;padding:0 6px;border:1px solid #2c313b;border-radius:8px;background:#07080b;color:#e9ebee;cursor:pointer}
 select:hover{border-color:#3a404b}
 input{font:inherit;flex:1;min-width:0;height:36px;padding:0 12px;border:1px solid #20242c;border-radius:10px;background:#07080b;color:#e9ebee}
