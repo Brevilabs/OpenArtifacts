@@ -888,18 +888,18 @@ describe("threads", () => {
 });
 
 describe("display names", () => {
-  it("asks a person for a name before their first comment, and never asks an agent", async () => {
+  it("names a person from their email before the @, without a +tag, on their first comment instead of asking, and keeps a chosen name", async () => {
     const { priv } = await world();
     const erin = await person("erin@acme.com", null);
     await invite(priv, erin.email, "comment");
 
-    const refused = await thread(priv, await frame(erin, priv));
-    expect(refused.status).toBe(409);
-    expect((await errorOf(refused)).code).toBe("name_required");
-    const reply = await send("POST", `/embed/api/docs/${priv}/threads/th_x/comments`, await frame(erin, priv), { body: "x" });
-    expect(reply.status).toBe(409);
+    const first = await thread(priv, await frame(erin, priv));
+    expect(first.status).toBe(201);
+    expect(await env.DB.prepare("SELECT display_name FROM accounts WHERE id = ?").bind(erin.id).first()).toEqual({
+      display_name: "erin",
+    });
 
-    // An agent acting for the same nameless account is exempt, and is "An agent" until it has a name.
+    // An agent acting for the same account is named after it.
     const agent = await created(await thread(priv, erin.token));
     expect(agent.anchorStatus).toBe("anchored");
 
@@ -910,6 +910,7 @@ describe("display names", () => {
 
     const names = (await threadsOf(await listThreads(priv, erin.token))).threads.flatMap((t) => t.comments.map((c) => c.author));
     expect(names).toEqual([
+      { name: "Erin E.", kind: "human" },
       { name: "Erin E.'s agent", kind: "agent" },
       { name: "Erin E.", kind: "human" },
     ]);

@@ -86,6 +86,7 @@ function post(path: string, fields: Record<string, string>, over: Partial<Env> =
 function oauthAnswering(
   email: string | null,
   subject = `sub-${email}`,
+  name?: string,
 ): OAuthClient & { calls: number } {
   const client = {
     calls: 0,
@@ -94,7 +95,7 @@ function oauthAnswering(
     },
     async verifiedIdentity() {
       client.calls += 1;
-      return email === null ? null : { subject, email };
+      return email === null ? null : name === undefined ? { subject, email } : { subject, email, name };
     },
   };
   return client;
@@ -192,12 +193,13 @@ async function approve(
   userCode = USER_CODE,
   email = "ada@example.com",
   subject?: string,
+  name?: string,
 ): Promise<Response> {
   await begin(provider, userCode);
   const proven = await callback({
     provider,
     state: await startedState(userCode),
-    oauth: oauthAnswering(email, subject ?? `sub-${provider}`),
+    oauth: oauthAnswering(email, subject ?? `sub-${provider}`, name),
   });
   return await post("/approve/confirm", {
     terms: "yes",
@@ -481,7 +483,7 @@ describe("POST /approve/start/{provider}", () => {
     expect(target.searchParams.get("code_challenge_method")).toBe("S256");
     expect(target.searchParams.get("code_challenge")).toBeTruthy();
     expect(target.searchParams.get("redirect_uri")).toBe(`${ORIGIN}/approve/callback/google`);
-    expect(target.searchParams.get("scope")).toBe("openid email");
+    expect(target.searchParams.get("scope")).toBe("openid email profile");
 
     const row = await readCode();
     expect(row?.provider).toBe("google");
@@ -1740,5 +1742,36 @@ describe("reader sign-in", () => {
     // `Origin: null` above is what a form posted from a no-referrer page sends, so
     // these pages must not be no-referrer: they keep their real Origin.
     expect((await asked({})).headers.get("referrer-policy")).toBe("same-origin");
+  });
+});
+
+describe("names from sign-in", () => {
+  const nameOf = async (email = "ada@example.com") =>
+    (await env.DB.prepare("SELECT display_name FROM accounts WHERE email = ?").bind(email).first<{ display_name: string | null }>())
+      ?.display_name ?? null;
+
+  it("names a new account with the provider's name when Terms are accepted", async () => {
+    expect((await approve("google", USER_CODE, "ada@example.com", "sub-g", "Ada Lovelace")).status).toBe(200);
+    expect(await nameOf()).toBe("Ada Lovelace");
+  });
+
+  it("names an existing account that has no name, on any provider", async () => {
+    await findOrCreateAccount(env.DB, newAccountId(), "ada@example.com", NOW);
+    await begin("github");
+    await callback({ provider: "github", oauth: oauthAnswering("ada@example.com", "sub-gh", "Ada L.") });
+    expect(await nameOf()).toBe("Ada L.");
+  });
+
+  it("never overwrites a name already set", async () => {
+    await findOrCreateAccount(env.DB, newAccountId(), "ada@example.com", NOW);
+    await env.DB.prepare("UPDATE accounts SET display_name = 'Countess' WHERE email = 'ada@example.com'").run();
+    await begin("google");
+    await callback({ oauth: oauthAnswering("ada@example.com", "sub-g", "Ada Lovelace") });
+    expect(await nameOf()).toBe("Countess");
+  });
+
+  it("leaves the account unnamed when the provider sends none", async () => {
+    await approve("google", USER_CODE, "ada@example.com", "sub-g");
+    expect(await nameOf()).toBeNull();
   });
 });

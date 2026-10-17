@@ -29,7 +29,7 @@ another service on every request.
 An account here holds an id, one verified email address, and the time it was
 created, alongside its configured plan, expiry and last entitlement-check time. One further thing
 about a person is stored, and it lives in `identities`: the provider's own permanent id for them,
-which is what returns a later sign-in to the right account. New accounts also store their optional newsletter choice. No name or avatar is requested.
+which is what returns a later sign-in to the right account. New accounts also store their optional newsletter choice. No one is asked for a name, and no avatar is read. Sign-in asks Google for the `profile` scope (on top of `openid email`) and reads GitHub's public profile name from `/user` (no extra scope), only so a comment can show a name beside the words. The name, never the picture, is stored in `accounts.display_name` and only while that is blank, so a name a person chose is never overwritten; a new account gets it when Terms are accepted (held meanwhile in `device_codes.pending_name`). A person who has none when they first comment is named from their email before the `@`, without any `+tag` (else `Reader`); that name is shown to everyone who can read their comments.
 
 **The prefix is load-bearing.** An app-sites uuid cannot start with `oa_`, so the
 two id spaces cannot collide, and no equality test between them can accidentally

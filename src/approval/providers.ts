@@ -3,8 +3,10 @@
  * this repo wants out of either of them: an email address the provider says it
  * has verified, and the provider's own permanent id for the person.
  *
- * Nothing else is read, stored, or asked for. No name, no avatar — scopes stay
- * at the minimum that yields those two.
+ * Plus, when the provider has one, the person's name: it is what a comment shows
+ * beside their words, and sign-in is the only place nobody has to be asked for
+ * it. The name only — never the picture — and it is stored nowhere but
+ * `accounts.display_name`, and only while that is still blank.
  *
  * **Both are needed because they answer different questions.** The email is
  * what creates an account and what links a second provider to it, since two
@@ -27,6 +29,7 @@
  */
 import { decodeIdToken, GitHub, Google } from "arctic";
 import type { Env } from "../config.js";
+import { normalizeDisplayName } from "../display-name.js";
 
 export const PROVIDER_IDS = ["google", "github"] as const;
 
@@ -47,12 +50,13 @@ export const PROVIDER_ICONS: Record<ProviderId, string> = {
 };
 
 /**
- * Least privilege, and both providers give it: Google's `openid email` yields
- * an id token with the address and its verification flag and nothing else,
- * GitHub's `user:email` reads addresses without granting the profile scope.
+ * Least privilege for what is read: Google's `openid email profile` yields an id
+ * token with the address, its verification flag and the name (`profile` is what
+ * adds the name); GitHub's `user:email` reads addresses, and the public profile
+ * name comes from `/user` with no scope at all.
  */
 const PROVIDER_SCOPES: Record<ProviderId, string[]> = {
-  google: ["openid", "email"],
+  google: ["openid", "email", "profile"],
   github: ["user:email"],
 };
 
@@ -128,6 +132,8 @@ export interface VerifiedIdentity {
   subject: string;
   /** The address the provider said it verified, in the casing it sent. */
   email: string;
+  /** The provider's name for the person under the display-name rule; absent when it sent none or an unusable one. */
+  name?: string;
 }
 
 /** GitHub rejects an API request with no user agent, so every call names us. */
@@ -196,6 +202,12 @@ export function arcticOAuthClient(env: Env): OAuthClient {
   };
 }
 
+/** The identity with the provider's name attached when it is a valid display name. */
+function withName(identity: VerifiedIdentity, rawName: unknown): VerifiedIdentity {
+  const name = normalizeDisplayName(rawName);
+  return name === null ? identity : { ...identity, name };
+}
+
 /**
  * Who a Google id token names, or null unless Google says it verified the
  * address.
@@ -211,10 +223,11 @@ export function arcticOAuthClient(env: Env): OAuthClient {
  */
 export function googleVerifiedIdentity(claims: unknown): VerifiedIdentity | null {
   if (typeof claims !== "object" || claims === null) return null;
-  const { sub, email, email_verified: verified } = claims as Record<string, unknown>;
+  const { sub, email, name, email_verified: verified } = claims as Record<string, unknown>;
   if (verified !== true) return null;
   if (typeof sub !== "string" || sub.trim() === "") return null;
-  return typeof email === "string" ? { subject: sub, email } : null;
+  if (typeof email !== "string") return null;
+  return withName({ subject: sub, email }, name);
 }
 
 /**
@@ -232,11 +245,13 @@ export function githubVerifiedIdentity(
   if (email === null) return null;
   if (typeof user !== "object" || user === null) return null;
 
-  const { id } = user as Record<string, unknown>;
+  const { id, name } = user as Record<string, unknown>;
   // A number in every response GitHub sends; accepted as a string too so the
-  // subject is one type by the time it reaches the database.
-  if (typeof id === "number") return { subject: String(id), email };
-  return typeof id === "string" && id.trim() !== "" ? { subject: id, email } : null;
+  // subject is one type by the time it reaches the database. `name` is the
+  // public profile name and is often null.
+  const subject = typeof id === "number" ? String(id) : typeof id === "string" && id.trim() !== "" ? id : null;
+  if (subject === null) return null;
+  return withName({ subject, email }, name);
 }
 
 /**

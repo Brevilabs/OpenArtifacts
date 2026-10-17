@@ -98,6 +98,18 @@ describe("googleVerifiedIdentity", () => {
     ).toEqual({ subject: "108422", email: "Ada@Example.com" });
   });
 
+  it("carries the name claim when it is a valid display name, and drops it when not", () => {
+    const claims = { sub: "108422", email: "ada@example.com", email_verified: true };
+    expect(googleVerifiedIdentity({ ...claims, name: "  Ada Lovelace " })).toEqual({
+      subject: "108422",
+      email: "ada@example.com",
+      name: "Ada Lovelace",
+    });
+    for (const bad of ["", "   ", "x".repeat(65), "Ada\nL", 7, null]) {
+      expect(googleVerifiedIdentity({ ...claims, name: bad })).toEqual({ subject: "108422", email: "ada@example.com" });
+    }
+  });
+
   it("refuses an address Google has not verified", () => {
     const claims = { sub: "108422", email: "ada@example.com" };
     expect(googleVerifiedIdentity({ ...claims, email_verified: false })).toBeNull();
@@ -128,6 +140,18 @@ describe("githubVerifiedIdentity", () => {
         { email: "Ada@Example.com", primary: true, verified: true },
       ]),
     ).toEqual({ subject: "4207", email: "Ada@Example.com" });
+  });
+
+  it("reads the public profile name from the same resource, and ignores a null or invalid one", () => {
+    const emails = [{ email: "ada@example.com", primary: true, verified: true }];
+    expect(githubVerifiedIdentity({ ...USER, name: " Ada Lovelace " }, emails)).toEqual({
+      subject: "4207",
+      email: "ada@example.com",
+      name: "Ada Lovelace",
+    });
+    for (const bad of [null, "", "x".repeat(65), "Ada\u0007"]) {
+      expect(githubVerifiedIdentity({ ...USER, name: bad }, emails)).toEqual({ subject: "4207", email: "ada@example.com" });
+    }
   });
 
   it("refuses an unverified primary rather than falling back to another address", () => {
