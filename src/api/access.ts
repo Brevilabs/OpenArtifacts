@@ -126,9 +126,9 @@ export type AccessRefusal = "not_found" | "bad_email" | "full" | "plan" | "plan_
 /**
  * What an operation did. `state` is read after the write, and `changed` says
  * whether the write changed the link access or the invite list, so a caller can
- * tell a switch from a repeat: the share page shows its notice only after a real
- * switch to private. A decline, a read and a repeat answer `false`, even when a
- * pending request was deleted: `changed` lines up with when
+ * tell a switch from a repeat: the Share popover counts only a real switch to
+ * private as its own (`FRAME_SCRIPT`). A decline, a read and a repeat answer
+ * `false`, even when a pending request was deleted: `changed` lines up with when
  * `document_access_changed` is recorded, and requests are not recorded.
  */
 export type AccessResult =

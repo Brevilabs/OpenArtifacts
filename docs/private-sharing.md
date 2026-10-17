@@ -451,9 +451,11 @@ who is looking.
 **The page script.** `GET /embed/page.js` on the API host turns **Share** into a
 popover anchored under the button. It is a constant that holds no credential,
 reads no cookie and no storage, defines no global and binds only our own link. It
-creates the frame on the first click only, so a page view costs no frame request,
-then hides and shows it and never reloads it, so a switch made inside the frame
-can never re-run its `frame-ancestors` check against the page it is on. The
+creates the frame on the first sign of intent (the pointer entering **Share**,
+**Share** taking focus, or the click), hidden, so the click usually finds it
+loaded; a page view with no pointer or focus on **Share** costs no frame request.
+It then hides and shows the frame and never reloads it, so a switch made inside the
+frame can never re-run its `frame-ancestors` check against the page it is on. The
 popover sits in a closed shadow root hanging off `<html>`, out of reach of author
 CSS and of a transformed or flex `<body>`. A modified click (a new tab) keeps the
 plain link; if the frame does not say it is ready within four seconds (an author
@@ -496,25 +498,55 @@ that must never be on a page whose scripts the author writes.
   only what it already named). With a token, a non-reader sees what an unknown id
   shows, never `403`.
 - **It tells the page around it nothing about its viewer.** It has one fixed
-  height (at most 640 px) and scrolls inside it. It posts the page exactly three
-  messages: `ready`, once, before it reads its storage; `close`, only after a
-  click or key press inside it; and `people`, only after the owner's own click
+  height for everyone (320 px, less on a short viewport) and scrolls inside it.
+  It posts the page exactly three messages: `ready`, once, before it reads its
+  storage; `close`, only after a click or key press inside it; and `people`,
+  only after the owner's own click
   inside it (an add, a role change, or closing it), so the page asks for its
   threads again. That one
   tells the page its visitor is the owner, but only on the owner's own click. Every public page on `openartifacts.site` shares the
   frame's storage partition, and any of them can embed the frame for any id it
   knows; a size report, a focus move or an early message would tell that page, with
   no click, whether its visitor holds a token.
-- **Its views** follow the table: the owner gets **Link access**, **Add people**,
-  each person with **Remove**, **Requests** with **Approve** and **Decline**, the
-  notice after a switch to private, and **Copy link**; any other reader gets **Copy
-  link** and "Only the owner can change who can open this."; someone not yet signed
-  in gets **Copy link** and **Sign in to manage**. Writes call the same operations
-  as `/api/v1` and the share page, so the plan check and the `402` message, both
-  invite caps, the invite email and `document_access_changed` are identical on all
-  three. Where comments are available it also carries a **Comments** Off/On switch
-  under Link access and a **Can view / Can comment** select on each person (the
-  owner's view only; see [comments.md](comments.md)).
+- **Its layout** is the same in every view. A row at the top holds the link
+  field, **Copy link** (an icon) and ×; it is the primary action, so it never scrolls away,
+  and it belongs to the frame's shell, not to a view, so nothing a view draws moves
+  it. There is no title row. Everything else is one scroll region under it, never a
+  nested scroll box; the row gets a hairline divider only once content has scrolled
+  under it, and a fade at the foot shows only while there is more below. Escape and
+  a click outside close the popover. The field drops the scheme and always shows
+  the end of the link, `/d/{id}`, cutting the host from its start when the whole
+  link does not fit; a click selects all of it, and **Copy link** copies the full
+  url.
+- **Its height** is one for every viewer, so it says nothing about who is looking,
+  and is chosen so that the owner view with nobody added shows whole, with no
+  scrollbar, in each of its forms: public, private, a free owner's plan line, and
+  the refusal after a failed switch. The tallest of these, measured in Chrome at the
+  popover's 360 px width, is 309 px; the popover is 320 px, capped by the viewport.
+  A list of people scrolls. `test/share-popover.browser.mjs` holds both.
+- **Its views** follow the table: the owner gets the **Link access** choice
+  (Anyone with the link / Only those invited), the address field with **Add**, one
+  helper line ("Only people you add can open this page." on a private page,
+  "Anyone with the link can view. Only people you add can comment." on a public
+  one), **Who has access** (**You**, **Owner**, then each person with a **Can view
+  / Can comment** select and **Remove**, see [comments.md](comments.md)), and
+  **Requests** with **Approve** and **Decline** when some are pending; any other
+  reader gets "Only the owner can change who can open this."; someone not yet
+  signed in gets that sentence and **Sign in to manage**. Writes call the same
+  operations as `/api/v1` and the share page, so the plan check and the `402`
+  message, both invite caps, the invite email and `document_access_changed` are
+  identical on all three.
+- **Loading.** A frame with a stored token never paints the signed-out view. The
+  shell's views are hidden until the frame's script has chosen the first one: no
+  token is the signed-out view at once; a token is a skeleton of the owner view
+  (the real row, with a working **Copy link**, since the link needs no request,
+  then muted blocks where Link access, Add people, the helper line and the owner's
+  row will be, pulsing gently except under reduced motion; the helper line holds
+  two lines in both views, so nothing below it moves) until the access read
+  answers. What replaces it is the answer: the owner view, the reader view, the
+  not-found view, or the signed-out view after a `401`. A frame whose script never
+  runs never says `ready`, and the page script shows its plain share-page link
+  after four seconds.
 
 **Signing in to the popover.** The frame cannot see the reader session, so
 **Sign in to manage** opens a top-level popup at `/embed/sign-in?doc={docId}&h=…`,
@@ -588,9 +620,10 @@ switch to invited itself, and that is not proof of anything about the page aroun
 it. A hostile public page can lay the frame invisibly over its own content and
 trick the owner into one click on **Only those invited**, and the switch is then
 made in the hostile page's frame. So that frame draws only what the owner needs
-right after a switch: the mode control, the notice and **Add people**, which needs
+right after a switch: the mode control and **Add people**, which needs
 typed input. **Approve**, **Decline** and **Remove**, each a single click on a
-private document, are left out, with a link to the share page for them. Before every
+private document, are left out, with a link to the share page for them once anyone
+is listed. Before every
 write on a frame embedded by the public origin the frame also reads the mode
 again, so a click on a view drawn while the document was public does nothing once
 the document is private, and the read fails closed: a failed, malformed or
@@ -615,7 +648,9 @@ request** leads, and the url `share <docId>` prints:
   dialog. **Link access** (Anyone with the link / Only those invited), **Add
   people**, **Requests** (only when some are pending, each with **Approve** and
   **Decline**), **Who has access** (**You**, **Owner**, then each invitee with
-  **Remove**) and **Copy link**. There is no role control.
+  **Remove**, and a role select with **Update** where the plan grants two or more
+  roles), **Copy link**, and a helper line under **Add people** in the popover's
+  words.
 - A session whose account may read the document but does not manage it: the
   reader view. The title, "Only the owner can change who can open this.", **Copy
   link**, **Use another account**, and a line saying that a page published from

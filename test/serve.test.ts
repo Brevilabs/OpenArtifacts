@@ -1904,7 +1904,9 @@ describe("an invited-only document", () => {
         expect(html).not.toContain("data-title");
         expect(html).not.toContain("title=");
         expect(html).toContain("Sign in to manage");
-        expect(html).toContain("<h1 id=\"oa-title\">Share</h1>");
+        // No title row; the views live in a main the script shows once it has chosen the first.
+        expect(html).not.toContain("<h1");
+        expect(html).toMatch(/<main [^>]*\shidden>/);
         expect(html).toContain(`data-link="https://openartifacts.site/d/${docId}"`);
       }
 
@@ -2631,7 +2633,6 @@ describe("an invited-only document", () => {
       expect(html).toContain("Approve");
       expect(html).toContain("Decline");
       expect(html.indexOf("Requests")).toBeLessThan(html.indexOf("Who has access"));
-      expect(html).not.toContain("may have kept a copy");
       expect(html).not.toContain('name="comments"');
       expect(html).toContain('<option value="comment" selected>Can comment</option>');
     });
@@ -2745,7 +2746,7 @@ describe("an invited-only document", () => {
       expect(sent.map((message) => message.to)).toEqual(["bob@other.com"]);
     });
 
-    it("switches the link access, and never shows a copy notice", async () => {
+    it("switches the link access, and returns to the page as it is after either switch", async () => {
       const doc = await privateDoc("a public page", KEY, "anyone");
       const owner = await ownerAccount(doc);
 
@@ -2753,8 +2754,6 @@ describe("an invited-only document", () => {
       expect(toPrivate.status).toBe(303);
       expect(toPrivate.headers.get("location")).toBe(`/share/${doc.docId}`);
       expect((await access(doc.docId)).linkAccess).toBe("invited");
-      expect(await (await open(doc.docId, owner, PRIVATE, "?notice=private")).text()).not.toContain("may have kept a copy");
-      expect(await (await open(doc.docId, owner)).text()).not.toContain("may have kept a copy");
 
       // A repeat changes nothing, and going back to public needs no plan.
       expect((await write(doc.docId, owner, { op: "link", linkAccess: "invited" })).headers.get("location")).toBe(`/share/${doc.docId}`);
@@ -2803,7 +2802,7 @@ describe("an invited-only document", () => {
       const html = await (await open(doc.docId, owner)).text();
 
       expect(html).not.toMatch(/<h2>Comments<\/h2>|name="comments"|Needs a paid plan/);
-      expect(html).toContain('<p class="hint">Only people you add can open this page.</p>');
+      expect(html).toContain("Only people you add can open this page.");
       expect(html).not.toContain("Private pages and comments need a paid plan.");
       expect(html).toContain('<option value="view">Can view</option><option value="comment" selected>Can comment</option>');
       expect(html).toContain('<option value="view" selected>Can view</option><option value="comment">Can comment</option>');
@@ -2811,7 +2810,7 @@ describe("an invited-only document", () => {
 
       await env.DB.prepare("UPDATE docs SET link_access = 'anyone' WHERE id = ?").bind(doc.docId).run();
       const pub = await (await open(doc.docId, owner)).text();
-      expect(pub).toContain('<p class="hint">Anyone with the link can view. Only people you add can comment.</p>');
+      expect(pub).toContain("Anyone with the link can view. Only people you add can comment.");
       expect(pub).not.toContain("Only people you add can open this page");
     });
 
@@ -2884,7 +2883,7 @@ describe("an invited-only document", () => {
       try {
         const html = await (await open(doc.docId, owner, { ...PRIVATE, LICENSE_API_URL: "https://license.test", LICENSE_API_KEY: "ours" })).text();
         expect(html).not.toContain("Private pages and comments need a paid plan.");
-        expect(html).toContain('<p class="hint">Only people you add can open this page.</p>');
+        expect(html).toContain("Only people you add can open this page.");
       } finally {
         vi.unstubAllGlobals();
       }
@@ -3040,7 +3039,7 @@ describe("an invited-only document", () => {
       expect((await sendTo("POST", SHARE(doc.docId), { headers: SAME_ORIGIN, body: new URLSearchParams({ op: "add", email: "x@acme.com" }) }, PRIVATE)).status).toBe(200); // sign-in, no write
       expect((await write(doc.docId, owner, { op: "mystery", email: "x@acme.com" })).status).toBe(404);
 
-      await open(doc.docId, owner, PRIVATE, "?op=add&email=bob@other.com&linkAccess=anyone&notice=private");
+      await open(doc.docId, owner, PRIVATE, "?op=add&email=bob@other.com&linkAccess=anyone");
       const state = await access(doc.docId);
       expect([state.linkAccess, state.people]).toEqual(["invited", []]);
       for (const method of ["PUT", "DELETE", "PATCH"]) {

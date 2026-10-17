@@ -25,10 +25,12 @@ import { PAGE_COMMENTS_SCRIPT } from "./comments-scripts.js";
  *
  * Behaviour this fixes:
  *
- * - The frame is created on the **first** Share click only, so a page view
- *   costs no frame request, and is then hidden and shown, **never reloaded**.
- *   A mode switch made inside it can therefore not re-run the frame's
- *   `frame-ancestors` check against the page it is on.
+ * - The frame is created on the first sign of **intent**: the pointer entering
+ *   Share, Share taking focus, or the click itself. It is built hidden, so the
+ *   click usually finds it loaded, and a page view with no pointer or focus on
+ *   Share costs no frame request. It is then hidden and shown, **never
+ *   reloaded**. A mode switch made inside it can therefore not re-run the
+ *   frame's `frame-ancestors` check against the page it is on.
  * - The popover lives in a closed shadow root, so author CSS such as
  *   `iframe { display: none }` and author code such as
  *   `querySelectorAll("iframe")` cannot reach it. It hangs off `<html>`, not
@@ -40,16 +42,19 @@ import { PAGE_COMMENTS_SCRIPT } from "./comments-scripts.js";
  *   plain `target="_blank"` link the design requires.
  * - Messages are accepted only from that iframe's window and the API origin,
  *   and carry no credential in either direction.
- * - The popover is **one fixed height** (at most 640 px, less on a short
- *   viewport) and the frame scrolls inside it. 640 is the tallest owner view
- *   with nobody added (measured at the popover's 360 px: under 605 px for a
- *   private page with its helper line; the free owner's plan line is shorter)
- *   plus a margin, so that view has no scrollbar; a list of
- *   people scrolls. The frame never reports its
- *   size: on a public document any page on `openartifacts.site` can embed the
- *   same frame for any document it knows, and the height of what the frame
- *   draws (owner controls, a list of people, or just Copy link) would tell that
- *   page, with no click, whether its visitor manages the document.
+ * - The popover is **one fixed height** for every viewer (320 px, less on a
+ *   short viewport) and the frame scrolls inside it. 320 is the tallest form of
+ *   the owner view with nobody added, plus a small margin: measured in Chrome at
+ *   the popover's 360 px width, a free owner's plan line and refusal after a
+ *   failed switch, with their Upgrade links, is 309 px (public and private 307,
+ *   the plan line alone 259). So an owner who has added nobody sees everything
+ *   without a scrollbar, and a list of people scrolls. A change to the owner
+ *   view or `FRAME_CSS` that makes it taller fails the browser test that holds
+ *   this. The frame never reports its size: on a public document any page on
+ *   `openartifacts.site` can embed the same frame for any document it knows,
+ *   and the height of what the frame draws (owner controls, a list of people, or
+ *   just Copy link) would tell that page, with no click, whether its visitor
+ *   manages the document.
  *
  * The URL it is served from is permanent: pinned `/v{n}` pages carry the tag for
  * a year. A fix to this script reaches them by the route's short cache, not by a
@@ -97,7 +102,7 @@ export const PAGE_SCRIPT = String.raw`(() => {
     host.style.width = width + "px";
     host.style.top = top + "px";
     host.style.left = Math.round(Math.max(8, Math.min(box.right - width, view.clientWidth - width - 8))) + "px";
-    host.style.height = Math.max(120, Math.min(640, view.clientHeight - top - 8)) + "px";
+    host.style.height = Math.max(120, Math.min(320, view.clientHeight - top - 8)) + "px";
   };
   const build = () => {
     host = document.createElement("div");
@@ -135,6 +140,11 @@ export const PAGE_SCRIPT = String.raw`(() => {
     link.setAttribute("aria-expanded", "false");
     if (refocus) link.focus();
   };
+  // Intent to press Share (the pointer on it, or focus) builds the frame, hidden,
+  // so the click finds it loaded. Once built, these do nothing.
+  const intent = () => { if (host === null) build(); };
+  link.addEventListener("pointerenter", intent);
+  link.addEventListener("focus", intent);
   link.addEventListener("click", (event) => {
     if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     event.preventDefault();
@@ -199,22 +209,42 @@ export const POPUP_DONE_SCRIPT = String.raw`(function () {
 /**
  * The popover frame's stylesheet (`src/embed.ts` puts it in the shell). The
  * frame fills the popover's fixed height, whatever it shows: nothing here sizes
- * the popover to its content. `main` scrolls when an owner's lists are long. On
- * the short views the top group (heading, sentence, link field, Copy link) sits
- * at the top and `.bottom` (the account line and the hint) is pinned to the
- * floor above a divider, so the room between them reads as layout. The height
- * is set for the owner view, which shows Link access, Add people and the first
- * few people without scrolling; longer lists scroll. The owner view starts the
- * same way as the others: the header (sticky, so it never scrolls away or gets cut through the
- * middle of a line) and then the link field and Copy link, so Copy link sits at
- * the same place in every view. Link access comes next so that it is in view without any scrolling,
- * and the plan line (for an owner whose plan grants no role) or Add people
- * follows Link access, also in view without scrolling; the people and requests
- * follow and scroll. Flex items do
- * not collapse margins, so spacing is adjusted in the margins, not the
+ * the popover to its content.
+ *
+ * **Layout.** Two parts, the same in every view. The `header` is the row every
+ * view starts with: the link field, **Copy link** and the × close button. It is
+ * the primary action, so it never scrolls away, and it is part of the shell, not
+ * of any view, so nothing a view draws can move it. `main` under it is the one
+ * scroll region; nothing inside it scrolls on its own. The row gets its hairline
+ * divider only while content is scrolled under it (`body.scrolled`), and the
+ * `.fade` over the foot of the frame shows only while there is more below
+ * (`body.more`), both set by the frame script. There is no title row.
+ *
+ * **The link field** always shows the end of the link, `/d/{id}`, and as much
+ * of the host before it as fits: its text runs right to left inside an LTR
+ * isolate (`<bdi>`), so the ellipsis takes the start of the host, and a click
+ * still selects the whole link. Copy link is an icon, with its label kept for
+ * assistive technology, because with a worded button the id alone would not fit
+ * at the popover's 360 px width, let alone 304.
+ *
+ * **Height.** One for every viewer (see `PAGE_SCRIPT`), set so that the owner
+ * view with nobody added, in each of its forms (public, private, a free
+ * owner's plan line, the refusal after a failed switch), shows whole without a
+ * scrollbar; a list of people scrolls. The short views (signed out, a reader,
+ * not found) pin `.bottom` (the account line and the hint) to the floor above a
+ * divider, so the room between reads as layout.
+ *
+ * **Loading.** `main` is `hidden` in the shell until the script has chosen the
+ * first view, so a token holder's frame never paints the signed-out markup.
+ * The skeleton (`.sk`) holds the owner view's places with muted blocks and pulses,
+ * except under reduced motion. The helper line (`.help`) holds two lines in both,
+ * since the public one wraps to two, so nothing under it moves when the owner
+ * view lands (a free owner's plan line, which takes its place, still does).
+ *
+ * Flex items do not collapse margins, so spacing is set in the margins, not the
  * structure. Children of `main` never shrink: an item with its own overflow rule
- * has no content minimum, so it would squash to a line and the footer would be
- * clipped instead of `main` scrolling.
+ * has no content minimum, so it would squash to a line instead of `main`
+ * scrolling.
  *
  * Dark only, in the reader pages' palette (`src/page.ts`): surface `#0d0f14`,
  * wells `#07080b`, borders `#20242c` and `#2c313b`, text `#e9ebee`, muted
@@ -222,18 +252,19 @@ export const POPUP_DONE_SCRIPT = String.raw`(function () {
  * fetches nothing, and its policy would not let it.
  */
 export const FRAME_CSS = `:root{color-scheme:dark;font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:#e9ebee;background:#0d0f14;-webkit-font-smoothing:antialiased}
-*{box-sizing:border-box}html,body{height:100%}body{margin:0}
-main{height:100%;overflow:auto;display:flex;flex-direction:column;padding:0 16px;scrollbar-color:#2c313b transparent;scrollbar-width:thin}
-main>*{flex-shrink:0}
+*{box-sizing:border-box}html,body{height:100%}body{margin:0;display:flex;flex-direction:column}
 body::before{content:"";position:fixed;top:0;left:0;right:0;height:1px;background:rgba(255,255,255,.06);z-index:3;pointer-events:none}
-.fade{position:sticky;bottom:0;z-index:1;height:28px;margin:0 -16px;background:linear-gradient(to bottom,rgba(13,15,20,0),#0d0f14 85%);pointer-events:none}
+header{flex:none;position:relative;z-index:2;display:flex;align-items:center;gap:8px;padding:16px 12px 12px 16px;background:#0d0f14}
+body.scrolled header{box-shadow:0 1px 0 #20242c,0 8px 10px -6px rgba(0,0,0,.6)}
+main{flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column;padding:4px 16px 16px;scrollbar-color:#2c313b transparent;scrollbar-width:thin}
+main[hidden]{display:none}
+main>*{flex-shrink:0}main>:first-child{margin-top:0}
+.fade{position:fixed;left:0;right:0;bottom:0;z-index:1;height:28px;background:linear-gradient(to bottom,rgba(13,15,20,0),#0d0f14 85%);pointer-events:none;opacity:0}
+body.more .fade{opacity:1}
 :focus-visible{outline:2px solid #f6ae52;outline-offset:2px}
-header{position:sticky;top:0;z-index:2;display:flex;align-items:flex-start;gap:8px;margin:0 -16px;padding:16px;background:#0d0f14}
-main.scrolled header{box-shadow:0 1px 0 #20242c,0 8px 10px -6px rgba(0,0,0,.6)}
-h1{flex:1;min-width:0;margin:0;font-size:16px;line-height:28px;font-weight:600;color:#f4f5f7;overflow-wrap:anywhere}
-h2{margin:20px 0 10px;font-size:11px;line-height:16px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:#8d94a0}
-p{margin:8px 0 0}header+p{margin-top:0}
-.muted{color:#8d94a0}.err{margin-top:8px;color:#ff8a80}.err.warn{color:#f6ae52}.err:empty{display:none}
+h2{margin:16px 0 2px;font-size:11px;line-height:16px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:#8d94a0}
+p{margin:8px 0 0}
+.muted{color:#8d94a0}.help{min-height:3em}.err{margin-top:8px;color:#ff8a80}.err.warn{color:#f6ae52}.err:empty{display:none}
 a{color:#f6ae52;text-decoration:none}a:hover{text-decoration:underline;text-underline-offset:3px}
 button{font:inherit;font-size:13px;font-weight:500;line-height:1;cursor:pointer;height:28px;padding:0 12px;border:1px solid #2c313b;border-radius:8px;background:transparent;color:#e9ebee;display:inline-flex;align-items:center;justify-content:center;gap:6px;white-space:nowrap}
 button:hover{border-color:#3a404b;background:rgba(255,255,255,.04)}
@@ -242,34 +273,38 @@ button.primary{background:#f4f5f7;border-color:#f4f5f7;color:#0b0c10;font-weight
 button.primary:hover{background:#fff;border-color:#fff}
 .row input:placeholder-shown+button.primary{background:transparent;border-color:#2c313b;color:#e9ebee}
 .row input:placeholder-shown+button.primary:hover{background:rgba(255,255,255,.04);border-color:#3a404b}
-button.tall{height:36px;padding:0 16px;border-radius:10px;font-size:14px}
+button.tall{height:36px;padding:0 14px;border-radius:10px;font-size:14px}
 button.link{display:inline;height:auto;padding:0;border:0;background:none;color:#f6ae52;font-size:inherit;font-weight:inherit;line-height:inherit;white-space:normal}
 button.link.block{display:block;margin-top:2px}
 button.link:hover{background:none;text-decoration:underline;text-underline-offset:3px}
-header button{flex:none;width:28px;padding:0;border:0;font-size:20px;font-weight:400;color:#8d94a0}
-header button:hover{background:rgba(255,255,255,.06);color:#f4f5f7}
+header button.primary{width:36px;padding:0}header button.primary span{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+header .x{flex:none;width:28px;padding:0;border:0;font-size:20px;font-weight:400;color:#8d94a0}
+header .x:hover{background:rgba(255,255,255,.06);color:#f4f5f7}
+header svg{width:16px;height:16px;flex:none;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.field{flex:1;min-width:0;display:flex;align-items:center;height:36px;padding:0 12px;border:1px solid #20242c;border-radius:10px;background:#07080b;color:#c9ced6;font:12.5px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.field>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;user-select:all;direction:rtl;text-align:left}
 select{font:inherit;font-size:13px;height:28px;padding:0 6px;border:1px solid #2c313b;border-radius:8px;background:#07080b;color:#e9ebee;cursor:pointer}
 select:hover{border-color:#3a404b}
 input{font:inherit;flex:1;min-width:0;height:36px;padding:0 12px;border:1px solid #20242c;border-radius:10px;background:#07080b;color:#e9ebee}
 input::placeholder{color:#5b626e}
 input:focus-visible{outline:0;border-color:#f6ae52;box-shadow:0 0 0 3px rgba(246,174,82,.18)}
-.row{display:flex;gap:8px;align-items:center}
-.seg{display:flex;gap:2px;padding:3px;border:1px solid #20242c;border-radius:10px;background:#07080b}
+.row{display:flex;gap:8px;align-items:center}main>.row{margin-top:12px}
+.seg{display:flex;gap:2px;height:36px;padding:3px;border:1px solid #20242c;border-radius:10px;background:#07080b}
 .seg button{flex:1;height:28px;border:0;border-radius:7px;color:#8d94a0;background:transparent}
 .seg button:hover{color:#e9ebee;background:transparent}
 .seg button[aria-checked="true"]{background:#20242c;color:#f4f5f7}
 .seg button:focus-visible{outline-offset:0}
 ul{list-style:none;margin:0;padding:0}
 li{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 0;border-top:1px solid #1a1d24}
+h2+ul>li:first-child{border-top:0}
 li span{flex:1;min-width:0;overflow-wrap:anywhere}li .row{margin-left:auto;flex:none}li small{display:block;font-size:12px;color:#8d94a0}
 li button.link{font-size:12px;color:#8d94a0}li button.link:hover{color:#e9ebee}
-
-.foot{display:flex;flex-direction:column;gap:8px;margin:16px 0 4px}header+.foot{margin-top:0}
-.field{display:flex;align-items:center;height:36px;padding:0 12px;border:1px solid #20242c;border-radius:10px;background:#07080b;color:#c9ced6;font:12.5px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-.field span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;user-select:all}
-.foot button{width:100%}
-.foot svg{width:16px;height:16px;flex:none;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
-.bottom{margin-top:auto;padding:12px 0 16px;border-top:1px solid #20242c;font-size:13px;overflow-wrap:anywhere}
+.sk{border-color:transparent;background:#171a21;animation:pulse 1.6s ease-in-out infinite}
+i.sk{display:inline-block;height:10px;border-radius:5px;vertical-align:middle}
+.sk-in{flex:1;height:36px;border-radius:10px}.sk-add{width:58px;height:36px;border-radius:10px}
+@keyframes pulse{50%{opacity:.45}}
+@media (prefers-reduced-motion:reduce){.sk{animation:none}}
+.bottom{margin-top:auto;padding-top:12px;border-top:1px solid #20242c;font-size:13px;overflow-wrap:anywhere}
 .bottom p{margin:0}.bottom .err{margin:0 0 8px}.bottom .hint{margin-top:8px;font-size:12.5px}
 `;
 
@@ -299,6 +334,14 @@ li button.link{font-size:12px;color:#8d94a0}li button.link:hover{color:#e9ebee}
  * fixed height), no `ResizeObserver`, no `autofocus`, and no `focus()` except
  * inside a handler for a user action.
  *
+ * **Its first view** is chosen synchronously, before `main` (hidden in the
+ * shell) is shown: no stored token is the signed-out view, a stored token is the
+ * skeleton, which only the access read's answer replaces (the owner, reader or
+ * not-found view, or the signed-out view after a `401`). A token that arrives
+ * while the signed-out view is up (a sign-in completing) shows the skeleton too.
+ * So a token holder never sees the signed-out view first, and the skeleton,
+ * which has no focusable element, changes nothing the embedding page can see.
+ *
  * **Its one inbound channel** is a single `message` listener for the token the
  * sign-in popup may post. It acts only on a message from the window its own
  * `window.open` returned, from this origin, for this document; a message from
@@ -319,9 +362,17 @@ export const FRAME_SCRIPT = String.raw`(() => {
   // No id on <main>: it scrolls (overflow:auto), and a scroll container is
   // focusable, but only when its content overflows, which differs by view.
   const main = document.querySelector("main");
-  // Content passing under the sticky header gets a defined edge, and only then:
-  // at rest the header abuts the first field.
-  main.addEventListener("scroll", () => main.classList.toggle("scrolled", main.scrollTop > 0));
+  // The row above main gets its divider only while content is under it, and the
+  // fade at the foot shows only while there is more below. Every view is drawn
+  // into main, so its content changing, a scroll and a resize (the popover shown)
+  // are all that move either edge.
+  const edges = () => {
+    document.body.classList.toggle("scrolled", main.scrollTop > 0);
+    document.body.classList.toggle("more", main.scrollTop + main.clientHeight < main.scrollHeight - 1);
+  };
+  main.addEventListener("scroll", edges);
+  window.addEventListener("resize", edges);
+  new MutationObserver(edges).observe(main, { childList: true, subtree: true, characterData: true });
   const doc = main.dataset.doc;
   const link = main.dataset.link;
   const parentOrigin = main.dataset.origin;
@@ -407,14 +458,14 @@ export const FRAME_SCRIPT = String.raw`(() => {
     if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(link).then(done, fallback);
     else fallback();
   };
-  // The owner view is the only one with the fade at its foot. Leaving it is a click or a key inside
+  // The owner view is the only one with the Link access control. Leaving it is a click or a key inside
   // the frame, so it may say that this visitor is the owner (see the header comment), but only an
   // owner whose plan grants Can comment: a free owner's page has no comments to bring up. Leaving
   // any other view says nothing more than close.
   let grantsComment = false;
   // The owner view is showing the plan line: coming back to the tab reads it again.
   let upgradeShown = false;
-  const leave = () => { post("close"); if (grantsComment && main.querySelector(".fade")) post("people"); };
+  const leave = () => { post("close"); if (grantsComment && main.querySelector("[role=radiogroup]")) post("people"); };
   const closeButton = (target) => target.addEventListener("click", leave);
   const copyButton = (target) => target.addEventListener("click", () => copyLink(target));
   document.addEventListener("keydown", (event) => { if (event.key === "Escape") leave(); });
@@ -425,12 +476,14 @@ export const FRAME_SCRIPT = String.raw`(() => {
   // an embedding page can navigate the frame to (a URL fragment), and whether the
   // browser then focuses something shows as a blur on that page: a read of
   // storage it has no right to. A focusable element carries no id at all, even one
-  // every view has: where it sits can differ by view (a wrapped title pushes it
-  // down), and a focus move scrolls the embedding page by that difference.
+  // every view has: where it sits can differ by view, and a focus move scrolls
+  // the embedding page by that difference.
   const signInButton = account.querySelector("button");
   const guestMessage = document.getElementById("oa-msg");
-  closeButton(main.querySelector("header button"));
-  copyButton(main.querySelector(".foot button"));
+  // The row above main (the link, Copy link and ×) is the shell's, the same in
+  // every view, so it is wired once and never redrawn.
+  closeButton(document.querySelector("header .x"));
+  copyButton(document.querySelector("header .primary"));
 
   let prepared = null;
   let opened = null;
@@ -560,32 +613,29 @@ export const FRAME_SCRIPT = String.raw`(() => {
     return fetch("/embed/api/docs/" + doc + path, { method: method, headers: headers, body: body ? JSON.stringify(body) : undefined, credentials: "omit", cache: "no-store" });
   };
 
-  const header = (title) => {
-    const close = button("×", null);
-    close.setAttribute("aria-label", "Close");
-    closeButton(close);
-    return node("header", {}, [node("h1", { id: "oa-title" }, [title]), close]);
-  };
   const muted = (kids) => node("p", { class: "muted" }, kids);
-  // The canonical link, read-only, and a full-width Copy link beneath it. Built
-  // from the id alone (data-link), so it reveals nothing about the document.
-  const bare = link.startsWith("https://") ? link.slice(8) : link.startsWith("http://") ? link.slice(7) : link;
-  const footer = () => {
-    const copy = button("", null, "primary tall");
-    copyLabel(copy, LINK_ICON, "Copy link");
-    copyButton(copy);
-    return node("div", { class: "foot" }, [node("div", { class: "field" }, [node("span", {}, [bare])]), copy]);
-  };
   const bottom = (kids) => node("div", { class: "bottom" }, kids);
   const anotherAccount = (lead, stacked) => muted([lead, button("Use another account", () => signIn(true), stacked ? "link block" : "link")]);
   const hintLine = () => node("p", { class: "muted hint" }, [hint]);
-  const quoted = (title) => "Share “" + title + "”";
 
   const showReader = (body) => {
-    main.replaceChildren(header(quoted(body.title)), muted([SENTENCE]), footer(), bottom([anotherAccount("Signed in as " + body.account + ".", true), hintLine()]));
+    main.replaceChildren(muted([SENTENCE]), bottom([anotherAccount("Signed in as " + body.account + ".", true), hintLine()]));
   };
   const showNone = () => {
-    main.replaceChildren(header("Share"), muted([SENTENCE]), footer(), bottom([anotherAccount("Is this your page? "), hintLine()]));
+    main.replaceChildren(muted([SENTENCE]), bottom([anotherAccount("Is this your page? "), hintLine()]));
+  };
+  // While a stored token's read is out: the owner view's places, held by muted
+  // blocks, under the real row. Only the answer replaces it (owner, reader, not
+  // found, or the signed-out view after a 401), never the signed-out view first.
+  const showSkeleton = () => {
+    const bar = (width) => node("i", { class: "sk", style: "width:" + width });
+    main.replaceChildren(
+      node("div", { class: "seg sk" }),
+      node("div", { class: "row" }, [node("div", { class: "sk sk-in" }), node("div", { class: "sk sk-add" })]),
+      node("p", { class: "help" }, [bar("85%")]),
+      node("h2", {}, [bar("96px")]),
+      node("ul", {}, [node("li", {}, [node("span", {}, [bar("32px"), node("small", {}, [bar("48px")])])])]),
+    );
   };
 
   const fail = (target, response, body, what) => {
@@ -622,7 +672,7 @@ export const FRAME_SCRIPT = String.raw`(() => {
   const limited = (body) => onPublicOrigin && switched && body.linkAccess === "invited";
   const showMoved = () => {
     latest = null;
-    main.replaceChildren(header("Share"), muted(["Open Share from the document’s own page to manage who can open it."]), footer());
+    main.replaceChildren(muted(["Open Share from the document’s own page to manage who can open it."]));
   };
   // A view drawn while the document was public may be stale, and a click on it
   // is a write. Ask first, and write only on a clear answer: any failure to read
@@ -813,20 +863,17 @@ export const FRAME_SCRIPT = String.raw`(() => {
       return select;
     };
     const person = (address, detail, buttons) => node("li", {}, [node("span", {}, [address, node("small", {}, [detail])]), node("div", { class: "row" }, buttons)]);
-    const kids = [
-      header(quoted(body.title)),
-      footer(),
-      node("h2", {}, ["Link access"]),
-      node("div", { class: "seg", role: "radiogroup", "aria-label": "Link access" }, [choice("anyone", "Anyone with the link"), choice("invited", "Only those invited")]),
-    ];
+    // No section labels where the control says what it is: the two choices, and an
+    // address field beside Add.
+    const kids = [node("div", { class: "seg", role: "radiogroup", "aria-label": "Link access" }, [choice("anyone", "Anyone with the link"), choice("invited", "Only those invited")])];
     if (roles !== null && roles.length === 0) {
       const upgrade = typeof body.upgradeUrl === "string" && body.upgradeUrl.startsWith("https://") ? body.upgradeUrl : null;
       kids.push(muted(["Private pages and comments need a paid plan."].concat(upgrade === null ? [] : [" ", node("a", { href: upgrade, target: "_blank", rel: "noopener noreferrer" }, ["Upgrade"])])));
     }
     if (mayAdd) {
-      kids.push(node("h2", {}, ["Add people"]), node("div", { class: "row" }, [input, button("Add", add, "primary tall")]));
+      kids.push(node("div", { class: "row" }, [input, button("Add", add, "primary tall")]));
       if (roles !== null && roles.includes("comment")) {
-        kids.push(muted([body.linkAccess === "anyone" ? "Anyone with the link can view. Only people you add can comment." : "Only people you add can open this page."]));
+        kids.push(node("p", { class: "muted help" }, [body.linkAccess === "anyone" ? "Anyone with the link can view. Only people you add can comment." : "Only people you add can open this page."]));
       }
     }
     kids.push(message);
@@ -841,13 +888,12 @@ export const FRAME_SCRIPT = String.raw`(() => {
       roleControl(entry),
       button("Remove", () => write("DELETE", "/access/people/" + encodeURIComponent(entry.email)), "link"),
     ].filter((kid) => kid !== null))))));
-    if (body.email && mayAdd) kids.push(muted(["OpenArtifacts emails each invitation. If someone doesn’t get it, send them the link."]));
+    // Both lines are about people on the list, so they wait for someone to be on it.
+    const listed = body.people.length > 0 || body.requests.length > 0;
+    if (body.email && mayAdd && body.people.length > 0) kids.push(muted(["OpenArtifacts emails each invitation. If someone doesn’t get it, send them the link."]));
     // Approve, Decline and Remove are one click on a private document, and this
     // frame is on the public origin. See exposed().
-    if (narrow) kids.push(muted(["To remove people or answer requests, ", node("a", { href: location.origin + "/share/" + doc, target: "_blank", rel: "noopener noreferrer" }, ["open the share page"]), "."]));
-    // The owner view scrolls: a sticky fade at its foot dissolves a half-visible
-    // row instead of slicing it, and its 28 px keeps the last row clear at the end.
-    kids.push(node("div", { class: "fade", "aria-hidden": "true" }));
+    if (narrow && listed) kids.push(muted(["To remove people or answer requests, ", node("a", { href: location.origin + "/share/" + doc, target: "_blank", rel: "noopener noreferrer" }, ["open the share page"]), "."]));
     main.replaceChildren(...kids);
   };
 
@@ -856,6 +902,9 @@ export const FRAME_SCRIPT = String.raw`(() => {
     const mine = ++seq;
     const stored = readToken();
     if (stored === null) { showGuest("", false); return; }
+    // Nothing drawn yet came from a token (the shell, or a sign-in just
+    // completed): hold the places instead of leaving the signed-out view up.
+    if (account.isConnected) showSkeleton();
     let response;
     try { response = await call("GET", "/access"); } catch (error) { if (mine === seq) showGuest("Couldn’t load the sharing settings. Try again.", false); return; }
     if (response === null) { if (mine === seq) showGuest("", false); return; }
@@ -870,6 +919,10 @@ export const FRAME_SCRIPT = String.raw`(() => {
   };
 
   try { prepare().catch(() => {}); } catch (error) {}
+  // The first view is chosen before main is shown: with a stored token, refresh()
+  // draws the skeleton synchronously, before its first await.
   if (readToken() !== null) refresh();
+  main.hidden = false;
+  edges();
 })();
 `;
