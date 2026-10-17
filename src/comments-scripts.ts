@@ -525,11 +525,11 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       if (phone) {
         // The visual viewport, not the window: a pinch zoom shows only part of the page, and the button stays on the part shown.
         const vv = window.visualViewport;
-        const floor = Math.min(vv ? vv.offsetTop + vv.height : window.innerHeight, open ? mhost.getBoundingClientRect().top : Infinity) - 12 - high;
-        tipHost.style.left = Math.round(((vv ? vv.offsetLeft + vv.width / 2 : window.innerWidth / 2) - wide / 2) / z) + "px";
+        const floor = Math.min(vv.offsetTop + vv.height, open ? mhost.getBoundingClientRect().top : Infinity) - 12 - high;
+        tipHost.style.left = Math.round((vv.offsetLeft + vv.width / 2 - wide / 2) / z) + "px";
         if (last.bottom > floor - 100) {
           const bar = link.closest(".openartifacts-bar");
-          tipHost.style.top = Math.round((Math.max(vv ? vv.offsetTop : 0, bar ? bar.getBoundingClientRect().bottom : 0) + 12) / z) + "px";
+          tipHost.style.top = Math.round((Math.max(vv.offsetTop, bar ? bar.getBoundingClientRect().bottom : 0) + 12) / z) + "px";
         } else tipHost.style.top = "calc(" + Math.round(floor / z) + "px - env(safe-area-inset-bottom, 0px))";
         return;
       }
@@ -678,10 +678,8 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       const follow = () => { if (tipHost && tipHost.style.display === "block") refreshTip(); };
       window.addEventListener("scroll", follow, { passive: true });
       // A pinch zoom, or Safari's toolbar showing and hiding, moves the visible part of the page, and a phone's button with it.
-      if (window.visualViewport) {
-        window.visualViewport.addEventListener("resize", follow);
-        window.visualViewport.addEventListener("scroll", follow);
-      }
+      window.visualViewport.addEventListener("resize", follow);
+      window.visualViewport.addEventListener("scroll", follow);
       // With html,body{height:100%} the body's own box never changes, so the author's top-level boxes are watched too; a <details> opening, a late image and a class or style flip move text without touching the body.
       if (window.ResizeObserver) {
         const watch = new ResizeObserver(schedule);
