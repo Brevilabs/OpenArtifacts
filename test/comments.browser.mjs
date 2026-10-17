@@ -1583,7 +1583,7 @@ test("a thread read that answers after a newer one does not paint over it", { ti
   await context.close();
 });
 
-test("the owner of a private page nobody else can comment on selects text and gets Comment and the Comments button, without opening Share", { timeout: 120_000 }, async () => {
+test("the owner of a private page nobody else can comment on selects text and gets Comment and the Comments button, without opening Share, and posts", { timeout: 120_000 }, async () => {
   const docId = await publish("Private, alone", REPORT, { route: "private-docs", comments: false });
   // A Can-view invitee makes nobody else a commenter, the owner's real situation.
   await db.prepare("INSERT INTO doc_invites (doc_id, email, role, created_at) VALUES (?, 'bob@example.com', 'view', ?)").bind(docId, Date.now()).run();
@@ -1600,6 +1600,14 @@ test("the owner of a private page nobody else can comment on selects text and ge
   await openSidebar(tab);
   await frame.getByText("Select text to comment.").waitFor();
   await shoot(tab, "sidebar-private-owner-alone");
+
+  // The first comment posts, and the Comments button stays, now counting it.
+  await pressComment(tab, "Staffing is unchanged");
+  await frame.getByRole("textbox", { name: "Add a comment…" }).fill("Is this still true?");
+  await frame.locator("[data-thread='']").getByRole("button", { name: "Send" }).click();
+  await until("the thread", async () => (await threadsOf(docId)).length === 1);
+  await until("its card", async () => (await cardFor(frame, "Is this still true?").count()) === 1);
+  await until("the Comments button counting it", async () => /1$/.test(await barButton(tab).innerText()));
   await context.close();
 });
 
@@ -1860,10 +1868,13 @@ test("resolving takes the thread off the page and offers Undo; resolved threads 
 
 test("in the header, Undo is a button for its few seconds and the resolved count a button whose chevron turns, on a light page and a dark one", { timeout: 180_000 }, async () => {
   const cases = [["light", page(REPORT)], ["dark", page(REPORT, "<style>body{background:#111316;color:#e8e6e1}</style>")]];
-  // The frame rebuilds its header on every render, and a node replaced between the locator finding it and the read has no computed style; so a read waits for one taken from a node still drawn.
-  const look = (locator) =>
-    until("a drawn button", () => locator.evaluate((el) => el.isConnected && { bg: getComputedStyle(el).backgroundColor, border: getComputedStyle(el).borderTopWidth, size: parseFloat(getComputedStyle(el).fontSize) }));
-  const turn = (toggle) => until("a drawn chevron", () => toggle.locator("svg").evaluate((el) => el.isConnected && getComputedStyle(el).transform));
+  // Found and read in one task inside the frame: the frame rebuilds its header on every render, and a node a locator found can be replaced before a separate read reaches it.
+  const headButton = (frame, label, read) =>
+    frame.evaluate(([label, read]) => {
+      const el = Array.from(document.querySelectorAll(".head button")).find((b) => b.textContent.trim() === label);
+      const style = getComputedStyle(read === "turn" ? el.querySelector("svg") : el);
+      return read === "turn" ? style.transform : { bg: style.backgroundColor, border: style.borderTopWidth, size: parseFloat(style.fontSize) };
+    }, [label, read]);
   for (const [name, html] of cases) {
     const docId = await publish(`Header ${name}`, REPORT, { html });
     await agentThread(docId, { exact: "Renewal risk is concentrated in three accounts", section: "risk" }, "This overstates the renewal risk.");
@@ -1882,7 +1893,7 @@ test("in the header, Undo is a button for its few seconds and the resolved count
     await until("one card", async () => (await cards.count()) === 1);
     const undo = head.getByRole("button", { name: "Undo" });
     await undo.waitFor();
-    const offer = await look(undo);
+    const offer = await headButton(frame, "Undo");
     assert.notEqual(offer.bg, "rgba(0, 0, 0, 0)", `${name}: Undo is a filled button, not grey text`);
     assert.ok(offer.size >= 12, `${name}: Undo is not small print`);
     assert.equal((await head.boundingBox()).height, rowHeight, `${name}: Undo does not grow the header row`);
@@ -1892,19 +1903,57 @@ test("in the header, Undo is a button for its few seconds and the resolved count
     const toggle = head.getByRole("button", { name: "1 resolved" });
     await toggle.waitFor();
     assert.equal(await toggle.getAttribute("aria-expanded"), "false");
-    assert.equal((await look(toggle)).border, "1px", `${name}: the count is outlined as a button`);
-    assert.equal(await turn(toggle), "none", `${name}: the chevron points down while closed`);
-    const resting = (await look(toggle)).bg;
+    assert.equal((await headButton(frame, "1 resolved")).border, "1px", `${name}: the count is outlined as a button`);
+    assert.equal(await headButton(frame, "1 resolved", "turn"), "none", `${name}: the chevron points down while closed`);
+    const resting = (await headButton(frame, "1 resolved")).bg;
     await toggle.hover();
-    await until(`${name}: a hover state`, async () => (await look(toggle)).bg !== resting);
+    await until(`${name}: a hover state`, async () => (await headButton(frame, "1 resolved")).bg !== resting);
     await toggle.click();
     assert.equal(await toggle.getAttribute("aria-expanded"), "true");
     await frame.locator("[data-thread].resolved").waitFor();
-    await until(`${name}: the chevron turned`, async () => /^matrix\(-1, /.test(await turn(toggle)));
+    await until(`${name}: the chevron turned`, async () => /^matrix\(-1, /.test(await headButton(frame, "1 resolved", "turn")));
     assert.equal((await head.boundingBox()).height, rowHeight, `${name}: the count does not grow the header row`);
     await shoot(tab, `header-resolved-open-${name}`);
     await owner.close();
   }
+});
+
+test("a header control the keyboard is on keeps focus when the frame redraws on its own: Undo, the resolved count and Close", { timeout: 180_000 }, async () => {
+  const docId = await publish("Header focus", REPORT);
+  await agentThread(docId, { exact: "Renewal risk is concentrated in three accounts", section: "risk" }, "This overstates the renewal risk.");
+  await agentThread(docId, { exact: "Staffing is unchanged" }, "Is that deliberate?");
+  const owner = await newContext(OWNER_ACCOUNT, { signedInTo: docId });
+  const tab = await owner.newPage();
+  await tab.goto(docUrl(docId));
+  const frame = await until("the comments frame", () => commentsFrame(tab, docId));
+  await openSidebar(tab);
+  const cards = frame.locator("[data-thread]");
+  await until("two cards", async () => (await cards.count()) === 2);
+  const head = frame.locator(".head");
+  const focused = () => frame.evaluate(() => (document.activeElement ? document.activeElement.getAttribute("aria-label") || document.activeElement.textContent.trim() : ""));
+  let width = 1280;
+  // Focus the control, mark its node, and reflow the page without any input to the frame: the page's new positions redraw the frame, which a node without the mark proves. At 900px (still a sidebar, scrollbar or not) the text column is narrow enough that the first paragraph wraps whatever the fonts, so every passage below it moves.
+  // Undo is on a six-second clock, so on a slow machine its expiry can be the redraw; the count that replaces it then holds the focus (asserted on its own below).
+  const survives = async (label, control, orElse) => {
+    await control.focus();
+    await control.evaluate((el) => { el.dataset.before = "1"; });
+    width = width === 1280 ? 900 : 1280;
+    await tab.setViewportSize({ width, height: 800 });
+    await until(`the header redrawn under ${label}`, () => frame.evaluate(() => !document.querySelector(".head [data-before]")));
+    const now = await focused();
+    assert.ok(now === label || (orElse !== undefined && now === orElse), `${label} keeps focus through a redraw (got ${JSON.stringify(now.slice(0, 40))})`);
+  };
+
+  await cardFor(frame, "Is that deliberate?").getByRole("button", { name: "Resolve" }).click();
+  await until("one card", async () => (await cards.count()) === 1);
+  await survives("Undo", head.getByRole("button", { name: "Undo" }), "1 resolved");
+  // The offer expiring under the keyboard hands the focus to the count that replaces it, never to the page.
+  if (await head.getByRole("button", { name: "Undo" }).count()) await head.getByRole("button", { name: "Undo" }).focus();
+  await until("the Undo offer to go", async () => (await head.getByRole("button", { name: "Undo" }).count()) === 0, 12_000);
+  assert.equal(await focused(), "1 resolved", "the keyboard moves from Undo to the count");
+  await survives("1 resolved", head.getByRole("button", { name: "1 resolved" }));
+  await survives("Close comments", head.getByRole("button", { name: "Close comments" }));
+  await owner.close();
 });
 
 test("a thread card has no Open badge, a Resolve icon, one menu per comment, and a reply box only while focused", { timeout: 120_000 }, async () => {
@@ -2189,6 +2238,50 @@ test("cards on adjacent lines stack in passage order 8px apart, the clicked one 
   });
   await shoot(tab, "sidebar-active-card");
   await context.close();
+});
+
+test("the page's text stays readable on its highlights, open and active, at 4.5:1 or more on a light page and a dark one", { timeout: 180_000 }, async () => {
+  const quote = "Staffing is unchanged";
+  const luminance = (rgb) => {
+    const [r, g, b] = rgb.map((v) => (v / 255 <= 0.04045 ? v / 255 / 12.92 : Math.pow((v / 255 + 0.055) / 1.055, 2.4)));
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  const contrast = (a, b) => { const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x); return (hi + 0.05) / (lo + 0.05); };
+  // What the highlight paints behind the glyphs: the most common colour along the bottom of the passage, where few letters reach.
+  const behind = async (tab) => {
+    const box = await rectOf(tab, quote);
+    const seen = new Map();
+    for (let i = 1; i < 10; i++) {
+      const rgb = await pixelAt(tab, Math.round(box.x + (box.width * i) / 10), Math.floor(box.y + box.height - 2));
+      seen.set(rgb.join(), (seen.get(rgb.join()) || 0) + 1);
+    }
+    return [...seen].sort((a, b) => b[1] - a[1])[0][0].split(",").map(Number);
+  };
+  // The owner's own dark page: light-grey text on a near-black panel.
+  const cases = [["light", page(REPORT)], ["dark", page(REPORT, "<style>body{background:#191c1a;color:#99a19c}</style>")]];
+  for (const [name, html] of cases) {
+    const docId = await publish(`Readable ${name}`, REPORT, { html });
+    await agentThread(docId, { exact: quote }, "Is that deliberate?");
+    const context = await newContext(ALICE, { signedInTo: docId });
+    const tab = await context.newPage();
+    await tab.goto(docUrl(docId));
+    await until("the highlight", async () => (await painted(tab, "openartifacts-open")).length === 1);
+    const ink = (await tab.evaluate(() => getComputedStyle(document.querySelector("#content p")).color)).match(/[0-9.]+/g).slice(0, 3).map(Number);
+    const page0 = await tab.evaluate(() => getComputedStyle(document.body).backgroundColor);
+    const open = await behind(tab);
+    assert.notDeepEqual(open, page0.match(/[0-9.]+/g).slice(0, 3).map(Number), `${name}: the open highlight shows`);
+    assert.ok(contrast(ink, open) >= 4.5, `${name}: text on the open highlight rgb(${open}) is ${contrast(ink, open).toFixed(2)}:1`);
+    const at = await rectOf(tab, quote);
+    await tab.mouse.click(at.x + at.width / 2, at.y + at.height / 2);
+    await until("the active highlight", async () => (await painted(tab, "openartifacts-focus")).length === 1);
+    await tab.mouse.move(5, 5);
+    await tab.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    const active = await behind(tab);
+    assert.notDeepEqual(active, open, `${name}: the active highlight is stronger than the open one`);
+    assert.ok(contrast(ink, active) >= 4.5, `${name}: text on the active highlight rgb(${active}) is ${contrast(ink, active).toFixed(2)}:1`);
+    await shoot(tab, `highlight-${name}`);
+    await context.close();
+  }
 });
 
 test("highlights show with the sidebar closed, in one yellow without an underline, and clicking one opens its card level with it", { timeout: 120_000 }, async () => {
@@ -2508,6 +2601,14 @@ test("hovering a highlight or its card links them: the passage darkens and the c
   await tab.mouse.move(20, 700);
   await until("the passage back", async () => (await painted(tab, "openartifacts-focus")).length === 0);
   await until("the card back", async () => !(await lifted()));
+
+  // Straight from the passage into an empty part of the sidebar, in one move: the page is told nothing, and only the frame sees the pointer arrive.
+  await tab.mouse.move(at.x + at.width / 2, at.y + at.height / 2);
+  await until("the passage in the active yellow again", async () => (await painted(tab, "openartifacts-focus")).length === 1);
+  const side = await hostBox(tab);
+  await tab.mouse.move(side.x + side.width / 2, 700);
+  await until("the passage back after a jump into the sidebar", async () => (await painted(tab, "openartifacts-focus")).length === 0);
+  await until("the card back after a jump into the sidebar", async () => !(await lifted()));
 
   const box = await card.boundingBox();
   await tab.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
