@@ -145,6 +145,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
@@ -1131,7 +1132,8 @@ describe("notifications", () => {
     expect(mailTo(owner.email)[0]!.text).toContain("thanks");
   });
 
-  it("mails nobody for an unlinked license key's comments: it has no account, so no mailbox", async () => {
+  it("records why an unlinked license owner gets no comment email, then mails them once linked", async () => {
+    const logs = vi.spyOn(console, "info").mockImplementation(() => {});
     const { alice } = await world();
     const KEY = "cplus_live_a1b2c3d4e5f60718";
     await env.DB.prepare("INSERT INTO publishers (key_hash, plan, validated_at, owner) VALUES (?, 'believer', ?, 'lic-nomail')")
@@ -1143,12 +1145,22 @@ describe("notifications", () => {
     const made = await created(await thread(own, KEY, fox, "from a key with no account"));
     expect(sent).toEqual([]);
 
-    // Alice replies: the thread's only other writer is the key, which cannot be mailed, and nothing throws.
+    // Alice starts a new thread: the missing owner mailbox is an explicit skip.
+    await created(await thread(own, alice.token, fox, "new thread"));
+    expect(logs.mock.calls.filter(([name, fields]) => name === "email delivery" && fields.email_type === "comment_thread")).toMatchObject([
+      ["email delivery", { outcome: "skipped_no_owner_email", recipient_hash: null }],
+    ]);
+    // Alice replies: the thread's only other writer is the key, which cannot be mailed.
     await send("POST", `/api/v1/docs/${own}/threads/${made.threadId}/comments`, alice.token, { body: "reply" });
     expect(sent).toEqual([]);
     // The key resolves: Alice, who has an account, is told.
     await send("POST", `/api/v1/docs/${own}/threads/${made.threadId}/resolve`, KEY);
     expect(sent.map((m) => m.to)).toEqual([alice.email]);
+    const linked = await person("linked-owner@acme.com", "Owner");
+    expect(await linkExternalOwner(env.DB, "lic-nomail", linked.id, Date.now())).toBe("linked");
+    sent.length = 0;
+    await created(await thread(own, alice.token, fox, "after linking"));
+    expect(sent.map((m) => m.to)).toEqual([linked.email]);
   });
 
   it("mails only people who can read the document now, however they once took part", async () => {
@@ -1211,7 +1223,8 @@ describe("notifications", () => {
     expect(sent.map((m) => m.to)).toEqual([owner.email]);
   });
 
-  it("sends nothing when mail is unconfigured, and survives a limiter that says no and a sender that throws", async () => {
+  it("sends nothing when mail is unconfigured, and records a refused limiter or failed sender", async () => {
+    const logs = vi.spyOn(console, "info").mockImplementation(() => {});
     const { alice, priv } = await world();
     await created(await send("POST", `/api/v1/docs/${priv}/threads`, alice.token, { anchor: fox, body: "a" }, { EMAIL: undefined }));
     expect(sent).toEqual([]);
@@ -1226,6 +1239,7 @@ describe("notifications", () => {
     expect(posted.status).toBe(201);
     expect(attempts).toBe(1); // it was tried, to the owner, and its failure changed nothing
     expect(sent).toEqual([]);
+    expect(logs.mock.calls.filter(([name]) => name === "email delivery").map(([, fields]) => fields.outcome)).toEqual(["failed", "skipped_limit", "failed"]);
   });
 });
 

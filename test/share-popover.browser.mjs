@@ -1118,6 +1118,8 @@ test("an owner pastes a column of addresses and adds them all at once", { timeou
 
   await frame.getByRole("button", { name: "Add", exact: true }).click();
   await frame.getByText("Not added: bob@ (not an email address).").waitFor();
+  await frame.getByText("carol@example.com").scrollIntoViewIfNeeded();
+  await frame.locator("main").evaluate((element) => { element.scrollTop = element.scrollHeight; });
   await shoot(page, "popover-pasted-added");
   assert.match(await frame.locator("#oa-msg").innerText(), /^Added 3 people\. Not added: bob@ \(not an email address\)\.$/);
   // Some went in and some did not: amber, not the red of a failure.
@@ -1126,6 +1128,9 @@ test("an owner pastes a column of addresses and adds them all at once", { timeou
     assert.equal(await frame.getByText(address).count(), 1, address);
   }
   assert.equal(await frame.getByRole("button", { name: "Remove" }).count(), 3);
+  // No Email Service in this harness: every address in the batch reports failure,
+  // including the earlier responses, not just the final PUT.
+  assert.equal(await frame.getByText("Invite email not sent · copy the link and send it yourself", { exact: true }).count(), 3);
   // One request per address that is one, and none for the one that is not.
   assert.deepEqual(puts, ["ann@example.com", "bob@example.com", "carol@example.com"]);
   assert.deepEqual((await (await api(`/api/v1/docs/${X}/access`)).json()).people.map((entry) => entry.email).sort(), puts);

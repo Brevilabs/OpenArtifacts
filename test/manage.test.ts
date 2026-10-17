@@ -1153,9 +1153,14 @@ describe("access requests", () => {
       linkAccess: "invited",
       roles: ["view", "comment"],
       email: true,
+      notificationNotice: expect.stringContaining("Link your Copilot account"),
       people: [{ email: "alice@acme.com", role: "comment", addedAt: people.created_at }],
       requests: [{ email: "bob@other.com", requestedAt: 2000 }],
     });
+
+    expect(await linkExternalOwner(env.DB, ownerPlus, await account("owner@acme.com"), Date.now())).toBe("linked");
+    const linked = await send("GET", `${API}/api/v1/docs/${docId}/access`, KEY_PLUS, undefined, hosts);
+    expect(await linked.json()).not.toHaveProperty("notificationNotice");
 
     // A deployment with Google and no Email Service binding still does private sharing, and says it sends nothing.
     const google = { OAUTH_GOOGLE_CLIENT_ID: "id", OAUTH_GOOGLE_CLIENT_SECRET: "secret" };
@@ -1264,7 +1269,7 @@ describe("access requests", () => {
 
     const response = await send("PUT", `${API}/api/v1/docs/${docId}/access/people/a%40acme.com`, KEY_PLUS, undefined, { ...hosts, INVITE_EMAIL_LIMITER: broken } as Partial<Env>);
     expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ people: [{ email: "a@acme.com" }] });
+    expect(await response.json()).toMatchObject({ people: [{ email: "a@acme.com" }], inviteDelivery: [{ email: "a@acme.com", outcome: "failed" }] });
     expect(sent).toEqual([]);
   });
 

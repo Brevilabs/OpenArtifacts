@@ -41,6 +41,7 @@ export type Purpose =
   | "login"
   | "signup"
   | "email-code"
+  | "email-recipient-v1"
   | "share-token"
   | "embed-signin";
 

@@ -55,7 +55,7 @@ import {
   type LinkAccess,
 } from "../db.js";
 import { commentRoute } from "../comments/routes.js";
-import { emailConfigured, inviteMessage, sendEmail } from "../email.js";
+import { emailConfigured, inviteMessage, sendEmail, type EmailOutcome } from "../email.js";
 import { docNotFound, errorResponse } from "../errors.js";
 import { sha256Hex } from "../hash.js";
 import { isDocId } from "../ids.js";
@@ -111,7 +111,15 @@ export function planRefusal(env: Env, publisher: Publisher, what = "Private shar
 }
 
 /** The document's mode, invite list and pending requests, as `readAccess` reads them. */
-export type AccessState = NonNullable<Awaited<ReturnType<typeof readAccess>>>;
+export type InviteDelivery = { email: string; outcome: EmailOutcome };
+export type AccessState = NonNullable<Awaited<ReturnType<typeof readAccess>>> & { inviteDelivery?: InviteDelivery[] };
+
+function ownerEmailNotice(env: Env): string {
+  const fix = env.ACCOUNT_ACTION_URL?.trim()
+    ? `Link your Copilot account at ${env.ACCOUNT_ACTION_URL.trim()} to enable these emails.`
+    : "Ask your server operator to link your license to a verified account to enable these emails.";
+  return `Access requests and new comment threads cannot reach you by email, and invitations do not name you. ${fix}`;
+}
 
 /**
  * Why an operation did nothing. `not_found` covers a missing, deleted and
@@ -254,13 +262,13 @@ export async function addWithoutManifest(
 
   // One read after the write answers everything below: the cap check, the
   // response and the count the event carries.
-  const state = await readAccess(env.DB, docId);
+  const state: AccessState | null = await readAccess(env.DB, docId);
   if (state === null) return refused("not_found");
   if (!added && !state.people.some((person) => person.email === email)) {
     return refused(state.people.length >= MAX_INVITES_PER_DOC ? "full" : "invite_quota");
   }
 
-  if (added) await invite(env, requestUrl, doc.publisher_id, docId, doc.title, email, granted);
+  if (added) state.inviteDelivery = [{ email, outcome: await invite(env, requestUrl, doc.publisher_id, docId, doc.title, email, granted, analytics) }];
   if (added || roleChanged) recordChange(analytics, docId, doc.publisher_id, state);
   return { ok: true, state, changed: added || roleChanged };
 }
@@ -341,15 +349,12 @@ async function invite(
   title: string,
   email: string,
   role: InviteRole,
-): Promise<void> {
-  try {
-    if (!emailConfigured(env)) return;
-    if (!(await withinLimit(env.INVITE_EMAIL_LIMITER, await sha256Hex(`invite:${publisherId}`)))) return;
+  analytics: AnalyticsSink,
+): Promise<EmailOutcome> {
+  return await sendEmail(env, analytics, { type: "invite", docId, to: email }, async () => {
     const sharer = await ownerEmail(env.DB, publisherId);
-    await sendEmail(env, email, inviteMessage(sharer, title, publicDocUrl(env, requestUrl, docId), email, role));
-  } catch (error) {
-    console.error("invite email failed", { error: error instanceof Error ? error.name : "unknown" });
-  }
+    return inviteMessage(sharer, title, publicDocUrl(env, requestUrl, docId), email, role);
+  }, async () => withinLimit(env.INVITE_EMAIL_LIMITER, await sha256Hex(`invite:${publisherId}`)));
 }
 
 /**
@@ -394,6 +399,8 @@ export function accessBody(env: Env, requestUrl: URL, docId: string, state: Acce
     // Only an account has a checkout to go to; a license key's plan is managed in Copilot, as in `planRefusal`.
     ...(roles?.length === 0 && publisher.authKind === "account" && upgradeLink(env) !== undefined ? { upgradeUrl: upgradeLink(env) } : {}),
     email: emailConfigured(env),
+    ...(state.owner_email_available ? {} : { notificationNotice: ownerEmailNotice(env) }),
+    ...(state.inviteDelivery === undefined ? {} : { inviteDelivery: state.inviteDelivery }),
     people: state.people.map((person) => ({ email: person.email, role: person.role, addedAt: person.created_at })),
     requests: state.requests.map((request) => ({ email: request.email, requestedAt: request.created_at })),
   };
