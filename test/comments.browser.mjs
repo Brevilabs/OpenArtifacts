@@ -2339,3 +2339,38 @@ test("with no comments the sidebar says so in plain text, and the phone sheet's 
   assert.equal(await sheetFrame.getByText("No comments yet").count(), 0);
   await phone.close();
 });
+
+/** A public page that relays comments made at the given ages (ms before now) into `victim`'s frame, which has no read of its own. */
+const agesPage = (victim, ages) => `<h1>Ages</h1>
+<script>
+const f = document.createElement("iframe");
+f.src = "https://${API}/embed/comments?doc=${victim}&v=999999999&origin=" + encodeURIComponent(location.origin);
+f.style.cssText = "position:absolute;left:0;top:0;width:320px;height:1400px";
+document.body.append(f);
+const now = Date.now();
+const threads = ${JSON.stringify(ages)}.map((age, i) => ({ threadId: "th_" + i, anchor: { exact: "x" + i }, anchorStatus: "orphaned", state: "open",
+  comments: [{ commentId: "cm_" + i, author: { name: "x", kind: "human" }, body: "Remark " + i, createdAt: now - age }] }));
+window.addEventListener("message", (e) => {
+  if (e.source !== f.contentWindow || !e.data || e.data.event !== "ready") return;
+  f.contentWindow.postMessage({ type: "openartifacts:comments", event: "threads", data: { title: "x", version: 1, threads } }, "https://${API}");
+});
+</script>`;
+test("times read now, 5m, 3h, 2d, then a short date after a week, with the exact time on hover", { timeout: 120_000 }, async () => {
+  const victim = await publish("Ages victim", REPORT);
+  const minute = 60_000;
+  const ages = [10_000, 5 * minute, 3 * 60 * minute, 2 * 24 * 60 * minute, 10 * 24 * 60 * minute];
+  const relay = await publish("Ages", agesPage(victim, ages), { comments: false });
+  const context = await newContext(null);
+  const tab = await context.newPage();
+  await tab.goto(docUrl(relay));
+  const frame = await until("the victim's frame", () => commentsFrame(tab, victim));
+  await frame.getByText("Remark 4").waitFor();
+  const shown = await frame.locator(".who small").evaluateAll((els) => els.map((el) => [el.textContent, el.title]));
+  const expected = await frame.evaluate((list) => {
+    const old = new Date(Date.now() - list[4]);
+    return { date: old.toLocaleDateString(undefined, { month: "short", day: "numeric" }) };
+  }, ages);
+  assert.deepEqual(shown.map(([text]) => text), ["now", "5m", "3h", "2d", expected.date]);
+  for (const [, title] of shown) assert.match(title, /[0-9]{4}/, "the exact date and time as a tooltip");
+  await context.close();
+});

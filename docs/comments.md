@@ -241,6 +241,8 @@ The model is a document editor's comment margin (Google Docs, Notion, Figma):
 - **With nothing open** the column says "No comments yet. Select text to
   comment." in plain text, not a card ("No open comments." once every thread is
   resolved); the sheet's thread view carries no such line.
+- **Times** read `now`, `5m`, `3h`, `2d`, then a short date (`Oct 9`) after a
+  week, with the exact local date and time on hover.
 
 ## Plans, limits and abuse
 

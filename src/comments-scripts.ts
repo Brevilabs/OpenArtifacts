@@ -1079,12 +1079,15 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
   };
 
   // ---- drawing ----
+  // As the major editors put it: now, 5m, 3h, 2d, then the date (with the year when it is not this one).
   const ago = (ms) => {
     const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
-    if (s < 60) return "just now";
-    if (s < 3600) return Math.floor(s / 60) + " m";
-    if (s < 86400) return Math.floor(s / 3600) + " h";
-    return Math.floor(s / 86400) + " d";
+    if (s < 60) return "now";
+    if (s < 3600) return Math.floor(s / 60) + "m";
+    if (s < 86400) return Math.floor(s / 3600) + "h";
+    if (s < 7 * 86400) return Math.floor(s / 86400) + "d";
+    const at = new Date(ms);
+    return at.toLocaleDateString(undefined, at.getFullYear() === new Date().getFullYear() ? { month: "short", day: "numeric" } : { month: "short", day: "numeric", year: "numeric" });
   };
   const muted = (value) => node("p", { class: "muted-text" }, [value]);
   const errorLine = (key) => node("p", { class: "err", role: "alert" }, errors[key] ? [errors[key]] : []);
@@ -1094,7 +1097,7 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     const a = authorOf(author);
     const kids = [node("span", { class: a.agent ? "av agent" : "av" }, [(a.name.trim()[0] || "?").toUpperCase()]), a.name];
     if (a.agent) kids.push(node("span", { class: "badge" }, ["agent"]));
-    if (typeof at === "number") kids.push(node("small", {}, [ago(at)]));
+    if (typeof at === "number") kids.push(node("small", { title: new Date(at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) }, [ago(at)]));
     return node("div", { class: "who" }, kids);
   };
 
