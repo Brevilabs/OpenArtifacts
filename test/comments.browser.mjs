@@ -2374,3 +2374,24 @@ test("times read now, 5m, 3h, 2d, then a short date after a week, with the exact
   for (const [, title] of shown) assert.match(title, /[0-9]{4}/, "the exact date and time as a tooltip");
   await context.close();
 });
+
+test("after a post, focus moves to the new card's reply field and the frame announces it", { timeout: 120_000 }, async () => {
+  const docId = await publish("Announce", REPORT);
+  const context = await newContext(ALICE, { signedInTo: docId });
+  const tab = await context.newPage();
+  await tab.goto(docUrl(docId));
+  await openSidebar(tab);
+  const frame = commentsFrame(tab, docId);
+  await frame.getByText("Select text to comment.").waitFor();
+  const live = frame.locator("[aria-live='polite']");
+  assert.equal(await live.count(), 1);
+  assert.equal((await live.textContent()).trim(), "");
+  await pressComment(tab, "Staffing is unchanged");
+  await frame.getByRole("textbox", { name: "Add a comment…" }).fill("Who is staffed?");
+  await frame.getByRole("button", { name: "Send" }).click();
+  await until("the post", async () => (await threadsOf(docId)).length === 1);
+  const threadId = (await threadsOf(docId))[0].threadId;
+  await until("the reply field to have focus", () => frame.evaluate((key) => document.activeElement && document.activeElement.dataset.key === key, `r:${threadId}`));
+  await until("the announcement", async () => (await live.textContent()) === "Comment posted");
+  await context.close();
+});

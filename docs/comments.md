@@ -243,6 +243,8 @@ The model is a document editor's comment margin (Google Docs, Notion, Figma):
   resolved); the sheet's thread view carries no such line.
 - **Times** read `now`, `5m`, `3h`, `2d`, then a short date (`Oct 9`) after a
   week, with the exact local date and time on hover.
+- **After a post** focus moves to the reply field of what was posted, and a
+  polite live region in the frame says "Comment posted".
 
 ## Plans, limits and abuse
 

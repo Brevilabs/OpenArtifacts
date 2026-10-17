@@ -800,6 +800,7 @@ button.b.primary{background:var(--send);border-color:var(--send);color:var(--sen
 .err{font-size:11.5px;color:var(--danger);margin:6px 0 0}.err:empty{display:none}
 .card.topline{padding:8px 12px}
 .line{padding:2px 4px}.line .muted-text{margin:0}.line>*+*{margin-top:6px}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 `;
 
 /**
@@ -905,7 +906,7 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
   let draft = null, draftTop = 0, focusId = "", loadSeq = 0, lastViewer = null, positionsKey = "";
   let signState = "", prepared = null, opened = null, generation = 0, wake = null;
   let confirming = "";
-  let showResolved = false, undoId = "", undoTimer = 0, menuId = "", posted = null;
+  let showResolved = false, undoId = "", undoTimer = 0, menuId = "", posted = null, focusKey = "";
   let modelKey = "", inFlight = false, lastLoad = 0, composing = false, owed = false, stacked = { head: [], flow: [] }, sentNeed = -1, revealOwed = false;
   const texts = {}, errors = {}, busy = {};
 
@@ -1090,6 +1091,10 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     return at.toLocaleDateString(undefined, at.getFullYear() === new Date().getFullYear() ? { month: "short", day: "numeric" } : { month: "short", day: "numeric", year: "numeric" });
   };
   const muted = (value) => node("p", { class: "muted-text" }, [value]);
+  // Read out by a screen reader without moving anything: a new child each time, so a second post is announced too.
+  const live = node("div", { class: "sr", role: "status", "aria-live": "polite" });
+  main.append(live);
+  const announce = (words) => live.replaceChildren(node("span", {}, [words]));
   const errorLine = (key) => node("p", { class: "err", role: "alert" }, errors[key] ? [errors[key]] : []);
   // Relayed data is the page's word, so under it nobody has a name or a badge: a page can make up a comment, not a commenter.
   const authorOf = (a) => (relayedOnly() ? { name: "A commenter", agent: false } : { name: text(a && a.name) || "Someone", agent: !!a && a.kind === "agent" });
@@ -1245,7 +1250,7 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
       if (replies) card.append(node("div", { class: "replies" }, [replies + (replies === 1 ? " reply" : " replies")]));
       const reply = () => {
         const body = (texts["r:" + id] || "").trim();
-        if (body) act("r:" + id, () => call("POST", docPath("/threads/" + encodeURIComponent(id) + "/comments"), { body: body, version: versionOf() || undefined }), () => { texts["r:" + id] = ""; });
+        if (body) act("r:" + id, () => call("POST", docPath("/threads/" + encodeURIComponent(id) + "/comments"), { body: body, version: versionOf() || undefined }), () => { texts["r:" + id] = ""; focusKey = "r:" + id; announce("Comment posted"); });
       };
       const box = writer("r:" + id, "Reply…", reply);
       // Only a box to type in hides with the card's focus; the line that says there is none stays.
@@ -1273,7 +1278,8 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
       act("draft", () => call("POST", docPath("/threads"), request), (result) => {
         draft = null;
         texts.draft = "";
-        if (result && typeof result.threadId === "string") { focusId = result.threadId; posted = { thread: result.threadId, top: draftTop }; }
+        if (result && typeof result.threadId === "string") { focusId = result.threadId; posted = { thread: result.threadId, top: draftTop }; focusKey = "r:" + result.threadId; }
+        announce("Comment posted");
       });
     };
     card.append(...writer("draft", "Add a comment…", submit));
@@ -1401,10 +1407,13 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     } catch (error) {
       cards.replaceChildren();
     }
-    if (key !== undefined) {
-      const again = Array.from(cards.querySelectorAll("[data-key]")).find((element) => element.dataset.key === key);
-      if (again) { again.focus({ preventScroll: true }); if (from) again.setSelectionRange(from[0], from[1]); }
+    // After a post, the reader's next words go in the reply field of what they posted, as in a chat; that follows their own click on Send in this frame. Otherwise the field that had focus keeps it.
+    const want = focusKey || key;
+    if (want !== undefined) {
+      const again = Array.from(cards.querySelectorAll("[data-key]")).find((element) => element.dataset.key === want);
+      if (again) { again.focus({ preventScroll: true }); if (from && want === key) again.setSelectionRange(from[0], from[1]); }
     }
+    focusKey = "";
     if (mode === "overlay" && cards.firstChild) {
       sizes.observe(main);
       reportSheet();
