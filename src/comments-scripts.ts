@@ -530,7 +530,8 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
         ["mode", "theme", "visible", "threads", "positions", "draft", "focus"].forEach((name) => { if (out[name]) deliver(out[name]); });
       } else if (msg.event === "viewer") {
         canComment = msg.canComment !== false;
-        if (!canComment) hideTip();
+        // A selection made before this answer (before signing in, say) gets its Comment button now, not on the next selection.
+        refreshTip();
         // The probe's answer: this viewer may comment, so the page is theirs to comment on, as after the Share popover's event.
         if (probing) { probing = false; if (canComment) { ownerHere = true; refresh().then(refreshTip); } }
       } else if (msg.event === "changed") {

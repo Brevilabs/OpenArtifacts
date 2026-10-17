@@ -233,6 +233,8 @@ The model is a document editor's comment margin (Google Docs, Notion, Figma):
 - **A highlight opens its thread**, and **Comment** on a selection opens the
   composer level with it, from a closed state too. Posting takes a click on Send;
   Enter is a newline.
+- **A selection made before the reader may comment** (before signing in, say)
+  gets its **Comment** button as soon as they may, without selecting again.
 
 ## Plans, limits and abuse
 

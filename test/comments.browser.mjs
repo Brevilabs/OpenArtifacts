@@ -2260,3 +2260,24 @@ test("cards follow the page's theme: white on a light page, dark grey on a dark 
   assert.ok(luminance(rgb(host)) < 0.25, `a dark sheet (${host})`);
   await context.close();
 });
+
+test("a selection made before signing in gets its Comment button once the frame says the reader may comment", { timeout: 180_000 }, async () => {
+  const docId = await publish("Select, then sign in", REPORT);
+  const context = await newContext(CAROL);
+  const tab = await context.newPage();
+  await tab.goto(docUrl(docId));
+  await openSidebar(tab);
+  const frame = commentsFrame(tab, docId);
+  const tip = tab.locator(".openartifacts-comment-tip");
+  assert.equal(await select(tab, "Staffing is unchanged"), true);
+  await tab.waitForTimeout(400);
+  assert.equal(await tip.isVisible().catch(() => false), false, "no Comment before sign-in");
+  const signIn = frame.getByRole("button", { name: "Invited to comment? Sign in." });
+  await signIn.waitFor();
+  const [popup] = await Promise.all([context.waitForEvent("page"), signIn.click()]);
+  await popup.waitForEvent("close").catch(() => {});
+  await frame.getByText("Select text to comment.").waitFor();
+  assert.equal(await tab.evaluate(() => window.getSelection().toString()), "Staffing is unchanged", "the selection is still there");
+  await until("the Comment button, without selecting again", async () => await tip.isVisible());
+  await context.close();
+});
