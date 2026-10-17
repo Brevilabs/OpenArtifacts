@@ -343,7 +343,7 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
     };
     // Whether that background is dark. The frame draws its cards in the matching theme.
     let dark = null, fill = "";
-    // One translucent yellow for every thread and no underline, which reads as a link; stronger for the active thread (its focus layer sits on its open one) and the draft (on its own). On a dark page the same yellows are fainter: a strong one under the page's light text is a mustard block it cannot be read on (these keep light-grey text at 4.5:1).
+    // One translucent yellow for every thread and no underline, which reads as a link; stronger for the active thread (its focus layer sits on its open one) and the draft (on its own). On a dark page the same yellows are fainter: a strong one under the page's light text is a mustard block it cannot be read on (on a near-black page these keep light-grey text at 4.5:1; any visible tint lowers a page's own contrast, so a page that starts near 4.5:1 dips slightly below it).
     let marks = null;
     const markColours = (onDark) => {
       if (!marks) return;
