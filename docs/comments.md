@@ -247,6 +247,8 @@ The model is a document editor's comment margin (Google Docs, Notion, Figma):
   polite live region in the frame says "Comment posted".
 - **Hovering links a passage and its card**: while either is under the pointer,
   the passage takes the active yellow and the card lifts; leaving restores both.
+- **Avatars** are each person's initial in one colour picked from their name, from
+  a small palette that reads on both themes.
 
 ## Plans, limits and abuse
 

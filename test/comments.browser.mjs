@@ -2428,3 +2428,34 @@ test("hovering a highlight or its card links them: the passage darkens and the c
   await until("the card back after the card", async () => !(await lifted()));
   await context.close();
 });
+
+test("each person's avatar has their initial and one colour, picked from their name", { timeout: 120_000 }, async () => {
+  const docId = await publish("Avatars", REPORT);
+  const quote = "Renewal risk is concentrated in three accounts";
+  const threadId = await agentThread(docId, { exact: quote, section: "risk" }, "From the agent.");
+  // Two people reply through the frame's own API, Alice twice.
+  const reply = async (account, body) => {
+    const response = await mf.dispatchFetch(`https://${API}/embed/api/docs/${docId}/threads/${threadId}/comments`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${frameToken(account, docId).token}`, "content-type": "application/json" },
+      body: JSON.stringify({ body }),
+    });
+    assert.equal(response.status, 201, await response.clone().text());
+  };
+  await reply(ALICE, "Alice once.");
+  await reply(CAROL, "Carol once.");
+  await reply(ALICE, "Alice twice.");
+  const context = await newContext(ALICE, { signedInTo: docId });
+  const tab = await context.newPage();
+  await tab.goto(docUrl(docId));
+  await openSidebar(tab);
+  const frame = commentsFrame(tab, docId);
+  const card = cardFor(frame, "From the agent.");
+  await card.getByText("Alice twice.").waitFor();
+  const avatars = await card.locator(".av").evaluateAll((els) => els.map((el) => [el.textContent, getComputedStyle(el).backgroundColor]));
+  assert.deepEqual(avatars.map(([initial]) => initial), ["L", "A", "C", "A"]);
+  const [agent, alice, carol, alice2] = avatars.map(([, colour]) => colour);
+  assert.equal(alice, alice2, "one colour per person");
+  assert.equal(new Set([agent, alice, carol]).size, 3, `three people, three colours (${agent}, ${alice}, ${carol})`);
+  await context.close();
+});

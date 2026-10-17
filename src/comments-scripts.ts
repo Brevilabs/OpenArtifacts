@@ -779,8 +779,8 @@ main.overlay{background:var(--sheet);padding:0 14px 18px}
 .where{font-size:11.5px;color:var(--muted);margin:0 0 6px}
 .who{display:flex;flex-wrap:wrap;align-items:center;gap:2px 6px;font-weight:700;font-size:12.5px;min-width:0}
 .who small{font-weight:400;color:var(--muted);white-space:nowrap}
-.av{width:20px;height:20px;border-radius:50%;display:inline-grid;place-items:center;font-size:10px;font-weight:700;color:#1b1b1b;background:#9fd6c9;flex:none}
-.av.agent{background:#c9b8f0}
+.av{width:20px;height:20px;border-radius:50%;display:inline-grid;place-items:center;font-size:10px;font-weight:700;color:#fff;flex:none}
+.av.c0{background:#3b6fd4}.av.c1{background:#c2410c}.av.c2{background:#15803d}.av.c3{background:#7c3aed}.av.c4{background:#0e7490}.av.c5{background:#be185d}.av.c6{background:#a16207}.av.c7{background:#4f46e5}
 .badge{font:9.5px/1.4 ui-monospace,"SF Mono",Menlo,Consolas,monospace;letter-spacing:.05em;text-transform:uppercase;padding:1px 6px;border-radius:999px;font-weight:600;background:var(--badge);color:var(--badge-ink);white-space:nowrap}
 .txt{margin:3px 0 8px 26px;white-space:pre-wrap;overflow-wrap:anywhere}
 .acts{display:flex;flex-wrap:wrap;align-items:center;gap:4px 10px;margin:0 0 6px;font-size:11.5px;color:var(--muted)}
@@ -1117,6 +1117,12 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     const at = new Date(ms);
     return at.toLocaleDateString(undefined, at.getFullYear() === new Date().getFullYear() ? { month: "short", day: "numeric" } : { month: "short", day: "numeric", year: "numeric" });
   };
+  // One colour per person, from their name, in a palette that reads on both themes.
+  const tint = (name) => {
+    let h = 0;
+    for (const ch of name) h = (h * 31 + ch.codePointAt(0)) % 997;
+    return "c" + (h % 8);
+  };
   const muted = (value) => node("p", { class: "muted-text" }, [value]);
   // Read out by a screen reader without moving anything: a new child each time, so a second post is announced too.
   const live = node("div", { class: "sr", role: "status", "aria-live": "polite" });
@@ -1127,7 +1133,7 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
   const authorOf = (a) => (relayedOnly() ? { name: "A commenter", agent: false } : { name: text(a && a.name) || "Someone", agent: !!a && a.kind === "agent" });
   const who = (author, at) => {
     const a = authorOf(author);
-    const kids = [node("span", { class: a.agent ? "av agent" : "av" }, [(a.name.trim()[0] || "?").toUpperCase()]), a.name];
+    const kids = [node("span", { class: "av " + tint(a.name), "aria-hidden": "true" }, [(a.name.trim()[0] || "?").toUpperCase()]), a.name];
     if (a.agent) kids.push(node("span", { class: "badge" }, ["agent"]));
     if (typeof at === "number") kids.push(node("small", { title: new Date(at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) }, [ago(at)]));
     return node("div", { class: "who" }, kids);
