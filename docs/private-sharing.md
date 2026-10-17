@@ -497,9 +497,9 @@ that must never be on a page whose scripts the author writes.
   (what the frame's `postMessage` and `frame-ancestors` need; it tells the caller
   only what it already named). With a token, a non-reader sees what an unknown id
   shows, never `403`.
-- **It tells the page around it nothing about its viewer.** It has one fixed
-  height for everyone (320 px, less on a short viewport) and scrolls inside it.
-  It posts the page exactly three messages: `ready`, once, before it reads its
+- **It tells a page on the shared origin nothing about its viewer.** There it
+  has one fixed height for everyone (320 px, less on a short viewport) and
+  scrolls inside it. It posts the page `ready`, once, before it reads its
   storage; `close`, only after a click or key press inside it; and `people`,
   only after the owner's own click
   inside it (an add, a role change, or closing it), so the page asks for its
@@ -508,6 +508,17 @@ that must never be on a page whose scripts the author writes.
   frame's storage partition, and any of them can embed the frame for any id it
   knows; a size report, a focus move or an early message would tell that page, with
   no click, whether its visitor holds a token.
+- **On a private document's own origin it also reports its size** (`size`, the
+  height of its content), and the popover takes it. The frame decides this once,
+  as it loads: it reports only when the origin it was embedded by is set and is
+  not the shared one. `frame-ancestors` admits only the document's serving origin
+  at load, so that origin is the publisher's `{code}.openartifacts.site`, which
+  runs only that publisher's scripts, and the only visitors it admits are the
+  publisher and the people they invited by address. The height tells those
+  scripts nothing their author cannot already know. A frame loaded on the shared
+  origin stays silent after the document goes private; one loaded on the code
+  origin keeps reporting, to the same publisher's page, after it goes public; and
+  a code origin cannot load the frame for a public document at all.
 - **Its layout** is the same in every view. A row at the top holds the link
   field, **Copy link** (an icon) and ×; it is the primary action, so it never scrolls away,
   and it belongs to the frame's shell, not to a view, so nothing a view draws moves
@@ -518,12 +529,17 @@ that must never be on a page whose scripts the author writes.
   the end of the link, `/d/{id}`, cutting the host from its start when the whole
   link does not fit; a click selects all of it, and **Copy link** copies the full
   url.
-- **Its height** is one for every viewer, so it says nothing about who is looking,
-  and is chosen so that the owner view with nobody added shows whole, with no
-  scrollbar, in each of its forms: public, private, a free owner's plan line, and
-  the refusal after a failed switch. The tallest of these, measured in Chrome at the
-  popover's 360 px width, is 309 px; the popover is 320 px, capped by the viewport.
-  A list of people scrolls. `test/share-popover.browser.mjs` holds both.
+- **Its height** on the shared origin is one for every viewer, so it says nothing
+  about who is looking, and is chosen so that the owner view with nobody added
+  shows whole, with no scrollbar, in each of its forms: public, private, a free
+  owner's plan line, and the refusal after a failed switch. The tallest of these,
+  measured in Chrome at the popover's 360 px width, is 309 px; the popover is
+  320 px, capped by the viewport. A list of people scrolls. On a private
+  document's own origin the popover is as tall as what the frame shows, up to
+  720 px and the viewport below the bar less 8 px, and scrolls past that; it
+  follows the content as people are added or removed and a line appears, and the
+  frame is laid out while hidden, so the popover opens at its height.
+  `test/share-popover.browser.mjs` holds all of it.
 - **Its views** follow the table: the owner gets the **Link access** choice
   (Anyone with the link / Only those invited), the address field with **Add**, one
   helper line, one line at the popover's narrowest width ("Only people you add
@@ -832,9 +848,10 @@ subdomain needs a paid certificate for `*.docs.example.net`.
   reader sign-in). Pressing **Sign in to manage** again then completes at once from
   the new session. Two that do not overlap are independent, because the popup's
   binding cookie is per handshake.
-- **The popover is one fixed height**, so its short views have room to spare; the
-  alternative is a frame that reports its size, which would tell any page that can
-  embed it whether its visitor manages the document.
+- **The popover is one fixed height on a public page**, so its short views have
+  room to spare and a long list scrolls in 320 px; the alternative is a frame that
+  reports its size there, which would tell any page that can embed it whether its
+  visitor manages the document. Only a private page's popover fits its content.
 - **Browsers with no Fetch Metadata** (Safari before 16.4) cannot sign in to the
   popover and use the share page.
 - **A popover token outlives sign-out** by up to 24 hours. It can do only what that
