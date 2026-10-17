@@ -71,8 +71,10 @@ export async function notifyComment(env: Env, requestUrl: URL, n: Notification, 
       });
     })();
     // An unlinked license owner has no account, so the reader query omits it.
-    // Log its skipped notification too.
-    if (recipients.includes(n.doc.owner_account) && !emails.has(n.doc.owner_account)) {
+    // Log its skipped notification too. Asked of the accounts table, not the
+    // reader filter, which also drops an owner whose page was just deleted.
+    if (recipients.includes(n.doc.owner_account) && !emails.has(n.doc.owner_account)
+      && !(await accountEmails(env.DB, [n.doc.owner_account])).has(n.doc.owner_account)) {
       await sendEmail(env, analytics, { type: `comment_${n.event}`, docId: n.docId, to: null }, message);
     }
     const key = await sha256Hex(`comment-email:${n.docId}`);

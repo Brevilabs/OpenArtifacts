@@ -1,6 +1,8 @@
 import { createExecutionContext, env, runInDurableObject, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { NO_ANALYTICS } from "../src/analytics.js";
 import type { DocComments } from "../src/comments/object.js";
+import { notifyComment, type Notification } from "../src/comments/notify.js";
 import { MAX_COMMENTS, MAX_THREADS } from "../src/comments/object.js";
 import type { Env } from "../src/config.js";
 import { readableAccounts } from "../src/db.js";
@@ -1130,6 +1132,19 @@ describe("notifications", () => {
     await send("POST", `/api/v1/docs/${priv}/threads/${made.threadId}/comments`, alice.token, { body: "thanks" });
     expect(mailTo(owner.email)).toHaveLength(1);
     expect(mailTo(owner.email)[0]!.text).toContain("thanks");
+  });
+
+  it("does not record a missing mailbox for an owner who has one but can no longer read the page", async () => {
+    const logs = vi.spyOn(console, "info").mockImplementation(() => {});
+    try {
+      const owner = await person("deleted-page-owner@acme.com", "Owner");
+      // An id with no row reads like a page deleted before the background send: nobody can read it.
+      const gone = { event: "thread", docId: "doc_does_not_exist_00000000", doc: { owner_account: owner.id, title: "Gone" },
+        actor: { principal: "someone-else", kind: "human" } } as unknown as Notification;
+      await notifyComment(env as Env, new URL("https://api.openartifacts.ai/"), gone, NO_ANALYTICS);
+      expect(logs.mock.calls.filter(([name]) => name === "email delivery")).toEqual([]);
+      expect(sent).toEqual([]);
+    } finally { logs.mockRestore(); }
   });
 
   it("records why an unlinked license owner gets no comment email, then mails them once linked", async () => {
