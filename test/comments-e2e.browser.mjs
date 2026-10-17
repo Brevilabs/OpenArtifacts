@@ -780,7 +780,9 @@ test("11. on a phone a tapped highlight opens a bottom sheet with the card, and 
   await frame.getByText("Who is staffed?").waitFor();
   // Erin's phone has not signed in to the frame yet: the sheet carries the sidebar's one line, and the popup answers.
   await signInThroughPopup(context, frame.getByRole("button", { name: "Invited to comment? Sign in." }));
-  await frame.getByText("Select text to comment.").waitFor();
+  // Signed in, the card offers its reply box; over one thread the sheet carries no instruction line.
+  await frame.getByRole("textbox", { name: "Reply…" }).waitFor();
+  assert.equal(await frame.getByText("Select text to comment.").count(), 0);
   await shoot(tab, "12-phone-bottom-sheet-card");
   await frame.getByRole("button", { name: "Close" }).click();
   await until("the sheet to close", async () => (await hostBox(tab)) === null);
