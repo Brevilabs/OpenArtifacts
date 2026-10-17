@@ -540,9 +540,9 @@ that must never be on a page whose scripts the author writes.
   url.
 - **Its height** on the shared origin is one for every viewer, so it says nothing
   about who is looking, and is chosen so that the owner view with nobody added
-  shows whole, with no scrollbar, in each of its forms: public, private, a free
-  owner's plan line, and the refusal after a failed switch. The tallest of these,
-  measured in Chrome at the popover's 360 px width, is 309 px; the popover is
+  shows whole, with no scrollbar, in each of its forms: public, private, and a
+  free owner's upgrade card. The tallest of these, measured in Chrome at the
+  popover's 360 px width, is 285 px; the popover is
   320 px, capped by the viewport. A list of people scrolls. On a private
   document's own origin the owner view's popover is as tall as what the frame
   shows, up to 720 px and the viewport below the bar less 8 px, and scrolls past
@@ -556,7 +556,12 @@ that must never be on a page whose scripts the author writes.
   can open this page." on a private page, "Anyone can view. Invitees can
   comment." on a public one), **Who has access** (**You**, **Owner**, then each person with a **Can view
   / Can comment** select and **Remove**, see [comments.md](comments.md)), and
-  **Requests** with **Approve** and **Decline** when some are pending; any other
+  **Requests** with **Approve** and **Decline** when some are pending. A plan
+  that grants no role (a free one) gets, in place of the address field, one card:
+  "Private sharing and comments", "Choose who can open this page, and let them
+  comment on it. Included in paid plans." and **Upgrade**; its **Only those
+  invited** shows a lock and, pressed, sends nothing but points at the card, and
+  **Who has access** is left out while it would hold only **You**. Any other
   reader gets "Only the owner can change who can open this."; someone not yet
   signed in gets that sentence and **Sign in to manage**. Writes call the same
   operations as `/api/v1` and the share page, so the plan check and the `402`
