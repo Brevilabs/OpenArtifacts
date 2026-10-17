@@ -111,8 +111,7 @@ export function planRefusal(env: Env, publisher: Publisher, what = "Private shar
 }
 
 /** The document's mode, invite list and pending requests, as `readAccess` reads them. */
-export type InviteDelivery = { email: string; outcome: EmailOutcome };
-export type AccessState = NonNullable<Awaited<ReturnType<typeof readAccess>>> & { inviteDelivery?: InviteDelivery[] };
+export type AccessState = NonNullable<Awaited<ReturnType<typeof readAccess>>>;
 
 function ownerEmailNotice(env: Env): string {
   const fix = env.ACCOUNT_ACTION_URL?.trim()
@@ -145,7 +144,7 @@ export type AccessRefusal = "not_found" | "bad_email" | "full" | "plan" | "plan_
  * `document_access_changed` is recorded, and requests are not recorded.
  */
 export type AccessResult =
-  | { ok: true; state: AccessState; changed: boolean; sending?: Promise<InviteDelivery> }
+  | { ok: true; state: AccessState; changed: boolean }
   | { ok: false; refusal: AccessRefusal };
 
 const refused = (refusal: AccessRefusal): AccessResult => ({ ok: false, refusal });
@@ -204,8 +203,8 @@ export async function setMode(
  * Add a person, which is also how a request is approved. An address that is
  * already on the list stays as it is, unless `role` names a different one. The
  * invite email goes out only on the call that added the address, so a retry does
- * not mail the same person twice, and the answer waits for it, since it says
- * whether the email went out. Needs the plan, except for a pure repeat: an
+ * not mail the same person twice, and after the answer (`ctx.waitUntil`), so the
+ * owner never waits on the mail service. Needs the plan, except for a pure repeat: an
  * address already listed, with no role or the same role and no request to
  * approve, answers on any plan, mails nobody and records nothing. A role
  * change, a new address and an approval still reach the plan check.
@@ -219,10 +218,10 @@ export async function addPerson(
   rawEmail: string,
   role: InviteRole | undefined,
   analytics: AnalyticsSink,
+  ctx: ExecutionContext,
 ): Promise<AccessResult> {
-  const result = await addWithoutManifest(env, requestUrl, principal, docId, rawEmail, role, analytics);
-  if (result.ok && result.sending) result.state.inviteDelivery = [await result.sending];
-  // After the email is sent and the event recorded, so a failed put cannot
+  const result = await addWithoutManifest(env, requestUrl, principal, docId, rawEmail, role, analytics, ctx);
+  // After the email is scheduled and the event recorded, so a failed put cannot
   // swallow either: the retry it invites is a pure repeat, which mails nobody.
   // Written on a pure repeat too, since that retry is what repairs a failed
   // manifest write.
@@ -239,6 +238,7 @@ export async function addWithoutManifest(
   rawEmail: string,
   role: InviteRole | undefined,
   analytics: AnalyticsSink,
+  ctx: ExecutionContext,
 ): Promise<AccessResult> {
   const doc = isDocId(docId) ? await findManagedDoc(env.DB, docId, principal.owner) : null;
   if (doc === null) return refused("not_found");
@@ -270,16 +270,15 @@ export async function addWithoutManifest(
 
   // One read after the write answers everything below: the cap check, the
   // response and the count the event carries.
-  const state: AccessState | null = await readAccess(env.DB, docId);
+  const state = await readAccess(env.DB, docId);
   if (state === null) return refused("not_found");
   if (!added && !state.people.some((person) => person.email === email)) {
     return refused(state.people.length >= MAX_INVITES_PER_DOC ? "full" : "invite_quota");
   }
 
-  // Started, not awaited: a batch's sends run together, and the caller awaits them.
-  const sending = added ? invite(env, requestUrl, doc.publisher_id, docId, doc.title, email, granted, analytics).then((outcome) => ({ email, outcome })) : undefined;
+  if (added) ctx.waitUntil(invite(env, requestUrl, doc.publisher_id, docId, doc.title, email, granted, analytics));
   if (added || roleChanged) recordChange(analytics, docId, doc.publisher_id, state);
-  return { ok: true, state, changed: added || roleChanged, sending };
+  return { ok: true, state, changed: added || roleChanged };
 }
 
 /** Remove a person. Never needs the plan. Removing an absent address is a repeat. */
@@ -341,11 +340,12 @@ function recordChange(analytics: AnalyticsSink, docId: string, ownerId: string, 
 }
 
 /**
- * Mail the invite, best effort, and say whether it went out. The address is on
- * the list whether or not this succeeds, and the link always points at the
+ * Mail the invite, best effort, after the answer (`waitUntil`): the answer does
+ * not wait on the mail service, and says only that the server can mail
+ * (`Access.email`), never that this one was delivered. The address is on the
+ * list whether or not this succeeds, and the link always points at the
  * sacrificial domain, so a failure costs the invitee an email and nothing else.
- * It never throws: the limiter and the sharer's address are inside the `try`
- * too, so a person who is already listed never gets a `500`. Bounded per
+ * It never throws, so nothing here can surface as an unhandled rejection. Bounded per
  * publisher by a binding, keyed by the canonical publisher id so a license key,
  * its linked account and the share page draw on one allowance.
  */
@@ -407,7 +407,6 @@ export function accessBody(env: Env, requestUrl: URL, docId: string, state: Acce
     // Only an account has a checkout to go to; a license key's plan is managed in Copilot, as in `planRefusal`.
     ...(roles?.length === 0 && publisher.authKind === "account" && upgradeLink(env) !== undefined ? { upgradeUrl: upgradeLink(env) } : {}),
     email: emailConfigured(env),
-    ...(state.inviteDelivery === undefined ? {} : { inviteDelivery: state.inviteDelivery }),
     people: state.people.map((person) => ({ email: person.email, role: person.role, addedAt: person.created_at })),
     requests: state.requests.map((request) => ({ email: request.email, requestedAt: request.created_at })),
   };
@@ -528,7 +527,7 @@ export async function handleDocSection(
   if (people && method === "PUT") {
     const role = await roleOf(request);
     if (role === null) return errorResponse("bad_request", 'Expected {"role": "view" | "comment"} or no body.');
-    result = await addPerson(env, url, publisher, docId, decodeAddress(person), role, analytics);
+    result = await addPerson(env, url, publisher, docId, decodeAddress(person), role, analytics, ctx);
   } else if (people) {
     result = await removePerson(env, publisher, docId, decodeAddress(person), analytics);
   } else if (requests) {

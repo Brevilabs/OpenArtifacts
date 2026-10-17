@@ -705,8 +705,7 @@ the plan gate, the invite email, idempotency and the `document_access_changed`
 event cannot differ between the two. A refused write re-renders the dialog with
 the reason, including "Private sharing needs a paid plan." and the upgrade link
 (`402`), or the 24-hour invite cap (`429`, "Nothing was changed.");
-an add that attempted email renders its delivery result (`200`); other successful
-writes redirect (`303`) back to the page. The page is `no-store` with
+a successful one redirects (`303`) back to the page. The page is `no-store` with
 `frame-ancestors 'none'` and `Referrer-Policy: same-origin` (as on every page of
 the API host that holds a form: a form posted from a `no-referrer` page sends
 `Origin: null`, which would defeat the `Origin` fallback for browsers without
@@ -765,9 +764,8 @@ work.
 
 Links in emails always point at the sacrificial domain or at our own share page,
 never at a grant and never at a requester-chosen url. Without an email binding the
-`email` field of the access JSON is `false`. Share shows each new invite's actual
-send result and offers Copy link on failure; reload shows only "Has access".
-Requests are listed without
+`email` field of the access JSON is `false`, the share page says "Invited · send
+them the link" instead of "Invited · email sent", and requests are listed without
 a notice to the owner.
 
 ## Self-hosting

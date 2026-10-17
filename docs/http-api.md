@@ -548,11 +548,7 @@ when the server has one and the caller signed in with an account, when the plan 
 comments. `requests` are the addresses that asked to open the document and
 have not been answered.
 
-Additive field: `inviteDelivery: [{email, outcome}]` appears only on the add
-that attempted an invite. Outcomes are `sent` (mail service accepted), `failed`
-or `skipped_limit`. It is not stored; a repeat, role change or reload makes no
-delivery claim. Clients show failures with Copy link. Existing clients may ignore
-it. Invites and access are managed from
+Invites and access are managed from
 Share in the published page's top bar, not Copilot's publish dialog. Share also
 shows conditional linking guidance to unlinked license-key publishers before
 they can authenticate as the owner.

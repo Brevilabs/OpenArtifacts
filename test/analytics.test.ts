@@ -893,10 +893,10 @@ describe("who a publication is attributed to", () => {
 
     await setMode(quiet, token, docId, "invited", sink);
     await setMode(quiet, token, docId, "invited", sink);
-    await addPerson(quiet, API_URL, token, docId, "alice@acme.com", undefined, sink);
-    await addPerson(quiet, API_URL, token, docId, "alice@acme.com", undefined, sink);
-    await addPerson(quiet, API_URL, token, docId, "alice@acme.com", "view", sink);
-    await addPerson(quiet, API_URL, token, docId, "alice@acme.com", "view", sink);
+    await addPerson(quiet, API_URL, token, docId, "alice@acme.com", undefined, sink, createExecutionContext());
+    await addPerson(quiet, API_URL, token, docId, "alice@acme.com", undefined, sink, createExecutionContext());
+    await addPerson(quiet, API_URL, token, docId, "alice@acme.com", "view", sink, createExecutionContext());
+    await addPerson(quiet, API_URL, token, docId, "alice@acme.com", "view", sink, createExecutionContext());
     await insertAccessRequest(env.DB, docId, "oa_bbbbbbbbbbbbbbbbbbbbbbbbbb", 1000, 100);
     expect((await declineRequest(quiet, token, docId, "bob@other.com")).ok).toBe(true);
     await removePerson(quiet, token, docId, "alice@acme.com", sink);
@@ -921,10 +921,10 @@ describe("who a publication is attributed to", () => {
     const free: Publisher = { owner: LINKED_ACCOUNT, plan: "free", authKind: "account" };
     const docId = await published(await create(sink, VALID_PUSH, BY_LICENSE));
     await setMode(quiet, pro, docId, "invited", sink);
-    await addPerson(quiet, API_URL, pro, docId, "alice@acme.com", undefined, sink);
+    await addPerson(quiet, API_URL, pro, docId, "alice@acme.com", undefined, sink, createExecutionContext());
     events.length = 0;
 
-    const repeat = await addPerson(quiet, API_URL, free, docId, "alice@acme.com", undefined, sink);
+    const repeat = await addPerson(quiet, API_URL, free, docId, "alice@acme.com", undefined, sink, createExecutionContext());
 
     expect(repeat).toMatchObject({ ok: true, changed: false });
     expect(events).toEqual([]);
