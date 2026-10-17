@@ -5,7 +5,7 @@
  * The vitest suite runs inside workerd and cannot load a page, so
  * `test/comments-*.test.ts` and `test/serve.test.ts` cover the HTTP contract and
  * this covers the DOM: the page script's selection, canonical text, highlights
- * and measuring; the margin frame's cards, sign-in and writes; and the two
+ * and measuring; the comments frame's sidebar and sheet, sign-in and writes; and the two
  * halves talking across the origin line.
  *
  * It uses the same harness as `test/share-popover.browser.mjs` (read its header
@@ -16,7 +16,7 @@
  * the frame, after the real sign-in popup, where it is.
  *
  * Needs Node 22 and a Google Chrome. `OA_HEADED=1` shows the browser, and
- * `OA_SCREENSHOTS={dir}` saves the margin with an open card, a resolved card, the
+ * `OA_SCREENSHOTS={dir}` saves the sidebar with an open card, a resolved card, the
  * orphaned section, a Can-view card and the phone's bottom sheet.
  */
 import assert from "node:assert/strict";
@@ -27,6 +27,7 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { inflateSync } from "node:zlib";
 
 const require = createRequire(import.meta.url);
 const { Miniflare } = require("miniflare");
@@ -305,28 +306,28 @@ test("a selection offers Comment, the frame posts after sign-in, and the card si
   const tab = await context.newPage();
   await tab.goto(docUrl(docId));
 
-  // 1. The bar gets a comments button beside Share, counting no open threads yet.
+  // 1. The bar gets a Comments button beside Share, with no count while nothing is open, and the sidebar closed.
   const button = barButton(tab);
   await button.waitFor();
-  assert.match(await button.innerText(), /0$/);
-  assert.equal(await button.getAttribute("aria-pressed"), "true");
+  assert.equal((await button.textContent()).trim(), "Comments");
+  assert.equal(await button.getAttribute("aria-pressed"), "false");
   const bar = await tab.locator(".openartifacts-bar").boundingBox();
   const shareBox = await tab.locator("a[data-openartifacts-share]").boundingBox();
   const buttonBox = await button.boundingBox();
   assert.ok(buttonBox.x + buttonBox.width <= shareBox.x && shareBox.x - (buttonBox.x + buttonBox.width) < 24, "the button sits just left of Share");
   assert.ok(bar.width > 0);
 
-  // 2. The margin is a frame to the right of the content, as tall as the page.
+  // 2. Pressed, it opens the sidebar: a frame to the right of the content, as tall as the page.
   const frame = await until("the comments frame", () => commentsFrame(tab, docId));
-  await until("the frame to be shown", async () => (await hostBox(tab)) !== null);
+  await openSidebar(tab);
   const content = await tab.locator("#content").boundingBox();
-  const margin = await hostBox(tab);
-  assert.ok(margin.x >= content.x + content.width + 15, `the frame (${margin.x}) starts right of the content (${content.x + content.width})`);
-  assert.ok(margin.x + margin.width <= 1280 - 8);
-  assert.ok(margin.height >= (await tab.evaluate(() => document.documentElement.scrollHeight)) - 2);
+  const side = await hostBox(tab);
+  assert.ok(side.x >= content.x + content.width, `the frame (${side.x}) starts right of the content (${content.x + content.width})`);
+  assert.ok(side.x + side.width <= 1280);
+  assert.ok(side.height >= (await tab.evaluate(() => document.documentElement.scrollHeight)) - 2);
   const authorBefore = await tab.locator("#content").innerHTML();
 
-  // 3. Signed out, nothing offers Comment: the margin's one line invites the people who may comment to sign in.
+  // 3. Signed out, nothing offers Comment: the sidebar's one line invites the people who may comment to sign in.
   const quote = "Renewal risk is concentrated in three accounts";
   const tip = tab.locator(".openartifacts-comment-tip");
   assert.equal(await select(tab, quote), true);
@@ -363,7 +364,7 @@ test("a selection offers Comment, the frame posts after sign-in, and the card si
   // 5. The composer is there. Carol has no name: she is not asked, and is named from her email.
   const box = frame.getByRole("textbox", { name: "Add a comment…" });
   await box.waitFor();
-  await shoot(tab, "margin-draft-card");
+  await shoot(tab, "sidebar-draft-card");
   await box.fill("This overstates the renewal risk; two of the three accounts already renewed.");
   await frame.locator("[data-thread='']").getByRole("button", { name: "Send" }).click();
 
@@ -372,15 +373,15 @@ test("a selection offers Comment, the frame posts after sign-in, and the card si
   await card.waitFor();
   assert.match(await card.innerText(), /carol/);
   assert.match(await card.innerText(), /This overstates the renewal risk/);
-  await until("the bar to count one", async () => /1$/.test(await button.innerText()));
-  await until("the card to sit at its passage", async () => {
+  await until("the bar to count one", async () => (await button.textContent()).trim() === "Comments 1");
+  await until("the card to sit level with its passage", async () => {
     const level = await rectOf(tab, quote);
     const cardBox = await card.boundingBox();
-    return Math.abs(cardBox.y - level.y) < 24;
+    return Math.abs(cardBox.y - level.y) <= 2;
   });
   assert.deepEqual(await painted(tab, "openartifacts-open"), [quote]);
   assert.equal(await tab.locator("#content").innerHTML(), authorBefore, "the author's DOM is untouched");
-  await shoot(tab, "margin-open-card");
+  await shoot(tab, "sidebar-open-card");
 
   // 7. The page holds no credential: nothing of ours in its storage or cookies.
   assert.deepEqual(await tab.evaluate(() => Object.keys(window.localStorage).concat(Object.keys(window.sessionStorage))), []);
@@ -392,69 +393,23 @@ test("a selection offers Comment, the frame posts after sign-in, and the card si
   assert.equal(stored[0].anchor.prefix.length > 0 && stored[0].anchor.suffix.length > 0, true);
   assert.equal(stored[0].anchor.section, "risk");
 
-  // 8. Pressing the bar's button hides the cards and the highlights, and again shows them.
+  // 8. Pressing the bar's button closes the sidebar and the highlights stay; again, it opens it.
   await button.click();
-  await until("the margin to hide", async () => (await hostBox(tab)) === null);
+  await until("the sidebar to close", async () => (await hostBox(tab)) === null);
   assert.equal(await button.getAttribute("aria-pressed"), "false");
-  // Released, it is a dark chip, not see-through: an older cached page's bar is light.
-  assert.equal(await button.evaluate((element) => getComputedStyle(element).backgroundColor), "rgb(11, 12, 16)");
-  assert.deepEqual(await painted(tab, "openartifacts-open"), []);
-  await button.click();
-  await until("the margin to show", async () => (await hostBox(tab)) !== null);
+  // Released, it is Share's own painted pill, not see-through: an older cached page's bar is light.
+  assert.equal(await button.evaluate((element) => getComputedStyle(element).backgroundColor), "rgb(29, 32, 39)");
   assert.deepEqual(await painted(tab, "openartifacts-open"), [quote]);
+  await button.click();
+  await until("the sidebar", async () => (await hostBox(tab)) !== null);
 
   // 9. Replying in the card posts under it, and the count does not change.
+  await card.locator(".txt").first().click();
   const reply = frame.getByRole("textbox", { name: "Reply…" });
   await reply.fill("Fixed in my draft.");
   await frame.getByRole("button", { name: "Send" }).click();
   await until("the reply", async () => (await card.innerText()).includes("Fixed in my draft."));
   assert.equal((await threadsOf(docId))[0].comments.length, 2);
-  await context.close();
-});
-
-test("cards that would overlap are pushed down, and the owner's agent is labelled", { timeout: 120_000 }, async () => {
-  const filler = Array.from({ length: 7 }, (_, i) => `<p>Filler paragraph ${i + 1}, to leave a gap before the closing remarks.</p>`).join("\n");
-  const docId = await publish("Overlap", REPORT.replace("<p>Closing", `${filler}\n<p>Closing`));
-  const first = "Revenue grew 18% quarter over quarter";
-  const second = "led by the integration pilot";
-  await agentThread(docId, { exact: first, section: "growth" }, "Is 18% the right base?");
-  await agentThread(docId, { exact: second, prefix: "quarter over quarter, ", section: "growth" }, "Name the pilot.");
-  await agentThread(docId, { exact: "The budget is on the next page" }, "Which page?");
-  // Far enough below the others that nothing pushes it.
-  await agentThread(docId, { exact: "Closing remarks follow in the appendix" }, "Which appendix?");
-
-  const context = await newContext(ALICE, { signedInTo: docId });
-  const tab = await context.newPage();
-  await tab.goto(docUrl(docId));
-  const frame = await until("the comments frame", () => commentsFrame(tab, docId));
-  const cards = frame.locator("[data-thread]");
-  await until("four cards", async () => (await cards.count()) === 4);
-  await until("the bar to count four", async () => /4$/.test(await barButton(tab).innerText()));
-  await until("the stack to settle", async () => {
-    const a = await cards.nth(0).boundingBox();
-    const b = await cards.nth(1).boundingBox();
-    return b.y >= a.y + a.height;
-  });
-
-  const boxes = [];
-  for (let i = 0; i < 4; i++) boxes.push(await cards.nth(i).boundingBox());
-  // The first two passages share a line, so the second card is pushed below the first.
-  assert.ok(boxes[1].y >= boxes[0].y + boxes[0].height, `second card (${boxes[1].y}) clears the first (${boxes[0].y + boxes[0].height})`);
-  const level = await rectOf(tab, first);
-  assert.ok(Math.abs(boxes[0].y - level.y) < 24);
-  // The third sits at its own passage unless the second card reaches past it, and then directly under that card: never lower than either.
-  const third = await rectOf(tab, "The budget is on the next page");
-  const floor = boxes[1].y + boxes[1].height;
-  assert.ok(boxes[2].y >= floor - 1, "no overlap");
-  assert.ok(Math.abs(boxes[2].y - Math.max(third.y, floor)) < 24, `third card (${boxes[2].y}) at its passage (${third.y}) or under the second (${floor})`);
-  // The fourth passage is clear of everything above it, so its card is level with it.
-  const fourth = await rectOf(tab, "Closing remarks follow in the appendix");
-  assert.ok(fourth.y > boxes[2].y + boxes[2].height, "the fixture leaves the fourth passage clear");
-  assert.ok(Math.abs(boxes[3].y - fourth.y) < 24, "not pushed");
-  assert.match(await cards.first().innerText(), /Logan's agent/);
-  assert.equal(await cards.first().locator(".who .badge", { hasText: "agent" }).count(), 1, "the agent is badged");
-  assert.deepEqual((await painted(tab, "openartifacts-open")).sort(), [first, second, "The budget is on the next page", "Closing remarks follow in the appendix"].sort());
-  await shoot(tab, "margin-pushed-down");
   await context.close();
 });
 
@@ -471,6 +426,7 @@ test("a resolved thread is off the page, waits behind a count, and opens with it
   const owner = await newContext(OWNER_ACCOUNT, { signedInTo: docId });
   const tab = await owner.newPage();
   await tab.goto(docUrl(docId));
+  await openSidebar(tab);
   const frame = await until("the comments frame", () => commentsFrame(tab, docId));
   const toggle = frame.getByRole("button", { name: "1 resolved" });
   await toggle.waitFor();
@@ -484,14 +440,14 @@ test("a resolved thread is off the page, waits behind a count, and opens with it
   await expanded.getByText("Softened in v1.").waitFor();
   assert.match(await expanded.locator(".where").innerText(), /^Resolved in v1 by Logan's agent$/);
   assert.equal(await expanded.locator(".who .badge", { hasText: "agent" }).count(), 2, "both comments are the agent's");
-  await shoot(tab, "margin-resolved-expanded");
+  await shoot(tab, "sidebar-resolved-expanded");
   await expanded.getByRole("button", { name: "Reopen" }).click();
   await until("the thread to reopen", async () => (await threadsOf(docId, "open")).length === 2);
   await until("the count", async () => /2$/.test(await barButton(tab).innerText()));
   await owner.close();
 });
 
-test("a thread whose text was rewritten waits at the top under the new version, and returns beside it when the text does", { timeout: 180_000 }, async () => {
+test("a thread whose text was rewritten waits at the top under On text that changed, with its quote, and returns beside it when the text does", { timeout: 180_000 }, async () => {
   const docId = await publish("Orphan", REPORT);
   const quote = "The budget is on the next page";
   await agentThread(docId, { exact: quote }, "Which page?");
@@ -500,6 +456,7 @@ test("a thread whose text was rewritten waits at the top under the new version, 
   const context = await newContext(ALICE, { signedInTo: docId });
   const tab = await context.newPage();
   await tab.goto(docUrl(docId));
+  await openSidebar(tab);
   const frame = await until("the comments frame", () => commentsFrame(tab, docId));
   await until("two cards", async () => (await frame.locator("[data-thread]").count()) === 2);
 
@@ -507,20 +464,23 @@ test("a thread whose text was rewritten waits at the top under the new version, 
   const v2 = await update(docId, REPORT.replace(quote, "Appendix B has the budget"));
   assert.equal(v2, 2);
   await tab.reload();
+  await openSidebar(tab);
   const again = await until("the comments frame", () => commentsFrame(tab, docId));
-  await again.getByText("On text that changed in v2").waitFor();
+  const heading = again.getByText("On text that changed", { exact: true });
+  await heading.waitFor();
   const orphan = again.locator("[data-thread].muted");
   await orphan.waitFor();
-  assert.match(await orphan.innerText(), /The budget is on the next page/);
+  assert.match(await orphan.locator(".quote").innerText(), /The budget is on the next page/);
   assert.match(await orphan.innerText(), /Which page\?/);
-  // Still open, still counted, and the other thread still sits at its passage.
+  // Still open, still counted, and the other thread still sits level with its passage.
   await until("the bar to count both", async () => /2$/.test(await barButton(tab).innerText()));
   assert.deepEqual(await painted(tab, "openartifacts-open"), ["Staffing is unchanged"]);
-  const heading = await again.getByText("On text that changed in v2").boundingBox();
+  await until("the anchored card level with its passage", allLevel(tab, again, [["Say who is staffed.", "Staffing is unchanged"]]));
+  const top = await heading.boundingBox();
   const orphanBox = await orphan.boundingBox();
   const staffing = await again.locator("[data-thread]:not(.muted)").boundingBox();
-  assert.ok(heading.y < orphanBox.y && orphanBox.y + orphanBox.height <= staffing.y + 1, "the orphan is stacked above the anchored cards");
-  await shoot(tab, "margin-orphaned");
+  assert.ok(top.y < orphanBox.y && orphanBox.y + orphanBox.height <= staffing.y + 1, "the orphan is stacked above the anchored cards");
+  await shoot(tab, "sidebar-orphaned");
   // Opaque on any author background: no opacity to let a dark page through, and a chip behind the heading.
   assert.equal(await orphan.evaluate((el) => getComputedStyle(el).opacity), "1");
   assert.equal(await again.locator(".heading").evaluate((el) => getComputedStyle(el).backgroundColor), "rgb(255, 253, 248)");
@@ -531,13 +491,17 @@ test("a thread whose text was rewritten waits at the top under the new version, 
   const pinnedFrame = await until("the pinned frame", () => commentsFrame(old, docId));
   assert.match(pinnedFrame.url(), /&v=1$/);
   await until("both cards beside their text", async () => (await painted(old, "openartifacts-open")).length === 2);
+  await openSidebar(old);
+  await until("two cards", async () => (await pinnedFrame.locator("[data-thread]").count()) === 2);
   assert.equal(await pinnedFrame.getByText("On text that changed").count(), 0);
 
   // v3 brings the text back; the thread anchors again on its own.
   await update(docId, REPORT);
   await tab.reload();
+  await openSidebar(tab);
   const third = await until("the comments frame", () => commentsFrame(tab, docId));
   await until("both beside their text again", async () => (await painted(tab, "openartifacts-open")).length === 2);
+  await until("two cards", async () => (await third.locator("[data-thread]").count()) === 2);
   assert.equal(await third.getByText("On text that changed").count(), 0);
   await context.close();
 });
@@ -560,6 +524,7 @@ test("a Can-view reader sees the cards with no reply box and no Comment button",
     await tab.goto(`https://${API}/open/${docId}`);
     await tab.waitForURL(new RegExp(`^https://[a-z0-9]+\\.${SERVING.replaceAll(".", "\\.")}/d/${docId}`));
     const frame = await until(`${who}'s comments frame`, () => commentsFrame(tab, docId));
+    await openSidebar(tab);
     const card = frame.locator("[data-thread]");
     await card.waitFor();
     assert.match(await card.innerText(), /Add owners for each step/);
@@ -577,13 +542,13 @@ test("a Can-view reader sees the cards with no reply box and no Comment button",
       await select(tab, "Staffing is unchanged");
       await tab.waitForTimeout(600);
       assert.equal(await tab.locator(".openartifacts-comment-tip").isVisible().catch(() => false), false);
-      await shoot(tab, "margin-can-view");
+      await shoot(tab, "sidebar-can-view");
     }
     await context.close();
   }
 });
 
-test("a narrow page draws no margin; a tapped highlight or Comment opens a bottom sheet", { timeout: 180_000 }, async () => {
+test("a narrow page draws no sidebar; a tapped highlight or Comment opens a bottom sheet", { timeout: 180_000 }, async () => {
   const docId = await publish("Phone", REPORT);
   const quote = "Renewal risk is concentrated in three accounts";
   await agentThread(docId, { exact: quote, section: "risk" }, "Is this still true?");
@@ -593,13 +558,19 @@ test("a narrow page draws no margin; a tapped highlight or Comment opens a botto
   await tab.goto(docUrl(docId));
   const frame = await until("the comments frame", () => commentsFrame(tab, docId));
   await until("the highlight", async () => (await painted(tab, "openartifacts-open")).length === 1);
-  assert.equal(await hostBox(tab), null, "no margin on a phone");
+  assert.equal(await hostBox(tab), null, "nothing drawn on a phone until something is tapped");
   assert.equal(await tab.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, "no horizontal scroll");
 
-  // Tapping the highlight opens its card as a sheet across the bottom.
+  // Tapping the highlight opens its card as a sheet across the bottom, drawn as that card from the start: a sheet drawn first as the list would change height under the reader's finger.
+  await frame.evaluate(() => {
+    window.sawList = false;
+    new MutationObserver(() => { if (document.querySelector("button.row")) window.sawList = true; }).observe(document.body, { childList: true, subtree: true });
+  });
   const at = await rectOf(tab, quote);
   await tab.mouse.click(at.x + at.width / 3, at.y + at.height / 2);
   await until("the sheet", async () => (await hostBox(tab)) !== null);
+  await frame.getByText("Is this still true?").waitFor();
+  assert.equal(await frame.evaluate(() => window.sawList), false, "the tapped thread, never the list first");
   const sheet = await hostBox(tab);
   assert.equal(Math.round(sheet.x), 0);
   assert.equal(Math.round(sheet.width), 390);
@@ -644,7 +615,7 @@ test("a narrow page draws no margin; a tapped highlight or Comment opens a botto
   await context.close();
 });
 
-test("on a phone with no threads yet, the bar's button opens the sheet with the margin's one line, and again closes it", { timeout: 120_000 }, async () => {
+test("on a phone with no threads yet, the bar's button opens the sheet with its one line, and again closes it", { timeout: 120_000 }, async () => {
   const docId = await publish("Phone, no threads", REPORT);
   const context = await newContext(null, { viewport: { width: 390, height: 844 } });
   const tab = await context.newPage();
@@ -718,7 +689,7 @@ test("a page with no thread and nobody who can comment is untouched by the scrip
   await context.close();
 });
 
-test("the margin appears, without a reload, after the owner adds a person who can comment in Share", { timeout: 120_000 }, async () => {
+test("the Comments button appears, without a reload, after the owner adds a person who can comment in Share", { timeout: 120_000 }, async () => {
   const docId = await publish("Nobody yet", REPORT, { comments: false });
   const context = await newContext(OWNER_ACCOUNT, { signedInTo: docId });
   const tab = await context.newPage();
@@ -737,11 +708,11 @@ test("the margin appears, without a reload, after the owner adds a person who ca
   await box.fill("newcomer@example.com");
   await share.getByRole("button", { name: "Add", exact: true }).click();
   await barButton(tab).waitFor();
-  assert.match(await barButton(tab).innerText(), /0$/);
+  assert.equal((await barButton(tab).textContent()).trim(), "Comments");
   await context.close();
 });
 
-test("the Share popover posts nothing when its owner view is drawn; closing it as the owner brings the margin and Comment", { timeout: 120_000 }, async () => {
+test("the Share popover posts nothing when its owner view is drawn; closing it as the owner brings the Comments button and Comment", { timeout: 120_000 }, async () => {
   const docId = await publish("Owner only", REPORT, { comments: false });
   const context = await newContext(OWNER_ACCOUNT, { signedInTo: docId });
   const tab = await context.newPage();
@@ -757,8 +728,9 @@ test("the Share popover posts nothing when its owner view is drawn; closing it a
   assert.equal(requests.some((url) => url.includes("/threads")), false);
   await share.getByRole("button", { name: "Close" }).click();
   await barButton(tab).waitFor();
-  assert.match(await barButton(tab).innerText(), /0$/);
+  assert.equal((await barButton(tab).textContent()).trim(), "Comments");
   // The owner is signed in to the frame through Share's own token, so Comment is theirs before anyone else can write.
+  await openSidebar(tab);
   await commentsFrame(tab, docId).getByText("Select text to comment.").waitFor();
   await select(tab, "Staffing is unchanged");
   await until("the Comment button", () => tab.locator(".openartifacts-comment-tip").isVisible());
@@ -772,9 +744,10 @@ test("a signed-out reader is shown no sign-in line when only the owner's agent h
   const tab = await context.newPage();
   await tab.goto(docUrl(docId));
   const frame = await until("the comments frame", () => commentsFrame(tab, docId));
+  await openSidebar(tab);
   await frame.locator("[data-thread]").waitFor();
   await tab.waitForTimeout(500);
-  assert.equal(await frame.getByRole("button").count(), 0);
+  assert.deepEqual(await frame.getByRole("button").evaluateAll((buttons) => buttons.map((b) => b.getAttribute("aria-label"))), ["Close comments"], "nothing to press but the header's close");
   assert.equal(await frame.getByText(/Sign in|Select text|Continue/).count(), 0);
   assert.equal(await frame.getByRole("textbox").count(), 0);
   await context.close();
@@ -787,6 +760,7 @@ test("a stranger signed in on a public page gets no Comment and is told they can
   const tab = await context.newPage();
   await tab.goto(docUrl(docId));
   const frame = await until("the comments frame", () => commentsFrame(tab, docId));
+  await openSidebar(tab);
   await frame.getByText("You can view this page.").waitFor();
   assert.equal(await frame.getByRole("textbox").count(), 0);
   assert.equal(await frame.getByText(/Select text|Invited to comment/).count(), 0);
@@ -852,7 +826,6 @@ document.getElementById("name").addEventListener("input", () => {
   const page2 = await own.newPage();
   await page2.goto(docUrl(docId));
   const frame = await until("the comments frame", () => commentsFrame(page2, docId));
-  await frame.locator("textarea[data-key^='r:']").waitFor({ state: "attached" });
   await select(page2, "Staffing is unchanged");
   const tip = page2.locator(".openartifacts-comment-tip");
   await until("the Comment button", async () => await tip.isVisible());
@@ -911,7 +884,7 @@ window.addEventListener("message", (e) => {
   await context.close();
 });
 
-test("the real Copilot column gets a margin at 1280px, and cards past the document's end extend the page", { timeout: 180_000 }, async () => {
+test("the real Copilot column gets the sidebar beside it at 1280px, and cards past the document's end extend the page", { timeout: 180_000 }, async () => {
   const body = REPORT.replace("<h1>Q3 client report</h1>", "<h1>Q3 client report</h1>");
   const docId = await publish("Copilot", body, { html: copilotPage(body) });
   const last = "Closing remarks follow in the appendix";
@@ -924,10 +897,11 @@ test("the real Copilot column gets a margin at 1280px, and cards past the docume
   const tab = await context.newPage();
   await tab.goto(docUrl(docId));
   const frame = await until("the comments frame", () => commentsFrame(tab, docId));
+  await openSidebar(tab);
   const content = await tab.locator("#content").boundingBox();
-  const margin = await until("the margin", () => hostBox(tab));
-  assert.ok(margin.x >= content.x + content.width + 15, "a margin, not a sheet");
-  assert.ok(margin.width >= 240, `a usable width (${margin.width})`);
+  const side = await hostBox(tab);
+  assert.ok(side.x >= content.x + content.width, "a column beside the text, not a sheet");
+  assert.equal(Math.round(side.width), 320);
   const card = frame.locator("[data-thread]");
   await card.waitFor();
   await until("the page to grow to the card", async () => {
@@ -940,7 +914,7 @@ test("the real Copilot column gets a margin at 1280px, and cards past the docume
   await tab.mouse.wheel(0, 3000);
   await tab.waitForTimeout(300);
   assert.equal(await frame.evaluate(() => document.scrollingElement.scrollTop), 0);
-  await shoot(tab, "margin-long-thread");
+  await shoot(tab, "sidebar-long-thread");
   await context.close();
 });
 
@@ -952,6 +926,7 @@ test("an empty reply box shows no buttons, and typing, or dragging the box talle
   const tab = await context.newPage();
   await tab.goto(docUrl(docId));
   const frame = await until("the comments frame", () => commentsFrame(tab, docId));
+  await openSidebar(tab);
   const cards = frame.locator("[data-thread]");
   await until("two cards", async () => (await cards.count()) === 2);
   const clear = async () => {
@@ -1113,9 +1088,10 @@ test("the page re-measures when a <details> opens under html,body{height:100%}, 
   const tab = await context.newPage();
   await tab.goto(docUrl(docId));
   const frame = await until("the comments frame", () => commentsFrame(tab, docId));
+  await openSidebar(tab);
   const card = frame.locator("[data-thread]");
   await card.waitFor();
-  const level = async () => Math.abs((await card.boundingBox()).y - (await rectOf(tab, "The text after the details block")).y) < 24;
+  const level = async () => Math.abs((await card.boundingBox()).y - (await rectOf(tab, "The text after the details block")).y) <= 2;
   await until("level at first", level);
   await tab.locator("#d summary").click();
   await until("level after the details opened", level);
@@ -1136,7 +1112,7 @@ test("the page re-measures when a <details> opens under html,body{height:100%}, 
   await context.close();
 });
 
-test("html{zoom}, an inner scroller and a fixed contents list do not break the margin", { timeout: 180_000 }, async () => {
+test("html{zoom} and an inner scroller do not break the sidebar, and a fixed contents list beside the text stays clickable", { timeout: 180_000 }, async () => {
   const quote = "Renewal risk is concentrated in three accounts";
   // 1. html{zoom:1.5} at 1920px: the host stays inside the viewport and the page does not scroll sideways.
   const zoomed = await publish("Zoom", REPORT, { html: page(REPORT, "<style>html{zoom:1.5}</style>") });
@@ -1145,9 +1121,12 @@ test("html{zoom}, an inner scroller and a fixed contents list do not break the m
   let tab = await context.newPage();
   await tab.goto(docUrl(zoomed));
   await until("the highlight", async () => (await painted(tab, "openartifacts-open")).length === 1);
-  const h = await until("the host", () => hostBox(tab));
+  await openSidebar(tab);
+  const h = await hostBox(tab);
   assert.ok(h.x + h.width <= 1920, `the host (${h.x + h.width}) is inside the viewport`);
   assert.equal(await tab.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true, "no sideways scroll");
+  const content = await tab.locator("#content").boundingBox();
+  assert.ok(content.x + content.width <= h.x, "the zoomed text stays left of the column");
   // The floating Comment button is zoomed with the page too: it must still sit by the selection, inside the viewport.
   await select(tab, "Staffing is unchanged");
   const zoomTip = tab.locator(".openartifacts-comment-tip");
@@ -1158,7 +1137,7 @@ test("html{zoom}, an inner scroller and a fixed contents list do not break the m
   assert.ok(Math.abs(zoomTipBox.y - (selected.top - 44)) < 12 && Math.abs(zoomTipBox.x - selected.left) < 12, "the button is beside the selection");
   await context.close();
 
-  // 2. A page that scrolls in a 100vh container, not in the window, gets the sheet, not a margin that cannot follow.
+  // 2. A page that scrolls in a 100vh container, not in the window, gets the sheet, not a column that cannot follow it.
   const inner = `<div id="sc" style="width:600px;height:100vh;overflow:auto;margin:0 auto"><div id="content">${"<p>Filler paragraph before the passage, with some words.</p>".repeat(30)}<p id="t">The passage that is far down inside the container.</p></div></div>`;
   const scroller = await publish("Inner", inner, { html: `<!doctype html><html><head><meta charset="utf-8"><title>Inner</title><style>html,body{height:100%;overflow:hidden;margin:0}</style></head><body>${inner}</body></html>` });
   await agentThread(scroller, { exact: "The passage that is far down inside the container" }, "Far down.");
@@ -1166,11 +1145,13 @@ test("html{zoom}, an inner scroller and a fixed contents list do not break the m
   tab = await context.newPage();
   await tab.goto(docUrl(scroller));
   await until("the highlight", async () => (await painted(tab, "openartifacts-open")).length === 1);
-  await tab.waitForTimeout(500);
-  assert.equal(await hostBox(tab), null, "overlay mode: no margin column");
+  await barButton(tab).click();
+  const sheet = await until("the sheet", () => hostBox(tab));
+  assert.ok(Math.abs(sheet.y + sheet.height - 800) < 2, "a bottom sheet, not a column");
+  assert.equal(await tab.evaluate(() => getComputedStyle(document.documentElement).paddingRight), "0px", "the page keeps its width");
   await context.close();
 
-  // 3. A fixed contents list beside the text stays clickable.
+  // 3. A fixed contents list beside the text stays clickable with the sidebar open.
   const nav = `<nav id="toc" style="position:fixed;left:700px;top:120px;width:160px"><a id="toclink" href="#risk">Risks</a></nav>`;
   const fixed = await publish("Fixed", REPORT + nav);
   await agentThread(fixed, { exact: quote, section: "risk" }, "Fixed?");
@@ -1178,37 +1159,29 @@ test("html{zoom}, an inner scroller and a fixed contents list do not break the m
   tab = await context.newPage();
   await tab.goto(docUrl(fixed));
   await until("the highlight", async () => (await painted(tab, "openartifacts-open")).length === 1);
-  await tab.waitForTimeout(500);
+  await openSidebar(tab);
   const link = await tab.locator("#toclink").boundingBox();
   assert.equal(await tab.evaluate(([x, y]) => document.elementFromPoint(x, y).id, [link.x + 4, link.y + 4]), "toclink");
   await context.close();
-
-  // 4. The same list nested in the author's column wrapper, at the right edge where the margin would go.
-  const nested = await publish("Nested", REPORT + `<aside id="aside" style="position:fixed;right:24px;top:96px;width:200px"><a id="asidelink" href="#risk">Risks</a></aside>`);
-  await agentThread(nested, { exact: quote, section: "risk" }, "Nested?");
-  context = await newContext(ALICE, { signedInTo: nested });
-  tab = await context.newPage();
-  await tab.goto(docUrl(nested));
-  await until("the highlight", async () => (await painted(tab, "openartifacts-open")).length === 1);
-  await tab.waitForTimeout(500);
-  const asideLink = await tab.locator("#asidelink").boundingBox();
-  assert.equal(await tab.evaluate(([x, y]) => document.elementFromPoint(x, y).id, [asideLink.x + 4, asideLink.y + 4]), "asidelink");
-  await context.close();
 });
 
-test("an inner scroller that starts with its passage in view switches to the sheet once it scrolls away, even with tall cards", { timeout: 120_000 }, async () => {
+test("an inner scroller that starts with its passage in view switches from the sidebar to the sheet once it scrolls away, even with tall cards", { timeout: 120_000 }, async () => {
   const inner = `<div id="sc" style="width:600px;height:100vh;overflow:auto;margin:0 auto"><div id="content"><p id="t">The passage that is in view at load.</p>${"<p>Filler paragraph after the passage, with some words.</p>".repeat(40)}</div></div>`;
   const docId = await publish("InnerTall", inner, { html: `<!doctype html><html><head><meta charset="utf-8"><title>Inner</title><style>html,body{height:100%;overflow:hidden;margin:0}</style></head><body>${inner}</body></html>` });
-  // One comment taller than the viewport: the margin column then needs more than a screen.
+  // One comment taller than the viewport: the sidebar's column then needs more than a screen.
   await agentThread(docId, { exact: "The passage that is in view at load" }, "A long remark that fills the card. ".repeat(70));
   const context = await newContext(ALICE, { signedInTo: docId });
   const tab = await context.newPage();
   await tab.goto(docUrl(docId));
   await until("the highlight", async () => (await painted(tab, "openartifacts-open")).length === 1);
-  await until("the margin column", async () => (await hostBox(tab)) !== null);
-  assert.ok((await hostBox(tab)).height > 800, "the cards need more than a screen");
+  await openSidebar(tab);
+  await until("the cards to need more than a screen", async () => (await hostBox(tab)).height > 800);
   await tab.evaluate(() => { document.getElementById("sc").scrollTop = 1500; });
-  await until("the margin to give way to the sheet", async () => (await hostBox(tab)) === null);
+  await until("the sidebar to give way to the sheet", async () => {
+    const box = await hostBox(tab);
+    return box !== null && Math.abs(box.y + box.height - 800) < 2 && box.height <= 800 * 0.55 + 2;
+  });
+  assert.equal(await tab.evaluate(() => getComputedStyle(document.documentElement).paddingRight), "0px", "the page has its width back");
   await context.close();
 });
 
@@ -1219,6 +1192,7 @@ test("a positions message that only changes the host height does not rebuild the
   const tab = await context.newPage();
   await tab.goto(docUrl(docId));
   const frame = await until("the comments frame", () => commentsFrame(tab, docId));
+  await openSidebar(tab);
   const card = frame.locator("[data-thread]");
   await card.waitFor();
   await card.locator(".txt").first().click();
@@ -1254,6 +1228,7 @@ test("a reader with no token sees the cards read-only and one sign-in line, only
   const seen = postedTo(tab);
   await tab.goto(docUrl(docId));
   const frame = await until("the comments frame", () => commentsFrame(tab, docId));
+  await openSidebar(tab);
   const card = frame.locator("[data-thread]");
   await card.waitFor();
   await frame.getByRole("button", { name: "Invited to comment? Sign in." }).waitFor();
@@ -1265,7 +1240,7 @@ test("a reader with no token sees the cards read-only and one sign-in line, only
   assert.equal(await card.getByRole("button", { name: "Delete" }).count(), 0);
   assert.equal(await card.getByRole("button", { name: "Resolve" }).count(), 0);
   assert.deepEqual(seen.filter((line) => !line.startsWith("GET ")), []);
-  await shoot(tab, "margin-sign-in-card");
+  await shoot(tab, "sidebar-sign-in-card");
   await context.close();
 });
 
@@ -1280,9 +1255,10 @@ test("on a dark author page the orphan heading and the muted card stay legible",
   const tab = await context.newPage();
   await tab.goto(docUrl(docId));
   const frame = await until("the comments frame", () => commentsFrame(tab, docId));
-  await frame.getByText("On text that changed in v2").waitFor();
+  await openSidebar(tab);
+  await frame.getByText("On text that changed", { exact: true }).waitFor();
   assert.equal(await frame.locator(".card.muted").evaluate((el) => getComputedStyle(el).opacity), "1");
-  await shoot(tab, "margin-dark-page");
+  await shoot(tab, "sidebar-dark-page-orphan");
   await context.close();
 });
 
@@ -1356,17 +1332,18 @@ test("a pinned page carries no comments flag and still asks; the shared link say
   await context.close();
 });
 
-test("the bar counts what the bottom sheet can show: orphaned threads are not counted there", { timeout: 120_000 }, async () => {
+test("the bar counts every open thread, on a phone and on a wide screen, those whose text changed too", { timeout: 120_000 }, async () => {
   const docId = await publish("Sheet count", REPORT);
   const gone = "The budget is on the next page";
   await agentThread(docId, { exact: gone }, "Which page?");
   await agentThread(docId, { exact: "Staffing is unchanged" }, "Say who is staffed.");
   await update(docId, REPORT.replace(gone, "Appendix B has the budget"));
-  for (const [viewport, expected] of [[{ width: 390, height: 844 }, /1$/], [{ width: 1280, height: 800 }, /2$/]]) {
+  // On a phone the word gives way to the count; the sheet's list holds both threads.
+  for (const [viewport, expected] of [[{ width: 390, height: 844 }, "2"], [{ width: 1280, height: 800 }, "Comments 2"]]) {
     const context = await newContext(ALICE, { viewport, signedInTo: docId });
     const tab = await context.newPage();
     await tab.goto(docUrl(docId));
-    await until("the count", async () => expected.test(await barButton(tab).innerText().catch(() => "")));
+    await until("the count", async () => (await barButton(tab).textContent().catch(() => "")).trim() === expected);
     await context.close();
   }
 });
@@ -1424,17 +1401,18 @@ test("on a phone without the highlight API, a signed-out invitee can still open 
   await context.close();
 });
 
-test("on a phone, a reader who cannot comment on a thread-less page gets no blank sheet from the bar's button", { timeout: 120_000 }, async () => {
+test("on a phone, a reader who cannot comment on a thread-less page gets a sheet that says so, never a blank one", { timeout: 120_000 }, async () => {
   const docId = await publish("Phone, nothing to show", REPORT);
   const context = await newContext(BOB, { viewport: { width: 390, height: 844 }, signedInTo: docId });
   const tab = await context.newPage();
   await tab.goto(docUrl(docId));
-  await until("the comments frame", () => commentsFrame(tab, docId));
+  const frame = await until("the comments frame", () => commentsFrame(tab, docId));
   const button = barButton(tab);
   await button.waitFor();
   await button.click();
-  // The click opens the sheet at once; it closes only when the frame answers that it has nothing to show.
-  await until("the sheet to close", async () => (await hostBox(tab)) === null);
+  await until("the sheet", async () => (await hostBox(tab)) !== null);
+  await frame.getByText("No open comments.").waitFor();
+  await frame.locator(".head").getByText("Comments", { exact: true }).waitFor();
   await context.close();
 });
 
@@ -1467,6 +1445,7 @@ test("a signed-in Can-view reader is never offered Comment, not even before the 
   await tab.waitForTimeout(400);
   assert.equal(await tip.isVisible(), false, "no Comment before the frame answers");
   const frame = await until("the comments frame", () => commentsFrame(tab, docId));
+  await openSidebar(tab);
   await frame.evaluate(() => window.__release());
   await frame.getByText("You can view this page.").waitFor();
   await select(tab, "The budget is on the next page");
@@ -1476,13 +1455,14 @@ test("a signed-in Can-view reader is never offered Comment, not even before the 
 });
 
 test("typing in a card survives the page re-measuring and the frame redrawing on every few keystrokes", { timeout: 120_000 }, async () => {
-  // A page whose own script keeps moving its text (a ticker, a clock): every move re-measures the margin and sends new positions, which redraw the cards, while the reader types.
+  // A page whose own script keeps moving its text (a ticker, a clock): every move re-measures the sidebar and sends new positions, which redraw the cards, while the reader types.
   const docId = await publish("Ticker", REPORT, { html: page(REPORT, "<style>main.tick{padding-top:3px}</style>") });
   await agentThread(docId, { exact: "Revenue grew 18% quarter over quarter" }, "Is 18% the right base?");
   const context = await newContext(ALICE, { signedInTo: docId });
   const tab = await context.newPage();
   await tab.goto(docUrl(docId));
   const frame = await until("the comments frame", () => commentsFrame(tab, docId));
+  await openSidebar(tab);
   await frame.locator("textarea[data-key^='r:']").waitFor({ state: "attached" });
   await select(tab, "Staffing is unchanged");
   const tip = tab.locator(".openartifacts-comment-tip");
@@ -1497,7 +1477,7 @@ test("typing in a card survives the page re-measuring and the frame redrawing on
     new MutationObserver(() => window.redrawn++).observe(document.querySelector("main").firstElementChild, { childList: true });
   });
   await tab.evaluate(() => { window.ticker = setInterval(() => document.querySelector("main").classList.toggle("tick"), 30); });
-  const words = "the margin moved under me while I was typing this";
+  const words = "the sidebar moved under me while I was typing this";
   await tab.keyboard.type(words, { delay: 20 });
   await tab.evaluate(() => clearInterval(window.ticker));
   assert.ok((await frame.evaluate(() => window.redrawn)) >= 5, "the page re-measured, and the frame redrew the cards, while the reader typed");
@@ -1570,7 +1550,7 @@ test("a thread read that answers after a newer one does not paint over it", { ti
   await tab.goto(docUrl(docId));
   const button = barButton(tab);
   await button.waitFor();
-  assert.match(await button.innerText(), /0$/);
+  assert.equal((await button.textContent()).trim(), "Comments");
 
   const ask = () => tab.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
   const held = tab.evaluate(() => window.__hold());
@@ -1594,10 +1574,11 @@ test("the owner of a private page nobody has been invited to selects text and ge
   assert.equal(await tab.locator("a[data-openartifacts-share]").getAttribute("data-comments"), "on");
   await barButton(tab).waitFor();
   const frame = await until("the comments frame", () => commentsFrame(tab, docId));
+  await openSidebar(tab);
   await frame.getByText("Select text to comment.").waitFor();
   await select(tab, "Staffing is unchanged");
   await until("the Comment button", () => tab.locator(".openartifacts-comment-tip").isVisible());
-  await shoot(tab, "margin-private-owner-alone");
+  await shoot(tab, "sidebar-private-owner-alone");
   await context.close();
 });
 
@@ -1653,7 +1634,7 @@ test("a signed-out visitor to a public page nobody can comment on selects text a
   await tab.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   assert.equal(await tab.locator(".openartifacts-comment-tip").isVisible().catch(() => false), false);
   assert.equal(await barButton(tab).count(), 0);
-  assert.equal(await hostBox(tab), null, "no visible margin");
+  assert.equal(await hostBox(tab), null, "no sidebar");
   await context.close();
 });
 
@@ -1663,6 +1644,7 @@ test("the composer is one field with a Send arrow: grey until there are words, E
   const tab = await context.newPage();
   await tab.goto(docUrl(docId));
   const frame = await until("the comments frame", () => commentsFrame(tab, docId));
+  await openSidebar(tab);
   await frame.getByText("Select text to comment.").waitFor();
   const tip = tab.locator(".openartifacts-comment-tip");
   const open = async () => {
@@ -1745,6 +1727,7 @@ test("pressing Comment under another thread's highlight starts a draft and leave
   await tab.goto(docUrl(docId));
   const frame = await until("the comments frame", () => commentsFrame(tab, docId));
   await until("the highlight", async () => (await painted(tab, "openartifacts-open")).length === 1);
+  await openSidebar(tab);
   await frame.getByText("Select text to comment.").waitFor();
 
   await select(tab, "Bravo bravo bravo");
@@ -1770,6 +1753,7 @@ test("Send keeps the comment on screen, with a sending state, until the page has
   const tab = await context.newPage();
   await tab.goto(docUrl(docId));
   const frame = await until("the comments frame", () => commentsFrame(tab, docId));
+  await openSidebar(tab);
   await frame.getByText("Select text to comment.").waitFor();
   const quote = "Staffing is unchanged";
   await pressComment(tab, quote);
@@ -1799,7 +1783,7 @@ test("Send keeps the comment on screen, with a sending state, until the page has
   await until("the highlight", async () => (await painted(tab, "openartifacts-open")).length === 1, 8000);
   assert.deepEqual(await painted(tab, "openartifacts-draft"), []);
   const level = await rectOf(tab, quote);
-  await until("the card to sit at its passage", async () => Math.abs((await card.boundingBox()).y - level.y) < 24);
+  await until("the card to sit level with its passage", async () => Math.abs((await card.boundingBox()).y - level.y) <= 2);
   await context.close();
 });
 
@@ -1812,6 +1796,7 @@ test("resolving takes the thread off the page and offers Undo; resolved threads 
   const tab = await owner.newPage();
   await tab.goto(docUrl(docId));
   const frame = await until("the comments frame", () => commentsFrame(tab, docId));
+  await openSidebar(tab);
   const cards = frame.locator("[data-thread]");
   await until("two cards", async () => (await cards.count()) === 2);
 
@@ -1823,7 +1808,7 @@ test("resolving takes the thread off the page and offers Undo; resolved threads 
   await until("the highlight to go", async () => (await painted(tab, "openartifacts-open")).length === 1);
   assert.deepEqual(await painted(tab, "openartifacts-resolved"), []);
   await frame.getByText("Resolved", { exact: true }).waitFor();
-  await shoot(tab, "margin-resolved-undo");
+  await shoot(tab, "sidebar-resolved-undo");
 
   // Undo brings it back where it was.
   await frame.getByRole("button", { name: "Undo" }).click();
@@ -1843,7 +1828,7 @@ test("resolving takes the thread off the page and offers Undo; resolved threads 
   assert.match(await line.innerText(), /^Resolved in v1 by Logan$/);
   assert.equal(await line.evaluate((el) => getComputedStyle(el).textTransform), "none", "a plain sentence");
   assert.equal(await done.locator(".badge.done").count(), 0);
-  await shoot(tab, "margin-resolved-list");
+  await shoot(tab, "sidebar-resolved-list");
   await done.getByRole("button", { name: "Reopen" }).click();
   await until("the thread to reopen", async () => (await threadsOf(docId, "open")).length === 2);
   await until("both highlights", async () => (await painted(tab, "openartifacts-open")).length === 2);
@@ -1860,6 +1845,7 @@ test("a thread card has no Open badge, a Resolve icon, one menu per comment, and
   const tab = await owner.newPage();
   await tab.goto(docUrl(docId));
   const frame = await until("the comments frame", () => commentsFrame(tab, docId));
+  await openSidebar(tab);
   const cards = frame.locator("[data-thread]");
   await until("two cards", async () => (await cards.count()) === 2);
   const [first, second] = [cards.nth(0), cards.nth(1)];
@@ -1875,7 +1861,7 @@ test("a thread card has no Open badge, a Resolve icon, one menu per comment, and
   await until("the reply box on the focused card", async () => await first.getByRole("textbox", { name: "Reply…" }).isVisible());
   assert.equal(await second.getByRole("textbox").isVisible(), false);
   assert.doesNotMatch(await first.innerText(), /1 reply/);
-  await shoot(tab, "margin-card-focused");
+  await shoot(tab, "sidebar-card-focused");
 
   // Two comments, two menus, each naming what it deletes; both ask first.
   const more = first.getByRole("button", { name: "More actions" });
@@ -1905,6 +1891,7 @@ test("Escape keeps a draft that has words in it", { timeout: 120_000 }, async ()
   const tab = await context.newPage();
   await tab.goto(docUrl(docId));
   const frame = await until("the comments frame", () => commentsFrame(tab, docId));
+  await openSidebar(tab);
   await frame.getByText("Select text to comment.").waitFor();
   await pressComment(tab, "Staffing is unchanged");
   const field = frame.getByRole("textbox", { name: "Add a comment…" });
@@ -1927,6 +1914,7 @@ test("on a phone the bar's button opens the list of open comments, and a row sho
   const frame = await until("the comments frame", () => commentsFrame(tab, docId));
   await until("the highlights", async () => (await painted(tab, "openartifacts-open")).length === 2);
   const button = barButton(tab);
+  assert.equal((await button.textContent()).trim(), "2", "at phone width the bubble and the count, without the word");
   await button.click();
   await until("the sheet", async () => (await hostBox(tab)) !== null);
   assert.equal(await button.getAttribute("aria-pressed"), "true");
@@ -1972,4 +1960,225 @@ test("on a phone the Comment button sits below the selection, centred and 44px t
   await until("the sheet", async () => (await hostBox(tab)) !== null);
   await until("the composer to have focus", async () => frame.evaluate(() => document.activeElement && document.activeElement.dataset.key === "draft"));
   await context.close();
+});
+
+// ---- the sidebar ----------------------------------------------------------------------------------------------
+
+/** A page with no max-width: its text runs the full width, so opening the sidebar reflows every line. */
+const widePage = (body, head = "") =>
+  `<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n<meta name="viewport" content="width=device-width, initial-scale=1">\n<title>Wide</title>\n` +
+  `<style>body{margin:0;padding:0 24px;font:16px/1.6 Georgia,serif;color:#222}h1{font-size:28px;margin:24px 0}p{margin:0 0 22px}</style>${head}\n</head>\n<body>\n<div id="content">\n${body}\n</div>\n</body>\n</html>\n`;
+
+const LONG = "This sentence is here to make the paragraph long enough that it wraps across several lines at any width, so that narrowing the page moves every line below it. ";
+
+/** Press the bar's Comments button unless the sidebar is already open, and wait for the column. */
+async function openSidebar(tab) {
+  const button = barButton(tab);
+  await button.waitFor();
+  if ((await button.getAttribute("aria-pressed")) !== "true") await button.click();
+  await until("the sidebar", async () => (await hostBox(tab)) !== null);
+}
+
+const cardFor = (frame, remark) => frame.locator("[data-thread]", { hasText: remark });
+
+/** How far a card's top is from the top of the first line of its passage. */
+const offsetOf = async (tab, frame, remark, passage) => (await cardFor(frame, remark).boundingBox()).y - (await rectOf(tab, passage)).y;
+const allLevel = (tab, frame, pairs) => async () => {
+  for (const [remark, passage] of pairs) if (Math.abs(await offsetOf(tab, frame, remark, passage)) > 2) return false;
+  return true;
+};
+
+/** The colour of one screen pixel, read from a 1x1 PNG (with one pixel every filter type leaves the bytes as they are). */
+async function pixelAt(tab, x, y) {
+  const png = await tab.screenshot({ clip: { x, y, width: 1, height: 1 } });
+  const parts = [];
+  for (let at = 8; at < png.length; ) {
+    const length = png.readUInt32BE(at);
+    if (png.toString("ascii", at + 4, at + 8) === "IDAT") parts.push(png.subarray(at + 8, at + 8 + length));
+    at += 12 + length;
+  }
+  const raw = inflateSync(Buffer.concat(parts));
+  return [raw[1], raw[2], raw[3]];
+}
+
+test("the Comments button sits left of Share and toggles a sidebar that narrows the page; it is closed on every load", { timeout: 120_000 }, async () => {
+  const docId = await publish("Sidebar", REPORT);
+  await agentThread(docId, { exact: "Staffing is unchanged" }, "Is that deliberate?");
+  const context = await newContext(ALICE, { signedInTo: docId });
+  const tab = await context.newPage();
+  await tab.goto(docUrl(docId));
+  const button = barButton(tab);
+  await button.waitFor();
+  await until("the label and count", async () => (await button.textContent()).trim() === "Comments 1");
+  assert.equal(await button.getAttribute("aria-pressed"), "false");
+  const share = await tab.locator("a[data-openartifacts-share]").boundingBox();
+  const own = await button.boundingBox();
+  assert.ok(own.x + own.width <= share.x && share.x - (own.x + own.width) <= 16, "immediately left of Share");
+  assert.equal(Math.round(own.height), Math.round(share.height), "in Share's pill shape");
+  // Closed, the highlights are still there.
+  await until("the highlight", async () => (await painted(tab, "openartifacts-open")).length === 1);
+  assert.equal(await hostBox(tab), null, "closed on load");
+  const before = await tab.locator("#content").boundingBox();
+  const vw = await tab.evaluate(() => document.documentElement.clientWidth);
+
+  await button.click();
+  await until("the sidebar", async () => (await hostBox(tab)) !== null);
+  assert.equal(await button.getAttribute("aria-pressed"), "true");
+  const frame = commentsFrame(tab, docId);
+  await frame.locator(".head").getByText("Comments", { exact: true }).waitFor();
+  const side = await hostBox(tab);
+  assert.ok(Math.abs(side.width - 320) <= 1, `a 320px column (${side.width})`);
+  assert.ok(Math.abs(side.x + side.width - vw) <= 1, "at the right edge");
+  const narrowed = await tab.locator("#content").boundingBox();
+  assert.ok(narrowed.x + narrowed.width <= side.x, `the text (${narrowed.x + narrowed.width}) stays left of the column (${side.x})`);
+  assert.equal(Math.round((await tab.locator(".openartifacts-bar").boundingBox()).width), vw, "our bar keeps the full width");
+  assert.equal(await tab.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true, "no sideways scroll");
+  await shoot(tab, "sidebar-open");
+
+  await frame.getByRole("button", { name: "Close comments" }).click();
+  await until("the sidebar to close", async () => (await hostBox(tab)) === null);
+  assert.equal(await button.getAttribute("aria-pressed"), "false");
+  assert.deepEqual(await tab.locator("#content").boundingBox(), before, "the page is back to its width");
+  assert.equal((await painted(tab, "openartifacts-open")).length, 1);
+
+  await button.click();
+  await until("the sidebar", async () => (await hostBox(tab)) !== null);
+  await tab.reload();
+  await barButton(tab).waitFor();
+  await until("the highlight", async () => (await painted(tab, "openartifacts-open")).length === 1);
+  assert.equal(await hostBox(tab), null, "not remembered");
+  assert.equal(await barButton(tab).getAttribute("aria-pressed"), "false");
+  await context.close();
+});
+
+test("in the sidebar each card is level with its passage, after the page reflows and after a resize", { timeout: 180_000 }, async () => {
+  const filler = (n) => Array.from({ length: n }, () => `<p>${LONG.repeat(3)}</p>`).join("\n");
+  const body = `<h1>Aligned</h1>\n${filler(3)}\n<p id="one">${LONG.repeat(2)}The first passage sits after two long sentences.</p>\n${filler(6)}\n` +
+    `<p id="two">${LONG}The second passage is further down.</p>\n${filler(6)}\n<p id="three">${LONG.repeat(3)}The third passage ends the report.</p>\n${filler(2)}`;
+  const docId = await publish("Aligned", body, { html: widePage(body) });
+  const pairs = [
+    ["First remark.", "The first passage sits after two long sentences"],
+    ["Second remark.", "The second passage is further down"],
+    ["Third remark.", "The third passage ends the report"],
+  ];
+  for (const [remark, exact] of pairs) await agentThread(docId, { exact }, remark);
+  const context = await newContext(ALICE, { signedInTo: docId });
+  const tab = await context.newPage();
+  await tab.goto(docUrl(docId));
+  await until("three highlights", async () => (await painted(tab, "openartifacts-open")).length === 3);
+  const before = await rectOf(tab, pairs[0][1]);
+  await openSidebar(tab);
+  const frame = commentsFrame(tab, docId);
+  await until("three cards", async () => (await frame.locator("[data-thread]").count()) === 3);
+  await until("every card level with its passage", allLevel(tab, frame, pairs));
+  assert.ok((await rectOf(tab, pairs[0][1])).y > before.y + 10, "the fixture's text reflowed when the page narrowed");
+  await shoot(tab, "sidebar-aligned");
+
+  await tab.setViewportSize({ width: 1040, height: 800 });
+  await until("every card level after a resize", allLevel(tab, frame, pairs));
+  await context.close();
+});
+
+test("cards on adjacent lines stack in passage order 8px apart, the clicked one moves level with its passage, and the owner's agent is labelled", { timeout: 120_000 }, async () => {
+  const body = `<h1>Stack</h1>\n<p>${LONG.repeat(4)}</p>\n<p id="a">Alpha passage on the first line.</p>\n<p id="b">Bravo passage on the second line.</p>\n<p id="c">Charlie passage on the third line.</p>\n<p>${LONG.repeat(16)}</p>`;
+  const docId = await publish("Stack", body, { html: widePage(body, "<style>p{margin:0}</style>") });
+  // Created out of passage order: the column follows the text, not the clock.
+  await agentThread(docId, { exact: "Charlie passage on the third line" }, "Charlie remark.");
+  await agentThread(docId, { exact: "Alpha passage on the first line" }, "Alpha remark.");
+  await agentThread(docId, { exact: "Bravo passage on the second line" }, "Bravo remark.");
+  const context = await newContext(ALICE, { signedInTo: docId });
+  const tab = await context.newPage();
+  await tab.goto(docUrl(docId));
+  await until("three highlights", async () => (await painted(tab, "openartifacts-open")).length === 3);
+  await openSidebar(tab);
+  const frame = commentsFrame(tab, docId);
+  const boxes = async () => Promise.all(["Alpha remark.", "Bravo remark.", "Charlie remark."].map((remark) => cardFor(frame, remark).boundingBox()));
+  const near = (a, b) => Math.abs(a - b) <= 1;
+  await until("the stack", async () => {
+    const [a, b, c] = await boxes();
+    const alpha = await rectOf(tab, "Alpha passage");
+    return Math.abs(a.y - alpha.y) <= 2 && near(b.y, a.y + a.height + 8) && near(c.y, b.y + b.height + 8);
+  });
+  assert.match(await cardFor(frame, "Alpha remark.").innerText(), /Logan's agent/);
+  assert.equal(await cardFor(frame, "Alpha remark.").locator(".who .badge", { hasText: "agent" }).count(), 1, "the agent is badged");
+  await shoot(tab, "sidebar-stacked");
+
+  await cardFor(frame, "Bravo remark.").locator(".txt").first().click();
+  await until("Bravo level with its passage, the others making room", async () => {
+    const [a, b, c] = await boxes();
+    const bravo = await rectOf(tab, "Bravo passage");
+    return Math.abs(b.y - bravo.y) <= 2 && near(a.y + a.height + 8, b.y) && near(c.y, b.y + b.height + 8);
+  });
+  await shoot(tab, "sidebar-active-card");
+  await context.close();
+});
+
+test("highlights show with the sidebar closed, in one yellow without an underline, and clicking one opens its card level with it", { timeout: 120_000 }, async () => {
+  const docId = await publish("Highlights", REPORT);
+  const quote = "Renewal risk is concentrated in three accounts";
+  await agentThread(docId, { exact: quote, section: "risk" }, "Is this still true?");
+  const context = await newContext(ALICE, { signedInTo: docId });
+  const tab = await context.newPage();
+  await tab.goto(docUrl(docId));
+  await until("the highlight", async () => (await painted(tab, "openartifacts-open")).length === 1);
+  assert.equal(await hostBox(tab), null);
+  const css = await tab.evaluate(() => document.adoptedStyleSheets.flatMap((sheet) => [...sheet.cssRules].map((rule) => rule.cssText)).join("\n"));
+  assert.match(css, /::highlight\(openartifacts-open\) \{ background-color: rgba\(255, 200, 0, 0\.28\); \}/);
+  assert.match(css, /::highlight\(openartifacts-focus\) \{ background-color: rgba\(255, 200, 0, 0\.5\); \}/);
+  assert.doesNotMatch(css, /underline/);
+
+  const at = await rectOf(tab, quote);
+  await tab.mouse.click(at.x + at.width / 3, at.y + at.height / 2);
+  await until("the sidebar", async () => (await hostBox(tab)) !== null);
+  assert.equal(await barButton(tab).getAttribute("aria-pressed"), "true");
+  const frame = commentsFrame(tab, docId);
+  await until("the card, focused and level", async () => (await cardFor(frame, "Is this still true?").getAttribute("class")).includes("focus") && Math.abs(await offsetOf(tab, frame, "Is this still true?", quote)) <= 2);
+  assert.deepEqual(await painted(tab, "openartifacts-focus"), [quote]);
+  await context.close();
+});
+
+test("Comment on a selection opens the sidebar with the composer level with the selection", { timeout: 120_000 }, async () => {
+  const docId = await publish("Pill", REPORT, { html: widePage(REPORT) });
+  const context = await newContext(ALICE, { signedInTo: docId });
+  const tab = await context.newPage();
+  await tab.goto(docUrl(docId));
+  await barButton(tab).waitFor();
+  const quote = "Staffing is unchanged";
+  await pressComment(tab, quote);
+  await until("the sidebar", async () => (await hostBox(tab)) !== null);
+  const frame = commentsFrame(tab, docId);
+  const field = frame.getByRole("textbox", { name: "Add a comment…" });
+  await field.waitFor();
+  await until("the composer to have focus", () => frame.evaluate(() => document.activeElement && document.activeElement.dataset.key === "draft"));
+  await until("the composer level with the selection", async () => Math.abs((await frame.locator("[data-thread='']").boundingBox()).y - (await rectOf(tab, quote)).y) <= 2);
+  assert.deepEqual(await painted(tab, "openartifacts-draft"), [quote]);
+  await context.close();
+});
+
+test("the sidebar narrows a centred column, a full-width page and a dark page, and each page's background fills the column", { timeout: 180_000 }, async () => {
+  const quote = "Renewal risk is concentrated in three accounts";
+  const styles = [
+    ["centred", page(REPORT), [255, 253, 248]],
+    ["full-width", widePage(REPORT), [255, 255, 255]],
+    ["dark", page(REPORT, "<style>body{background:#111316;color:#e8e6e1}</style>"), [17, 19, 22]],
+  ];
+  for (const [name, html, background] of styles) {
+    const docId = await publish(name, REPORT, { html });
+    await agentThread(docId, { exact: quote, section: "risk" }, `A remark on the ${name} page.`);
+    const context = await newContext(ALICE, { signedInTo: docId });
+    const tab = await context.newPage();
+    await tab.goto(docUrl(docId));
+    await until("the highlight", async () => (await painted(tab, "openartifacts-open")).length === 1);
+    await openSidebar(tab);
+    const frame = commentsFrame(tab, docId);
+    await until(`the ${name} card level with its passage`, allLevel(tab, frame, [[`A remark on the ${name} page.`, quote]]));
+    const side = await hostBox(tab);
+    const content = await tab.locator("#content").boundingBox();
+    assert.ok(content.x + content.width <= side.x, `${name}: the text stays left of the column`);
+    assert.equal(await tab.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true, `${name}: no sideways scroll`);
+    const [r, g, b] = await pixelAt(tab, side.x + side.width - 4, 600);
+    assert.ok(Math.abs(r - background[0]) <= 2 && Math.abs(g - background[1]) <= 2 && Math.abs(b - background[2]) <= 2, `${name}: the column shows the page's background, not rgb(${r}, ${g}, ${b})`);
+    await shoot(tab, `sidebar-${name}`);
+    await context.close();
+  }
 });

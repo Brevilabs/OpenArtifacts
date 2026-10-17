@@ -57,8 +57,8 @@ import { PAGE_COMMENTS_SCRIPT } from "./comments-scripts.js";
  *
  * **Comments are the second half** (`PAGE_COMMENTS_SCRIPT`, `src/comments-scripts.ts`,
  * joined here so both share `api`, `docId` and `link`). It is inert when the bar says
- * the document has no comments to show, and otherwise unless its threads resource answers, adds a button to the bar and a margin frame
- * on the API host, and holds no credential either: everything above about what
+ * the document has no comments to show, and otherwise unless its threads resource answers, adds a Comments button to the bar and a
+ * comments frame on the API host (a sidebar, or a bottom sheet), and holds no credential either: everything above about what
  * the page script holds is true of it too. It reads the Share half's `api`,
  * `docId`, `link` and `viewport` and changes none of them, and closes its own
  * sheet when Share is pressed.

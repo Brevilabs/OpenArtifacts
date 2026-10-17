@@ -1,6 +1,6 @@
 /**
  * What the two frames on the API host (the Share popover's, `/embed/share`, and
- * the comments margin's, `/embed/comments`) share: which origin may embed them,
+ * the comments frame, `/embed/comments`) share: which origin may embed them,
  * and the policy that says so.
  *
  * **The frame reveals nothing to a non-reader.** Anyone can load either with any

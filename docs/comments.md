@@ -22,8 +22,8 @@ comment, then converge. The wire contract is in
   public and private pages alike. A page has comments when the owner's agent has
   commented or some person holds **Can comment**. A paid plan is required to add
   anyone; a free owner's pages are view-only.
-- **People and agents both write.** A person comments through the frame in the
-  page's margin; an agent through `/api/v1` with an account token or a license key,
+- **People and agents both write.** A person comments through the comments frame
+  beside the page; an agent through `/api/v1` with an account token or a license key,
   or the CLI's `openartifacts comments`. Agent comments are labelled "Alice's agent"
   and carry a badge. They post immediately.
 - **Works on private pages.** The same access model as the page: a private
@@ -193,11 +193,41 @@ function of the stored version. So comments are a **separate resource**:
 
 The reader never sees a credential on the document's origin: the frame is on the API
 host in a closed `iframe`, with the token in its own storage, and the highlights are
-painted with `CSS.highlights`, which mutates nothing in the author's DOM. A margin
-needs 256 px free beside the content; otherwise the frame is a bottom sheet, which
-shows only a focused thread or a draft and not orphaned threads. See
+painted with `CSS.highlights`, which mutates nothing in the author's DOM. See
 [http-api.md](http-api.md#the-embed-family-not-part-of-the-client-contract) for the
 frame, its policy and the `postMessage` protocol.
+
+## Reading and writing on the page
+
+The model is a document editor's comment margin (Google Docs, Notion, Figma):
+
+- **A Comments button** in the bar, just left of **Share** and in its pill shape,
+  reads `Comments` and the open-thread count (`Comments 3`); at phone width the
+  bubble and the count. It is pressed while the comments are open, and they are
+  closed on every page load: nothing is remembered.
+- **Highlights are always on.** Every open thread whose passage the page finds is
+  one translucent yellow, whether or not the comments are open; the active thread
+  and the draft a stronger yellow. No underline, which reads as a link. Resolved
+  threads have none.
+- **Wide screens get a sidebar.** Where the viewport is at least 880 px and the
+  window is what scrolls the page, opening the comments narrows the page by a
+  320 px column on its right (an adopted stylesheet pads `<html>`, so the author's
+  own layout reflows and the page's own background fills the column), and closing
+  them gives the width back. Nothing else changes the page's width. The column has
+  a header (the title, the `N resolved` toggle and a close button), then the
+  threads whose text changed, under "On text that changed" with their quotes, then
+  a card level with the first line of each passage.
+- **Cards follow Google Docs when they collide**: in passage order, 8 px apart, the
+  active card (the draft, else the focused thread) exactly level with its passage,
+  the ones above pushed up and the ones below pushed down only as far as they must.
+  The page re-measures whenever the geometry can change: opening or closing,
+  resizing, fonts and images loading, the document resizing, or a card growing.
+- **Narrow screens get a bottom sheet** from the same button: the list of open
+  threads, or the one thread whose highlight was tapped, or the draft. The page
+  does not narrow.
+- **A highlight opens its thread**, and **Comment** on a selection opens the
+  composer level with it, from a closed state too. Posting takes a click on Send;
+  Enter is a newline.
 
 ## Plans, limits and abuse
 
@@ -237,14 +267,13 @@ Deliberate non-goals of this version:
 
 - **Approval of agent comments.** Agent comments post immediately and are labelled
   as agents; there is no pending state.
-- **@mentions**, whole-document (anchorless) threads, a list of all comments across
-  documents, and a side panel.
+- **@mentions**, whole-document (anchorless) threads, and a list of all comments
+  across documents.
 - **Editing a comment**, moderating someone else's, and "ask for a change".
 - **Live sockets.** The page polls every 30 seconds and the frame refetches after
   its own writes.
 - **Edit-distance anchoring.** A quote that no rung finds is orphaned.
 - **Clickable links** in bodies, and comments on the free plan.
-- **Orphaned threads in the bottom sheet.**
 - **Comments in the manifest.** The per-document `manifest.json` that rebuilds D1
   ([CLAUDE.md](../CLAUDE.md)) holds the comments switch, not the threads: those
   live in the object and its `threads.json` snapshot, and are not rebuilt into D1.

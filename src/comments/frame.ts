@@ -1,6 +1,6 @@
 /**
  * `GET /embed/comments?doc={docId}&origin={embedder's origin}[&v={n}]`: the
- * margin's frame, the page that draws the comment cards and holds the only
+ * comments frame (the sidebar, or the bottom sheet), the page that draws the comment cards and holds the only
  * credential a reader writes with.
  *
  * Built exactly as the Share popover's is (`embed.ts` `shareFrame`): one shell

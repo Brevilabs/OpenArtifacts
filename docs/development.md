@@ -132,12 +132,12 @@ OA_SCREENSHOTS=/some/dir npm run test:browser # bar.png, popover-*.png, and the 
 `test/comments-e2e.browser.mjs`. All need Google
 Chrome installed (they drive the machine's own through `playwright-core`; nothing
 is downloaded). `OA_HEADED=1` shows the window and `OA_SCREENSHOTS=dir` writes
-screenshots to `dir` (the comments test writes the margin, the draft card, a
-resolved and an orphaned thread, the Can-view reader, the phone bottom sheet and
-the popover's role select). The comments test uses the same harness plus the
+screenshots to `dir` (the comments test writes the sidebar on three page styles,
+stacked and active cards, the draft card, a resolved and an orphaned thread, the
+Can-view reader, the phone bottom sheet and the popover's role select). The comments test uses the same harness plus the
 `COMMENTS` Durable Object binding, and covers selecting and posting through the
-frame after a real sign-in, card placement, highlights that leave the author's DOM
-untouched, the bar's count and toggle, the narrow-viewport sheet, and an orphaned
+frame after a real sign-in, card placement measured to 2px, highlights that leave the author's DOM
+untouched, the bar's Comments button and the sidebar it toggles, the narrow-viewport sheet, and an orphaned
 thread after a version without its text.
 
 `test/comments-e2e.browser.mjs` is the whole story in twelve ordered steps (each

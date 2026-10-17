@@ -11,8 +11,8 @@
  * - `PAGE_COMMENTS_SCRIPT` runs inside the publisher's page, as the second half
  *   of `PAGE_SCRIPT` (`embed-scripts.ts` joins them, so both share the Share
  *   half's `api`, `docId` and `link`). It holds no credential.
- * - `COMMENTS_FRAME_SCRIPT` runs in the margin's frame on the API host and holds
- *   the reader's token.
+ * - `COMMENTS_FRAME_SCRIPT` runs in the comments frame on the API host (the
+ *   sidebar, or the bottom sheet) and holds the reader's token.
  */
 
 /**
@@ -34,16 +34,18 @@
  * selection of the author's text: then, once per page load, the script builds the
  * comments frame hidden and waits for its `viewer` message, and only a yes
  * (the owner, signed in to the frame) makes it active and shows Comment. The Share popover tells it when its owner adds a person, changes a
- * role or closes it (`people` event), which makes it ask again, so the margin
- * appears without a reload; after that event the page treats its viewer as the
+ * role or closes it (`people` event), which makes it ask again, so the Comments
+ * button appears without a reload; after that event the page treats its viewer as the
  * owner for the rest of the tab and stays active even with no thread and
  * `commentable: false`.
  *
  * **It paints, it never writes.** Highlights are `CSS.highlights` over Ranges,
  * styled by an adopted stylesheet, so a chart, a React island or a Pyodide cell
  * keeps every node it had. The only things added to the document are the
- * comments button inside our own bar and two hosts on `<html>`, each a closed
- * shadow root (the frame, and the floating **Comment** button).
+ * Comments button inside our own bar and two hosts on `<html>`, each a closed
+ * shadow root (the frame, and the floating **Comment** button). Every open thread
+ * whose passage it finds is painted one translucent yellow whether or not the
+ * comments are open, the active thread and the draft a stronger one.
  *
  * **Canonical text** is what `src/comments/anchor.ts` builds from the stored
  * HTML: the text of `<body>` in document order, with no separator between text
@@ -53,20 +55,27 @@
  * whitespace-collapsed) finds each one again here.
  *
  * **Messages.** To the frame, `{type, event, …}` with the API origin as the
- * target: `threads`, `positions`, `draft`, `focus`, `mode`, `visible`. From it,
- * accepted only from that iframe's window and the API origin: `ready`, `viewer`,
- * `changed`, `focus`, `close`, and three that are layout only and reveal nothing
- * beyond `viewer`: `size` (the height the margin's stacked cards need), `height`
- * (the height of the overlay sheet's content) and `reveal` (where the focused
+ * target: `mode`, `visible`, `threads`, `positions`, `draft`, `focus`, `dismiss`.
+ * From it, accepted only from that iframe's window and the API origin: `ready`,
+ * `viewer`, `changed`, `focus`, `cancel` (an empty draft was dropped), `close`
+ * (the reader closed the comments), and three that are layout only and reveal
+ * nothing beyond `viewer`: `size` (the height the sidebar's stacked cards need),
+ * `height` (the height of the sheet's content) and `reveal` (where the active
  * card sits). Nothing in either direction is a credential.
  *
- * **Margin or overlay.** If the author's content leaves 256px at the right of
- * the viewport (the real Copilot export, a 46rem column centred at 1280px, leaves
- * 272) the frame is a column there, as tall as the document or as its stacked
- * cards need if that is taller, so it scrolls with the page, and the cards sit at
- * the heights this script reports in document coordinates. Otherwise, or when the
- * window is not what scrolls the content, the frame is a bottom sheet that is
- * only as tall as its card, shown only for a tapped highlight or a new comment.
+ * **Sidebar or sheet.** The Comments button opens and closes them; they are
+ * closed on every page load, and a highlight or the Comment button opens them
+ * too. Where the viewport is at least `WIDE` and the window is what scrolls the
+ * page (`innerScrolled`), it is a sidebar: while it is open an adopted
+ * stylesheet pads `<html>` by `COLUMN` on the right, the author's layout reflows
+ * into what is left, and the frame is that column, as tall as the document (or as
+ * its stacked cards need, if that is taller), so it scrolls with the page. The
+ * page re-measures each passage whenever the geometry can change (opening, a
+ * resize, fonts and images loading, a resize of the document or of a card) and
+ * reports the tops in document coordinates; the frame lays the cards out level
+ * with them. Elsewhere it is a bottom sheet that is only as tall as its content:
+ * the list of open threads, one thread, or a draft. Nothing else ever changes the
+ * page's width.
  */
 export const PAGE_COMMENTS_SCRIPT = String.raw`
   // Comments. See src/comments-scripts.ts.
@@ -80,8 +89,10 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
     const painting = typeof Highlight === "function" && window.CSS && CSS.highlights;
     // The version on screen: the path names it on a pinned url, the bar on the shared link. A shared page served before the bar carried it asks the newest.
     let version = pin ? Number(pin[1]) : Number(link.getAttribute("data-version")) || 0;
-    let data = null, active = false, shown = true, canComment = false, mode = "margin";
-    let mhost = null, mframe = null, ready = false, sheet = false, button = null, tipHost = null, tip = null;
+    // The sidebar's column, and the narrowest viewport that has one beside the page; narrower, the comments are a bottom sheet.
+    const COLUMN = 320, WIDE = 880;
+    let data = null, active = false, open = false, canComment = false, mode = "margin";
+    let mhost = null, mframe = null, ready = false, button = null, words = null, tipHost = null, tip = null;
     let canon = null, dirty = true, ranges = new Map(), lost = [], draft = null, draftRange = null, focusId = "", timer = 0;
     let need = 0, sheetH = 0, refreshSeq = 0, ownerHere = false, probing = false;
     const out = {};
@@ -267,30 +278,6 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       document.documentElement.append(mhost);
       listen();
     };
-    const contentRight = () => {
-      let right = 0;
-      const vw = viewport().clientWidth;
-      for (const el of document.body.children) {
-        if (skipped(el)) continue;
-        const cs = getComputedStyle(el);
-        if (cs.display === "none") continue;
-        const r = el.getBoundingClientRect();
-        // A fixed bar across the whole width says nothing about the column; any other fixed box (a contents list, a sidebar) is content the margin must not cover.
-        if (cs.position === "fixed" && r.left <= 1 && r.right >= vw - 1) continue;
-        if (r.width > 0 || r.height > 0) right = Math.max(right, r.right);
-      }
-      // A fixed or sticky box nested in the author's column wrapper (a contents list, a sidebar) is content too.
-      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT, (n) => (skipped(n) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT));
-      for (let el = walker.nextNode(); el; el = walker.nextNode()) {
-        if (el.parentElement === document.body) continue;
-        const cs = getComputedStyle(el);
-        if ((cs.position !== "fixed" && cs.position !== "sticky") || cs.display === "none") continue;
-        const r = el.getBoundingClientRect();
-        if (r.left <= 1 && r.right >= vw - 1) continue;
-        if (r.width > 0 && r.height > 0) right = Math.max(right, r.right);
-      }
-      return right;
-    };
     // When the window is not what scrolls the content (an inner overflow container), a passage can be out of the viewport while the window has nothing to scroll: document coordinates mean nothing there.
     const innerScrolled = () => {
       const se = document.scrollingElement || document.documentElement;
@@ -301,33 +288,42 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       }
       return false;
     };
+    // The column the open sidebar takes from the page: an adopted stylesheet pads <html> on the right, so the author's own layout (a centred column, a full-width page) reflows into what is left, and the canvas, which carries the page's own background, fills the column. Nothing in the author's DOM changes, and nothing else ever changes the page's width.
+    let narrow = null, narrowed = "";
+    const setNarrow = (px) => {
+      const css = px ? ":root{padding-right:" + px + "px!important}" : "";
+      if (css === narrowed) return;
+      narrowed = css;
+      try {
+        if (!narrow) { narrow = new CSSStyleSheet(); document.adoptedStyleSheets = document.adoptedStyleSheets.concat([narrow]); }
+        narrow.replaceSync(css);
+      } catch (error) {}
+    };
     let visible = null;
     const layout = () => {
-      // Measure the page without our own margin column: its height counts toward scrollHeight and would hide an inner scroller.
+      // Measure the page without our own column: its height counts toward scrollHeight and would hide an inner scroller.
       // Collapse it, never hide it: a display:none host takes the frame out of rendering, and Chrome then drops the keystroke, or the focus, of a reader typing in a card.
       mhost.style.height = "0";
-      const vw = viewport().clientWidth, right = contentRight();
-      const next = vw - right >= 256 && !innerScrolled() ? "margin" : "overlay";
-      if (next !== mode) { mode = next; need = 0; sheetH = 0; send({ event: "mode", mode: mode }); if (button) label(); }
+      const vw = viewport().clientWidth;
+      const next = vw >= WIDE && !innerScrolled() ? "margin" : "overlay";
+      if (next !== mode) { mode = next; need = 0; sheetH = 0; send({ event: "mode", mode: mode }); }
+      if (button) label();
       // The host is a child of <html>, so an html{zoom} would multiply every length written below; cancel it.
       const z = document.documentElement.currentCSSZoom || 1;
       const flat = base + (z !== 1 ? "zoom:" + 1 / z + ";" : "");
-      if (!active || !shown) {
-        mhost.style.display = "none";
-        if (visible !== false) { visible = false; send({ event: "visible", shown: false }); }
-        return;
-      }
-      const now = mode === "margin" || sheet;
+      const now = active && open;
+      setNarrow(now && mode === "margin" ? Math.round(COLUMN / z) : 0);
       if (now !== visible) { visible = now; send({ event: "visible", shown: now }); }
+      if (!now) { mhost.style.display = "none"; return; }
       if (mode === "margin") {
-        // The cards may need more than the document is tall; the host then extends the page, so they can be reached by scrolling it.
+        // As tall as the document, so the cards scroll with the page; the cards may need more, and the host then extends the page, so they can be reached by scrolling it.
         const height = Math.round(Math.max(document.documentElement.scrollHeight, document.body.scrollHeight) * z);
-        mhost.setAttribute("style", flat + "display:block;position:absolute;top:0;left:" + Math.round(right + 16 + window.pageXOffset) + "px;width:" + Math.round(Math.min(320, vw - right - 24)) + "px;height:" + Math.max(height, need) + "px");
+        mhost.setAttribute("style", flat + "display:block;position:absolute;top:0;left:" + Math.round(vw - COLUMN + window.pageXOffset) + "px;width:" + COLUMN + "px;height:" + Math.max(height, need) + "px");
       } else {
         const phone = vw <= 600;
-        mhost.setAttribute("style", flat + "position:fixed;bottom:0;height:" + (sheetH ? "min(" + sheetH + "px,55vh,560px)" : "min(55vh,560px)") + ";opacity:" + (unsure && !sheetH ? "0" : "1") + ";display:" + (sheet ? "block" : "none") +
+        mhost.setAttribute("style", flat + "display:block;position:fixed;bottom:0;height:" + (sheetH ? "min(" + sheetH + "px,55vh,560px)" : "min(55vh,560px)") + ";opacity:" + (unsure && !sheetH ? "0" : "1") +
           ";border-radius:18px 18px 0 0;overflow:hidden;background:#f6f2e9;box-shadow:0 -8px 32px rgba(0,0,0,.18),0 0 0 1px rgba(0,0,0,.08);" +
-          (phone ? "left:0;right:0" : "right:16px;width:420px;max-width:calc(100vw - 32px);border-radius:18px 18px 0 0"));
+          (phone ? "left:0;right:0" : "right:16px;width:420px;max-width:calc(100vw - 32px)"));
       }
     };
     const measure = () => {
@@ -335,22 +331,25 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       if (!active) return;
       if (dirty || !canon) { locateAll(); if (button) label(); }
       layout();
-      if (mode === "margin" && shown) {
+      if (mode === "margin" && open) {
         const top = mhost.getBoundingClientRect().top + window.pageYOffset, tops = {}, none = lost.slice();
-        ranges.forEach((range, id) => {
+        // In passage order, so the frame stacks the cards of passages that share a line as the text reads.
+        const placed = Array.from(ranges).sort((a, b) => a[1].compareBoundaryPoints(Range.START_TO_START, b[1]));
+        for (const [id, range] of placed) {
           const rects = range.getClientRects();
           if (rects.length) tops[id] = Math.round(rects[0].top + window.pageYOffset - top); else none.push(id);
-        });
+        }
         send({ event: "positions", tops: tops, lost: none, height: Math.round(mhost.getBoundingClientRect().height) });
       }
     };
     const schedule = () => { if (!timer) timer = window.setTimeout(measure, 80); };
 
     // ---- highlights ---------------------------------------------------------
+    // Painted whenever the page has open threads, whether or not the sidebar is open: the passages are what invite a reader in.
     const paint = () => {
       if (!painting) return;
       const groups = { "openartifacts-open": [], "openartifacts-focus": [], "openartifacts-draft": [] };
-      if (active && shown) {
+      if (active) {
         ranges.forEach((range) => groups["openartifacts-open"].push(range));
         if (focusId && ranges.has(focusId)) groups["openartifacts-focus"].push(ranges.get(focusId));
         if (draftRange) groups["openartifacts-draft"].push(draftRange);
@@ -375,42 +374,42 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
     };
 
     // ---- the bar's button ---------------------------------------------------
+    // A speech bubble, painted by a mask in the button's own ink, as Share's glyph is (src/render.ts): no <svg> near the top of the author's body.
+    const BUBBLE = "url(data:image/svg+xml," + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 8.6 8.6 0 0 1-3.7-.8L3 21l1.9-5.1A8.4 8.4 0 0 1 3 11.5 8.5 8.5 0 0 1 12 3a8.5 8.5 0 0 1 9 8.5z"/></svg>') + ") center/contain no-repeat";
     const label = () => {
-      // What this mode can show: the bottom sheet opens only from a highlight, so a thread whose text is gone is not counted there.
-      const n = data ? data.threads.filter((t) => t.state === "open" && (mode !== "overlay" || ranges.has(t.threadId))).length : 0;
-      button.textContent = String.fromCodePoint(0x1F4AC) + " " + n;
-      button.setAttribute("aria-label", "Comments, " + n + " open");
-      // Pressed is what the button would undo: the highlights on a wide page, the open sheet on a phone.
-      const on = mode === "overlay" ? sheet : shown;
-      button.setAttribute("aria-pressed", String(on));
-      button.title = on ? "Hide comments" : "Show comments";
-      // Pressed is Share's own pill (#1d2027), released the strip's own colour
-      // (#0b0c10), painted rather than transparent: page.js is short-cached but a
-      // pinned /v{n} is immutable for a year, so this button also lands on bars
-      // rendered before the dark strip (light, #fbfbfa) and must read there too.
-      button.style.background = on ? "#1d2027" : "#0b0c10";
-      button.style.color = on ? "#f4f5f7" : "#c9ced6";
+      const n = data ? data.threads.filter((t) => t.state === "open").length : 0;
+      // At phone width the word goes and the bubble and the count stay.
+      const text = viewport().clientWidth < 600 ? (n ? String(n) : "") : "Comments" + (n ? " " + n : "");
+      if (words.textContent !== text) words.textContent = text;
+      words.style.display = text ? "block" : "none";
+      button.setAttribute("aria-label", n ? "Comments, " + n + " open" : "Comments");
+      button.setAttribute("aria-pressed", String(open));
+      button.title = open ? "Hide comments" : "Show comments";
+      // Released it is Share's own pill; pressed, a step lighter with a brighter edge, so it reads as held down.
+      button.style.background = open ? "#343a46" : "#1d2027";
+      button.style.borderColor = open ? "rgba(255,255,255,0.24)" : "rgba(255,255,255,0.08)";
     };
     const makeButton = () => {
       button = document.createElement("button");
       button.type = "button";
-      // A pill beside Share's, in its shape and edge: 34px, fully rounded, a hairline
-      // border, Share's 14px type. Hover and focus are OPENARTIFACTS_BAR_STYLE's
-      // (src/render.ts), keyed on the class.
+      // Share's pill: 34px, fully rounded, a hairline border, Share's 14px type and
+      // ink, painted rather than transparent so that it also reads on a bar rendered
+      // before the dark strip (a pinned /v{n} is immutable for a year). Hover and
+      // focus are OPENARTIFACTS_BAR_STYLE's (src/render.ts), keyed on the class.
       button.className = "openartifacts-comments-button";
-      button.setAttribute("style", "all:initial;flex:none;box-sizing:border-box;display:inline-flex;align-items:center;gap:6px;height:34px;padding:0 14px;margin-left:auto;border:1px solid rgba(255,255,255,0.08);border-radius:999px;color:#c9ced6;cursor:pointer;white-space:nowrap;-webkit-font-smoothing:antialiased;" + FONT.replace("13px/1.25", "14px/1"));
+      button.setAttribute("style", "all:initial;flex:none;box-sizing:border-box;display:inline-flex;align-items:center;gap:8px;height:34px;padding:0 16px 0 14px;margin-left:auto;border:1px solid rgba(255,255,255,0.08);border-radius:999px;background:#1d2027;color:#f4f5f7;cursor:pointer;white-space:nowrap;-webkit-font-smoothing:antialiased;" + FONT.replace("13px/1.25", "14px/1"));
+      const glyph = document.createElement("span");
+      glyph.setAttribute("aria-hidden", "true");
+      glyph.setAttribute("style", "all:initial;display:block;flex:none;width:16px;height:16px;background-color:#f4f5f7;-webkit-mask:" + BUBBLE + ";mask:" + BUBBLE);
+      words = document.createElement("span");
+      words.setAttribute("style", "all:initial;display:block;font:inherit;color:inherit;white-space:nowrap");
+      button.append(glyph, words);
       button.addEventListener("click", () => {
-        // On a phone there is no margin to hide, so the button opens the sheet: the list of open comments, whose rows scroll to their passages, or the margin's one line where there is nothing to list. The focus message makes the frame redraw and report its height, and a frame with nothing to show reports 0 and the page closes the sheet again.
-        if (mode === "overlay" && data) {
-          if (sheet) closeSheet(); else { shown = true; openSheet(); send({ event: "focus", threadId: "" }); }
-          paint();
-          return;
-        }
-        shown = !shown;
-        if (!shown) { closeSheet(); hideTip(); }
-        label();
-        paint();
-        measure();
+        if (open) { closePanel(); return; }
+        // Opened from the bar, nothing is active: on a phone the sheet lists the open comments, whose rows scroll to their passages.
+        focusId = "";
+        send({ event: "focus", threadId: "" });
+        openPanel();
       });
       link.parentNode.insertBefore(button, link);
     };
@@ -418,7 +417,7 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
     // ---- the Comment button on a selection ----------------------------------
     const hideTip = () => { if (tipHost) tipHost.style.display = "none"; };
     const refreshTip = () => {
-      if (!active || !shown || !canComment) { hideTip(); return; }
+      if (!active || !canComment) { hideTip(); return; }
       const cap = capture();
       if (!cap) { hideTip(); return; }
       if (!tipHost) {
@@ -464,24 +463,28 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       draft = cap.anchor;
       hideTip();
       window.getSelection().removeAllRanges();
+      if (focusId) { focusId = ""; send({ event: "focus", threadId: "" }); }
+      // Opened before the draft is measured: the sidebar narrows the page and its text reflows. And the frame is told it is shown before the draft arrives: a frame that is not shown draws nothing, so a draft that came first found no field to focus.
+      openPanel();
+      reveal(draftRange);
       const top = draftRange.getClientRects()[0] || draftRange.getBoundingClientRect();
-      // The sheet is told it is shown before the draft arrives: a frame that is not shown draws nothing, so a draft that came first found no field to focus.
-      if (mode === "overlay") { openSheet(); reveal(draftRange); }
       send({ event: "draft", focus: true, anchor: draft, top: Math.round(top.top + window.pageYOffset - (mhost.getBoundingClientRect().top + window.pageYOffset)) });
       paint();
     };
     const endDraft = () => { draft = null; draftRange = null; send({ event: "draft", anchor: null, top: 0 }); paint(); };
 
-    // ---- the overlay sheet --------------------------------------------------
-    // The sheet is invisible until the frame has said how tall its card is (or 300ms have passed), so it opens at its size and does not shrink under the reader's finger.
+    // ---- opening and closing --------------------------------------------------
+    // The sheet is invisible until the frame has said how tall its content is (or 300ms have passed), so it opens at its size and does not shrink under the reader's finger.
     let unsure = false;
-    const openSheet = () => {
-      if (!sheet && !sheetH) { unsure = true; window.setTimeout(() => { unsure = false; layout(); }, 300); }
-      sheet = true;
-      layout();
-      if (button) label();
+    const openPanel = () => {
+      if (open) return;
+      if (mode === "overlay" && !sheetH) { unsure = true; window.setTimeout(() => { unsure = false; layout(); }, 300); }
+      open = true;
+      // At once, not on the next tick: what opens next (a draft, a focused card) is placed against the page as it reflowed.
+      measure();
+      paint();
     };
-    // Scroll the passage out from under the sheet, unless it is already clear of it. Call after openSheet, whose layout sets the height this reads.
+    // On a phone, scroll the passage out from under the sheet, unless it is already clear of it. Call after openPanel, whose layout sets the height this reads.
     const reveal = (range) => {
       if (mode !== "overlay" || !range) return;
       const rect = range.getBoundingClientRect();
@@ -489,14 +492,15 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       if (rect.top >= 48 && rect.bottom <= limit) return;
       window.scrollTo({ top: Math.max(0, rect.top + window.pageYOffset - window.innerHeight * 0.15), behavior: "smooth" });
     };
-    const closeSheet = () => {
-      if (!sheet) return;
-      sheet = false;
+    // Closing ends a draft, lets go of the active thread and gives the page its width back.
+    const closePanel = () => {
+      if (!open) return;
+      open = false;
       sheetH = 0;
+      if (draft) endDraft();
       focusId = "";
-      layout();
-      if (button) label();
       send({ event: "focus", threadId: "" });
+      layout();
       paint();
     };
 
@@ -522,27 +526,26 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       } else if (msg.event === "focus" && typeof msg.threadId === "string") {
         focusId = msg.threadId;
         send({ event: "focus", threadId: focusId });
-        if (mode === "overlay") { openSheet(); reveal(ranges.get(focusId)); }
+        reveal(ranges.get(focusId));
         paint();
       } else if (msg.event === "size" && Number.isFinite(msg.height)) {
         const n = Math.max(0, Math.min(Math.round(msg.height), 1000000));
         if (mode === "margin" && n !== need) { need = n; schedule(); }
       } else if (msg.event === "height" && Number.isFinite(msg.px)) {
-        // A height while the sheet is closed would linger as sheetH and open the next sheet at the wrong height. Zero is a frame with nothing to show.
-        if (!sheet) return;
-        if (msg.px === 0) { closeSheet(); return; }
+        // A height while the sheet is closed would linger as sheetH and open the next sheet at the wrong height.
+        if (!open || mode !== "overlay") return;
         const n = Math.max(80, Math.min(Math.round(msg.px), 4000));
         if (n !== sheetH || unsure) { sheetH = n; unsure = false; layout(); }
       } else if (msg.event === "reveal" && Number.isFinite(msg.top) && Number.isFinite(msg.height)) {
-        if (mode !== "margin" || !shown) return;
+        if (mode !== "margin" || !open) return;
         const t = mhost.getBoundingClientRect().top + msg.top;
         if (t < 48 || t + msg.height > window.innerHeight) window.scrollTo({ top: Math.max(0, t + window.pageYOffset - window.innerHeight * 0.15), behavior: "smooth" });
-      } else if (msg.event === "close") {
+      } else if (msg.event === "cancel") {
+        // The frame dropped an empty draft. The sheet was showing only that draft; the sidebar stays.
         if (draft) endDraft();
-        focusId = "";
-        send({ event: "focus", threadId: "" });
-        if (mode === "overlay") closeSheet();
-        paint();
+        if (mode === "overlay") closePanel();
+      } else if (msg.event === "close") {
+        closePanel();
       }
     });
     };
@@ -573,8 +576,9 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
     };
     const deactivate = () => {
       active = false;
+      open = false;
       button.style.display = "none";
-      mhost.style.display = "none";
+      layout();
       hideTip();
       paint();
     };
@@ -606,21 +610,25 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       document.addEventListener("toggle", schedule, true);
       document.addEventListener("load", schedule, true);
       document.addEventListener("scroll", (event) => { if (event.target !== document) schedule(); }, { capture: true, passive: true });
-      if (document.fonts && document.fonts.ready) document.fonts.ready.then(schedule);
+      if (document.fonts && document.fonts.ready) {
+        document.fonts.ready.then(schedule);
+        document.fonts.addEventListener("loadingdone", schedule);
+      }
       let settle = 0;
       document.addEventListener("selectionchange", () => { window.clearTimeout(settle); settle = window.setTimeout(refreshTip, 150); });
-      link.addEventListener("click", closeSheet);
-      // A draft is the frame's to end (it knows whether words are in it); a sheet without one closes.
-      document.addEventListener("keydown", (event) => { if (sheet && event.key === "Escape") { if (draft) send({ event: "dismiss" }); else closeSheet(); } }, true);
+      link.addEventListener("click", () => { if (mode === "overlay") closePanel(); });
+      // A draft is the frame's to end (it knows whether words are in it); a sheet without one closes. The sidebar stays open until its reader closes it.
+      document.addEventListener("keydown", (event) => { if (open && event.key === "Escape") { if (draft) send({ event: "dismiss" }); else if (mode === "overlay") closePanel(); } }, true);
       document.addEventListener("pointerdown", (event) => {
+        const ours = event.target === mhost || event.target === tipHost || button.contains(event.target);
         // A click on the page itself closes a draft that has nothing typed in it (the frame decides); on a phone a touch is how the reader scrolls back to the passage.
-        if (draft && mode !== "overlay" && event.target !== tipHost && event.target !== mhost) send({ event: "dismiss" });
+        if (draft && mode === "margin" && !ours) send({ event: "dismiss" });
         // A draft is the reader's own words and the sheet covers half the page: a touch on the page above it (to scroll back to the passage) must not throw them away. Cancel, the close button, Escape and a post end it.
-        if (sheet && !draft && event.target !== mhost && event.target !== tipHost && event.target !== button) closeSheet();
+        if (open && mode === "overlay" && !draft && !ours) closePanel();
       }, true);
       document.addEventListener("click", (event) => {
-        // A press on the Comment button is the button's: the passage under it (the line above the selection) is not what was clicked.
-        if (!active || !shown || event.button !== 0 || ranges.size === 0 || event.target === tipHost) return;
+        // A press on the Comment button is the button's: the passage under it (the line above the selection) is not what was clicked. Nor is anything in our bar.
+        if (!active || event.button !== 0 || event.target === tipHost || link.parentNode.contains(event.target)) return;
         const sel = window.getSelection();
         if (sel && !sel.isCollapsed) return;
         let node, offset;
@@ -631,24 +639,29 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
           const r = document.caretRangeFromPoint(event.clientX, event.clientY);
           if (r) { node = r.startContainer; offset = r.startOffset; }
         }
-        if (!node || node.nodeType !== 3) return;
-        for (const [id, range] of ranges) {
-          if (range.isPointInRange(node, offset)) {
-            if (draft) endDraft();
-            focusId = id;
-            send({ event: "focus", threadId: id });
-            if (mode === "overlay") { openSheet(); reveal(range); }
-            paint();
-            return;
-          }
+        const hit = node && node.nodeType === 3 ? Array.from(ranges).find((entry) => entry[1].isPointInRange(node, offset)) : null;
+        if (hit) {
+          // A highlight opens the comments on its thread, closed or not. The frame learns the thread before it is shown, so its first drawing is that thread (a sheet drawn as the list first would resize under the reader's finger).
+          if (draft) endDraft();
+          focusId = hit[0];
+          send({ event: "focus", threadId: focusId });
+          openPanel();
+          reveal(hit[1]);
+          paint();
+        } else if (focusId && mode === "margin") {
+          // A click on the page away from every highlight lets go of the active card, as in a document editor.
+          focusId = "";
+          send({ event: "focus", threadId: "" });
+          paint();
         }
       });
       if (painting) {
         try {
           const sheetCss = new CSSStyleSheet();
-          sheetCss.replaceSync("::highlight(openartifacts-open){background-color:rgba(94,200,160,.28);text-decoration:underline;text-decoration-color:#16786a;text-decoration-thickness:2px}" +
-            "::highlight(openartifacts-focus){background-color:rgba(94,200,160,.5)}" +
-            "::highlight(openartifacts-draft){background-color:rgba(255,179,138,.45)}");
+          // One translucent yellow for every thread, which reads on a light page and a dark one, and no underline, which reads as a link; stronger for the active thread and the draft.
+          sheetCss.replaceSync("::highlight(openartifacts-open){background-color:rgba(255,200,0,.28)}" +
+            "::highlight(openartifacts-focus){background-color:rgba(255,200,0,.5)}" +
+            "::highlight(openartifacts-draft){background-color:rgba(255,184,0,.5)}");
           document.adoptedStyleSheets = document.adoptedStyleSheets.concat([sheetCss]);
         } catch (error) {}
       }
@@ -670,33 +683,36 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
 `;
 
 /**
- * The margin frame's stylesheet (`src/comments/frame.ts` puts it in the shell).
+ * The comments frame's stylesheet (`src/comments/frame.ts` puts it in the shell).
  * Two layouts of the same cards, chosen by a class on `<main>` that the page
- * script's `mode` message sets: `margin`, where `.cards` is as tall as the
- * document and every card is absolutely positioned by the script at the height
- * of its passage, and `overlay`, a bottom sheet with one card in normal flow.
- * The frame's own background is transparent in the margin, so the page shows
- * through between cards; the colours are the design mockups' (green for open
- * and for the focused card, a violet badge for an agent, grey for resolved).
+ * script's `mode` message sets: `margin`, the sidebar, where `.cards` is as tall as the
+ * document and the header and every card are absolutely positioned by the
+ * script, the cards level with their passages, and `overlay`, a bottom sheet in
+ * normal flow under a sticky header. The frame's own background is transparent
+ * in the sidebar, so the page's own background shows through between cards; the
+ * colours are the design mockups' (green for the focused card, a violet badge
+ * for an agent, grey for resolved).
  */
 export const COMMENTS_FRAME_CSS = `:root{color-scheme:light;font:13px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:#18191d;background:transparent}
 *{box-sizing:border-box}html,body{height:100%;margin:0;background:transparent}
 [hidden]{display:none!important}
 html:has(main.margin),html:has(main.margin) body{overflow:hidden}
 main.margin{min-height:100%}
-main.overlay{background:#f6f2e9;padding:6px 14px 18px}
+main.overlay{background:#f6f2e9;padding:0 14px 18px}
 .cards{position:relative}
 .card{background:#fffdf8;border:1px solid #cbbfa8;border-radius:12px;padding:10px 12px;box-shadow:0 1px 2px rgba(40,30,10,.12),0 14px 28px -20px rgba(40,30,10,.4)}
-.margin .card,.margin .heading{position:absolute;left:4px;right:10px}
+.margin .card,.margin .heading,.margin .head{position:absolute;left:8px;right:16px}
 .card.focus{border-color:#16786a;box-shadow:0 0 0 3px #dcf0ea,0 1px 2px rgba(40,30,10,.12)}
 .card.muted{background:#f4f1ea;border-color:#ddd5c4}
 .card.muted .quote{color:#8f8a7e;border-left-color:#ddd5c4}
 .card.resolved{background:#f4f1ea;border-color:#ddd5c4}
 .heading{font:10px/1.4 ui-monospace,"SF Mono",Menlo,Consolas,monospace;letter-spacing:.1em;text-transform:uppercase;color:#6d6a62;background:#fffdf8;border:1px solid #ddd5c4;border-radius:6px;padding:2px 6px}
 .margin .heading{right:auto}
-.grab{display:flex;align-items:center;justify-content:center;position:relative;height:22px}
-.grab i{width:36px;height:4px;border-radius:2px;background:#cbbfa8}
-.grab .x{position:absolute;right:0;top:0;border:0;background:none;font-size:20px;line-height:1;color:#6d6a62;cursor:pointer;padding:0 6px}
+.head{display:flex;align-items:center;gap:10px}
+.head .title{font-weight:700;font-size:14px}
+.head button.ic{margin-left:auto}
+.margin .head{background:#fffdf8;border:1px solid #cbbfa8;border-radius:12px;padding:4px 4px 4px 12px;box-shadow:0 1px 2px rgba(40,30,10,.12)}
+.overlay .head{position:sticky;top:0;z-index:2;background:#f6f2e9;padding:8px 0 6px}
 .quote{font-size:11.5px;color:#6d6a62;border-left:2px solid #cbbfa8;padding-left:7px;margin:0 0 8px;font-style:italic;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
 .where{font-size:11.5px;color:#6d6a62;margin:0 0 6px}
 .who{display:flex;flex-wrap:wrap;align-items:center;gap:2px 6px;font-weight:700;font-size:12.5px;min-width:0}
@@ -722,7 +738,7 @@ button.ic:focus-visible{outline:2px solid #16786a;outline-offset:1px}
 .card:not(.focus) .replybox{display:none}
 .card.focus .replies{display:none}
 button.link.strong{font-weight:650;color:#18191d}
-button.link.toggle{display:block;margin-top:2px;font-size:12px}
+button.link.toggle{font-size:12px;color:#6d6a62}
 .card.undo{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:12.5px}
 textarea,input{width:100%;font:inherit;border:1px solid #cbbfa8;border-radius:9px;padding:8px 10px;background:#f7f4ec;color:inherit}
 textarea{resize:vertical;min-height:34px}
@@ -753,11 +769,11 @@ button.b.primary{background:#18191d;border-color:#18191d;color:#fff}
 .muted-text{font-size:11.5px;color:#6d6a62;margin:6px 0 0}
 .err{font-size:11.5px;color:#b4342b;margin:6px 0 0}.err:empty{display:none}
 .ask{font-size:12px;margin:0 0 6px}
-.card.topline{padding:8px 12px}.topline .muted-text{margin:0}
+.card.topline{padding:8px 12px}.topline .muted-text{margin:0}.topline>*+*{margin-top:6px}
 `;
 
 /**
- * The margin frame's script (`GET /embed/comments`). It draws the cards, holds
+ * The comments frame's script (`GET /embed/comments`). It draws the cards, holds
  * the reader's token and does the writing, so it is written as the least
  * trusting code can be, like the Share popover's: DOM built only with
  * `createElement` and `textContent` (never `innerHTML`, so a comment is only
@@ -774,10 +790,11 @@ button.b.primary{background:#18191d;border-color:#18191d;color:#fff}
  * author's name or agent badge and with a line saying to sign in for them: the
  * page is the author's, so what it relays could be invented, and must not appear
  * under real names beside our Sign in button. An own read always replaces it.
- * The one line at the top (`topLine`) follows the same split: "Invited to comment?
- * Sign in." only on its own anonymous read's `commentable`, "Continue to see names
- * and comment." over relayed cards, "Select text to comment." for a viewer who
- * may, nothing otherwise; the overlay sheet carries it too.
+ * The one line under the header (`lineCard`) follows the same split: "Invited to
+ * comment? Sign in." only on its own anonymous read's `commentable`, "Continue to
+ * see names and comment." over relayed cards, "Select text to comment." for a
+ * viewer who may, after "No open comments." when there are none; the sheet
+ * carries it too.
  * Relayed data is only ever drawn as text; the title shown above a new comment
  * is the server's whenever the frame has a token, and nothing a page sends can
  * post: every write goes to `/embed/api` for this one document.
@@ -785,8 +802,9 @@ button.b.primary{background:#18191d;border-color:#18191d;color:#fff}
  * **What it tells the page.** `ready`, once, before it touches storage; `viewer`
  * with `{canComment}` after every read (false until the server says a signed-in
  * viewer may, so no one is offered Comment only to be refused); `changed` after its own
- * write; `focus` when a card is pressed; `close` from a user action. Nothing
- * else about the viewer.
+ * write; `focus` when a card is pressed; `cancel` when an empty draft is
+ * dropped; `close` from the header's close button (or Escape on the sheet).
+ * Nothing else about the viewer.
  *
  * **Signing in** is the Share popover's own handshake, copied: a nonce only this
  * frame knows, its hash in the popup's address, collected by polling
@@ -857,7 +875,7 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
   let signState = "", prepared = null, opened = null, generation = 0, wake = null;
   let confirming = "", needName = "", nameText = "", pending = null;
   let showResolved = false, undoId = "", undoTimer = 0, menuId = "", posted = null;
-  let modelKey = "", inFlight = false, lastLoad = 0, composing = false, owed = false, stacked = [], sentNeed = -1;
+  let modelKey = "", inFlight = false, lastLoad = 0, composing = false, owed = false, stacked = { head: [], flow: [] }, sentNeed = -1, revealOwed = false;
   const texts = {}, errors = {}, busy = {};
 
   // Its own read (a token's, else the anonymous one a public document answers) wins; the page's relay is drawn only when neither answered, and then without names.
@@ -1080,16 +1098,19 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     return relayed ? [signInBlock("Continue to see names and comment.")] : [];
   };
   const resolvedOf = () => threadsOf().filter((t) => t.state === "resolved");
-  // Resolved threads are off the page; they wait behind their count, here.
-  const topLine = () => {
-    const kids = notice();
-    const n = loaded ? resolvedOf().length : 0;
-    if (n) kids.push(node("button", { type: "button", class: "link toggle", "aria-expanded": String(showResolved), onclick: () => { showResolved = !showResolved; render(); } }, [n + " resolved"]));
-    return kids;
-  };
+  // The one line under the header: the notice, after "No open comments." when there are none, so an open sidebar or sheet is never blank.
   const lineCard = () => {
-    const kids = topLine();
+    const kids = notice();
+    if (loaded && !draft && !threadsOf().some((t) => t.state !== "resolved")) kids.unshift(muted("No open comments."));
     return kids.length ? node("div", { class: "card topline" }, kids) : null;
+  };
+  // The title, the resolved threads (off the page, waiting behind their count) and the close button, in the sidebar and the sheet alike.
+  const header = () => {
+    const n = loaded ? resolvedOf().length : 0;
+    const kids = [node("span", { class: "title" }, ["Comments"])];
+    if (n) kids.push(node("button", { type: "button", class: "link toggle", "aria-expanded": String(showResolved), onclick: () => { showResolved = !showResolved; render(); } }, [n + " resolved"]));
+    kids.push(iconButton("Close comments", "M6 6l12 12M18 6L6 18", () => post({ event: "close" })));
+    return node("div", { class: "head" }, kids);
   };
   // "Resolved · Undo", for a few seconds after a thread leaves the page.
   const undoCard = () => (undoId ? node("div", { class: "card topline undo" }, [node("span", {}, ["Resolved"]), button("Undo", () => reopenThread(undoId), "link strong")]) : null);
@@ -1131,12 +1152,18 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
   };
   const fitAll = () => { for (const area of cards.querySelectorAll("textarea")) fit(area); };
 
+  // Marks the focused card; in the sidebar it is the active one, so the column is laid out again around it and the page is asked to bring it into view.
+  const markFocus = () => {
+    for (const element of cards.querySelectorAll("[data-thread]")) element.classList.toggle("focus", focusId !== "" && element.dataset.thread === focusId);
+    // The focused card's reply box was hidden, so it was fitted at no height.
+    fitAll();
+    revealOwed = focusId !== "";
+    restack();
+  };
   const focusThread = (id) => {
     if (focusId === id) return;
     focusId = id;
-    for (const element of cards.querySelectorAll("[data-thread]")) element.classList.toggle("focus", element.dataset.thread === id);
-    // The focused card's reply box was hidden, so it was fitted at no height.
-    fitAll();
+    markFocus();
     post({ event: "focus", threadId: id });
   };
 
@@ -1189,7 +1216,8 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     const at = res && Number.isInteger(res.atVersion) && res.atVersion > 0 ? res.atVersion : 0;
     const summary = res ? (at ? "Resolved in v" + at : "Resolved") + (relayedOnly() ? "" : " by " + by) : "Resolved";
     const card = node("div", { class: "card" + (resolved ? " resolved" : "") + (orphan ? " muted" : "") + (focusId === id ? " focus" : ""), "data-thread": id });
-    card.addEventListener("mousedown", () => focusThread(id));
+    // A click, not a press: the card moves to its passage when it becomes active, and a press that moved it would lose the click it began (on Resolve, say).
+    card.addEventListener("click", () => focusThread(id));
     if (orphan || resolved || mode === "overlay") card.append(node("div", { class: "quote" }, [text(thread.anchor && thread.anchor.exact)]));
     if (resolved) card.append(node("p", { class: "where" }, [summary]));
     const comments = Array.isArray(thread.comments) ? thread.comments : [];
@@ -1221,7 +1249,7 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     errors.draft = "";
     needName = needName === "draft" ? "" : needName;
     render();
-    post({ event: "close" });
+    post({ event: "cancel" });
   };
   const draftCard = () => {
     const card = node("div", { class: "card draft" + (needName === "draft" ? " name" : ""), "data-thread": "" });
@@ -1247,53 +1275,78 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     return m && Array.isArray(m.threads) ? m.threads.filter((t) => t && typeof t === "object" && typeof t.threadId === "string") : [];
   };
 
-  const renderMargin = () => {
-    const items = [];
+  // The sidebar: what belongs at the top (the header, Undo, the one line, resolved and orphaned threads) stacked from the top, then a card beside each passage the page placed, and the draft.
+  const renderSide = () => {
+    const head = [header()];
     const undo = undoCard();
-    if (undo) items.push({ el: undo, want: BAR, gap: 8 });
-    const top = lineCard();
-    if (top) items.push({ el: top, want: BAR, gap: 8 });
-    if (showResolved) for (const t of resolvedOf()) items.push({ el: threadCard(t, false), want: 0, gap: 8 });
+    if (undo) head.push(undo);
+    const line = lineCard();
+    if (line) head.push(line);
+    if (showResolved) for (const t of resolvedOf()) head.push(threadCard(t, false));
     const threads = threadsOf().filter((t) => t.state !== "resolved");
     const lost = new Set(lostIds);
-    const orphans = threads.filter((t) => t.anchorStatus !== "anchored" || lost.has(t.threadId));
+    const orphaned = (t) => t.anchorStatus !== "anchored" || lost.has(t.threadId);
+    const orphans = threads.filter(orphaned);
     if (orphans.length) {
-      items.push({ el: node("div", { class: "heading" }, ["On text that changed in v" + versionOf()]), want: BAR, gap: 4 });
-      for (const t of orphans) items.push({ el: threadCard(t, true), want: 0, gap: 8 });
+      head.push(node("div", { class: "heading" }, ["On text that changed"]));
+      for (const t of orphans) head.push(threadCard(t, true));
     }
     const flow = [];
     for (const t of threads) {
-      if (t.anchorStatus !== "anchored" || lost.has(t.threadId)) continue;
+      if (orphaned(t)) continue;
       const at = tops !== null && typeof tops[t.threadId] === "number" ? tops[t.threadId] : posted !== null && posted.thread === t.threadId ? posted.top : null;
-      if (at !== null) flow.push({ el: threadCard(t, false), want: at, gap: 8 });
+      if (at !== null) flow.push({ el: threadCard(t, false), want: at, thread: t.threadId });
     }
-    if (draft) flow.push({ el: draftCard(), want: draftTop, gap: 8 });
-    flow.sort((a, b) => a.want - b.want);
-    const all = items.concat(flow);
-    cards.replaceChildren(...all.map((item) => item.el));
+    if (draft) flow.push({ el: draftCard(), want: draftTop, thread: "" });
+    // In passage order: the page sends the positions in it, so passages that share a line keep the order they are read in.
+    const order = tops !== null ? Object.keys(tops) : [];
+    flow.sort((a, b) => a.want - b.want || order.indexOf(a.thread) - order.indexOf(b.thread));
+    const all = head.concat(flow.map((item) => item.el));
+    cards.replaceChildren(...all);
     fitAll();
-    stacked = all;
+    stacked = { head: head, flow: flow };
     restack();
-    for (const item of all) sizes.observe(item.el);
+    for (const el of all) sizes.observe(el);
   };
 
-  // Lay the cards out by their wants, each pushed below the one before it, and tell the page how tall that needs the column to be (it can then extend the document, so the last card is reached by scrolling the page, never the frame). Run again whenever a card's height changes: a reply box growing as it is typed in.
+  // Lays the column out as a document editor's margin does. The top items stack from under the bar. Then the cards, in passage order, GAP apart: the active card (the draft, else the focused thread) exactly level with its passage, the cards above it pushed up and the ones below pushed down only as far as they must; with none active, each card is level with its passage unless the one above reaches past it. Then it tells the page how tall that needs the column to be (it can then extend the document, so the last card is reached by scrolling the page, never the frame). Run again whenever a card's height changes: the reply box appearing on the active card, or growing as it is typed in.
+  const GAP = 8;
   const restack = () => {
+    if (mode !== "margin") return;
     let floor = BAR;
-    for (const item of stacked) {
-      const top = Math.max(item.want, floor);
-      item.el.style.top = top + "px";
-      floor = top + item.el.offsetHeight + item.gap;
+    for (const el of stacked.head) {
+      el.style.top = floor + "px";
+      floor += el.offsetHeight + GAP;
     }
-    cards.style.height = Math.max(height, floor) + "px";
-    const need = Math.ceil(floor);
+    const flow = stacked.flow, h = flow.map((item) => item.el.offsetHeight), at = [];
+    const k = draft ? flow.findIndex((item) => item.thread === "") : focusId ? flow.findIndex((item) => item.thread === focusId) : -1;
+    if (k >= 0) {
+      // Level with its passage, unless the cards above it would not fit between it and the top.
+      let room = floor;
+      for (let i = 0; i < k; i++) room += h[i] + GAP;
+      at[k] = Math.max(flow[k].want, room);
+      for (let i = k - 1; i >= 0; i--) at[i] = Math.min(flow[i].want, at[i + 1] - GAP - h[i]);
+    }
+    for (let i = k + 1; i < flow.length; i++) at[i] = Math.max(flow[i].want, i > 0 ? at[i - 1] + h[i - 1] + GAP : floor);
+    let bottom = floor;
+    flow.forEach((item, i) => {
+      item.el.style.top = at[i] + "px";
+      bottom = Math.max(bottom, at[i] + h[i] + GAP);
+    });
+    cards.style.height = Math.max(height, bottom) + "px";
+    const need = Math.ceil(bottom);
     if (need !== sentNeed) { sentNeed = need; post({ event: "size", height: need }); }
+    // Owed until the active card is laid out: a thread focused while the sidebar was closed is revealed once its card is drawn.
+    if (revealOwed && k >= 0) {
+      revealOwed = false;
+      post({ event: "reveal", top: at[k], height: h[k] });
+    }
   };
   const sizes = new ResizeObserver(() => {
-    if (mode === "margin" && stacked.length) restack();
-    else if (mode === "overlay") reportSheet();
+    if (mode === "margin") restack();
+    else reportSheet();
   });
-  // The sheet is as tall as its card, up to the page's cap, so it reports the content's height.
+  // The sheet is as tall as its content, up to the page's cap, so it reports the content's height.
   const reportSheet = () => post({ event: "height", px: Math.ceil(main.scrollHeight) });
 
   // The sheet's list: one row per open thread, its passage and who is in it. A tap opens the card and scrolls to the passage.
@@ -1303,28 +1356,22 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     const line = authorOf(comments[0] && comments[0].author).name + (replies ? " · " + replies + (replies === 1 ? " reply" : " replies") : "");
     return node("button", { type: "button", class: "row", onclick: () => { focusId = text(t.threadId); render(); post({ event: "focus", threadId: focusId }); } }, [node("span", { class: "rq" }, [text(t.anchor && t.anchor.exact)]), node("span", { class: "rw" }, [line])]);
   });
-  const renderOverlay = () => {
-    const close = button("×", () => { if (draft) cancelDraft(); else post({ event: "close" }); }, "x");
-    close.setAttribute("aria-label", "Close");
-    const kids = [];
+  // The sheet: the header, then the draft, or the focused thread, or the list of open threads.
+  const renderSheet = () => {
+    const kids = [header()];
     if (draft) kids.push(draftCard());
     else {
       const undo = undoCard();
       if (undo) kids.push(undo);
-      const top = lineCard();
-      if (top) kids.push(top);
+      const line = lineCard();
+      if (line) kids.push(line);
       if (showResolved) kids.push(...resolvedOf().map((t) => threadCard(t, false)));
       const thread = threadsOf().find((t) => t.threadId === focusId && t.state !== "resolved");
+      const list = rows();
       if (thread) kids.push(threadCard(thread, thread.anchorStatus !== "anchored"));
-      else if (rows().length) kids.push(node("div", { class: "list" }, rows()));
+      else if (list.length) kids.push(node("div", { class: "list" }, list));
     }
-    // Nothing to show, so no sheet: the page closes it on a height of 0. Before the first read the page's own fallback covers the wait.
-    if (!kids.length) {
-      cards.replaceChildren();
-      if (loaded) post({ event: "height", px: 0 });
-      return;
-    }
-    cards.replaceChildren(node("div", { class: "grab" }, [node("i"), close]), ...kids);
+    cards.replaceChildren(...kids);
     fitAll();
     cards.style.height = "";
   };
@@ -1336,11 +1383,11 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     if (composing) { owed = true; return; }
     main.className = mode;
     sizes.disconnect();
-    stacked = [];
+    stacked = { head: [], flow: [] };
     try {
       if (!shown) cards.replaceChildren();
-      else if (mode === "overlay") renderOverlay();
-      else renderMargin();
+      else if (mode === "overlay") renderSheet();
+      else renderSide();
     } catch (error) {
       cards.replaceChildren();
     }
@@ -1384,8 +1431,7 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
         // Only the host's height moved (often in answer to our own size message): re-lay the cards, never rebuild them, or a reply box being typed in is replaced under the pointer.
         if (nextHeight !== height) {
           height = nextHeight;
-          if (mode === "margin" && stacked.length) restack();
-          else if (mode === "margin") cards.style.height = height + "px";
+          restack();
         }
         return;
       }
@@ -1403,6 +1449,7 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
         draftTop = typeof msg.top === "number" ? msg.top : 0;
         texts.draft = "";
         errors.draft = "";
+        revealOwed = true;
         render();
         // Only the page script's Comment click asks for focus, so a bare draft message (which any page on the serving origin can send) never moves it.
         if (msg.focus === true) {
@@ -1418,15 +1465,7 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     } else if (msg.event === "focus") {
       focusId = typeof msg.threadId === "string" ? msg.threadId : "";
       if (mode === "overlay") render();
-      else {
-        let target = null;
-        for (const element of cards.querySelectorAll("[data-thread]")) {
-          const on = element.dataset.thread === focusId && focusId !== "";
-          element.classList.toggle("focus", on);
-          if (on) target = element;
-        }
-        if (target) post({ event: "reveal", top: target.offsetTop, height: target.offsetHeight });
-      }
+      else markFocus();
     }
   });
   // A click anywhere else in the frame closes a draft that has nothing typed in it; one with words stays until it is sent or Escape.
