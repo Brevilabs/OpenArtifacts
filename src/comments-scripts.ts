@@ -55,7 +55,8 @@
  * whitespace-collapsed) finds each one again here.
  *
  * **Messages.** To the frame, `{type, event, …}` with the API origin as the
- * target: `mode`, `visible`, `threads`, `positions`, `draft`, `focus`, `dismiss`.
+ * target: `mode`, `theme` (whether the page's own background is dark), `visible`,
+ * `threads`, `positions`, `draft`, `focus`, `dismiss`.
  * From it, accepted only from that iframe's window and the API origin: `ready`,
  * `viewer`, `changed`, `focus`, `cancel` (an empty draft was dropped), `close`
  * (the reader closed the comments), and three that are layout only and reveal
@@ -299,6 +300,17 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
         narrow.replaceSync(css);
       } catch (error) {}
     };
+    // Whether the page's own background is dark: the first that is not transparent from <body> up to <html> (the canvas takes it from them in that order), white if neither has one. The frame draws its cards in the matching theme.
+    let dark = null;
+    const pageIsDark = () => {
+      for (const el of [document.body, document.documentElement]) {
+        const c = (getComputedStyle(el).backgroundColor.match(/[0-9.]+/g) || []).map(Number);
+        if (c.length < 3 || c[3] === 0) continue;
+        const lin = (v) => (v / 255 <= 0.04045 ? v / 255 / 12.92 : Math.pow((v / 255 + 0.055) / 1.055, 2.4));
+        return 0.2126 * lin(c[0]) + 0.7152 * lin(c[1]) + 0.0722 * lin(c[2]) < 0.179;
+      }
+      return false;
+    };
     let visible = null;
     const layout = () => {
       // Measure the page without our own column: its height counts toward scrollHeight and would hide an inner scroller.
@@ -307,6 +319,8 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       const vw = viewport().clientWidth;
       const next = vw >= WIDE && !innerScrolled() ? "margin" : "overlay";
       if (next !== mode) { mode = next; need = 0; sheetH = 0; send({ event: "mode", mode: mode }); }
+      const d = pageIsDark();
+      if (d !== dark) { dark = d; send({ event: "theme", dark: d }); }
       if (button) label();
       // The host is a child of <html>, so an html{zoom} would multiply every length written below; cancel it.
       const z = document.documentElement.currentCSSZoom || 1;
@@ -322,7 +336,7 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       } else {
         const phone = vw <= 600;
         mhost.setAttribute("style", flat + "display:block;position:fixed;bottom:0;height:" + (sheetH ? "min(" + sheetH + "px,55vh,560px)" : "min(55vh,560px)") + ";opacity:" + (unsure && !sheetH ? "0" : "1") +
-          ";border-radius:18px 18px 0 0;overflow:hidden;background:#f6f2e9;box-shadow:0 -8px 32px rgba(0,0,0,.18),0 0 0 1px rgba(0,0,0,.08);" +
+          ";border-radius:18px 18px 0 0;overflow:hidden;background:" + (dark ? "#1f2023" : "#f7f7f8") + ";box-shadow:0 -8px 32px rgba(0,0,0,.18),0 0 0 1px rgba(0,0,0,.08);" +
           (phone ? "left:0;right:0" : "right:16px;width:420px;max-width:calc(100vw - 32px)"));
       }
     };
@@ -513,7 +527,7 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       if (msg.event === "ready") {
         ready = true;
         schedule();
-        ["mode", "visible", "threads", "positions", "draft", "focus"].forEach((name) => { if (out[name]) deliver(out[name]); });
+        ["mode", "theme", "visible", "threads", "positions", "draft", "focus"].forEach((name) => { if (out[name]) deliver(out[name]); });
       } else if (msg.event === "viewer") {
         canComment = msg.canComment !== false;
         if (!canComment) hideTip();
@@ -610,6 +624,8 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       document.addEventListener("toggle", schedule, true);
       document.addEventListener("load", schedule, true);
       document.addEventListener("scroll", (event) => { if (event.target !== document) schedule(); }, { capture: true, passive: true });
+      // A page that follows the system's dark mode changes its background with no resize; the cards follow it.
+      if (window.matchMedia) window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", schedule);
       if (document.fonts && document.fonts.ready) {
         document.fonts.ready.then(schedule);
         document.fonts.addEventListener("loadingdone", schedule);
@@ -689,79 +705,87 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
  * document and the header and every card are absolutely positioned by the
  * script, the cards level with their passages, and `overlay`, a bottom sheet in
  * normal flow under a sticky header. The frame's own background is transparent
- * in the sidebar, so the page's own background shows through between cards; the
- * colours are the design mockups' (green for the focused card, a violet badge
- * for an agent, grey for resolved).
+ * in the sidebar, so the page's own background shows through between cards.
+ *
+ * **Two themes, one set of tokens.** The page tells the frame whether its own
+ * background is dark (`theme`), and `main.dark` swaps every colour the cards
+ * use: light is white cards with dark text, a hairline border and a soft
+ * shadow; dark is a dark-grey card that stands off the page, with light text.
+ * Green marks the focused card, a badge marks an agent, a sunken grey a resolved
+ * or orphaned card. The frame's `color-scheme` stays light in both, as the
+ * iframe's does: a frame whose scheme differs from its element's is painted
+ * opaque, and the page's background would no longer show between cards.
  */
-export const COMMENTS_FRAME_CSS = `:root{color-scheme:light;font:13px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:#18191d;background:transparent}
+export const COMMENTS_FRAME_CSS = `:root{color-scheme:light;font:13px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;background:transparent}
 *{box-sizing:border-box}html,body{height:100%;margin:0;background:transparent}
 [hidden]{display:none!important}
+main{--card:#fff;--ink:#18191d;--muted:#5f6368;--line:rgba(0,0,0,.12);--edge:rgba(0,0,0,.22);--shadow:0 1px 2px rgba(0,0,0,.08),0 4px 14px -4px rgba(0,0,0,.14);--lift:0 2px 4px rgba(0,0,0,.1),0 10px 28px -6px rgba(0,0,0,.28);--sunk:#f5f5f6;--hover:rgba(0,0,0,.06);--field:#fff;--accent:#16786a;--ring:rgba(22,120,106,.2);--send:#18191d;--send-ink:#fff;--send-off:#d4d5d8;--danger:#b4342b;--badge:#fbe3d8;--badge-ink:#b03d1b;--sheet:#f7f7f8;color:var(--ink)}
+main.dark{--card:#2a2b2f;--ink:#e8e9ec;--muted:#a3a7ae;--line:rgba(255,255,255,.12);--edge:rgba(255,255,255,.24);--shadow:0 1px 2px rgba(0,0,0,.5),0 6px 18px -6px rgba(0,0,0,.6);--lift:0 2px 6px rgba(0,0,0,.55),0 12px 32px -6px rgba(0,0,0,.75);--sunk:#232427;--hover:rgba(255,255,255,.08);--field:#1f2023;--accent:#5fc4b0;--ring:rgba(95,196,176,.25);--send:#e8e9ec;--send-ink:#18191d;--send-off:#45474d;--danger:#ff8a80;--badge:rgba(255,138,101,.18);--badge-ink:#ffab91;--sheet:#1f2023}
 html:has(main.margin),html:has(main.margin) body{overflow:hidden}
 main.margin{min-height:100%}
-main.overlay{background:#f6f2e9;padding:0 14px 18px}
+main.overlay{background:var(--sheet);padding:0 14px 18px}
 .cards{position:relative}
-.card{background:#fffdf8;border:1px solid #cbbfa8;border-radius:12px;padding:10px 12px;box-shadow:0 1px 2px rgba(40,30,10,.12),0 14px 28px -20px rgba(40,30,10,.4)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px 12px;box-shadow:var(--shadow)}
 .margin .card,.margin .heading,.margin .head{position:absolute;left:8px;right:16px}
-.card.focus{border-color:#16786a;box-shadow:0 0 0 3px #dcf0ea,0 1px 2px rgba(40,30,10,.12)}
-.card.muted{background:#f4f1ea;border-color:#ddd5c4}
-.card.muted .quote{color:#8f8a7e;border-left-color:#ddd5c4}
-.card.resolved{background:#f4f1ea;border-color:#ddd5c4}
-.heading{font:10px/1.4 ui-monospace,"SF Mono",Menlo,Consolas,monospace;letter-spacing:.1em;text-transform:uppercase;color:#6d6a62;background:#fffdf8;border:1px solid #ddd5c4;border-radius:6px;padding:2px 6px}
+.card.focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--ring),var(--shadow)}
+.card.muted,.card.resolved{background:var(--sunk)}
+.heading{font:10px/1.4 ui-monospace,"SF Mono",Menlo,Consolas,monospace;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);background:var(--card);border:1px solid var(--line);border-radius:6px;padding:2px 6px}
 .margin .heading{right:auto}
 .head{display:flex;align-items:center;gap:10px}
 .head .title{font-weight:700;font-size:14px}
 .head button.ic{margin-left:auto}
-.margin .head{background:#fffdf8;border:1px solid #cbbfa8;border-radius:12px;padding:4px 4px 4px 12px;box-shadow:0 1px 2px rgba(40,30,10,.12)}
-.overlay .head{position:sticky;top:0;z-index:2;background:#f6f2e9;padding:8px 0 6px}
-.quote{font-size:11.5px;color:#6d6a62;border-left:2px solid #cbbfa8;padding-left:7px;margin:0 0 8px;font-style:italic;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
-.where{font-size:11.5px;color:#6d6a62;margin:0 0 6px}
+.margin .head{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:4px 4px 4px 12px;box-shadow:var(--shadow)}
+.overlay .head{position:sticky;top:0;z-index:2;background:var(--sheet);padding:8px 0 6px}
+.quote{font-size:11.5px;color:var(--muted);border-left:2px solid var(--edge);padding-left:7px;margin:0 0 8px;font-style:italic;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.where{font-size:11.5px;color:var(--muted);margin:0 0 6px}
 .who{display:flex;flex-wrap:wrap;align-items:center;gap:2px 6px;font-weight:700;font-size:12.5px;min-width:0}
-.who small{font-weight:400;color:#6d6a62;white-space:nowrap}
+.who small{font-weight:400;color:var(--muted);white-space:nowrap}
 .av{width:20px;height:20px;border-radius:50%;display:inline-grid;place-items:center;font-size:10px;font-weight:700;color:#1b1b1b;background:#9fd6c9;flex:none}
 .av.agent{background:#c9b8f0}
-.badge{font:9.5px/1.4 ui-monospace,"SF Mono",Menlo,Consolas,monospace;letter-spacing:.05em;text-transform:uppercase;padding:1px 6px;border-radius:999px;font-weight:600;background:#fbe3d8;color:#b03d1b}
-.badge{white-space:nowrap}
+.badge{font:9.5px/1.4 ui-monospace,"SF Mono",Menlo,Consolas,monospace;letter-spacing:.05em;text-transform:uppercase;padding:1px 6px;border-radius:999px;font-weight:600;background:var(--badge);color:var(--badge-ink);white-space:nowrap}
 .txt{margin:3px 0 8px 26px;white-space:pre-wrap;overflow-wrap:anywhere}
-.acts{display:flex;flex-wrap:wrap;align-items:center;gap:4px 10px;margin:0 0 6px;font-size:11.5px;color:#6d6a62}
+.acts{display:flex;flex-wrap:wrap;align-items:center;gap:4px 10px;margin:0 0 6px;font-size:11.5px;color:var(--muted)}
 .acts button,button.link{border:0;background:none;padding:0;font:inherit;color:inherit;cursor:pointer}
-.acts button:hover,button.link:hover{color:#18191d;text-decoration:underline}
-.acts button.danger{color:#b4342b;font-weight:600}
+.acts button:hover,button.link:hover{color:var(--ink);text-decoration:underline}
+.acts button.danger{color:var(--danger);font-weight:600}
 .who{position:relative}
 .tools{margin-left:auto;display:inline-flex;align-items:center;gap:2px}
-button.ic{display:grid;place-items:center;min-width:26px;height:26px;padding:0;border:0;border-radius:50%;background:none;color:#6d6a62;font:inherit;font-size:16px;line-height:1;cursor:pointer}
-button.ic:hover{background:#ece7da;color:#18191d}
-button.ic:focus-visible{outline:2px solid #16786a;outline-offset:1px}
-.menu{position:absolute;right:0;top:100%;z-index:3;min-width:150px;background:#fff;border:1px solid #cbbfa8;border-radius:10px;padding:4px;box-shadow:0 8px 24px rgba(40,30,10,.25)}
-.menu .item{display:block;width:100%;text-align:left;border:0;background:none;padding:7px 10px;border-radius:7px;font:inherit;font-size:12.5px;font-weight:400;color:#b4342b;cursor:pointer}
-.menu .item:hover,.menu .item:focus-visible{background:#f6f2e9}
-.replies{font-size:11.5px;color:#6d6a62;margin:2px 0 0 26px}
+button.ic{display:grid;place-items:center;min-width:26px;height:26px;padding:0;border:0;border-radius:50%;background:none;color:var(--muted);font:inherit;font-size:16px;line-height:1;cursor:pointer}
+button.ic:hover{background:var(--hover);color:var(--ink)}
+button.ic:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.menu{position:absolute;right:0;top:100%;z-index:3;min-width:150px;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:4px;box-shadow:var(--lift)}
+.menu .item{display:block;width:100%;text-align:left;border:0;background:none;padding:7px 10px;border-radius:7px;font:inherit;font-size:12.5px;font-weight:400;color:var(--danger);cursor:pointer}
+.menu .item:hover,.menu .item:focus-visible{background:var(--hover);outline:0}
+.replies{font-size:11.5px;color:var(--muted);margin:2px 0 0 26px}
 .card:not(.focus) .replybox{display:none}
 .card.focus .replies{display:none}
-button.link.strong{font-weight:650;color:#18191d}
-button.link.toggle{font-size:12px;color:#6d6a62}
+button.link.strong{font-weight:650;color:var(--ink)}
+button.link.toggle{font-size:12px;color:var(--muted)}
+button.link:focus-visible,button.row:focus-visible,button.b:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .card.undo{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:12.5px}
-.composer{display:flex;align-items:flex-end;gap:6px;border:1px solid #cbbfa8;border-radius:20px;background:#fff;padding:3px 3px 3px 14px}
-.composer:focus-within{border-color:#16786a;box-shadow:0 0 0 2px #dcf0ea}
+.composer{display:flex;align-items:flex-end;gap:6px;border:1px solid var(--edge);border-radius:20px;background:var(--field);padding:3px 3px 3px 14px}
+.composer:focus-within{border-color:var(--accent);box-shadow:0 0 0 2px var(--ring)}
 .composer textarea{flex:1;min-width:0;font:inherit;color:inherit;border:0;border-radius:0;background:transparent;padding:6px 0;min-height:22px;max-height:160px;overflow-y:auto;resize:none;line-height:1.45}
 .composer textarea:focus{outline:0}
-button.send{flex:none;display:grid;place-items:center;width:30px;height:30px;padding:0;border:0;border-radius:50%;background:#18191d;color:#fff;cursor:pointer}
-button.send:disabled{background:#d9d6cd;color:#fff;cursor:default}
-button.send.busy{background:#18191d;cursor:default}
+.composer textarea::placeholder{color:var(--muted);opacity:1}
+button.send{flex:none;display:grid;place-items:center;width:30px;height:30px;padding:0;border:0;border-radius:50%;background:var(--send);color:var(--send-ink);cursor:pointer}
+button.send:disabled{background:var(--send-off);color:var(--card);cursor:default}
+button.send.busy{background:var(--send);cursor:default}
 button.send.busy svg{display:none}
-button.send.busy::after{content:"";width:14px;height:14px;border:2px solid #fff;border-top-color:transparent;border-radius:50%;animation:spin .7s linear infinite}
+button.send.busy::after{content:"";width:14px;height:14px;border:2px solid var(--send-ink);border-top-color:transparent;border-radius:50%;animation:spin .7s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
-button.send:focus-visible{outline:2px solid #16786a;outline-offset:2px}
+button.send:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .card.draft{padding:0;border:0;background:transparent;box-shadow:none}
-.card.draft .composer{box-shadow:0 1px 2px rgba(40,30,10,.12),0 14px 28px -14px rgba(40,30,10,.45)}
+.card.draft .composer{box-shadow:var(--lift)}
 .list{display:grid;gap:6px;margin-top:6px}
-button.row{display:grid;gap:2px;width:100%;text-align:left;padding:9px 12px;border:1px solid #cbbfa8;border-radius:10px;background:#fffdf8;font:inherit;color:inherit;cursor:pointer;min-height:44px}
+button.row{display:grid;gap:2px;width:100%;text-align:left;padding:9px 12px;border:1px solid var(--line);border-radius:10px;background:var(--card);font:inherit;color:inherit;cursor:pointer;min-height:44px}
 button.row .rq{overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-button.row .rw{font-size:11.5px;color:#6d6a62}
-button.b{font:inherit;font-size:12px;font-weight:650;padding:5px 11px;border-radius:8px;border:1px solid #cbbfa8;background:#fffdf8;color:#18191d;cursor:pointer}
-button.b:hover{border-color:#8f8670}button.b:disabled{cursor:default;opacity:.55}
-button.b.primary{background:#18191d;border-color:#18191d;color:#fff}
-.muted-text{font-size:11.5px;color:#6d6a62;margin:6px 0 0}
-.err{font-size:11.5px;color:#b4342b;margin:6px 0 0}.err:empty{display:none}
+button.row .rw{font-size:11.5px;color:var(--muted)}
+button.b{font:inherit;font-size:12px;font-weight:650;padding:5px 11px;border-radius:8px;border:1px solid var(--edge);background:var(--card);color:var(--ink);cursor:pointer}
+button.b:hover{border-color:var(--muted)}button.b:disabled{cursor:default;opacity:.55}
+button.b.primary{background:var(--send);border-color:var(--send);color:var(--send-ink)}
+.muted-text{font-size:11.5px;color:var(--muted);margin:6px 0 0}
+.err{font-size:11.5px;color:var(--danger);margin:6px 0 0}.err:empty{display:none}
 .card.topline{padding:8px 12px}.topline .muted-text{margin:0}.topline>*+*{margin-top:6px}
 `;
 
@@ -863,7 +887,7 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
   const bytesToBase64Url = (bytes) => btoa(String.fromCharCode(...bytes)).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
   const bytesToHex = (bytes) => Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 
-  let mode = "margin", shown = true, relayed = null, own = null, anon = null, loaded = false, tops = null, lostIds = [], height = 0;
+  let mode = "margin", dark = false, shown = true, relayed = null, own = null, anon = null, loaded = false, tops = null, lostIds = [], height = 0;
   let draft = null, draftTop = 0, focusId = "", loadSeq = 0, lastViewer = null, positionsKey = "";
   let signState = "", prepared = null, opened = null, generation = 0, wake = null;
   let confirming = "";
@@ -1347,7 +1371,7 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     const key = active && active.dataset ? active.dataset.key : undefined;
     const from = key !== undefined && typeof active.selectionStart === "number" ? [active.selectionStart, active.selectionEnd] : null;
     if (composing) { owed = true; return; }
-    main.className = mode;
+    main.className = mode + (dark ? " dark" : "");
     sizes.disconnect();
     stacked = { head: [], flow: [] };
     try {
@@ -1377,6 +1401,10 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
       mode = msg.mode === "overlay" ? "overlay" : "margin";
       sentNeed = -1;
       render();
+    } else if (msg.event === "theme") {
+      // Only colours change, so the cards are not rebuilt under a reader typing in one.
+      dark = msg.dark === true;
+      main.classList.toggle("dark", dark);
     } else if (msg.event === "visible") {
       shown = msg.shown !== false;
       render();

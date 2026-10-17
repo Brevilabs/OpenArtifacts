@@ -1099,6 +1099,7 @@ also checks the origin.
 | Direction | `event` | Payload |
 | --- | --- | --- |
 | page → frame | `mode` | `{mode: "margin" \| "overlay"}`: the sidebar, or the bottom sheet |
+| page → frame | `theme` | `{dark}`: whether the page's own background is dark, so the cards are drawn to match |
 | page → frame | `visible` | `{shown}`: the sidebar or the sheet is open |
 | page → frame | `threads` | `{data, version}`: the threads resource JSON |
 | page → frame | `positions` | `{tops, lost, height}`: each placed thread's top in document coordinates, the ids it could not place, and the document height |

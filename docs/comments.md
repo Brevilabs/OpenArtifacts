@@ -222,6 +222,11 @@ The model is a document editor's comment margin (Google Docs, Notion, Figma):
   the ones above pushed up and the ones below pushed down only as far as they must.
   The page re-measures whenever the geometry can change: opening or closing,
   resizing, fonts and images loading, the document resizing, or a card growing.
+- **Cards follow the page's theme.** The page reads its own background (the first
+  that is not transparent from `<body>` up to `<html>`, white if neither has one)
+  and the frame draws light cards (white, dark text, a hairline border and a soft
+  shadow) on a light page and dark-grey cards with light text on a dark one; the
+  header, menus, composer, buttons and focus rings follow.
 - **Narrow screens get a bottom sheet** from the same button: the list of open
   threads, or the one thread whose highlight was tapped, or the draft. The page
   does not narrow.

@@ -483,7 +483,7 @@ test("a thread whose text was rewritten waits at the top under On text that chan
   await shoot(tab, "sidebar-orphaned");
   // Opaque on any author background: no opacity to let a dark page through, and a chip behind the heading.
   assert.equal(await orphan.evaluate((el) => getComputedStyle(el).opacity), "1");
-  assert.equal(await again.locator(".heading").evaluate((el) => getComputedStyle(el).backgroundColor), "rgb(255, 253, 248)");
+  assert.equal(await again.locator(".heading").evaluate((el) => getComputedStyle(el).backgroundColor), "rgb(255, 255, 255)");
 
   // The pinned page of v1 still has the text, so its card is back beside it.
   const old = await context.newPage();
@@ -2206,5 +2206,57 @@ test("a refused post shows the frame's own error and keeps the words, never a na
   await frame.getByRole("alert").filter({ hasText: "Add a display name to comment." }).waitFor();
   assert.equal(await frame.getByRole("textbox", { name: "Your name" }).count(), 0, "no name prompt");
   assert.equal(await field.inputValue(), "Who is staffed?", "the words are kept");
+  await context.close();
+});
+
+
+test("cards follow the page's theme: white on a light page, dark grey on a dark body or a dark <html>, and the phone sheet too", { timeout: 180_000 }, async () => {
+  const quote = "Renewal risk is concentrated in three accounts";
+  const luminance = ([r, g, b]) => (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+  const rgb = (value) => value.match(/[0-9.]+/g).slice(0, 3).map(Number);
+  const cases = [
+    ["light", page(REPORT), false],
+    ["dark body", page(REPORT, "<style>body{background:#111316;color:#e8e6e1}</style>"), true],
+    ["dark html", page(REPORT, "<style>html{background:#0b0c0f}body{background:transparent;color:#e8e6e1}</style>"), true],
+  ];
+  for (const [name, html, dark] of cases) {
+    const docId = await publish(name, REPORT, { html });
+    await agentThread(docId, { exact: quote, section: "risk" }, `A remark on the ${name} page.`);
+    const context = await newContext(ALICE, { signedInTo: docId });
+    const tab = await context.newPage();
+    await tab.goto(docUrl(docId));
+    await openSidebar(tab);
+    const frame = commentsFrame(tab, docId);
+    const card = cardFor(frame, `A remark on the ${name} page.`);
+    await card.waitFor();
+    const style = await card.evaluate((el) => ({ bg: getComputedStyle(el).backgroundColor, ink: getComputedStyle(el).color, border: getComputedStyle(el).borderTopWidth, shadow: getComputedStyle(el).boxShadow }));
+    const head = await frame.locator(".head").evaluate((el) => getComputedStyle(el).backgroundColor);
+    if (dark) {
+      await until(`${name}: a dark card`, async () => luminance(rgb(await card.evaluate((el) => getComputedStyle(el).backgroundColor))) < 0.25);
+      const bg = rgb(await card.evaluate((el) => getComputedStyle(el).backgroundColor));
+      assert.ok(luminance(bg) > 0.1, `${name}: the card (${bg}) stands off a near-black page`);
+      assert.ok(luminance(rgb(await card.evaluate((el) => getComputedStyle(el).color))) > 0.75, `${name}: light text`);
+      assert.ok(luminance(rgb(head)) < 0.25, `${name}: a dark header`);
+    } else {
+      assert.equal(style.bg, "rgb(255, 255, 255)", "a white card");
+      assert.ok(luminance(rgb(style.ink)) < 0.2, "dark text");
+      assert.equal(style.border, "1px", "a hairline border");
+      assert.notEqual(style.shadow, "none", "a soft shadow");
+      assert.equal(head, "rgb(255, 255, 255)");
+    }
+    await shoot(tab, `theme-${name.replace(" ", "-")}`);
+    await context.close();
+  }
+
+  // On a phone the sheet behind the cards is dark on a dark page.
+  const docId = await publish("dark phone", REPORT, { html: page(REPORT, "<style>body{background:#111316;color:#e8e6e1}</style>") });
+  await agentThread(docId, { exact: quote, section: "risk" }, "A remark on a phone.");
+  const context = await newContext(ALICE, { viewport: { width: 390, height: 844 }, signedInTo: docId });
+  const tab = await context.newPage();
+  await tab.goto(docUrl(docId));
+  await barButton(tab).click();
+  await until("the sheet", async () => (await hostBox(tab)) !== null);
+  const host = await tab.locator(".openartifacts-comments").evaluate((el) => getComputedStyle(el).backgroundColor);
+  assert.ok(luminance(rgb(host)) < 0.25, `a dark sheet (${host})`);
   await context.close();
 });
