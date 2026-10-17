@@ -50,6 +50,7 @@ import type { AnalyticsSink } from "./analytics.js";
 import {
   accessBody,
   addPerson,
+  copilotHint,
   declineRequest,
   decodeAddress,
   getAccess,
@@ -66,7 +67,7 @@ import type { Publisher } from "./auth.js";
 import { stringField } from "./account.js";
 import type { Env } from "./config.js";
 import { accountEmail, findReadableDoc, putEmbedHandoff, takeEmbedHandoff } from "./db.js";
-import { COPILOT_HINT, FRAME_CSS, FRAME_SCRIPT, PAGE_SCRIPT } from "./embed-scripts.js";
+import { FRAME_CSS, FRAME_SCRIPT, PAGE_SCRIPT } from "./embed-scripts.js";
 import { accountPlan } from "./entitlement.js";
 import { handleCommentsEmbed } from "./comments/embed-api.js";
 import { commentsFrame } from "./comments/frame.js";
@@ -201,6 +202,7 @@ async function shareFrame(request: Request, url: URL, env: Env): Promise<Respons
   // Built from the id alone, like the link beside it, so showing it leaks nothing.
   const link = publicDocUrl(env, url, doc);
   const bareLink = link.replace(/^https?:\/\//, "");
+  const hint = escapeHtml(copilotHint(env));
   const body = `<!doctype html>
 <html lang="en">
 <head>
@@ -212,9 +214,9 @@ async function shareFrame(request: Request, url: URL, env: Env): Promise<Respons
 </head>
 <body>
 <header><div class="field"><span><bdi>${escapeHtml(bareLink)}</bdi></span></div><button type="button" class="primary tall">${LINK_ICON_SVG}<span>Copy link</span></button><button type="button" class="x" aria-label="Close">×</button></header>
-<main data-doc="${escapeHtml(doc)}" data-link="${escapeHtml(link)}" data-origin="${origin === null ? "" : escapeHtml(origin)}" data-hint="${escapeHtml(COPILOT_HINT)}" hidden>
+<main data-doc="${escapeHtml(doc)}" data-link="${escapeHtml(link)}" data-origin="${origin === null ? "" : escapeHtml(origin)}" data-hint="${hint}" hidden>
 <p class="muted">Only the owner can change who can open this.</p>
-<div class="bottom"><p id="oa-msg" class="err" role="alert"></p><p class="muted" id="oa-account">Is this your page? <button type="button" class="link" disabled>Sign in to manage</button></p><p class="muted hint">${escapeHtml(COPILOT_HINT)}</p></div>
+<div class="bottom"><p id="oa-msg" class="err" role="alert"></p><p class="muted" id="oa-account">Is this your page? <button type="button" class="link" disabled>Sign in to manage</button></p><p class="muted hint">${hint}</p></div>
 </main>
 <div class="fade" aria-hidden="true"></div>
 <script>${FRAME_SCRIPT}</script>

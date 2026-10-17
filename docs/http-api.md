@@ -554,7 +554,10 @@ that attempted an invite. Outcomes are `sent` (mail service accepted), `failed`,
 change or reload makes no delivery claim. Clients show failures with Copy link.
 `notificationNotice`, when present, tells an owner with no verified address
 that request/thread emails cannot reach them and how to link their Copilot account.
-Existing clients may ignore these fields; Copilot must adopt them to show the notice.
+Existing clients may ignore these fields. Invites and access are managed from
+Share in the published page's top bar, not Copilot's publish dialog. Share also
+shows conditional linking guidance to unlinked license-key publishers before
+they can authenticate as the owner.
 
 - `PUT …/access` takes `{"linkAccess": "anyone" | "invited"}`. Switching to
   `anyone` keeps the list and the requests, and switching back restores them.
@@ -788,7 +791,7 @@ request email's **Review request** and the url `share` prints.
 | No session, a live public document | The title, "Only the owner can change who can open this.", **Copy link**, and "Is this your page? **Sign in to manage**" (`?signin` selects the sign-in page) |
 | No session, anything else, or `?signin` | The sign-in page, the same bytes for an invited-only, an unknown and a deleted id, returning to `/share/{docId}` |
 | A signed-in account that owns the document | **Link access**, **Add people**, **Requests** with **Approve** and **Decline**, **Who has access** with **Remove** and, where the plan grants two or more roles, a role select beside each person (a plan that grants none sees a plan line instead of **Add people**, **Approve** and the select), and **Copy link** |
-| A signed-in account that may read it | The title, the same sentence, **Copy link**, **Use another account** and a line telling a Copilot owner to manage access in Copilot |
+| A signed-in account that may read it | The title, the same sentence, **Copy link**, **Use another account** and conditional no-email guidance telling an unlinked Copilot owner how to link their account and then manage access here |
 | A signed-in account that may not, unknown, deleted | The unavailable page as `/open`, `404`, never `403` |
 
 Its writes are `POST /share/{docId}` forms (`op` of `link`, `add`, `remove` or

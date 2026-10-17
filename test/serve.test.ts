@@ -2537,7 +2537,7 @@ describe("an invited-only document", () => {
       const doc = await privateDoc();
       const bob = await reader("bob@other.com", doc.docId);
       const carol = await reader("carol@other.com"); // not invited, but the public page is open to her
-      const hint = "Open the note in Copilot and run Publish file to OpenArtifacts";
+      const hint = "If your license key is not linked to an OpenArtifacts account, we have no email address for you.";
 
       // A visitor to a public document: the title and link, an invitation to sign in to manage.
       const visitor = await open(pub.docId, null);
