@@ -446,7 +446,7 @@ test("2. the Share popover has no Comments switch, only roles, and the page has 
   await context.close();
 });
 
-test("3. Alice selects a passage, signs in to the frame, names herself once, and posts; the owner is emailed", { timeout: 180_000 }, async () => {
+test("3. Alice selects a passage, signs in to the frame, and posts under her email's name, never asked for one; the owner is emailed", { timeout: 180_000 }, async () => {
   mail.length = 0;
   alice = await newContext("alice");
   const tab = await alice.newPage();
@@ -472,15 +472,12 @@ test("3. Alice selects a passage, signs in to the frame, names herself once, and
   await box.fill(COMMENT);
   await shoot(tab, "03-alice-draft-card");
   await frame.getByRole("button", { name: "Post" }).click();
-  // Alice has no display name yet: the first post asks for one, once.
-  const name = frame.getByRole("textbox", { name: "Your name" });
-  await name.waitFor();
-  await name.fill("Alice");
-  await frame.getByRole("button", { name: "Save and post" }).click();
+  // Alice has no display name: she is not asked, and is named from her email before the @.
 
   const card = frame.locator("[data-thread]:not([data-thread=''])");
   await card.waitFor();
-  assert.match(await card.innerText(), /Alice/);
+  assert.match(await card.innerText(), /alice/);
+  assert.equal(await frame.getByRole("textbox", { name: "Your name" }).count(), 0, "never asked for a name");
   assert.match(await card.innerText(), /This overstates the renewal risk/);
   await until("the bar to count one", async () => /💬\s*1$/.test(await button.innerText()));
   await until("the card to sit level with its passage", async () => {
@@ -495,7 +492,7 @@ test("3. Alice selects a passage, signs in to the frame, names herself once, and
   const [stored] = (await (await request("owner", `/api/v1/docs/${DOC}/threads`)).json()).threads;
   threadOne = stored.threadId;
   assert.equal(stored.anchor.exact, QUOTE);
-  assert.deepEqual(stored.comments[0].author, { name: "Alice", kind: "human" });
+  assert.deepEqual(stored.comments[0].author, { name: "alice", kind: "human" });
 
   // The owner, and only the owner, is told: with the quote and the comment, and with nobody's address in it.
   const letters = await until("the owner's email", () => (mailTo(PEOPLE.owner.email).length ? mailTo(PEOPLE.owner.email) : null));
@@ -504,7 +501,7 @@ test("3. Alice selects a passage, signs in to the frame, names herself once, and
   for (const part of [letters[0].text, letters[0].html]) {
     assert.ok(part.includes(QUOTE), "the email quotes the passage");
     assert.ok(part.includes("This overstates the renewal risk"), "the email carries the comment");
-    assert.ok(part.includes("Alice"), "the email names the author");
+    assert.ok(part.includes("alice"), "the email names the author");
     assert.ok(!part.includes(PEOPLE.alice.email) && !part.includes(PEOPLE.bob.email), "no one else's address");
   }
   assert.ok(letters[0].text.includes(DOC), "the email links to the page");
@@ -567,7 +564,7 @@ test("5. Alice reloads: the card is collapsed as resolved in v2, she can Reopen 
   await open.getByRole("button", { name: "Resolve" }).click();
   await until("resolved again", async () => (await (await request("owner", `/api/v1/docs/${DOC}/threads?state=resolved`)).json()).threads.length === 1);
   const [thread] = (await (await request("owner", `/api/v1/docs/${DOC}/threads?state=resolved`)).json()).threads;
-  assert.deepEqual(thread.resolution.by, { name: "Alice", kind: "human" });
+  assert.deepEqual(thread.resolution.by, { name: "alice", kind: "human" });
   await until("the bar to count none", async () => /💬\s*0$/.test(await barButton(tab).innerText()));
 });
 

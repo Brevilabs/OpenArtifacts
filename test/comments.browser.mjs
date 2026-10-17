@@ -47,7 +47,6 @@ const OWNER_ACCOUNT = accountId("a");
 const ALICE = accountId("b");
 const BOB = accountId("c");
 const CAROL = accountId("d");
-const DAN = accountId("e");
 
 const sha256Hex = (value) => createHash("sha256").update(value).digest("hex");
 
@@ -250,10 +249,8 @@ before(async () => {
     [OWNER_ACCOUNT, "owner@example.com", "Logan"],
     [ALICE, "alice@example.com", "Alice"],
     [BOB, "bob@example.com", "Bob"],
-    // No display name: her first comment asks for one.
+    // No display name: her first comment names her from her email.
     [CAROL, "carol@example.com", null],
-    // A second nameless reader, for a test that must meet the prompt after Carol has answered it.
-    [DAN, "dan@example.com", null],
   ];
   for (const [id, email, name] of people) {
     await db
@@ -360,21 +357,17 @@ test("a selection offers Comment, the frame posts after sign-in, and the card si
   await frame.getByText("Comment on “Q3 client report”").waitFor();
   assert.equal(await frame.locator(".quote").first().innerText(), quote);
 
-  // 5. The composer is there. Carol has no name, so the first post asks for one.
+  // 5. The composer is there. Carol has no name: she is not asked, and is named from her email.
   const box = frame.getByRole("textbox", { name: "Add a comment…" });
   await box.waitFor();
   await shoot(tab, "margin-draft-card");
   await box.fill("This overstates the renewal risk; two of the three accounts already renewed.");
   await frame.getByRole("button", { name: "Post" }).click();
-  const name = frame.getByRole("textbox", { name: "Your name" });
-  await name.waitFor();
-  await name.fill("Carol");
-  await frame.getByRole("button", { name: "Save and post" }).click();
 
   // 6. The card stays beside the passage, the highlight is painted, the count is 1.
   const card = frame.locator("[data-thread]:not([data-thread=''])");
   await card.waitFor();
-  assert.match(await card.innerText(), /Carol/);
+  assert.match(await card.innerText(), /carol/);
   assert.match(await card.innerText(), /This overstates the renewal risk/);
   await until("the bar to count one", async () => /1$/.test(await button.innerText()));
   await until("the card to sit at its passage", async () => {
@@ -391,7 +384,7 @@ test("a selection offers Comment, the frame posts after sign-in, and the card si
   assert.equal(await tab.evaluate(() => document.cookie), "");
   const stored = await threadsOf(docId);
   assert.equal(stored.length, 1);
-  assert.deepEqual(stored[0].comments[0].author, { name: "Carol", kind: "human" });
+  assert.deepEqual(stored[0].comments[0].author, { name: "carol", kind: "human" });
   assert.equal(stored[0].anchor.exact, quote);
   assert.equal(stored[0].anchor.prefix.length > 0 && stored[0].anchor.suffix.length > 0, true);
   assert.equal(stored[0].anchor.section, "risk");
@@ -1013,25 +1006,6 @@ test("a card is one quiet row of actions, open cards say open, and the resolved 
   await shoot(tab, "margin-resolved-expanded");
   assert.ok(threadId);
   await owner.close();
-});
-
-test("the display-name prompt can be cancelled, and the typed reply comes back", { timeout: 120_000 }, async () => {
-  const docId = await publish("Names", REPORT);
-  await agentThread(docId, { exact: "Staffing is unchanged" }, "Is that deliberate?");
-  const context = await newContext(DAN, { signedInTo: docId });
-  const tab = await context.newPage();
-  await tab.goto(docUrl(docId));
-  const frame = await until("the comments frame", () => commentsFrame(tab, docId));
-  const reply = frame.getByRole("textbox", { name: "Reply…" });
-  await reply.fill("Yes, on purpose.");
-  await frame.getByRole("button", { name: "Post" }).click();
-  await frame.getByRole("textbox", { name: "Your name" }).waitFor();
-  await shoot(tab, "margin-name-prompt");
-  await frame.getByRole("button", { name: "Cancel" }).click();
-  await frame.getByRole("textbox", { name: "Reply…" }).waitFor();
-  assert.equal(await frame.getByRole("textbox", { name: "Reply…" }).inputValue(), "Yes, on purpose.");
-  assert.equal(await frame.getByRole("textbox", { name: "Your name" }).count(), 0);
-  await context.close();
 });
 
 test("the phone sheet fits its card, keeps the passage in view, and a touch on the page keeps a draft", { timeout: 180_000 }, async () => {
