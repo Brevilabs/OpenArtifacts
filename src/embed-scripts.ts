@@ -28,7 +28,10 @@ import { PAGE_COMMENTS_SCRIPT } from "./comments-scripts.js";
  * - The frame is created on the first sign of **intent**: the pointer entering
  *   Share, Share taking focus, or the click itself. It is built hidden, so the
  *   click usually finds it loaded, and a page view with no pointer or focus on
- *   Share costs no frame request. It is then hidden and shown, **never
+ *   Share costs no frame request. Hidden is `visibility: hidden`, not
+ *   `display: none`: the frame is laid out in place, at its width, so one that
+ *   reports its size has done so before it is first shown, while it can be
+ *   neither seen, clicked nor tabbed into. It is then hidden and shown, **never
  *   reloaded**. A mode switch made inside it can therefore not re-run the
  *   frame's `frame-ancestors` check against the page it is on.
  * - The popover lives in a closed shadow root, so author CSS such as
@@ -42,19 +45,25 @@ import { PAGE_COMMENTS_SCRIPT } from "./comments-scripts.js";
  *   plain `target="_blank"` link the design requires.
  * - Messages are accepted only from that iframe's window and the API origin,
  *   and carry no credential in either direction.
- * - The popover is **one fixed height** for every viewer (320 px, less on a
- *   short viewport) and the frame scrolls inside it. 320 is the tallest form of
- *   the owner view with nobody added, plus a small margin: measured in Chrome at
- *   the popover's 360 px width, a free owner's plan line and refusal after a
- *   failed switch, with their Upgrade links, is 309 px (public and private 307,
- *   the plan line alone 259). So an owner who has added nobody sees everything
- *   without a scrollbar, and a list of people scrolls. A change to the owner
- *   view or `FRAME_CSS` that makes it taller fails the browser test that holds
- *   this. The frame never reports its size: on a public document any page on
- *   `openartifacts.site` can embed the same frame for any document it knows,
- *   and the height of what the frame draws (owner controls, a list of people, or
- *   just Copy link) would tell that page, with no click, whether its visitor
- *   manages the document.
+ * - **Height.** On the shared serving origin (`openartifacts.site`, a public
+ *   document's page) the popover is **one fixed height** for every viewer
+ *   (320 px, less on a short viewport) and the frame scrolls inside it. 320 is
+ *   the tallest form of the owner view with nobody added, plus a small margin:
+ *   measured in Chrome at the popover's 360 px width, a free owner's plan line
+ *   and refusal after a failed switch, with their Upgrade links, is 309 px. So
+ *   an owner who has added nobody sees everything without a scrollbar, and a
+ *   list of people scrolls. A change to the owner view or `FRAME_CSS` that
+ *   makes it taller fails the browser test that holds this. There the frame
+ *   never reports its size: any page on that origin can embed the same frame
+ *   for any document it knows, and the height of what the frame draws (owner
+ *   controls, a list of people, or just Copy link) would tell that page, with
+ *   no click, whether its visitor manages the document.
+ *   On a private document's page (its publisher's own `{code}.openartifacts.site`)
+ *   the frame reports the height of its content (`size`), and the popover takes
+ *   it, up to 720 px and the viewport below the bar less 8 px; past that the
+ *   frame scrolls inside it as above. Until the first report it is the fixed
+ *   height. Which frames report, and why that tells no page anything it may not
+ *   know, is `FRAME_SCRIPT`'s.
  *
  * The URL it is served from is permanent: pinned `/v{n}` pages carry the tag for
  * a year. A fix to this script reaches them by the route's short cache, not by a
@@ -82,6 +91,8 @@ export const PAGE_SCRIPT = String.raw`(() => {
   link.setAttribute("aria-haspopup", "dialog");
   link.setAttribute("aria-expanded", "false");
   let host = null, frame = null, fallback = null, timer = 0, ready = false, open = false;
+  // The height of the frame's content, once it has said: only a frame on a private document's own origin does.
+  let size = 0;
   // Set by the comment half: the owner just clicked in the popover (added a person, changed a role, or closed it).
   let commentsSwitched = null;
   // The layout viewport, which a classic scrollbar narrows (innerWidth and 100vw
@@ -102,12 +113,13 @@ export const PAGE_SCRIPT = String.raw`(() => {
     host.style.width = width + "px";
     host.style.top = top + "px";
     host.style.left = Math.round(Math.max(8, Math.min(box.right - width, view.clientWidth - width - 8))) + "px";
-    host.style.height = Math.max(120, Math.min(320, view.clientHeight - top - 8)) + "px";
+    const room = Math.max(120, view.clientHeight - top - 8);
+    host.style.height = (size > 0 ? Math.min(size, 720, room) : Math.min(320, room)) + "px";
   };
   const build = () => {
     host = document.createElement("div");
     host.className = "openartifacts-share-popover";
-    host.setAttribute("style", "all:initial;position:fixed;z-index:2147483647;display:none;box-sizing:border-box;direction:ltr;border-radius:14px;background:#0d0f14;box-shadow:0 12px 32px rgba(0,0,0,.35),0 2px 6px rgba(0,0,0,.25),0 0 0 1px rgba(255,255,255,.14);overflow:hidden");
+    host.setAttribute("style", "all:initial;position:fixed;z-index:2147483647;display:block;visibility:hidden;box-sizing:border-box;direction:ltr;border-radius:14px;background:#0d0f14;box-shadow:0 12px 32px rgba(0,0,0,.35),0 2px 6px rgba(0,0,0,.25),0 0 0 1px rgba(255,255,255,.14);overflow:hidden");
     const root = host.attachShadow ? host.attachShadow({ mode: "closed" }) : host;
     frame = document.createElement("iframe");
     frame.title = "Share";
@@ -122,12 +134,13 @@ export const PAGE_SCRIPT = String.raw`(() => {
     fallback.setAttribute("style", "display:none;padding:16px;font:14px/1.4 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#f6ae52;text-underline-offset:3px");
     root.append(frame, fallback);
     document.documentElement.append(host);
+    place();
   };
   const show = () => {
     if (host === null) build();
     open = true;
     place();
-    host.style.display = "block";
+    host.style.visibility = "visible";
     link.setAttribute("aria-expanded", "true");
     if (ready) frame.focus();
     else timer = window.setTimeout(() => { if (!ready) { frame.style.display = "none"; fallback.style.display = "block"; } }, 4000);
@@ -136,7 +149,7 @@ export const PAGE_SCRIPT = String.raw`(() => {
     if (!open) return;
     open = false;
     window.clearTimeout(timer);
-    host.style.display = "none";
+    host.style.visibility = "hidden";
     link.setAttribute("aria-expanded", "false");
     if (refocus) link.focus();
   };
@@ -160,12 +173,15 @@ export const PAGE_SCRIPT = String.raw`(() => {
       fallback.style.display = "none";
       frame.style.display = "block";
       if (open) frame.focus();
+    } else if (data.event === "size" && typeof data.height === "number" && data.height > 0) {
+      size = Math.ceil(data.height);
+      place();
     } else if (data.event === "close") hide(true);
     else if (data.event === "people" && commentsSwitched) commentsSwitched();
   });
   document.addEventListener("keydown", (event) => { if (open && event.key === "Escape") hide(true); }, true);
   document.addEventListener("pointerdown", (event) => { if (open && event.target !== host && !link.contains(event.target)) hide(false); }, true);
-  window.addEventListener("resize", () => { if (open) place(); });
+  window.addEventListener("resize", () => { if (host !== null) place(); });
 ` +
   PAGE_COMMENTS_SCRIPT +
   "})();\n";
@@ -208,8 +224,9 @@ export const POPUP_DONE_SCRIPT = String.raw`(function () {
 
 /**
  * The popover frame's stylesheet (`src/embed.ts` puts it in the shell). The
- * frame fills the popover's fixed height, whatever it shows: nothing here sizes
- * the popover to its content.
+ * frame fills the popover, whatever it shows. Only a frame that reports its size
+ * (`body.fit`, see `FRAME_SCRIPT`) lets `main` take its content's height instead
+ * of the room left, so what it measures is the content.
  *
  * **Layout.** Two parts, the same in every view. The `header` is the row every
  * view starts with: the link field, **Copy link** and the × close button. It is
@@ -227,12 +244,14 @@ export const POPUP_DONE_SCRIPT = String.raw`(function () {
  * assistive technology, because with a worded button the id alone would not fit
  * at the popover's 360 px width, let alone 304.
  *
- * **Height.** One for every viewer (see `PAGE_SCRIPT`), set so that the owner
- * view with nobody added, in each of its forms (public, private, a free
- * owner's plan line, the refusal after a failed switch), shows whole without a
- * scrollbar; a list of people scrolls. The short views (signed out, a reader,
- * not found) pin `.bottom` (the account line and the hint) to the floor above a
- * divider, so the room between reads as layout.
+ * **Height.** On the shared serving origin, one for every viewer (see
+ * `PAGE_SCRIPT`), set so that the owner view with nobody added, in each of its
+ * forms (public, private, a free owner's plan line, the refusal after a failed
+ * switch), shows whole without a scrollbar; a list of people scrolls. The short
+ * views (signed out, a reader, not found) pin `.bottom` (the account line and
+ * the hint) to the floor above a divider, so the room between reads as layout.
+ * On a private document's own origin the popover is its content's height, up
+ * to a maximum, and `main` scrolls past it.
  *
  * **Loading.** `main` is `hidden` in the shell until the script has chosen the
  * first view, so a token holder's frame never paints the signed-out markup.
@@ -258,7 +277,7 @@ body::before{content:"";position:fixed;top:0;left:0;right:0;height:1px;backgroun
 header{flex:none;position:relative;z-index:2;display:flex;align-items:center;gap:8px;padding:16px 12px 12px 16px;background:#0d0f14}
 body.scrolled header{box-shadow:0 1px 0 #20242c,0 8px 10px -6px rgba(0,0,0,.6)}
 main{flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column;padding:4px 16px 16px;scrollbar-color:#2c313b transparent;scrollbar-width:thin}
-main[hidden]{display:none}
+main[hidden]{display:none}body.fit main{flex:0 1 auto}
 main>*{flex-shrink:0}main>:first-child{margin-top:0}
 .fade{position:fixed;left:0;right:0;bottom:0;z-index:1;height:28px;background:linear-gradient(to bottom,rgba(13,15,20,0),#0d0f14 85%);pointer-events:none;opacity:0}
 body.more .fade{opacity:1}
@@ -321,19 +340,41 @@ i.sk{display:inline-block;height:10px;border-radius:5px;vertical-align:middle}
  * or partitioned, so the credential is a bearer header on same-origin `fetch`
  * with `credentials: "omit"`, accepted only by `/embed/api/docs/{docId}/access…`.
  *
- * **What it tells the page around it.** Only `ready`, once, before it touches
- * storage, `close`, only from a user action in the frame (the × button or
- * Escape), and `people`, only after the owner's own click inside the owner view
+ * **What it tells the page around it.** `ready`, once, before it touches
+ * storage; `close`, only from a user action in the frame (the × button or
+ * Escape); `people`, only after the owner's own click inside the owner view
  * (an add, a role change, or × / Escape, the last only where the plan grants Can
- * comment): it says this visitor is the owner, so it
- * is never sent when a view is drawn. Nothing the frame sends, and nothing it does that an embedding page
- * can observe (a size change, a focus move), depends on what is in storage. On a
- * public document any page on `openartifacts.site` can embed this frame for any
- * document it knows, and the stored token lives in the partition that page
- * shares, so anything token-dependent would tell it, with no click, whether its
- * visitor manages that document. So there is no size report (the popover is one
- * fixed height), no `ResizeObserver`, no `autofocus`, and no `focus()` except
+ * comment): it says this visitor is the owner, so it is never sent when a view
+ * is drawn; and `size`, only where the frame `fits` (below). Embedded by the
+ * shared serving origin, nothing the frame sends, and nothing it does that an
+ * embedding page can observe (a size change, a focus move), depends on what is
+ * in storage. Any page on `openartifacts.site` can embed this frame for any
+ * public document it knows, and the stored token lives in the partition that
+ * page shares, so anything token-dependent would tell it, with no click,
+ * whether its visitor manages that document. So there it sends no size, and
+ * nowhere is there a `ResizeObserver`, an `autofocus`, or a `focus()` except
  * inside a handler for a user action.
+ *
+ * **Where it reports its size.** `data-origin`, the only target of its
+ * `postMessage`, is the embedder's origin only when that equals the document's
+ * serving origin as the frame loads, and `frame-ancestors` then admits that
+ * origin alone (`frameContext`, `src/frame-shell.ts`). For a public document
+ * that is the shared origin; for an invited-only one it is its publisher's
+ * `{code}.openartifacts.site`, which serves only that publisher's documents and
+ * so runs only that publisher's scripts (`src/private.ts`). So a frame `fits`
+ * (an origin is set, and it is not the shared one) only when every page around
+ * it is that publisher's own. What its height says (whether the visitor holds a
+ * token for the document, and how much the view holds) tells those scripts
+ * nothing their author cannot already know: the only visitors that origin
+ * admits are the publisher and the people the publisher invited by address.
+ * Then `main` takes its content's height (`body.fit`) and the frame posts
+ * `size`, the row above `main` plus all of `main`, whenever that changes (a
+ * view drawn, a line added, a resize). The rule is fixed when the frame loads,
+ * because the frame is never reloaded (`PAGE_SCRIPT`): one loaded on the shared
+ * origin stays silent after the document goes private, and one loaded on the
+ * code origin keeps reporting after it goes public, still to the publisher's
+ * own page. A fresh load for a public document under a code origin is refused by
+ * `frame-ancestors`.
  *
  * **Its first view** is chosen synchronously, before `main` (hidden in the
  * shell) is shown: no stored token is the signed-out view, a stored token is the
@@ -363,17 +404,6 @@ export const FRAME_SCRIPT = String.raw`(() => {
   // No id on <main>: it scrolls (overflow:auto), and a scroll container is
   // focusable, but only when its content overflows, which differs by view.
   const main = document.querySelector("main");
-  // The row above main gets its divider only while content is under it, and the
-  // fade at the foot shows only while there is more below. Every view is drawn
-  // into main, so its content changing, a scroll and a resize (the popover shown)
-  // are all that move either edge.
-  const edges = () => {
-    document.body.classList.toggle("scrolled", main.scrollTop > 0);
-    document.body.classList.toggle("more", main.scrollTop + main.clientHeight < main.scrollHeight - 1);
-  };
-  main.addEventListener("scroll", edges);
-  window.addEventListener("resize", edges);
-  new MutationObserver(edges).observe(main, { childList: true, subtree: true, characterData: true });
   const doc = main.dataset.doc;
   const link = main.dataset.link;
   const parentOrigin = main.dataset.origin;
@@ -381,15 +411,36 @@ export const FRAME_SCRIPT = String.raw`(() => {
   // is public is one any page on that origin could have embedded.
   let publicOrigin = "";
   try { publicOrigin = new URL(link).origin; } catch (error) {}
+  // Embedded by a private document's own origin: only its publisher's pages are around it, so it may
+  // report its size (see the header comment). Decided once, as the frame loads.
+  const fits = parentOrigin !== "" && parentOrigin !== publicOrigin && window.parent !== window;
   const hint = main.dataset.hint;
   const KEY = "openartifacts:share-token:" + doc;
   const SIGNIN_WINDOW_MS = 10 * 60 * 1000;
   const SENTENCE = "Only the owner can change who can open this.";
 
-  const post = (event) => {
-    if (parentOrigin && window.parent !== window) window.parent.postMessage({ type: "openartifacts:share", event: event }, parentOrigin);
+  const post = (event, fields) => {
+    if (parentOrigin && window.parent !== window) window.parent.postMessage(Object.assign({ type: "openartifacts:share", event: event }, fields), parentOrigin);
   };
   post("ready");
+
+  // The row above main gets its divider only while content is under it, and the
+  // fade at the foot shows only while there is more below. Every view is drawn
+  // into main, so its content changing, a scroll and a resize (the popover shown)
+  // are all that move either edge, or the content height that a frame which fits reports.
+  const header = document.querySelector("header");
+  let reported = 0;
+  if (fits) document.body.classList.add("fit");
+  const edges = () => {
+    document.body.classList.toggle("scrolled", main.scrollTop > 0);
+    document.body.classList.toggle("more", main.scrollTop + main.clientHeight < main.scrollHeight - 1);
+    if (!fits) return;
+    const height = Math.ceil(header.getBoundingClientRect().height + main.scrollHeight);
+    if (height !== reported) { reported = height; post("size", { height: height }); }
+  };
+  main.addEventListener("scroll", edges);
+  window.addEventListener("resize", edges);
+  new MutationObserver(edges).observe(main, { childList: true, subtree: true, characterData: true });
 
   const node = (tag, attrs, kids) => {
     const element = document.createElement(tag);
@@ -483,8 +534,8 @@ export const FRAME_SCRIPT = String.raw`(() => {
   const guestMessage = document.getElementById("oa-msg");
   // The row above main (the link, Copy link and ×) is the shell's, the same in
   // every view, so it is wired once and never redrawn.
-  closeButton(document.querySelector("header .x"));
-  copyButton(document.querySelector("header .primary"));
+  closeButton(header.querySelector(".x"));
+  copyButton(header.querySelector(".primary"));
 
   let prepared = null;
   let opened = null;

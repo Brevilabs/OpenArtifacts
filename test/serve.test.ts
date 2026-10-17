@@ -1921,12 +1921,16 @@ describe("an invited-only document", () => {
       expect(new Set(refused).size).toBe(1);
       expect(refused[0]).toContain('data-origin=""');
 
-      // The script is the constant, sends exactly one kind of message call, and reports no size.
+      // The script is the constant, sends exactly one kind of message call, and reports a size from one place,
+      // only where it fits: embedded by an origin that is set and is not the shared one. What a page on either
+      // origin sees is held by test/share-popover.browser.mjs.
       const html = await (await getFrom(frameUrl(doc.docId, doc.host), {}, OPEN)).text();
       expect(inlineScript(html)).toBe(FRAME_SCRIPT);
       expect(occurrences(FRAME_SCRIPT, "postMessage(")).toBe(1);
       expect(FRAME_SCRIPT).not.toContain("ResizeObserver");
-      expect(FRAME_SCRIPT).not.toContain('"size"');
+      expect(occurrences(FRAME_SCRIPT, '"size"')).toBe(1);
+      expect(FRAME_SCRIPT).toContain('const fits = parentOrigin !== "" && parentOrigin !== publicOrigin && window.parent !== window;');
+      expect(FRAME_SCRIPT).toContain('if (!fits) return;\n    const height = ');
       expect(FRAME_SCRIPT).not.toContain("autofocus");
       // A focusable element carries no id, in the shell or in the views the script draws.
       // <main> counts: it scrolls, and a scroller takes focus when its content overflows.
