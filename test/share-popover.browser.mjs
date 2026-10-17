@@ -1688,6 +1688,72 @@ test("a public page's popover keeps one fixed height for every viewer, and its f
   await context.close();
 });
 
+test("on a private page only the owner view reports a size: an invitee, signed in to Share or not, gets the fixed height and no size", { timeout: 300_000 }, async () => {
+  // Two invitees whose "Signed in as …" line wraps differently: a size from the reader view would say which one is looking.
+  const LONG_ACCOUNT = accountId("d");
+  const long = "a.very.long.invitee.address.for.wrapping@subdomain.example.com";
+  await db.prepare("INSERT INTO accounts (id, email, plan, created_at) VALUES (?, ?, 'free', ?)").bind(LONG_ACCOUNT, long, Date.now()).run();
+  const Y = await publish("Private invitees", "<p>Shared.</p>", "private-docs");
+  for (const email of ["stranger@example.com", long]) {
+    assert.equal((await api(`/api/v1/docs/${Y}/access/people/${encodeURIComponent(email)}`, { method: "PUT", body: "{}" })).status, 200);
+  }
+  const events = (page) => page.evaluate(() => window.__shareEvents.map((data) => data.event + (data.event === "size" ? `:${data.height}` : "")));
+  // The × posts close, which reaches the page after every message the frame posted before it, so the
+  // events seen then are all the frame said while the view was up. Pressed from the keyboard, as is Sign in
+  // below: a click sent the moment the popover is shown can reach Chrome before the frame is hit-testable,
+  // and land on the popover around it instead.
+  const heard = async (page, frame) => {
+    await frame.getByRole("button", { name: "Close" }).press("Enter");
+    await until("close", async () => (await events(page)).includes("close"));
+    return events(page);
+  };
+  const fixed = async (page, label) => assert.equal((await page.locator(".openartifacts-share-popover").boundingBox()).height, 320, label);
+
+  for (const [email, account] of [["stranger@example.com", OTHER_ACCOUNT], [long, LONG_ACCOUNT]]) {
+    const context = await newContext(account, 900);
+    await recordShareEvents(context);
+
+    // Signed out of Share.
+    const page = await context.newPage();
+    await page.goto(docUrl(Y));
+    assert.notEqual(new URL(page.url()).host, SERVING, "a private page is served on its publisher's code host");
+    await page.locator("a[data-openartifacts-share]").click();
+    const frame = await until("the Share frame", () => frameOf(page, Y));
+    await frame.getByRole("button", { name: "Sign in to manage" }).waitFor();
+    await fixed(page, `${email}, signed out`);
+    assert.deepEqual(await heard(page, frame), ["ready", "close"], `${email}, signed out`);
+
+    // Signed in: the reader view, drawn after the skeleton.
+    await page.locator("a[data-openartifacts-share]").click();
+    await Promise.all([context.waitForEvent("page"), frame.getByRole("button", { name: "Sign in to manage" }).press("Enter")]);
+    await frame.getByText(`Signed in as ${email}.`).waitFor();
+    await fixed(page, `${email}, the reader view`);
+    assert.deepEqual(await heard(page, frame), ["ready", "close", "close"], `${email}, the reader view`);
+
+    // A later page view with the token stored: the skeleton, then the reader view.
+    const again = await context.newPage();
+    await again.goto(docUrl(Y));
+    await again.locator("a[data-openartifacts-share]").click();
+    const stored = await until("the Share frame", () => frameOf(again, Y));
+    await stored.getByText(`Signed in as ${email}.`).waitFor();
+    await fixed(again, `${email}, the reader view from a stored token`);
+    assert.deepEqual(await heard(again, stored), ["ready", "close"], `${email}, the reader view from a stored token`);
+    await context.close();
+  }
+
+  // The owner, on the same page, gets the popover fitted to the owner view.
+  const context = await newContext(OWNER_ACCOUNT, 900);
+  await recordShareEvents(context);
+  const { page, frame } = await ownerFrame(context, Y);
+  const state = await until("the popover to fit the owner view", async () => {
+    const now = await fitState(page, frame);
+    return Math.abs(now.height - now.content) <= 1 ? now : null;
+  });
+  assert.notEqual(state.height, 320);
+  assert.ok((await events(page)).some((event) => event.startsWith("size:")), "the owner view reports its size");
+  await context.close();
+});
+
 /** Hold every write to `docId`'s access for `ms`, and count them by method and path. */
 const slowWrites = async (page, docId, ms = 1500) => {
   const writes = [];

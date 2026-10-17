@@ -59,11 +59,11 @@ import { PAGE_COMMENTS_SCRIPT } from "./comments-scripts.js";
  *   controls, a list of people, or just Copy link) would tell that page, with
  *   no click, whether its visitor manages the document.
  *   On a private document's page (its publisher's own `{code}.openartifacts.site`)
- *   the frame reports the height of its content (`size`), and the popover takes
- *   it, up to 720 px and the viewport below the bar less 8 px; past that the
- *   frame scrolls inside it as above. Until the first report it is the fixed
- *   height. Which frames report, and why that tells no page anything it may not
- *   know, is `FRAME_SCRIPT`'s.
+ *   the owner view reports the height of its content (`size`), and the popover
+ *   takes it, up to 720 px and the viewport below the bar less 8 px; past that
+ *   the frame scrolls inside it as above. Every other view, and the time before
+ *   the first report, is the fixed height; `size` 0 says so. Which views report,
+ *   and why that tells no page anything it may not know, is `FRAME_SCRIPT`'s.
  *
  * The URL it is served from is permanent: pinned `/v{n}` pages carry the tag for
  * a year. A fix to this script reaches them by the route's short cache, not by a
@@ -91,7 +91,8 @@ export const PAGE_SCRIPT = String.raw`(() => {
   link.setAttribute("aria-haspopup", "dialog");
   link.setAttribute("aria-expanded", "false");
   let host = null, frame = null, fallback = null, timer = 0, ready = false, open = false;
-  // The height of the frame's content, once it has said: only a frame on a private document's own origin does.
+  // The height of the frame's content, once it has said: only the owner view, on a private document's own origin,
+  // does. 0 is the fixed height, which the frame says when it leaves the owner view.
   let size = 0;
   // Set by the comment half: the owner just clicked in the popover (added a person, changed a role, or closed it).
   let commentsSwitched = null;
@@ -173,7 +174,7 @@ export const PAGE_SCRIPT = String.raw`(() => {
       fallback.style.display = "none";
       frame.style.display = "block";
       if (open) frame.focus();
-    } else if (data.event === "size" && typeof data.height === "number" && data.height > 0) {
+    } else if (data.event === "size" && typeof data.height === "number" && data.height >= 0) {
       size = Math.ceil(data.height);
       place();
     } else if (data.event === "close") hide(true);
@@ -224,9 +225,9 @@ export const POPUP_DONE_SCRIPT = String.raw`(function () {
 
 /**
  * The popover frame's stylesheet (`src/embed.ts` puts it in the shell). The
- * frame fills the popover, whatever it shows. Only a frame that reports its size
- * (`body.fit`, see `FRAME_SCRIPT`) lets `main` take its content's height instead
- * of the room left, so what it measures is the content.
+ * frame fills the popover, whatever it shows. Only the owner view of a frame that
+ * reports its size (`body.fit`, see `FRAME_SCRIPT`) lets `main` take its
+ * content's height instead of the room left, so what it measures is the content.
  *
  * **Layout.** Two parts, the same in every view. The `header` is the row every
  * view starts with: the link field, **Copy link** and the × close button. It is
@@ -250,8 +251,9 @@ export const POPUP_DONE_SCRIPT = String.raw`(function () {
  * switch), shows whole without a scrollbar; a list of people scrolls. The short
  * views (signed out, a reader, not found) pin `.bottom` (the account line and
  * the hint) to the floor above a divider, so the room between reads as layout.
- * On a private document's own origin the popover is its content's height, up
- * to a maximum, and `main` scrolls past it.
+ * On a private document's own origin the owner view's popover is its content's
+ * height, up to a maximum, and `main` scrolls past it; every other view keeps
+ * the fixed height and its pinned `.bottom`.
  *
  * **Loading.** `main` is `hidden` in the shell until the script has chosen the
  * first view, so a token holder's frame never paints the signed-out markup.
@@ -354,7 +356,7 @@ i.sk{display:inline-block;height:10px;border-radius:5px;vertical-align:middle}
  * Escape); `people`, only after the owner's own click inside the owner view
  * (an add, a role change, or × / Escape, the last only where the plan grants Can
  * comment): it says this visitor is the owner, so it is never sent when a view
- * is drawn; and `size`, only where the frame `fits` (below). Embedded by the
+ * is drawn; and `size`, only from the owner view where the frame `fits` (below). Embedded by the
  * shared serving origin, nothing the frame sends, and nothing it does that an
  * embedding page can observe (a size change, a focus move), depends on what is
  * in storage. Any page on `openartifacts.site` can embed this frame for any
@@ -364,26 +366,32 @@ i.sk{display:inline-block;height:10px;border-radius:5px;vertical-align:middle}
  * nowhere is there a `ResizeObserver`, an `autofocus`, or a `focus()` except
  * inside a handler for a user action.
  *
- * **Where it reports its size.** `data-origin`, the only target of its
- * `postMessage`, is the embedder's origin only when that equals the document's
- * serving origin as the frame loads, and `frame-ancestors` then admits that
- * origin alone (`frameContext`, `src/frame-shell.ts`). For a public document
- * that is the shared origin; for an invited-only one it is its publisher's
+ * **Where it reports its size.** Only from the owner view, and only in a frame
+ * that `fits`. `data-origin`, the only target of its `postMessage`, is the
+ * embedder's origin only when that equals the document's serving origin as the
+ * frame loads, and `frame-ancestors` then admits that origin alone
+ * (`frameContext`, `src/frame-shell.ts`). For a public document that is the
+ * shared origin; for an invited-only one it is its publisher's
  * `{code}.openartifacts.site`, which serves only that publisher's documents and
  * so runs only that publisher's scripts (`src/private.ts`). So a frame `fits`
  * (an origin is set, and it is not the shared one) only when every page around
- * it is that publisher's own. What its height says (whether the visitor holds a
- * token for the document, and how much the view holds) tells those scripts
- * nothing their author cannot already know: the only visitors that origin
- * admits are the publisher and the people the publisher invited by address.
- * Then `main` takes its content's height (`body.fit`) and the frame posts
- * `size`, the row above `main` plus all of `main`, whenever that changes (a
- * view drawn, a line added, a resize). The rule is fixed when the frame loads,
+ * it is that publisher's own. The owner view's height tells those scripts
+ * nothing their author cannot already know: the visitor is the publisher. No
+ * other view reports, there or anywhere: signed out, a reader, not found and the
+ * skeleton keep the one fixed height and post nothing. The page is the
+ * publisher's and its visitor may be an invitee, and the reader view's "Signed
+ * in as {email}." wraps by address, so its height would tell the publisher which
+ * invitee is looking, and any report from a view but the signed-out one would
+ * tell that the visitor has signed in to Share. While the owner view is drawn,
+ * `main` takes its content's height (`body.fit`) and the frame posts `size`, the
+ * row above `main` plus all of `main`, whenever that changes (a line added, a
+ * resize); leaving it posts `size` 0, the fixed height, which follows only from
+ * the owner's own view. Whether it `fits` is fixed when the frame loads,
  * because the frame is never reloaded (`PAGE_SCRIPT`): one loaded on the shared
  * origin stays silent after the document goes private, and one loaded on the
- * code origin keeps reporting after it goes public, still to the publisher's
- * own page. A fresh load for a public document under a code origin is refused by
- * `frame-ancestors`.
+ * code origin keeps reporting its owner view after the document goes public,
+ * still to the publisher's own page. A fresh load for a public document under a
+ * code origin is refused by `frame-ancestors`.
  *
  * **Its first view** is chosen synchronously, before `main` (hidden in the
  * shell) is shown: no stored token is the signed-out view, a stored token is the
@@ -420,8 +428,8 @@ export const FRAME_SCRIPT = String.raw`(() => {
   // is public is one any page on that origin could have embedded.
   let publicOrigin = "";
   try { publicOrigin = new URL(link).origin; } catch (error) {}
-  // Embedded by a private document's own origin: only its publisher's pages are around it, so it may
-  // report its size (see the header comment). Decided once, as the frame loads.
+  // Embedded by a private document's own origin: only its publisher's pages are around it, so its owner
+  // view may report its size (see the header comment). Decided once, as the frame loads.
   const fits = parentOrigin !== "" && parentOrigin !== publicOrigin && window.parent !== window;
   const hint = main.dataset.hint;
   const KEY = "openartifacts:share-token:" + doc;
@@ -436,20 +444,28 @@ export const FRAME_SCRIPT = String.raw`(() => {
   // The row above main gets its divider only while content is under it, and the
   // fade at the foot shows only while there is more below. Every view is drawn
   // into main, so its content changing, a scroll and a resize (the popover shown)
-  // are all that move either edge, or the content height that a frame which fits reports.
+  // are all that move either edge, or the height the owner view reports.
   const header = document.querySelector("header");
+  // Whether the owner view is drawn: only it reports a size, and only where the frame fits.
+  let ownerDrawn = false;
+  // The last height posted; 0 is the fixed height, which every other view has and posts nothing for.
   let reported = 0;
-  if (fits) document.body.classList.add("fit");
   const edges = () => {
     document.body.classList.toggle("scrolled", main.scrollTop > 0);
     document.body.classList.toggle("more", main.scrollTop + main.clientHeight < main.scrollHeight - 1);
-    if (!fits) return;
-    const height = Math.ceil(header.getBoundingClientRect().height + main.scrollHeight);
+    const height = fits && ownerDrawn ? Math.ceil(header.getBoundingClientRect().height + main.scrollHeight) : 0;
+    // Leaving the owner view posts 0, so the popover goes back to the fixed height.
     if (height !== reported) { reported = height; post("size", { height: height }); }
   };
   main.addEventListener("scroll", edges);
   window.addEventListener("resize", edges);
   new MutationObserver(edges).observe(main, { childList: true, subtree: true, characterData: true });
+  // Every view is drawn through here, so the one flag that lets a view report is set with it.
+  const draw = (kids, owner) => {
+    ownerDrawn = owner === true;
+    document.body.classList.toggle("fit", fits && ownerDrawn);
+    main.replaceChildren(...kids);
+  };
 
   const node = (tag, attrs, kids) => {
     const element = document.createElement(tag);
@@ -572,7 +588,7 @@ export const FRAME_SCRIPT = String.raw`(() => {
   };
 
   const showGuest = (text, waiting) => {
-    main.replaceChildren(...guest);
+    draw(guest);
     // The button stays while waiting: the popup may have been closed, the done page
     // reached after the handoff row expired, or an overlapping sign-in may have
     // failed at the login binding, and pressing it again is the way out of each.
@@ -680,23 +696,23 @@ export const FRAME_SCRIPT = String.raw`(() => {
   const hintLine = () => node("p", { class: "muted hint" }, [hint]);
 
   const showReader = (body) => {
-    main.replaceChildren(muted([SENTENCE]), bottom([anotherAccount("Signed in as " + body.account + ".", true), hintLine()]));
+    draw([muted([SENTENCE]), bottom([anotherAccount("Signed in as " + body.account + ".", true), hintLine()])]);
   };
   const showNone = () => {
-    main.replaceChildren(muted([SENTENCE]), bottom([anotherAccount("Is this your page? "), hintLine()]));
+    draw([muted([SENTENCE]), bottom([anotherAccount("Is this your page? "), hintLine()])]);
   };
   // While a stored token's read is out: the owner view's places, held by muted
   // blocks, under the real row. Only the answer replaces it (owner, reader, not
   // found, or the signed-out view after a 401), never the signed-out view first.
   const showSkeleton = () => {
     const bar = (width) => node("i", { class: "sk", style: "width:" + width });
-    main.replaceChildren(
+    draw([
       node("div", { class: "seg sk" }),
       node("div", { class: "row" }, [node("div", { class: "sk sk-in" }), node("div", { class: "sk sk-add" })]),
       node("p", { class: "help" }, [bar("85%")]),
       node("h2", {}, [bar("96px")]),
       node("ul", {}, [node("li", {}, [node("span", {}, [bar("32px"), node("small", {}, [bar("48px")])])])]),
-    );
+    ]);
   };
 
   const fail = (target, response, body, what) => {
@@ -733,7 +749,7 @@ export const FRAME_SCRIPT = String.raw`(() => {
   const limited = (body) => onPublicOrigin && switched && body.linkAccess === "invited";
   const showMoved = () => {
     latest = null;
-    main.replaceChildren(muted(["Open Share from the document’s own page to manage who can open it."]));
+    draw([muted(["Open Share from the document’s own page to manage who can open it."])]);
   };
   // A view drawn while the document was public may be stale, and a click on it
   // is a write. Ask first, and write only on a clear answer: any failure to read
@@ -977,7 +993,7 @@ export const FRAME_SCRIPT = String.raw`(() => {
     // Approve, Decline and Remove are one click on a private document, and this
     // frame is on the public origin. See exposed().
     if (narrow && listed) kids.push(muted(["To remove people or answer requests, ", node("a", { href: location.origin + "/share/" + doc, target: "_blank", rel: "noopener noreferrer" }, ["open the share page"]), "."]));
-    main.replaceChildren(...kids);
+    draw(kids, true);
   };
 
   const refresh = async () => {
