@@ -754,7 +754,7 @@ test("10. a Free-plan owner cannot add anyone: the CLI prints the upgrade hint a
   const context = await newContext("free");
   const { tab, frame } = await ownerPopover(context, free);
   await frame.getByText(/Private pages and comments need a paid plan/).waitFor();
-  assert.equal(await frame.getByRole("heading", { name: "Add people" }).count(), 0);
+  assert.equal(await frame.getByPlaceholder("Emails, separated by commas").count(), 0);
   const access = await (await request("free", `/api/v1/docs/${free}/access`)).json();
   assert.deepEqual(access.roles, []);
   assert.equal("comments" in access, false);

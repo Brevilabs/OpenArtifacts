@@ -712,9 +712,9 @@ writes. `origin` is the page's own origin, which the script fills in.
 - *The frame reveals nothing to non-readers.* Anyone can load it with any id.
   Until a token shows the viewer can read the document, the body is the same for
   a public, an invited-only, an unknown and a deleted id once the id is replaced:
-  **Share**, "Only the owner can change who can open this.", **Copy link** for the
-  canonical address (built from the id, with no lookup) and "Is this your page?
-  **Sign in to manage**". No title, no mode, no list. The one thing that varies is
+  the canonical address (built from the id, with no lookup) with **Copy link**,
+  "Only the owner can change who can open this." and "Is this your page? **Sign in
+  to manage**". No title, no mode, no list. The one thing that varies is
   `data-origin`, which echoes the caller's own `origin` when it matches the
   document's serving origin. With a token, a non-reader gets what an unknown id
   gets, never `403`.

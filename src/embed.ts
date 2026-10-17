@@ -173,9 +173,8 @@ function frameScriptHash(): Promise<string> {
 }
 
 /**
- * The link glyph in the shell's Copy link, as the frame script draws it. Static
- * markup, so the no-token view needs no script to look right. Its size and
- * stroke come from the stylesheet (`FRAME_CSS`).
+ * The link glyph in the shell's Copy link, as the frame script draws it after
+ * "Copied". Its size and stroke come from the stylesheet (`FRAME_CSS`).
  */
 const LINK_ICON_SVG =
   '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>' +
@@ -186,10 +185,12 @@ const LINK_ICON_SVG =
  * frame, as the same shell for every document id.
  *
  * Until a token proves the viewer can read the document the body is the same
- * bytes for a public, an invited-only, an unknown and a deleted document:
- * `Share`, **Copy link** for the canonical address (built from the id, no
- * lookup) and **Sign in to manage**. No title, no mode, no list. Only the
- * document's title, from `/embed/api/…` after a token, ever follows. Which
+ * bytes for a public, an invited-only, an unknown and a deleted document: the
+ * row every view starts with (the canonical address, built from the id with no
+ * lookup, **Copy link** and ×), then "Only the owner can change who can open
+ * this." and **Sign in to manage**. No title, no mode, no list. `main` is
+ * `hidden` until the script has chosen the first view, so a frame holding a
+ * token paints its skeleton, never this signed-out view (`FRAME_CSS`). Which
  * origin may embed it is `frameContext`'s (`src/frame-shell.ts`).
  */
 async function shareFrame(request: Request, url: URL, env: Env): Promise<Response> {
@@ -210,12 +211,12 @@ async function shareFrame(request: Request, url: URL, env: Env): Promise<Respons
 <style>${FRAME_CSS}</style>
 </head>
 <body>
-<main data-doc="${escapeHtml(doc)}" data-link="${escapeHtml(link)}" data-origin="${origin === null ? "" : escapeHtml(origin)}" data-hint="${escapeHtml(COPILOT_HINT)}">
-<header><h1 id="oa-title">Share</h1><button type="button" aria-label="Close">×</button></header>
+<header><div class="field"><span>${escapeHtml(bareLink)}</span></div><button type="button" class="primary tall">${LINK_ICON_SVG}<span>Copy link</span></button><button type="button" class="x" aria-label="Close">×</button></header>
+<main data-doc="${escapeHtml(doc)}" data-link="${escapeHtml(link)}" data-origin="${origin === null ? "" : escapeHtml(origin)}" data-hint="${escapeHtml(COPILOT_HINT)}" hidden>
 <p class="muted">Only the owner can change who can open this.</p>
-<div class="foot"><div class="field"><span>${escapeHtml(bareLink)}</span></div><button type="button" class="primary tall">${LINK_ICON_SVG}<span>Copy link</span></button></div>
 <div class="bottom"><p id="oa-msg" class="err" role="alert"></p><p class="muted" id="oa-account">Is this your page? <button type="button" class="link" disabled>Sign in to manage</button></p><p class="muted hint">${escapeHtml(COPILOT_HINT)}</p></div>
 </main>
+<div class="fade" aria-hidden="true"></div>
 <script>${FRAME_SCRIPT}</script>
 </body>
 </html>`;
