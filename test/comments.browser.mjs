@@ -284,8 +284,8 @@ after(async () => {
  * frame's token for `signedInTo` (a document id) already in its storage, written
  * before the frame's own script runs, for tests that are not about signing in.
  */
-async function newContext(account, { viewport = { width: 1280, height: 800 }, signedInTo } = {}) {
-  const context = await browser.newContext({ ignoreHTTPSErrors: true, viewport });
+async function newContext(account, { viewport = { width: 1280, height: 800 }, signedInTo, ...options } = {}) {
+  const context = await browser.newContext({ ignoreHTTPSErrors: true, viewport, ...options });
   if (account) await context.addCookies([sessionCookie(account)]);
   if (signedInTo) {
     const value = JSON.stringify(frameToken(account, signedInTo));
@@ -1434,13 +1434,13 @@ test("on a phone, a reader who cannot comment on a thread-less page gets a sheet
   await context.close();
 });
 
-test("a signed-in Can-view reader is never offered Comment, not even before the frame answers", { timeout: 120_000 }, async () => {
+test("a signed-in Can-view reader on a phone is never offered Comment, not even before the frame answers", { timeout: 120_000 }, async () => {
   const docId = await publish("Can view", REPORT, { route: "private-docs" });
   // A card, so the frame has a reply box to replace with "You can view this page." once it knows.
   await agentThread(docId, { exact: "Closing remarks follow in the appendix" }, "A remark.");
   const response = await api(`/api/v1/docs/${docId}/access/people/bob%40example.com`, { method: "PUT", body: JSON.stringify({ role: "view" }) });
   assert.equal(response.status, 200, await response.clone().text());
-  const context = await newContext(BOB, { signedInTo: docId });
+  const context = await newContext(BOB, { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, signedInTo: docId });
   const tab = await context.newPage();
   // The frame's thread reads wait for the test's word, so the page has no viewer message yet when the reader selects. Held inside the frame rather than by `context.route`, which this harness does not use.
   await tab.addInitScript((api) => {
@@ -1465,6 +1465,7 @@ test("a signed-in Can-view reader is never offered Comment, not even before the 
   const frame = await until("the comments frame", () => commentsFrame(tab, docId));
   await openSidebar(tab);
   await frame.evaluate(() => window.__release());
+  await frame.locator("button.row").click();
   await frame.getByText("You can view this page.").waitFor();
   await select(tab, "The budget is on the next page");
   await tab.waitForTimeout(400);
@@ -2009,10 +2010,10 @@ test("on a phone the bar's button opens the list of open comments, and a row sho
   await context.close();
 });
 
-test("on a phone the Comment button sits below the selection, centred and 44px tall, and the composer has focus", { timeout: 180_000 }, async () => {
+test("on a phone Comment follows the selection and a tap keeps its passage even if the live selection clears", { timeout: 180_000 }, async () => {
   const docId = await publish("Phone pill", REPORT);
   await agentThread(docId, { exact: "Closing remarks follow in the appendix" }, "Which appendix?");
-  const context = await newContext(ALICE, { viewport: { width: 390, height: 844 }, signedInTo: docId });
+  const context = await newContext(ALICE, { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, signedInTo: docId });
   const tab = await context.newPage();
   await tab.goto(docUrl(docId));
   const frame = await until("the comments frame", () => commentsFrame(tab, docId));
@@ -2028,9 +2029,31 @@ test("on a phone the Comment button sits below the selection, centred and 44px t
   assert.ok(Math.abs(pill.x + pill.width / 2 - (passage.x + passage.width / 2)) < 6, "centred under it");
   await shoot(tab, "phone-comment-pill");
 
-  await tab.mouse.click(pill.x + pill.width / 2, pill.y + pill.height / 2);
+  // Selection handles change the passage; clearing it hides the button.
+  await select(tab, "Closing remarks follow in the appendix");
+  await until("the button to follow the selection", async () => (await tip.boundingBox()).y > pill.y + 10);
+  await tab.evaluate(() => window.getSelection().removeAllRanges());
+  await until("the button to hide", async () => !(await tip.isVisible()));
+  await select(tab, quote);
+  await until("the button on the original passage", async () => (await tip.isVisible()) && Math.abs((await tip.boundingBox()).y - pill.y) < 2);
+
+  // Reproduce the mobile selection-loss ordering deterministically: the native
+  // selection disappears before the button's click handler gets its turn.
+  await tab.evaluate(() => {
+    document.addEventListener("click", () => window.getSelection().removeAllRanges(), { capture: true, once: true });
+  });
+  await tab.touchscreen.tap(pill.x + pill.width / 2, pill.y + pill.height / 2);
   await until("the sheet", async () => (await hostBox(tab)) !== null);
   await until("the composer to have focus", async () => frame.evaluate(() => document.activeElement && document.activeElement.dataset.key === "draft"));
+  assert.deepEqual(await painted(tab, "openartifacts-draft"), [quote]);
+  const area = frame.getByRole("textbox", { name: "Add a comment…" });
+  await area.fill("Who is staffed?");
+  await frame.getByRole("button", { name: "Send" }).tap();
+  await until("the new thread", async () => (await threadsOf(docId)).length === 2);
+  await frame.getByText("Who is staffed?").waitFor();
+  assert.equal((await threadsOf(docId))[1].anchor.exact, quote);
+  await until("the posted passage to be highlighted", async () => (await painted(tab, "openartifacts-open")).includes(quote));
+  await shoot(tab, "phone-comment-posted");
   await context.close();
 });
 
