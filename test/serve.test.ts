@@ -6,7 +6,8 @@ import { PAGE_SCRIPT } from "../src/embed-scripts.js";
 import { DOC_ID_LENGTH } from "../src/ids.js";
 import { newAccountId } from "../src/ids.js";
 import { linkExternalOwner } from "../src/owners.js";
-import { grantUrl, originLabel, PRIVATE_LABEL } from "../src/private.js";
+import { ORIGIN_CODE, originCode } from "../src/origin-code.js";
+import { grantUrl } from "../src/private.js";
 import { readerSignInConfigured } from "../src/reader-config.js";
 import { signPayload, verifyPayload } from "../src/session.js";
 import { FAVICON_LINK, NOINDEX_META, OPENARTIFACTS_FOOTER, OPENARTIFACTS_HEADER, OPENARTIFACTS_MARK_SVG } from "../src/render.js";
@@ -862,7 +863,7 @@ describe("an invited-only document", () => {
     const { docId } = (await response.json()) as { docId: string };
     await env.DB.prepare("UPDATE docs SET link_access = ? WHERE id = ?").bind(mode, docId).run();
     const row = await env.DB.prepare("SELECT owner FROM docs WHERE id = ?").bind(docId).first<{ owner: string }>();
-    return { docId, owner: row!.owner, host: `https://${await originLabel(row!.owner)}.openartifacts.site` };
+    return { docId, owner: row!.owner, host: `https://${await originCode(env.DB, row!.owner)}.openartifacts.site` };
   }
 
   /** What `/open` would redirect `principal` to. */
@@ -955,7 +956,7 @@ describe("an invited-only document", () => {
 
   it("lets a grant, a grant cookie and a session expire, at the lifetimes the design gives", async () => {
     const doc = await privateDoc();
-    const label = await originLabel(doc.owner);
+    const label = await originCode(env.DB, doc.owner);
     const SECRET_K = PRIVATE.READER_SESSION_SECRET;
     const signIn = `${API}/open/${doc.docId}`;
 
@@ -1138,7 +1139,7 @@ describe("an invited-only document", () => {
     expect(opened.status).toBe(302);
     const target = new URL(opened.headers.get("location")!);
     expect(target.origin).toBe(doc.host);
-    expect(target.origin).not.toBe(`https://${await originLabel(alice)}.openartifacts.site`);
+    expect(target.origin).not.toBe(`https://${await originCode(env.DB, alice)}.openartifacts.site`);
     expect(target.pathname).toBe(`/d/${doc.docId}`);
     expect((await getFrom(target.toString(), {}, PRIVATE)).status).toBe(303);
   });
@@ -1185,19 +1186,114 @@ describe("an invited-only document", () => {
     expect(configured({ API_HOST: " " })).toBe(false);
   });
 
-  it("names a publisher's origin by a one-way hash of docs.owner, the same for all of their documents", async () => {
-    const labels = await Promise.all(["account-a", "account-b", "user_123"].map(originLabel));
+  it("names a publisher's origin by a stored random code per docs.owner, the same for all of their documents", async () => {
+    const labels = await Promise.all(["account-a", "account-b", "user_123"].map((owner) => originCode(env.DB, owner)));
     expect(new Set(labels).size).toBe(3);
-    for (const label of labels) expect(label).toMatch(PRIVATE_LABEL);
-    expect(await originLabel("account-a")).toBe(labels[0]);
+    for (const label of labels) expect(label).toMatch(ORIGIN_CODE);
+    expect(await originCode(env.DB, "account-a")).toBe(labels[0]);
 
     const one = await privateDoc("one");
     const two = await privateDoc("two");
     expect(one.docId).not.toBe(two.docId);
     expect(one.host).toBe(two.host);
-    expect(one.host).toBe(`https://${await originLabel(one.owner)}.openartifacts.site`);
+    expect(one.host).toBe(`https://${await originCode(env.DB, one.owner)}.openartifacts.site`);
     expect(one.host).not.toContain(one.docId);
     expect(one.host).not.toContain(one.owner);
+  });
+
+  describe("a publisher's origin code", () => {
+    const CODE_HOST = /^https:\/\/[23456789bcdfghjkmnpqrstvwxz]{6}\.openartifacts\.site$/;
+
+    it("is allocated once per owner, never changes, and differs between owners", async () => {
+      const a = await originCode(env.DB, "code-owner-a");
+      const b = await originCode(env.DB, "code-owner-b");
+      expect(a).toMatch(ORIGIN_CODE);
+      expect(b).toMatch(ORIGIN_CODE);
+      expect(a).not.toBe(b);
+      expect(await originCode(env.DB, "code-owner-a")).toBe(a);
+      const rows = await env.DB.prepare("SELECT COUNT(*) AS n FROM publisher_origins WHERE owner = ?").bind("code-owner-a").first<{ n: number }>();
+      expect(rows!.n).toBe(1);
+    });
+
+    it("draws a fresh code when the random one is another owner's, and gives up after a bounded number of tries", async () => {
+      const taken = await originCode(env.DB, "collide-first");
+      const draws = [taken, taken, "kkkkkk"];
+      expect(await originCode(env.DB, "collide-second", () => draws.shift()!)).toBe("kkkkkk");
+      expect(draws).toEqual([]);
+      // The owner's own existing row is returned without drawing at all.
+      expect(await originCode(env.DB, "collide-second", () => { throw new Error("drew"); })).toBe("kkkkkk");
+      await expect(originCode(env.DB, "collide-third", () => taken)).rejects.toThrow("could not allocate");
+      const none = await env.DB.prepare("SELECT code FROM publisher_origins WHERE owner = ?").bind("collide-third").first();
+      expect(none).toBeNull();
+    });
+
+    it("sends /open to the owner's six-character host with a grant, and that host serves the page after the swap", async () => {
+      const doc = await privateDoc();
+      const alice = await reader("alice@acme.com", doc.docId);
+      const opened = await getFrom(`${API}/open/${doc.docId}`, { headers: { cookie: await sessionFor(alice) } }, PRIVATE);
+      expect(opened.status).toBe(302);
+      const target = new URL(opened.headers.get("location")!);
+      expect(target.origin).toMatch(CODE_HOST);
+      expect(target.origin).toBe(`https://${await originCode(env.DB, doc.owner)}.openartifacts.site`);
+      expect(target.pathname).toBe(`/d/${doc.docId}`);
+      expect(target.searchParams.get("grant")).not.toBeNull();
+
+      const swapped = await getFrom(target.toString(), {}, PRIVATE);
+      expect(swapped.status).toBe(303);
+      const served = await getFrom(`${target.origin}/d/${doc.docId}`, { headers: { cookie: swapped.headers.get("set-cookie")!.split(";")[0]! } }, PRIVATE);
+      expect(served.status).toBe(200);
+      expect(await served.text()).toContain("for invited eyes");
+    });
+
+    it("answers another owner's document on a code host exactly as a missing one", async () => {
+      const mine = await privateDoc();
+      const theirs = await privateDoc("theirs", KEY_Q);
+      expect(theirs.host).not.toBe(mine.host);
+      const cookie = await cookieFor(mine, mine.owner);
+
+      const other = await getFrom(`${mine.host}/d/${theirs.docId}`, { headers: { cookie } }, PRIVATE);
+      const missing = await getFrom(`${mine.host}/d/${"z".repeat(16)}`, { headers: { cookie } }, PRIVATE);
+      expect(other.status).toBe(404);
+      expect(missing.status).toBe(404);
+      expect(await other.text()).toBe(await missing.text());
+
+      // A grant minted for the other host does not swap here.
+      const foreign = new URL(await grantFor(theirs, theirs.owner));
+      const crossed = await getFrom(`${mine.host}${foreign.pathname}${foreign.search}`, {}, PRIVATE);
+      expect(crossed.headers.get("set-cookie")).toBeNull();
+    });
+
+    it("sends a retired 26-character label host's document url to /open, and nothing else", async () => {
+      const doc = await privateDoc();
+      const legacy = "https://0123456789abcdefghjkmnpqrs.openartifacts.site";
+      for (const suffix of ["", "/v1"]) {
+        const moved = await getFrom(`${legacy}/d/${doc.docId}${suffix}`, {}, PRIVATE);
+        expect(moved.status).toBe(302);
+        expect(moved.headers.get("location")).toBe(`${API}/open/${doc.docId}${suffix}`);
+      }
+      expect((await getFrom(`${legacy}/api/v1/docs`, {}, PRIVATE)).status).toBe(404);
+      // It reads nothing about the document: another publisher's id and one that never existed get the
+      // same redirect, and /open applies the usual checks (404 for anyone who may not read it).
+      const theirs = await privateDoc("theirs", KEY_Q);
+      for (const id of [theirs.docId, "z".repeat(16)]) {
+        const moved = await getFrom(`${legacy}/d/${id}`, {}, PRIVATE);
+        expect(moved.status).toBe(302);
+        expect(moved.headers.get("location")).toBe(`${API}/open/${id}`);
+      }
+    });
+
+    it("lets the Share and comments frames be embedded by the code origin, and by nothing before a code exists", async () => {
+      const doc = await privateDoc();
+      for (const frame of ["share", "comments"]) {
+        const frameUrl = (origin: string) => `${API}/embed/${frame}?doc=${doc.docId}&origin=${encodeURIComponent(origin)}`;
+        const csp = async (origin: string) => (await getFrom(frameUrl(origin), {}, PRIVATE)).headers.get("content-security-policy")!;
+        expect(await csp(doc.host)).toContain(`frame-ancestors ${doc.host}`);
+        expect(await csp("https://0123456789abcdefghjkmnpqrs.openartifacts.site")).toContain("frame-ancestors 'none'");
+      }
+      await env.DB.prepare("DELETE FROM publisher_origins WHERE owner = ?").bind(doc.owner).run();
+      const none = await getFrom(`${API}/embed/share?doc=${doc.docId}&origin=${encodeURIComponent(doc.host)}`, {}, PRIVATE);
+      expect(none.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+    });
   });
 
   // ---- Stage S3: sign-in first, requesting access, the top bar and the share page ----
@@ -3053,7 +3149,7 @@ describe("GET /d/{docId}/threads", () => {
     await stub.createThread({ ...base, principal: alice, kind: "human", onBehalfOf: null, anchor: { exact: "first draft" }, body: "Why first?" });
     await stub.createThread({ ...base, principal: alice, kind: "agent", onBehalfOf: alice, anchor: { exact: "first" }, body: "Same, from my agent" });
     const row = await env.DB.prepare("SELECT owner FROM docs WHERE id = ?").bind(docId).first<{ owner: string }>();
-    return { docId, alice, owner: row!.owner, host: `https://${await originLabel(row!.owner)}.openartifacts.site` };
+    return { docId, alice, owner: row!.owner, host: `https://${await originCode(env.DB, row!.owner)}.openartifacts.site` };
   }
 
   interface Served {
@@ -3264,7 +3360,7 @@ describe("GET /d/{docId}/threads", () => {
 
       // A cookie names its origin: this publisher's, replayed on a document of another label, is nothing.
       await env.DB.prepare("UPDATE docs SET owner = 'someone-else' WHERE id = ?").bind(other.docId).run();
-      const otherHost = `https://${await originLabel("someone-else")}.openartifacts.site`;
+      const otherHost = `https://${await originCode(env.DB, "someone-else")}.openartifacts.site`;
       const replay = await getFrom(`${otherHost}/d/${other.docId}/threads`, { headers: { cookie: await cookieFor(doc, doc.owner) } }, HOSTS);
       expect(replay.status).toBe(404);
       // And this host does not confirm another publisher's document either.

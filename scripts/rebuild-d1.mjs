@@ -1,5 +1,5 @@
 // Turn a local mirror of the bucket into SQL that rebuilds the document rows of
-// D1 (docs, doc_invites, versions, storage_usage). Usage:
+// D1 (docs, doc_invites, versions, publisher_origins, storage_usage). Usage:
 //
 //   node scripts/rebuild-d1.mjs <mirror-dir> > rebuild.sql
 //

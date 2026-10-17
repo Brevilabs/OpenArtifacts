@@ -552,9 +552,10 @@ says what each piece is for.
    `*.openartifacts.site` record, `AAAA` to `100::`. The route that catches it,
    `*.openartifacts.site/*`, is in `wrangler.jsonc` (a custom domain cannot be a
    wildcard). Universal SSL already covers first-level wildcards. The Worker
-   serves only a 26-character label there and fails closed on every other
+   serves only a 6-character publisher code there (and redirects the retired
+   26-character labels to `/open`) and fails closed on every other
    subdomain. This is one publisher origin per publisher
-   (`{label}.openartifacts.site`), not one per document, so it is the only record
+   (`{code}.openartifacts.site`), not one per document, so it is the only record
    and route needed however many documents there are.
 3. **The sending domain.** Onboard `mail.openartifacts.ai` in Cloudflare Email
    Service (Compute → Email Service → Email Sending → Onboard Domain). The
@@ -680,7 +681,13 @@ on the free Workers plan.
    `0016` before the deploy that reads it. `0016` also marks `has_threads` on
    every document whose `comments_enabled` is `1`, the only ones a thread could
    have been written to. It leaves the invites alone: step 3 lowers them. The
-   deploy workflow refuses to ship over an unapplied migration.
+   deploy workflow refuses to ship over an unapplied migration. Apply
+   `0017_publisher_origins.sql` before the deploy that reads it too: it adds the
+   `publisher_origins` table (a publisher's 6-character origin code), is additive,
+   and the live Worker ignores it. Codes are allocated lazily, on a publisher's first
+   open of an invited-only page, which also rewrites that doc's `manifest.json`
+   so R2 holds the code. A manifest written before then has no code and needs no
+   backfill; a code, once allocated, is never changed or deleted.
 2. Deploy. `wrangler deploy` applies the Durable Object itself: the `COMMENTS`
    binding in `durable_objects.bindings` and the
    `migrations: [{"tag": "v1", "new_sqlite_classes": ["DocComments"]}]` block in

@@ -3,7 +3,7 @@
  *
  * `openartifacts.site` runs every publisher's scripts on purpose, so it can never
  * hold a credential. An invited-only document therefore lives on
- * `{label}.openartifacts.site`, an origin that runs only its publisher's
+ * `{code}.openartifacts.site`, an origin that runs only its publisher's
  * scripts, and that is the only place its bytes are ever served. The rule that
  * replaces "the origin is cookieless" is: **no origin that runs more than one
  * publisher's scripts ever holds a credential.**
@@ -13,10 +13,11 @@
  * owns. It also makes a custom domain a one-for-one replacement later: the same
  * seat, a different name, resolved to a publisher by lookup instead of by hash.
  *
- * The label is derived from `docs.owner` by a one-way hash and never stored, so
- * the hostname, which appears in DNS and in TLS SNI, reveals neither the owner
- * nor the document. A host answers `404` for any document whose owner does not
- * hash to its label, so a host never serves, or even confirms, another
+ * The code is 6 random characters, allocated once per publisher and stored in
+ * `publisher_origins` (`src/origin-code.ts`), so the hostname, which appears in
+ * DNS and in TLS SNI, reveals neither the owner nor the document. It is an
+ * address, not a password. A host answers `404` for any document whose owner's
+ * code is not its own, so a host never serves, or even confirms, another
  * publisher's document.
  *
  * How a reader gets here: `/open/{docId}` on the API host checks the session
@@ -31,7 +32,8 @@ import type { AnalyticsSink } from "./analytics.js";
 import { threadsNotFound, threadsResource } from "./comments/resource.js";
 import type { Env } from "./config.js";
 import { findReadableDoc } from "./db.js";
-import { encodeBase32 } from "./ids.js";
+import { writeManifestBestEffort } from "./manifest.js";
+import { originCode } from "./origin-code.js";
 import { SERVING_PREFIX, docPath, parseDocPath, parseThreadsPath, type DocRoute } from "./paths.js";
 import { readerSecret, readerSignInConfigured } from "./reader-config.js";
 import { serveAndCount, servingError, servingPageResponse, servingRedirect } from "./serve.js";
@@ -43,8 +45,8 @@ import {
   verifyPayload,
 } from "./session.js";
 
-/** A label host's name: 16 bytes of hash as base32, so always 26 characters. */
-export const PRIVATE_LABEL = /^[0-9abcdefghjkmnpqrstvwxyz]{26}$/;
+/** The retired hash-label host's name: 16 bytes of hash as base32, so always 26 characters. */
+export const LEGACY_LABEL = /^[0-9abcdefghjkmnpqrstvwxyz]{26}$/;
 
 /** How long the URL grant lives. It is a hand-off between two redirects. */
 const URL_GRANT_TTL_MS = 60 * 1000;
@@ -53,48 +55,23 @@ const URL_GRANT_TTL_MS = 60 * 1000;
 const COOKIE_GRANT_TTL_MS = 60 * 60 * 1000;
 
 /**
- * One publisher's origin label: the first 16 bytes of
- * `SHA-256("openartifacts-origin-v1:" + owner)` as lowercase Crockford base32.
- *
- * `owner` is always `docs.owner` of the document being opened, never the
- * caller's own `Publisher.owner`. A publisher whose license key was later linked
- * to an account has documents under two owner ids and so two origins; deriving
- * the label from the caller would send a reader to a host that then answers
- * `404` for the document. `docs.owner` never changes, so a document's origin is
- * stable for life.
+ * The origin that serves a publisher's documents under `code`, or null when this
+ * deployment has no serving host to hang a code on. No lookup: frames use this
+ * with a code they already read.
  */
-export async function originLabel(owner: string): Promise<string> {
-  const digest = await crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(`openartifacts-origin-v1:${owner}`),
-  );
-  return encodeBase32(new Uint8Array(digest).slice(0, 16));
-}
-
-/**
- * Where a publisher's invited-only documents are served: today a label host
- * under `SERVING_HOST`. Null when this deployment has no serving host to hang a
- * label on.
- *
- * `/open` and the owner route reach a publisher origin only through here, so a
- * custom domain, a verified `publisher_hosts` lookup, changes this function and
- * no link anyone holds.
- */
-export async function publisherOrigin(
-  env: Env,
-  owner: string,
-): Promise<{ label: string; origin: string } | null> {
+export function codeOrigin(env: Env, code: string): string | null {
   const servingHost = env.SERVING_HOST?.trim();
-  if (!servingHost) return null;
-  const label = await originLabel(owner);
-  return { label, origin: `https://${label}.${servingHost}` };
+  return servingHost ? `https://${code}.${servingHost}` : null;
 }
 
 /**
  * The url that opens `route` on its publisher's origin for `principal`, good for
  * `URL_GRANT_TTL_MS`. Null when this deployment cannot do private sharing.
  *
- * `docOwner` is the document's `docs.owner`. `principal` is either a reader's
+ * `docOwner` is the document's `docs.owner`, never the caller's own
+ * `Publisher.owner`: a publisher whose license key was later linked to an account
+ * has documents under two owner ids and so two origins. `knownCode` is that
+ * owner's code when the caller's read already has it. `principal` is either a reader's
  * account id or a publisher's owner id; the origin checks it with `canRead`
  * like any other.
  */
@@ -104,13 +81,22 @@ export async function grantUrl(
   route: DocRoute,
   principal: string,
   now: number,
+  knownCode: string | null = null,
 ): Promise<{ url: string; expiresAt: number } | null> {
   const secret = readerSecret(env);
-  const publisher = await publisherOrigin(env, docOwner);
-  if (secret === null || publisher === null) return null;
+  if (secret === null || !env.SERVING_HOST?.trim()) return null;
+  // The document was read with its owner's code, so only a first open lacks one.
+  // That is the moment the code comes to exist, and R2 learns it now: nothing
+  // else would snapshot a manifest before the next change to the doc.
+  let code = knownCode;
+  if (code === null) {
+    code = await originCode(env.DB, docOwner);
+    await writeManifestBestEffort(env, route.docId);
+  }
+  const publisher = { code, origin: codeOrigin(env, code)! };
 
   const expiresAt = now + URL_GRANT_TTL_MS;
-  const grant = await signPayload(secret, "grant-url", { l: publisher.label, p: principal }, expiresAt);
+  const grant = await signPayload(secret, "grant-url", { l: publisher.code, p: principal }, expiresAt);
   return { url: `${publisher.origin}${docPath(SERVING_PREFIX, route)}?grant=${grant}`, expiresAt };
 }
 
@@ -118,22 +104,37 @@ export async function grantUrl(
  * What a publisher's origin makes of a document it found, in the order it
  * decides: unknown, or another publisher's, is `missing`; then `deleted`; an
  * `anyone` document belongs to the apex (`public`); one the principal may not
- * read is `denied`; the rest are `ok`. The label comparison comes before
+ * read is `denied`; the rest are `ok`. The code comparison comes before
  * anything that reveals state, so a host never confirms that another
  * publisher's document exists, is deleted, or is public.
  *
  * Shared by the page and the threads resource, which differ only in how they
  * answer each outcome (a redirect or a page, against JSON): the read rule is one.
  */
-export async function judgeForPublisher(
-  found: { owner: string; deleted_at: number | null; link_access: string; allowed: boolean } | null,
-  publisher: { label: string },
-): Promise<"missing" | "deleted" | "public" | "denied" | "ok"> {
+export function judgeForPublisher(
+  found: { origin_code: string | null; deleted_at: number | null; link_access: string; allowed: boolean } | null,
+  publisher: { code: string },
+): "missing" | "deleted" | "public" | "denied" | "ok" {
   if (found === null) return "missing";
-  if ((await originLabel(found.owner)) !== publisher.label) return "missing";
+  if (found.origin_code !== publisher.code) return "missing";
   if (found.deleted_at !== null) return "deleted";
   if (found.link_access === "anyone") return "public";
   return found.allowed ? "ok" : "denied";
+}
+
+/**
+ * A request to a retired 26-character label host (`resolvePublisherHost`). A
+ * top-level GET or HEAD of a document url goes to the API's `/open`, which mints
+ * the code host; anything else is null, and the router answers it as it answers
+ * an unknown host. Kept only while old links are in the wild; a later cleanup
+ * removes this and `LEGACY_LABEL`.
+ */
+export function legacyLabelResponse(request: Request, url: URL, env: Env): Response | null {
+  const apiHost = env.API_HOST?.trim();
+  if ((request.method !== "GET" && request.method !== "HEAD") || !apiHost) return null;
+  const route = parseDocPath(url.pathname);
+  if (route === null) return null;
+  return isolate(servingRedirect(`https://${apiHost}${docPath("/open", route)}`, 302));
 }
 
 /**
@@ -151,7 +152,7 @@ export function isolate(response: Response): Response {
 }
 
 /**
- * `GET /d/{docId}[/v{n}]` on a publisher's origin. `publisher` is the label the
+ * `GET /d/{docId}[/v{n}]` on a publisher's origin. `publisher` is the code the
  * router resolved from the hostname; this never parses the hostname again.
  *
  * The isolation headers are set on every response from here, errors and
@@ -162,7 +163,7 @@ export async function handlePublisherServing(
   url: URL,
   env: Env,
   analytics: AnalyticsSink,
-  publisher: { label: string },
+  publisher: { code: string },
 ): Promise<Response> {
   return isolate(await publisherResponse(request, url, env, analytics, publisher));
 }
@@ -172,7 +173,7 @@ async function publisherResponse(
   url: URL,
   env: Env,
   analytics: AnalyticsSink,
-  publisher: { label: string },
+  publisher: { code: string },
 ): Promise<Response> {
   const atMs = Date.now();
   const method = request.method;
@@ -187,9 +188,9 @@ async function publisherResponse(
   }
 
   // A grant names this origin and a principal. Another publisher's grant carries
-  // another label and is refused here, before the database is read.
+  // another code and is refused here, before the database is read.
   const readGrant = (held: Record<string, string> | null) =>
-    held !== null && held.l === publisher.label && typeof held.p === "string" && held.p !== ""
+    held !== null && held.l === publisher.code && typeof held.p === "string" && held.p !== ""
       ? held.p
       : null;
 
@@ -201,7 +202,7 @@ async function publisherResponse(
     const principal = readGrant(await verifyPayload(secret, "grant-cookie", readCookie(request, GRANT_COOKIE), atMs));
     if (principal === null) return threadsNotFound(method);
     return await threadsResource(env, method, threadsDoc, url.searchParams.get("v"), principal, async (doc) => {
-      const verdict = await judgeForPublisher(doc, publisher);
+      const verdict = judgeForPublisher(doc, publisher);
       return verdict === "ok" || verdict === "deleted" ? verdict : "missing";
     });
   }
@@ -217,7 +218,7 @@ async function publisherResponse(
     const held = await signPayload(
       secret,
       "grant-cookie",
-      { l: publisher.label, p: principal },
+      { l: publisher.code, p: principal },
       atMs + COOKIE_GRANT_TTL_MS,
     );
     return servingRedirect(
@@ -236,7 +237,7 @@ async function publisherResponse(
   // that reveals the document's state, so a host never confirms that another
   // publisher's document exists, is deleted, or is public.
   const found = await findReadableDoc(env.DB, route.docId, route.pinned, principal);
-  const verdict = await judgeForPublisher(found, publisher);
+  const verdict = judgeForPublisher(found, publisher);
   if (found === null || verdict === "missing") return servingError(method, "not_found");
   if (verdict === "deleted") return servingPageResponse(method, "deleted");
   if (verdict === "public") {
