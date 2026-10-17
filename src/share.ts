@@ -47,9 +47,12 @@ import type { AnalyticsSink } from "./analytics.js";
 import {
   addPerson,
   addWithoutManifest,
+  copilotHint,
   declineRequest,
   getAccess,
   grantableRoles,
+  type InviteDelivery,
+  ownerEmailNotice,
   planRefusal,
   removePerson,
   setMode,
@@ -61,8 +64,6 @@ import { readSmallForm } from "./approval/handler.js";
 import type { Publisher } from "./auth.js";
 import { MAX_INVITES_PER_DOC, MAX_NEW_INVITES_PER_OWNER_PER_DAY, type Env } from "./config.js";
 import { accountEmail, findReadableDoc } from "./db.js";
-import { COPILOT_HINT } from "./embed-scripts.js";
-import { emailConfigured } from "./email.js";
 import { accountPlan } from "./entitlement.js";
 import { sameOriginPost } from "./limits.js";
 import { writeManifest } from "./manifest.js";
@@ -218,6 +219,7 @@ export async function handleShare(
   const result = await write(env, url, principal, docId, form, analytics);
   if (result === null) return READER_NOT_FOUND();
   if (result.ok) {
+    if (result.state.inviteDelivery !== undefined) return await dialog(env, url, principal, docId, result.state, {});
     // Post, redirect, get: a reload shows the page and repeats nothing.
     return new Response(null, {
       status: 303,
@@ -240,7 +242,7 @@ export async function handleShare(
  * **Copy link** (`publicDocUrl`, the canonical url whichever host the reader
  * came from). `email` is the signed-in reader, or null for a visitor to a public
  * document. A visitor is offered sign-in to manage; a signed-in reader is told
- * how to manage from Copilot, because an owner who published with a license key
+ * how to link their Copilot account, because an owner who published with a license key
  * that is not linked to a browser account looks like any other reader here, and
  * offered **Use another account** in case this one is the wrong one. It lists no
  * people, no mode and no requests.
@@ -258,7 +260,7 @@ async function readerView(
       ? `<div class="actions"><a href="${next}?signin">Is this your page? Sign in to manage</a></div>`
       // Back to the sign-in page, not the visitor view a public document
       // would otherwise show a reader who has just signed out.
-      : `<div class="actions">${useAnotherAccount(`${next}?signin`)}</div>\n<p class="hint">${escapeHtml(COPILOT_HINT)}</p>`;
+      : `<div class="actions">${useAnotherAccount(`${next}?signin`)}</div>\n<p class="hint">${escapeHtml(copilotHint(env))}</p>`;
   return readerPage(
     {
       title: "Share document",
@@ -322,11 +324,15 @@ async function addMany(
   analytics: AnalyticsSink,
 ): Promise<Response | null> {
   let added = 0;
+  const deliveries: InviteDelivery[] = [];
   let stop: DialogError | undefined;
   for (const address of found.emails) {
     // The batch snapshots the manifest once, after the loop.
     const result = await addWithoutManifest(env, url, principal, docId, address, undefined, analytics);
-    if (result.ok) added += 1;
+    if (result.ok) {
+      added += 1;
+      deliveries.push(...(result.state.inviteDelivery ?? []));
+    }
     else if (result.refusal === "not_found") return null;
     else {
       stop = result.refusal;
@@ -336,6 +342,7 @@ async function addMany(
   if (added > 0) await writeManifest(env, docId);
   const state = await getAccess(env, principal, docId);
   if (!state.ok) return null;
+  state.state.inviteDelivery = deliveries;
   const done = [
     ...(added > 0 ? [`Added ${added} ${added === 1 ? "person" : "people"}.`] : []),
     ...(found.bad.length > 0 ? [`Not added: ${found.bad.map((entry) => `${entry} (not an email address)`).join(", ")}.`] : []),
@@ -359,7 +366,6 @@ async function dialog(
     `<form method="post" action="${action}"${cls ? ` class="${cls}"` : ""}>${hidden("op", op)}${Object.entries(fields)
       .map(([name, value]) => hidden(name, value))
       .join("")}${body}</form>`;
-  const emailEnabled = emailConfigured(env);
   const mode = (value: "anyone" | "invited", label: string, hint: string) =>
     `<label class="choice"><input type="radio" name="linkAccess" value="${value}"${state.link_access === value ? " checked" : ""}><span><b>${label}</b><small>${hint}</small></span></label>`;
 
@@ -396,7 +402,7 @@ async function dialog(
   const people = state.people
     .map(
       (person) =>
-        `<li><span><b><bdi>${escapeHtml(person.email)}</bdi></b><small>${emailEnabled ? "Invited" : "Invited · send them the link"}</small></span><span class="pair">${roleForm(person)}${form("remove", { email: person.email }, `<button type="submit">Remove</button>`)}</span></li>`,
+        `<li><span><b><bdi>${escapeHtml(person.email)}</bdi></b><small>${state.inviteDelivery?.find((d) => d.email === person.email)?.outcome === "sent" ? "Invite email sent" : state.inviteDelivery?.some((d) => d.email === person.email) ? "Invite email not sent · copy the link and send it yourself" : "Has access"}</small></span><span class="pair">${roleForm(person)}${form("remove", { email: person.email }, `<button type="submit">Remove</button>`)}</span></li>`,
     )
     .join("");
   const requests = state.requests.length
@@ -418,13 +424,14 @@ ${message === null ? "" : `<p${shown.quiet === true ? "" : ' class="err"'} role=
     `${mode("anyone", "Anyone with the link", "Exactly today's public page. No sign-in.")}${mode("invited", "Only those invited", "Only people you add can open it. They sign in once.")}<button type="submit">Save</button>`,
   )}</section>
 ${planLine}
+${state.owner_email_available ? "" : `<p class="hint">${escapeHtml(ownerEmailNotice(env))}</p>`}
 ${mayAdd ? `<section><h2>Add people</h2>${form(
     "add",
     {},
     `<div class="row"><textarea id="people" name="email" rows="2" placeholder="Emails, separated by commas" aria-label="Email addresses" autocomplete="off" required></textarea><button type="submit">Add</button></div>`,
   )}${helper}</section>` : ""}
 ${requests}
-<section><h2>Who has access</h2><ul><li><span><b>You</b><small>Owner</small></span></li>${people}</ul>${emailEnabled && mayAdd ? "<p>OpenArtifacts emails each invitation. If someone doesn’t get it, send them the link.</p>" : ""}</section>
+<section><h2>Who has access</h2><ul><li><span><b>You</b><small>Owner</small></span></li>${people}</ul></section>
 ${copyLinkSection(url)}`;
 
   return readerPage(

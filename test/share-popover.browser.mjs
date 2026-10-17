@@ -177,6 +177,7 @@ before(async () => {
       PLAN_LIMITS: vars.PLAN_LIMITS,
       // The plan line and a plan refusal carry an Upgrade link in production, and the popover's height must hold them.
       UPGRADE_URL: vars.UPGRADE_URL,
+      ACCOUNT_ACTION_URL: vars.ACCOUNT_ACTION_URL,
     },
   });
   const { port } = await mf.ready;
@@ -721,6 +722,50 @@ async function ownerFrame(context, docId) {
   return { page, frame };
 }
 
+test("an unlinked Copilot publisher sees the no-email notice in top-bar Share, then links to manage access", { timeout: 120_000 }, async () => {
+  const key = "cplus_live_unlinked131";
+  const owner = "unlinked-owner-131";
+  const account = accountId("c");
+  const now = Date.now();
+  await db.prepare("INSERT INTO publishers (key_hash, plan, validated_at, owner) VALUES (?, 'believer', ?, ?)").bind(sha256Hex(key), now, owner).run();
+  await db.prepare("INSERT INTO accounts (id, email, plan, created_at) VALUES (?, 'publisher131@example.com', 'pro', ?)").bind(account, now).run();
+  const published = await api("/api/v1/docs", {
+    method: "POST", headers: { authorization: `Bearer ${key}` },
+    body: JSON.stringify({ title: "License-key page", html: html("License-key page") }),
+  });
+  assert.equal(published.status, 201);
+  const { docId } = await published.json();
+  const context = await newContext(null);
+  const page = await context.newPage();
+  try {
+    await page.goto(docUrl(docId));
+    await page.locator("a[data-openartifacts-share]").click();
+    const frame = await until("the unlinked publisher's Share frame", () => frameOf(page, docId));
+    const notice = frame.locator("p.hint");
+    await notice.waitFor();
+    for (const text of ["we have no email address for you", "Access requests and new comment threads cannot reach you by email", "invitations do not name you", `Link your Copilot account at ${wranglerVars().ACCOUNT_ACTION_URL}`, "After linking, sign in here to manage access"]) {
+      assert.ok((await notice.innerText()).includes(text), text);
+    }
+    await shoot(page, "popover-unlinked-owner");
+    assert.equal(await frame.getByRole("button", { name: "Copy link" }).count(), 1);
+    // Signing into an unrelated browser account does not hide the guidance or reveal access lists.
+    await context.addCookies([sessionCookie(account)]);
+    await Promise.all([context.waitForEvent("page"), frame.getByRole("button", { name: "Sign in to manage" }).click()]);
+    await frame.getByRole("button", { name: "Use another account" }).waitFor();
+    assert.ok((await notice.innerText()).includes("we have no email address for you"));
+    assert.equal(await frame.getByRole("radiogroup").count(), 0);
+    // The existing verified-account linking flow establishes ownership; no Copilot UI adoption.
+    await db.prepare("INSERT INTO owner_links (external_owner, account_id, created_at) VALUES (?, ?, ?)").bind(owner, account, now).run();
+    await page.reload();
+    await page.locator("a[data-openartifacts-share]").click();
+    const linked = await until("the linked publisher's Share frame", () => frameOf(page, docId));
+    await linked.getByRole("radio", { name: "Only those invited" }).waitFor();
+    assert.equal(await linked.getByText("we have no email address for you", { exact: false }).count(), 0);
+  } finally {
+    await context.close();
+  }
+});
+
 /**
  * Every view the Share frames of `context` paint, in order, as `window.__views` in each frame. Sampled in
  * an animation-frame callback, which runs before each paint, so a view that is drawn for one frame is seen.
@@ -1118,6 +1163,8 @@ test("an owner pastes a column of addresses and adds them all at once", { timeou
 
   await frame.getByRole("button", { name: "Add", exact: true }).click();
   await frame.getByText("Not added: bob@ (not an email address).").waitFor();
+  await frame.getByText("carol@example.com").scrollIntoViewIfNeeded();
+  await frame.locator("main").evaluate((element) => { element.scrollTop = element.scrollHeight; });
   await shoot(page, "popover-pasted-added");
   assert.match(await frame.locator("#oa-msg").innerText(), /^Added 3 people\. Not added: bob@ \(not an email address\)\.$/);
   // Some went in and some did not: amber, not the red of a failure.
@@ -1126,6 +1173,9 @@ test("an owner pastes a column of addresses and adds them all at once", { timeou
     assert.equal(await frame.getByText(address).count(), 1, address);
   }
   assert.equal(await frame.getByRole("button", { name: "Remove" }).count(), 3);
+  // No Email Service in this harness: every address in the batch reports failure,
+  // including the earlier responses, not just the final PUT.
+  assert.equal(await frame.getByText("Invite email not sent · copy the link and send it yourself", { exact: true }).count(), 3);
   // One request per address that is one, and none for the one that is not.
   assert.deepEqual(puts, ["ann@example.com", "bob@example.com", "carol@example.com"]);
   assert.deepEqual((await (await api(`/api/v1/docs/${X}/access`)).json()).people.map((entry) => entry.email).sort(), puts);

@@ -388,18 +388,16 @@ exists, and the invite email that add sends is the notice to the requester.
 
 - **Table:** `doc_access_requests (doc_id, email, created_at)`, one pending row
   per document and address, capped at 100 per document. Past the cap a new request
-  is dropped silently.
+  is not recorded; the reader sees **Request not sent**.
 - **Route:** `POST /open/{docId}/request`, on the API host, session required (no
   session shows the sign-in page), same-origin required. One statement inserts
   the row only when the document is live and invited-only, the account cannot
   already read it, no request is pending and the list is under the cap.
-- **It says nothing.** The **Request sent** page is the same status and the same
-  words for every outcome: stored, repeated, unknown id, deleted, public, already
-  allowed, a full list and a rate limit. The owner's email, the one slow step,
-  runs after the response is decided. Without an email binding the page says what
-  will happen instead ("the link will open for {email}").
+- **Only a recorded request or repeat says Request sent.** Every unrecorded case
+  gets the same **Request not sent** page, including limits and unknown/deleted
+  ids. The owner email runs after the response and does not decide its words.
 - **Rate limit:** per account, by `REQUEST_ACCESS_LIMITER`. Over the limit stores
-  nothing and still shows **Request sent**.
+  nothing; a previously recorded request remains confirmed.
 - **Approve and decline.** Approving is `PUT …/access/people/{email}` (or **Approve** on
   the share page): one batch inserts the invite and deletes the request, and the
   invite email goes out. It needs the plan, like any add. Declining deletes the
@@ -407,9 +405,9 @@ exists, and the invite email that add sends is the notice to the requester.
   declined address that asks again is a new row.
 - **The owner is emailed on a new row only.** The address is resolved through the
   owner scope: an account owner's own, a license owner's linked account (through
-  `owner_links`), nothing for an unlinked license owner, who sees the request in
-  Copilot's dialog, in `share` and on the share page. The message is from
-  `EMAIL_FROM`, with no reply-to: subject `{requester} asked to open "{title}"`,
+  `owner_links`), nothing for an unlinked license owner. After linking, that
+  owner sees the request in the published page's Share view and on the share page.
+  The message is from `EMAIL_FROM`, with no reply-to: subject `{requester} asked to open "{title}"`,
   the requester's address, the title, "Nothing has been shared yet.", a **Review
   request** link to `https://{API_HOST}/share/{docId}`, and a line for Copilot
   users. **The link carries no token**, so a forwarded email approves nothing and
@@ -632,9 +630,10 @@ round trip between that read and the write.
 
 ## The share page
 
-`https://{API_HOST}/share/{docId}` is the top-level form of the same controls: the
-dialog Copilot renders, served by the Worker, so it exists for whoever published the
-document and for self-hosters. It is behind the reader session, and it is where
+`https://{API_HOST}/share/{docId}` is the top-level form of the published page's
+Share controls, served by the Worker for publishers and self-hosters. Copilot's
+publish dialog only chooses public or private; people and access are managed here.
+It is behind the reader session, and it is where
 **Share** leads when scripts do not run, where the request email's **Review
 request** leads, and the url `share <docId>` prints:
 
@@ -653,9 +652,10 @@ request** leads, and the url `share <docId>` prints:
   words.
 - A session whose account may read the document but does not manage it: the
   reader view. The title, "Only the owner can change who can open this.", **Copy
-  link**, **Use another account**, and a line saying that a page published from
-  Copilot is managed from Copilot. That line is for an owner whose license key is
-  not linked to a browser account, who looks like any other reader here. It lists no
+  link**, **Use another account**, and conditional guidance for a Copilot owner
+  whose license key is not linked to a browser account: no owner notification
+  emails or named invitations, with instructions to link and then sign in here.
+  An unlinked owner looks like any other reader here. It lists no
   people, no mode and no requests. A session whose account has no email row is
   treated as no session.
 - Anyone else, and every unknown or deleted id: the same not-available page as
@@ -668,7 +668,8 @@ the plan gate, the invite email, idempotency and the `document_access_changed`
 event cannot differ between the two. A refused write re-renders the dialog with
 the reason, including "Private sharing needs a paid plan." and the upgrade link
 (`402`), or the 24-hour invite cap (`429`, "Nothing was changed.");
-a successful one redirects (`303`) back to the page. The page is `no-store` with
+an add that attempted email renders its delivery result (`200`); other successful
+writes redirect (`303`) back to the page. The page is `no-store` with
 `frame-ancestors 'none'` and `Referrer-Policy: same-origin` (as on every page of
 the API host that holds a form: a form posted from a `no-referrer` page sends
 `Origin: null`, which would defeat the `Origin` fallback for browsers without
@@ -727,8 +728,9 @@ work.
 
 Links in emails always point at the sacrificial domain or at our own share page,
 never at a grant and never at a requester-chosen url. Without an email binding the
-`email` field of the access JSON is `false`, the share page says "Invited · send
-them the link" instead of "Invited · email sent", and requests are listed without
+`email` field of the access JSON is `false`. Share shows each new invite's actual
+send result and offers Copy link on failure; reload shows only "Has access".
+Requests are listed without
 a notice to the owner.
 
 ## Self-hosting
@@ -843,8 +845,11 @@ subdomain needs a paid certificate for `*.docs.example.net`.
 - **A waiting frame polls** once every two seconds for at most ten minutes, and
   gives up quietly after that.
 - **A Copilot owner whose license key is not linked to a browser account** reaches
-  only the reader view, or the none view, in the popover and on the share page,
-  which tells them to manage access in Copilot.
+  only the reader view, or the none view, in the popover. The same conditional
+  no-email and account-linking guidance appears in both views and before sign-in,
+  without revealing whether the document has an unlinked owner. The share page's
+  reader view also provides this guidance. Link through `ACCOUNT_ACTION_URL`
+  (or ask the server operator), then sign in to manage access from Share.
 
 ## State in the manifest
 

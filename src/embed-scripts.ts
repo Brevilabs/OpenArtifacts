@@ -171,16 +171,6 @@ export const PAGE_SCRIPT = String.raw`(() => {
   "})();\n";
 
 /**
- * What the owner of a Copilot-published page sees when their license key is not
- * linked to a browser account: they can sign in to the popover, but the account
- * that signs in does not own the page. A constant sentence, so it says nothing
- * about the document. The frame receives it in a `data-` attribute rather than
- * holding its own copy.
- */
-export const COPILOT_HINT =
-  "Published from Copilot? Open the note in Copilot and run Publish file to OpenArtifacts to manage who can open it.";
-
-/**
  * The popup's done page script (`popupDonePage`): when the popup still has its
  * opener, post the token to it, then close. A constant, named by its hash in
  * the page's policy; the token and the document id come from `data-` attributes
@@ -374,6 +364,8 @@ export const FRAME_SCRIPT = String.raw`(() => {
   window.addEventListener("resize", edges);
   new MutationObserver(edges).observe(main, { childList: true, subtree: true, characterData: true });
   const doc = main.dataset.doc;
+  // Response-only delivery results survive redraws here, never a reload.
+  const deliveries = new Map();
   const link = main.dataset.link;
   const parentOrigin = main.dataset.origin;
   // Where a public document is served. A frame embedded there while the document
@@ -794,7 +786,10 @@ export const FRAME_SCRIPT = String.raw`(() => {
           if (response !== null) parsed = await response.json().catch(() => null);
         } catch (error) { crashed = true; break; }
         if (response === null) { showGuest("", false); return; }
-        if (response.status === 200 && parsed && parsed.viewer === "owner") { added += 1; last = parsed; continue; }
+        if (response.status === 200 && parsed && parsed.viewer === "owner") {
+          for (const delivery of parsed.inviteDelivery || []) deliveries.set(delivery.email, delivery.outcome);
+          added += 1; last = parsed; continue;
+        }
         if (response.status === 401) { writeToken(null); showGuest("", false); return; }
         if (response.status === 404) { showNone(); return; }
         stop = [response, parsed];
@@ -823,6 +818,7 @@ export const FRAME_SCRIPT = String.raw`(() => {
   };
 
   const showOwner = (body) => {
+    for (const delivery of body.inviteDelivery || []) deliveries.set(delivery.email, delivery.outcome);
     latest = body;
     if (body.linkAccess !== "invited") switched = false;
     message = node("p", { id: "oa-msg", class: "err", role: "alert" });
@@ -876,6 +872,7 @@ export const FRAME_SCRIPT = String.raw`(() => {
         kids.push(node("p", { class: "muted help" }, [body.linkAccess === "anyone" ? "Anyone with the link can view. Only people you add can comment." : "Only people you add can open this page."]));
       }
     }
+    if (body.notificationNotice) kids.push(muted([body.notificationNotice]));
     kids.push(message);
     if (body.requests.length > 0) {
       kids.push(node("h2", {}, ["Requests"]), node("ul", {}, body.requests.map((request) => person(request.email, "Asked to open it", narrow ? [] : [
@@ -883,14 +880,12 @@ export const FRAME_SCRIPT = String.raw`(() => {
         button("Decline", () => write("DELETE", "/access/requests/" + encodeURIComponent(request.email))),
       ].filter((kid) => kid !== null)))));
     }
-    const invitationLabel = body.email ? "Invited" : "Invited · send them the link";
-    kids.push(node("h2", {}, ["Who has access"]), node("ul", {}, [person("You", "Owner", [])].concat(body.people.map((entry) => person(entry.email, invitationLabel, narrow ? [] : [
+    const invitationLabel = (email) => deliveries.get(email) === "sent" ? "Invite email sent" : deliveries.has(email) ? "Invite email not sent · copy the link and send it yourself" : "Has access";
+    kids.push(node("h2", {}, ["Who has access"]), node("ul", {}, [person("You", "Owner", [])].concat(body.people.map((entry) => person(entry.email, invitationLabel(entry.email), narrow ? [] : [
       roleControl(entry),
       button("Remove", () => write("DELETE", "/access/people/" + encodeURIComponent(entry.email)), "link"),
     ].filter((kid) => kid !== null))))));
-    // Both lines are about people on the list, so they wait for someone to be on it.
     const listed = body.people.length > 0 || body.requests.length > 0;
-    if (body.email && mayAdd && body.people.length > 0) kids.push(muted(["OpenArtifacts emails each invitation. If someone doesn’t get it, send them the link."]));
     // Approve, Decline and Remove are one click on a private document, and this
     // frame is on the public origin. See exposed().
     if (narrow && listed) kids.push(muted(["To remove people or answer requests, ", node("a", { href: location.origin + "/share/" + doc, target: "_blank", rel: "noopener noreferrer" }, ["open the share page"]), "."]));
