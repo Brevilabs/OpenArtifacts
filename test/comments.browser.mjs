@@ -1185,6 +1185,24 @@ test("an inner scroller that starts with its passage in view switches from the s
   await context.close();
 });
 
+test("in an inner scroller, the first draft on a page with no thread switches from the sidebar to the sheet once it scrolls away", { timeout: 120_000 }, async () => {
+  const inner = `<div id="sc" style="width:600px;height:100vh;overflow:auto;margin:0 auto"><div id="content"><p id="t">The passage that is in view at load.</p>${"<p>Filler paragraph after the passage, with some words.</p>".repeat(40)}</div></div>`;
+  const docId = await publish("InnerDraft", inner, { html: `<!doctype html><html><head><meta charset="utf-8"><title>Inner</title><style>html,body{height:100%;overflow:hidden;margin:0}</style></head><body>${inner}</body></html>` });
+  const context = await newContext(ALICE, { signedInTo: docId });
+  const tab = await context.newPage();
+  await tab.goto(docUrl(docId));
+  await until("the comments frame", () => commentsFrame(tab, docId));
+  await pressComment(tab, "The passage that is in view at load");
+  await until("the sidebar", async () => (await tab.evaluate(() => getComputedStyle(document.documentElement).paddingRight)) === "320px");
+  await tab.evaluate(() => { document.getElementById("sc").scrollTop = 1500; });
+  await until("the sidebar to give way to the sheet", async () => {
+    const box = await hostBox(tab);
+    return box !== null && Math.abs(box.y + box.height - 800) < 2 && box.height <= 800 * 0.55 + 2;
+  });
+  assert.equal(await tab.evaluate(() => getComputedStyle(document.documentElement).paddingRight), "0px", "the page has its width back");
+  await context.close();
+});
+
 test("a positions message that only changes the host height does not rebuild the reply box being typed in", { timeout: 120_000 }, async () => {
   const docId = await publish("LastLine", `<p>First line.</p><p id="last">The very last line of text.</p>`);
   await agentThread(docId, { exact: "The very last line of text", section: "last" }, "Last?");

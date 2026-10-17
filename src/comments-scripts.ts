@@ -286,7 +286,8 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
     const innerScrolled = () => {
       const se = document.scrollingElement || document.documentElement;
       if (se.scrollHeight > window.innerHeight + 1) return false;
-      for (const range of ranges.values()) {
+      // The draft's passage counts too: on a page with no thread yet it is the only one.
+      for (const range of draftRange ? [draftRange, ...ranges.values()] : ranges.values()) {
         const r = range.getBoundingClientRect();
         if (r.bottom < 0 || r.top > window.innerHeight) return true;
       }
