@@ -243,24 +243,33 @@ describe("POST /api/v1/docs", () => {
     expect((await docRow(body.docId))?.title).toBe("Untitled");
   });
 
-  it("offers account linking to an unlinked Copilot caller until it links", async () => {
+  it("offers account linking to an unlinked Copilot caller on either create until it links", async () => {
     const ACCOUNT_ACTION_URL = "https://actions.example.test/account";
-    const publish = (headers: HeadersInit = {}) =>
-      send("POST", "/api/v1/docs", KEY_A, { html: page("<p>x</p>") }, { ACCOUNT_ACTION_URL }, API_ORIGIN, headers);
+    // Reader sign-in is configured so `POST /private-docs` exists at all.
+    const withPrivateSharing = {
+      ACCOUNT_ACTION_URL,
+      SERVING_HOST: "openartifacts.site",
+      API_HOST: "api.openartifacts.ai",
+      READER_SESSION_SECRET: "k".repeat(32),
+      EMAIL: { send: async () => {} },
+      EMAIL_FROM: "share@mail.openartifacts.ai",
+    } as Partial<Env>;
+    const publish = (route: "docs" | "private-docs", headers: HeadersInit = {}) =>
+      send("POST", `/api/v1/${route}`, KEY_A, { html: page("<p>x</p>") }, withPrivateSharing,
+        "https://api.openartifacts.ai", headers);
     const copilot = { "x-openartifacts-client": "obsidian-copilot" };
+    type Offered = PushResponse & { guidance?: { url: string } };
 
-    const offered = (await pushedOk(await publish(copilot), 201)) as PushResponse & {
-      guidance?: { url: string };
-    };
-    expect(offered.guidance?.url).toBe(ACCOUNT_ACTION_URL);
-    expect(Object.keys(await pushedOk(await publish(), 201)).sort()).toEqual(["docId", "linkAccess", "url", "version"]);
+    expect(((await pushedOk(await publish("docs", copilot), 201)) as Offered).guidance?.url).toBe(ACCOUNT_ACTION_URL);
+    expect(((await pushedOk(await publish("private-docs", copilot), 201)) as Offered).guidance?.url).toBe(ACCOUNT_ACTION_URL);
+    expect(Object.keys(await pushedOk(await publish("docs"), 201)).sort()).toEqual(["docId", "linkAccess", "url", "version"]);
 
     const account = "oa_aaaaaaaaaaaaaaaaaaaaaaaaaa";
     await env.DB.prepare("INSERT INTO accounts (id, email, created_at, plan) VALUES (?, ?, 0, 'pro')")
       .bind(account, "linked@example.test")
       .run();
     expect(await linkExternalOwner(env.DB, ownerA, account, Date.now())).toBe("linked");
-    expect(await pushedOk(await publish(copilot), 201)).not.toHaveProperty("guidance");
+    expect(await pushedOk(await publish("docs", copilot), 201)).not.toHaveProperty("guidance");
   });
 
   it("returns a canonical document url through the canonical API host (D3)", async () => {
