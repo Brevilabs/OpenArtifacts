@@ -2395,3 +2395,36 @@ test("after a post, focus moves to the new card's reply field and the frame anno
   await until("the announcement", async () => (await live.textContent()) === "Comment posted");
   await context.close();
 });
+
+test("hovering a highlight or its card links them: the passage darkens and the card lifts, and leaving restores both", { timeout: 120_000 }, async () => {
+  const docId = await publish("Hover", REPORT);
+  const quote = "Renewal risk is concentrated in three accounts";
+  await agentThread(docId, { exact: quote, section: "risk" }, "Is this still true?");
+  const context = await newContext(ALICE, { signedInTo: docId });
+  const tab = await context.newPage();
+  await tab.goto(docUrl(docId));
+  await openSidebar(tab);
+  const frame = commentsFrame(tab, docId);
+  const card = cardFor(frame, "Is this still true?");
+  await until("the card level with its passage", allLevel(tab, frame, [["Is this still true?", quote]]));
+  const rest = await card.evaluate((el) => getComputedStyle(el).boxShadow);
+  const lifted = () => card.evaluate((el, before) => getComputedStyle(el).boxShadow !== before, rest);
+  assert.deepEqual(await painted(tab, "openartifacts-focus"), []);
+
+  const at = await rectOf(tab, quote);
+  await tab.mouse.move(at.x + at.width / 2, at.y + at.height / 2);
+  await until("the passage in the active yellow", async () => (await painted(tab, "openartifacts-focus")).length === 1);
+  await until("the card lifted", lifted);
+  await tab.mouse.move(20, 700);
+  await until("the passage back", async () => (await painted(tab, "openartifacts-focus")).length === 0);
+  await until("the card back", async () => !(await lifted()));
+
+  const box = await card.boundingBox();
+  await tab.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await until("the passage in the active yellow from the card", async () => (await painted(tab, "openartifacts-focus")).length === 1);
+  await until("the card lifted", lifted);
+  await tab.mouse.move(20, 700);
+  await until("the passage back after the card", async () => (await painted(tab, "openartifacts-focus")).length === 0);
+  await until("the card back after the card", async () => !(await lifted()));
+  await context.close();
+});

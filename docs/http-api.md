@@ -1105,11 +1105,13 @@ also checks the origin.
 | page → frame | `positions` | `{tops, lost, height}`: each placed thread's top in document coordinates, the ids it could not place, and the document height |
 | page → frame | `draft` | `{anchor \| null, top}`: a selection awaiting its comment |
 | page → frame | `focus` | `{threadId}` (empty clears) |
+| page → frame | `hover` | `{threadId}`: the thread whose passage or card is under the pointer (empty clears); its card lifts |
 | page → frame | `dismiss` | none: a click on the page; the frame drops the draft if nothing is typed in it |
 | frame → page | `ready` | none |
 | frame → page | `viewer` | `{canComment}`, after every read of the frame's own: `false` when signed out, the server's answer when signed in |
 | frame → page | `changed` | none: refetch now |
 | frame → page | `focus` | `{threadId}` |
+| frame → page | `hover` | `{threadId}`: the card under the pointer (empty clears); its passage takes the active yellow |
 | frame → page | `cancel` | none: the frame dropped an empty draft; the page unmarks its passage, and closes the sheet |
 | frame → page | `close` | none: the reader closed the comments (the header's close button, or Escape on the sheet) |
 | frame → page | `size` | `{height}`: how tall the sidebar's stacked cards need the column to be (`margin` mode) |

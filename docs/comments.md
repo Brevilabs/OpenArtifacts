@@ -245,6 +245,8 @@ The model is a document editor's comment margin (Google Docs, Notion, Figma):
   week, with the exact local date and time on hover.
 - **After a post** focus moves to the reply field of what was posted, and a
   polite live region in the frame says "Comment posted".
+- **Hovering links a passage and its card**: while either is under the pointer,
+  the passage takes the active yellow and the card lifts; leaving restores both.
 
 ## Plans, limits and abuse
 

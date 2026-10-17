@@ -56,9 +56,11 @@
  *
  * **Messages.** To the frame, `{type, event, …}` with the API origin as the
  * target: `mode`, `theme` (whether the page's own background is dark), `visible`,
- * `threads`, `positions`, `draft`, `focus`, `dismiss`.
+ * `threads`, `positions`, `draft`, `focus`, `hover` (the thread whose card lifts:
+ * its passage or its card is under the pointer), `dismiss`.
  * From it, accepted only from that iframe's window and the API origin: `ready`,
- * `viewer`, `changed`, `focus`, `cancel` (an empty draft was dropped), `close`
+ * `viewer`, `changed`, `focus`, `hover` (the card under the pointer), `cancel`
+ * (an empty draft was dropped), `close`
  * (the reader closed the comments), and three that are layout only and reveal
  * nothing beyond `viewer`: `size` (the height the sidebar's stacked cards need),
  * `height` (the height of the sheet's content) and `reveal` (where the active
@@ -97,7 +99,7 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
     let data = null, active = false, open = false, canComment = false, mode = "margin";
     let mhost = null, mframe = null, ready = false, button = null, words = null, tipHost = null, tip = null;
     let canon = null, dirty = true, ranges = new Map(), lost = [], draft = null, draftRange = null, focusId = "", timer = 0;
-    let need = 0, sheetH = 0, refreshSeq = 0, ownerHere = false, probing = false;
+    let need = 0, sheetH = 0, refreshSeq = 0, ownerHere = false, probing = false, hoverPage = "", hoverFrame = "";
     const out = {};
     const flag = link.getAttribute("data-comments");
 
@@ -368,6 +370,9 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       if (active) {
         ranges.forEach((range) => groups["openartifacts-open"].push(range));
         if (focusId && ranges.has(focusId)) groups["openartifacts-focus"].push(ranges.get(focusId));
+        // The passage under the pointer, or of the card under it, takes the active yellow while it is there.
+        const hovered = hoverFrame || hoverPage;
+        if (hovered && hovered !== focusId && ranges.has(hovered)) groups["openartifacts-focus"].push(ranges.get(hovered));
         if (draftRange) groups["openartifacts-draft"].push(draftRange);
       }
       Object.keys(groups).forEach((name, i) => {
@@ -376,6 +381,13 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
         h.priority = i;
         CSS.highlights.set(name, h);
       });
+    };
+    // A passage and its card are linked while either is under the pointer: the passage takes the active yellow (paint) and the frame lifts the card. The page decides both, so a card is never left lifted by a pointer the frame did not see go.
+    let hoverSent = "";
+    const hover = () => {
+      const h = hoverFrame || hoverPage;
+      if (h !== hoverSent) { hoverSent = h; send({ event: "hover", threadId: h }); }
+      paint();
     };
     const locateAll = () => {
       if (dirty || !canon) build();
@@ -559,6 +571,8 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
         if (mode !== "margin" || !open) return;
         const t = mhost.getBoundingClientRect().top + msg.top;
         if (t < 48 || t + msg.height > window.innerHeight) window.scrollTo({ top: Math.max(0, t + window.pageYOffset - window.innerHeight * 0.15), behavior: "smooth" });
+      } else if (msg.event === "hover" && typeof msg.threadId === "string") {
+        if (msg.threadId !== hoverFrame) { hoverFrame = msg.threadId; hover(); }
       } else if (msg.event === "cancel") {
         // The frame dropped an empty draft. The sheet was showing only that draft; the sidebar stays.
         if (draft) endDraft();
@@ -640,6 +654,16 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       link.addEventListener("click", () => { if (mode === "overlay") closePanel(); });
       // A draft is the frame's to end (it knows whether words are in it); a sheet without one closes. The sidebar stays open until its reader closes it.
       document.addEventListener("keydown", (event) => { if (open && event.key === "Escape") { if (draft) send({ event: "dismiss" }); else if (mode === "overlay") closePanel(); } }, true);
+      // The passage under the pointer, measured against the passages' own boxes (not the nearest caret, so the space beside a line is not the line). A move on the page also means the pointer is not over the frame, whether or not the frame saw it leave a card.
+      document.addEventListener("pointermove", (event) => {
+        if (!active || event.pointerType === "touch") return;
+        const x = event.clientX, y = event.clientY;
+        const hit = Array.from(ranges).find((entry) => Array.from(entry[1].getClientRects()).some((r) => x >= r.left && x <= r.right && y >= r.top && y <= r.bottom));
+        const next = hit ? hit[0] : "";
+        if (next !== hoverPage || hoverFrame) { hoverPage = next; hoverFrame = ""; hover(); }
+      }, { passive: true });
+      // Into the frame or out of the window: nothing on the page is under the pointer.
+      document.addEventListener("pointerout", (event) => { if (!event.relatedTarget && hoverPage) { hoverPage = ""; hover(); } });
       // ⌘⌥M (Ctrl+Alt+M elsewhere) opens the composer on the selection, as the Comment button does. It only opens it: posting still takes a click on Send.
       document.addEventListener("keydown", (event) => {
         if (event.code !== "KeyM" || !event.altKey || event.shiftKey || (MAC ? !event.metaKey || event.ctrlKey : !event.ctrlKey || event.metaKey)) return;
@@ -739,7 +763,10 @@ main.overlay{background:var(--sheet);padding:0 14px 18px}
 .cards{position:relative}
 .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px 12px;box-shadow:var(--shadow)}
 .margin .card,.margin .heading,.margin .head,.margin .line{position:absolute;left:8px;right:16px}
+.card[data-thread]{transition:box-shadow .15s}
+.card.hover{box-shadow:var(--lift)}
 .card.focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--ring),var(--shadow)}
+.card.focus.hover{box-shadow:0 0 0 3px var(--ring),var(--lift)}
 .card.muted,.card.resolved{background:var(--sunk)}
 .heading{font:10px/1.4 ui-monospace,"SF Mono",Menlo,Consolas,monospace;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);background:var(--card);border:1px solid var(--line);border-radius:6px;padding:2px 6px}
 .margin .heading{right:auto}
@@ -834,9 +861,9 @@ button.b.primary{background:var(--send);border-color:var(--send);color:var(--sen
  * **What it tells the page.** `ready`, once, before it touches storage; `viewer`
  * with `{canComment}` after every read (false until the server says a signed-in
  * viewer may, so no one is offered Comment only to be refused); `changed` after its own
- * write; `focus` when a card is pressed; `cancel` when an empty draft is
- * dropped; `close` from the header's close button (or Escape on the sheet).
- * Nothing else about the viewer.
+ * write; `focus` when a card is pressed; `hover` while the pointer is over a
+ * card; `cancel` when an empty draft is dropped; `close` from the header's close
+ * button (or Escape on the sheet). Nothing else about the viewer.
  *
  * **Signing in** is the Share popover's own handshake, copied: a nonce only this
  * frame knows, its hash in the popup's address, collected by polling
@@ -906,7 +933,7 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
   let draft = null, draftTop = 0, focusId = "", loadSeq = 0, lastViewer = null, positionsKey = "";
   let signState = "", prepared = null, opened = null, generation = 0, wake = null;
   let confirming = "";
-  let showResolved = false, undoId = "", undoTimer = 0, menuId = "", posted = null, focusKey = "";
+  let showResolved = false, undoId = "", undoTimer = 0, menuId = "", posted = null, focusKey = "", hoverId = "";
   let modelKey = "", inFlight = false, lastLoad = 0, composing = false, owed = false, stacked = { head: [], flow: [] }, sentNeed = -1, revealOwed = false;
   const texts = {}, errors = {}, busy = {};
 
@@ -1231,9 +1258,12 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     // Typed, not concatenated: a relayed atVersion is the page's, and a string there could write its own "by" into the summary.
     const at = res && Number.isInteger(res.atVersion) && res.atVersion > 0 ? res.atVersion : 0;
     const summary = res ? (at ? "Resolved in v" + at : "Resolved") + (relayedOnly() ? "" : " by " + by) : "Resolved";
-    const card = node("div", { class: "card" + (resolved ? " resolved" : "") + (orphan ? " muted" : "") + (focusId === id ? " focus" : ""), "data-thread": id });
+    const card = node("div", { class: "card" + (resolved ? " resolved" : "") + (orphan ? " muted" : "") + (focusId === id ? " focus" : "") + (hoverId === id ? " hover" : ""), "data-thread": id });
     // A click, not a press: the card moves to its passage when it becomes active, and a press that moved it would lose the click it began (on Resolve, say).
     card.addEventListener("click", () => focusThread(id));
+    // The pointer over a card marks its passage, as the passage under the pointer lifts its card.
+    card.addEventListener("pointerenter", (event) => { if (event.pointerType !== "touch") post({ event: "hover", threadId: id }); });
+    card.addEventListener("pointerleave", (event) => { if (event.pointerType !== "touch") post({ event: "hover", threadId: "" }); });
     if (orphan || resolved || mode === "overlay") card.append(node("div", { class: "quote" }, [text(thread.anchor && thread.anchor.exact)]));
     if (resolved) card.append(node("p", { class: "where" }, [summary]));
     const comments = Array.isArray(thread.comments) ? thread.comments : [];
@@ -1479,6 +1509,9 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
         draft = null;
         render();
       }
+    } else if (msg.event === "hover") {
+      hoverId = typeof msg.threadId === "string" ? msg.threadId : "";
+      for (const element of cards.querySelectorAll("[data-thread]")) element.classList.toggle("hover", hoverId !== "" && element.dataset.thread === hoverId);
     } else if (msg.event === "dismiss") {
       if (draft && (texts.draft || "").trim() === "") cancelDraft();
     } else if (msg.event === "focus") {
