@@ -28,9 +28,7 @@
  * (the page is immutable and must not freeze it), its first act is
  * `GET /d/{docId}/threads` on the page's own origin, and unless that answers
  * `200` with a thread or `commentable: true` it adds no button, no frame and no
- * listener. A private (invited-only) page always says `on` and `commentable`
- * (its viewers are the owner and the people they invited), so its owner can select
- * text at once. A public page with nobody to comment stays inert until the first
+ * listener. A page with nobody to comment stays inert until the first
  * selection of the author's text: then, once per page load, the script builds the
  * comments frame hidden and waits for its `viewer` message, and only a yes
  * (the owner, signed in to the frame) makes it active and shows Comment. The Share popover tells it when its owner adds a person, changes a
@@ -100,7 +98,7 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
     let data = null, active = false, open = false, canComment = false, mode = "margin";
     let mhost = null, mframe = null, ready = false, button = null, words = null, tipHost = null, tip = null;
     let canon = null, dirty = true, ranges = new Map(), lost = [], draft = null, draftRange = null, focusId = "", timer = 0;
-    let need = 0, sheetH = 0, refreshSeq = 0, ownerHere = false, probing = false, hoverPage = "", hoverFrame = "";
+    let need = 0, sheetH = 0, refreshSeq = 0, ownerHere = false, hoverPage = "", hoverFrame = "";
     const out = {};
     const flag = link.getAttribute("data-comments");
 
@@ -574,8 +572,8 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
         canComment = msg.canComment !== false;
         // A selection made before this answer (before signing in, say) gets its Comment button now, not on the next selection.
         refreshTip();
-        // The probe's answer: this viewer may comment, so the page is theirs to comment on, as after the Share popover's event.
-        if (probing) { probing = false; if (canComment) { ownerHere = true; refresh().then(refreshTip); } }
+        // An inert page has nobody else who may comment, so a yes here is its owner's (the selection probe's answer): the page is theirs to comment on, as after the Share popover's event.
+        if (!active && canComment) { ownerHere = true; refresh().then(refreshTip); }
       } else if (msg.event === "changed") {
         // The draft's passage stays marked until the read that draws its thread has landed, so a sent comment is never nowhere.
         const mine = draft;
@@ -746,7 +744,6 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       const sel = window.getSelection();
       if (!sel || sel.isCollapsed || sel.rangeCount === 0) return;
       for (const n of [sel.anchorNode, sel.focusNode]) if (!n || !document.body.contains(n) || outermost(n)) return;
-      probing = true;
       buildHost();
     });
     if (flag !== "off") refresh();
@@ -817,9 +814,13 @@ button.ic:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
 .menu .item:hover,.menu .item:focus-visible{background:var(--hover);outline:0}
 .card:not(.focus) .replybox{display:none}
 .card:focus-visible{outline:0}
-button.link.strong{font-size:12px;font-weight:650;color:var(--ink)}
-button.link.toggle{font-size:12px;color:var(--muted)}
-button.link:focus-visible,button.row:focus-visible,button.b:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+button.chip{display:inline-flex;align-items:center;gap:3px;height:24px;padding:0 8px 0 10px;border:1px solid var(--edge);border-radius:999px;background:none;color:var(--ink);font:inherit;font-size:12px;font-weight:600;cursor:pointer}
+button.chip:hover{background:var(--hover)}
+button.chip svg{width:14px;height:14px;transition:transform .15s}
+button.chip[aria-expanded="true"] svg{transform:rotate(180deg)}
+button.chip.primary{padding:0 12px;border-color:var(--send);background:var(--send);color:var(--send-ink)}
+button.chip.primary:hover{opacity:.85}
+button.link:focus-visible,button.row:focus-visible,button.b:focus-visible,button.chip:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .head .done{font-size:12px;color:var(--muted)}
 .composer{display:flex;align-items:flex-end;gap:6px;border:1px solid var(--edge);border-radius:20px;background:var(--field);padding:3px 3px 3px 14px}
 .composer:focus-within{border-color:var(--accent);box-shadow:0 0 0 2px var(--ring)}
@@ -1183,12 +1184,12 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     if (way) kids.push(way);
     return kids.length ? node("div", { class: "line" }, kids) : null;
   };
-  // The title, the resolved threads (off the page, waiting behind their count; for a few seconds after a resolve, "Resolved · Undo" in its place) and the close button, in the sidebar and the sheet alike. Undo lives in this row so it never pushes the cards down.
+  // The title, the resolved threads (off the page, waiting behind their count, a button whose chevron turns when open; for a few seconds after a resolve, "Resolved" and an Undo button in its place) and the close button, in the sidebar and the sheet alike. Undo lives in this row, no taller than the close button, so it never pushes the cards down.
   const header = () => {
     const n = loaded ? resolvedOf().length : 0;
     const kids = [node("span", { class: "title" }, ["Comments"])];
-    if (undoId) kids.push(node("span", { class: "done" }, ["Resolved ·"]), button("Undo", () => reopenThread(undoId), "link strong"));
-    else if (n) kids.push(node("button", { type: "button", class: "link toggle", "aria-expanded": String(showResolved), onclick: () => { showResolved = !showResolved; render(); } }, [n + " resolved"]));
+    if (undoId) kids.push(node("span", { class: "done" }, ["Resolved"]), button("Undo", () => reopenThread(undoId), "chip primary"));
+    else if (n) kids.push(node("button", { type: "button", class: "chip", "aria-expanded": String(showResolved), onclick: () => { showResolved = !showResolved; render(); } }, [n + " resolved", icon("M6 9l6 6 6-6", "2.2")]));
     kids.push(iconButton("Close comments", "M6 6l12 12M18 6L6 18", () => post({ event: "close" })));
     return node("div", { class: "head" }, kids);
   };
@@ -1517,7 +1518,7 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
         errors.draft = "";
         revealOwed = true;
         render();
-        // Only the page script's Comment click asks for focus, so a bare draft message (which any page on the serving origin can send) never moves it.
+        // The page's Comment click asks for focus. Any page on the serving origin could ask too, which gains it nothing: it could already put a reader's click on this box through a transparent frame, and posting still takes a click on Send.
         if (msg.focus === true) {
           const field = Array.from(cards.querySelectorAll("textarea")).find((element) => element.dataset.key === "draft");
           if (field) field.focus({ preventScroll: true });

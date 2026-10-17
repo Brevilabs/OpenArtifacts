@@ -1718,21 +1718,9 @@ describe("an invited-only document", () => {
       const doc = await privateDoc("for invited eyes");
       const cookie = await cookieFor(doc, doc.owner);
       const latest = await getFrom(`${doc.host}/d/${doc.docId}`, { headers: { cookie } }, PRIVATE);
-      expect(await latest.text()).toContain('data-comments="on"');
+      expect(await latest.text()).toContain('data-comments="off"');
       const pinned = await getFrom(`${doc.host}/d/${doc.docId}/v1`, { headers: { cookie } }, PRIVATE);
       expect(await pinned.text()).not.toContain("data-comments");
-    });
-
-    it("serves an invited-only page with no thread and nobody at Can comment as comments on, and a public one as off", async () => {
-      const priv = await privateDoc("for invited eyes");
-      const cookie = await cookieFor(priv, priv.owner);
-      const flag = async (response: Response) => /data-comments="(on|off)"/.exec(await response.text())?.[1] ?? null;
-      const invited = await getFrom(`${priv.host}/d/${priv.docId}`, { headers: { cookie } }, PRIVATE);
-      expect(await flag(invited)).toBe("on");
-      expect(invited.headers.get("etag")).toMatch(/\.r\d+\.c1"$/);
-
-      const pub = await privateDoc("a public page", KEY, "anyone");
-      expect(await flag(await getFrom(`https://openartifacts.site/d/${pub.docId}`, {}, PRIVATE))).toBe("off");
     });
 
     // An open tab, or the shared link's 60-second cache, can show a version older

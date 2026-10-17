@@ -172,11 +172,10 @@ function of the stored version. So comments are a **separate resource**:
   same-origin and adds the comments button, the highlights, and the frame. It does
   not ask when the bar says the document has no comments: on the shared link the
   Share link carries `data-comments="on|off"`, derived in the `docs` read the serving
-  path already makes (`has_threads`, a person at `comment` or above, or an
-  invited-only document, where the owner is always a possible commenter) and folded
+  path already makes (`has_threads`, or a person at `comment` or above) and folded
   into that rendering's etag (`.c0` / `.c1` after the deploy time), so a page with no
   comments costs no second request and a flip reaches readers within the route's
-  60 seconds. On a page that stays inert (public, no thread, nobody at `comment`)
+  60 seconds. On a page that stays inert (no thread, nobody at `comment`)
   the first text selection builds the frame hidden, once per page load, and the
   frame's existing `viewer` message says whether this viewer may comment (the owner
   signed in to the frame): if so the page activates and offers **Comment** without the
@@ -217,8 +216,9 @@ The model is a document editor's comment margin (Google Docs, Notion, Figma):
   the reader was looking at (the passage being commented on, the active thread's,
   else the line in the middle of the window) stays where it was on screen while
   the page reflows. The column has
-  a header (the title, the `N resolved` toggle, which reads "Resolved · Undo" for a
-  few seconds after a resolve, and a close button), then the
+  a header (the title, an `N resolved` button whose chevron turns while the resolved
+  threads are shown, replaced for a few seconds after a resolve by "Resolved" and an
+  **Undo** button, and a close button), then the
   threads whose text changed, under "On text that changed" with their quotes, then
   a card level with the first line of each passage.
 - **Cards follow Google Docs when they collide**: in passage order, 8 px apart, the

@@ -506,22 +506,6 @@ describe("who can comment", () => {
     expect(await read(carol)).toBe(false);
   });
 
-  it("counts the owner for an invited-only page: commentable with nobody at Can comment, false once the plan lapses, and unchanged on a public page", async () => {
-    const owner = await person("logan@acme.com", "Logan");
-    const carol = await person("carol@other.com", "Carol");
-    const priv = await publish(owner, "Private notes", TEXT, "invited");
-    const pub = await publish(owner, "Public notes", TEXT, "anyone");
-    await invite(priv, carol.email, "view");
-    const read = async (docId: string, who: Person) => ((await (await listThreads(docId, who.token)).json()) as { commentable: boolean }).commentable;
-
-    expect(await read(priv, owner)).toBe(true);
-    expect(await read(priv, carol)).toBe(true);
-    expect(await read(pub, owner)).toBe(false);
-
-    await env.DB.prepare("UPDATE accounts SET plan = 'free' WHERE id = ?").bind(owner.id).run();
-    expect(await read(priv, owner)).toBe(false);
-  });
-
   it("sets has_threads with the first thread, keeps it after the last is deleted, and never reads it from a switch", async () => {
     const { owner, alice, priv } = await world();
     const flag = async () =>

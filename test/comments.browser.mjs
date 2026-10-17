@@ -1565,19 +1565,22 @@ test("a thread read that answers after a newer one does not paint over it", { ti
   await context.close();
 });
 
-test("the owner of a private page nobody has been invited to selects text and gets Comment, without opening Share", { timeout: 120_000 }, async () => {
+test("the owner of a private page nobody else can comment on selects text and gets Comment and the Comments button, without opening Share", { timeout: 120_000 }, async () => {
   const docId = await publish("Private, alone", REPORT, { route: "private-docs", comments: false });
+  // A Can-view invitee makes nobody else a commenter, the owner's real situation.
+  await db.prepare("INSERT INTO doc_invites (doc_id, email, role, created_at) VALUES (?, 'bob@example.com', 'view', ?)").bind(docId, Date.now()).run();
   const context = await newContext(OWNER_ACCOUNT, { signedInTo: docId });
   const tab = await context.newPage();
   await tab.goto(`https://${API}/open/${docId}`);
   await tab.waitForURL(new RegExp(`/d/${docId}`));
-  assert.equal(await tab.locator("a[data-openartifacts-share]").getAttribute("data-comments"), "on");
+  assert.equal(await tab.locator("a[data-openartifacts-share]").getAttribute("data-comments"), "off");
+  assert.equal(await barButton(tab).count(), 0);
+  await select(tab, "Staffing is unchanged");
+  await until("the Comment button", () => tab.locator(".openartifacts-comment-tip").isVisible());
   await barButton(tab).waitFor();
   const frame = await until("the comments frame", () => commentsFrame(tab, docId));
   await openSidebar(tab);
   await frame.getByText("Select text to comment.").waitFor();
-  await select(tab, "Staffing is unchanged");
-  await until("the Comment button", () => tab.locator(".openartifacts-comment-tip").isVisible());
   await shoot(tab, "sidebar-private-owner-alone");
   await context.close();
 });
@@ -1809,7 +1812,7 @@ test("resolving takes the thread off the page and offers Undo; resolved threads 
   assert.deepEqual(await painted(tab, "openartifacts-resolved"), []);
   // In the header row, in place of the count, so it never pushes the cards down.
   await frame.locator(".head").getByRole("button", { name: "Undo" }).waitFor();
-  assert.match(await frame.locator(".head").innerText(), /Resolved ·\s*Undo/);
+  assert.match(await frame.locator(".head").innerText(), /Resolved\s*Undo/);
   await shoot(tab, "sidebar-resolved-undo");
 
   // Undo brings it back where it was.
@@ -1835,6 +1838,52 @@ test("resolving takes the thread off the page and offers Undo; resolved threads 
   await until("the thread to reopen", async () => (await threadsOf(docId, "open")).length === 2);
   await until("both highlights", async () => (await painted(tab, "openartifacts-open")).length === 2);
   await owner.close();
+});
+
+test("in the header, Undo is a button for its few seconds and the resolved count a button whose chevron turns, on a light page and a dark one", { timeout: 180_000 }, async () => {
+  const cases = [["light", page(REPORT)], ["dark", page(REPORT, "<style>body{background:#111316;color:#e8e6e1}</style>")]];
+  const look = (locator) => locator.evaluate((el) => ({ bg: getComputedStyle(el).backgroundColor, border: getComputedStyle(el).borderTopWidth, size: parseFloat(getComputedStyle(el).fontSize) }));
+  const turn = (toggle) => toggle.locator("svg").evaluate((el) => getComputedStyle(el).transform);
+  for (const [name, html] of cases) {
+    const docId = await publish(`Header ${name}`, REPORT, { html });
+    await agentThread(docId, { exact: "Renewal risk is concentrated in three accounts", section: "risk" }, "This overstates the renewal risk.");
+    await agentThread(docId, { exact: "Staffing is unchanged" }, "Is that deliberate?");
+    const owner = await newContext(OWNER_ACCOUNT, { signedInTo: docId });
+    const tab = await owner.newPage();
+    await tab.goto(docUrl(docId));
+    const frame = await until("the comments frame", () => commentsFrame(tab, docId));
+    await openSidebar(tab);
+    const cards = frame.locator("[data-thread]");
+    await until("two cards", async () => (await cards.count()) === 2);
+    const head = frame.locator(".head");
+    const rowHeight = (await head.boundingBox()).height;
+
+    await cardFor(frame, "Is that deliberate?").getByRole("button", { name: "Resolve" }).click();
+    const undo = head.getByRole("button", { name: "Undo" });
+    await undo.waitFor();
+    const offer = await look(undo);
+    assert.notEqual(offer.bg, "rgba(0, 0, 0, 0)", `${name}: Undo is a filled button, not grey text`);
+    assert.ok(offer.size >= 12, `${name}: Undo is not small print`);
+    assert.equal((await head.boundingBox()).height, rowHeight, `${name}: Undo does not grow the header row`);
+    await shoot(tab, `header-undo-${name}`);
+
+    await until("the Undo offer to go", async () => (await undo.count()) === 0, 12_000);
+    const toggle = head.getByRole("button", { name: "1 resolved" });
+    await toggle.waitFor();
+    assert.equal(await toggle.getAttribute("aria-expanded"), "false");
+    assert.equal((await look(toggle)).border, "1px", `${name}: the count is outlined as a button`);
+    assert.equal(await turn(toggle), "none", `${name}: the chevron points down while closed`);
+    const resting = (await look(toggle)).bg;
+    await toggle.hover();
+    await until(`${name}: a hover state`, async () => (await look(toggle)).bg !== resting);
+    await toggle.click();
+    assert.equal(await toggle.getAttribute("aria-expanded"), "true");
+    await frame.locator("[data-thread].resolved").waitFor();
+    await until(`${name}: the chevron turned`, async () => /^matrix\(-1, /.test(await turn(toggle)));
+    assert.equal((await head.boundingBox()).height, rowHeight, `${name}: the count does not grow the header row`);
+    await shoot(tab, `header-resolved-open-${name}`);
+    await owner.close();
+  }
 });
 
 test("a thread card has no Open badge, a Resolve icon, one menu per comment, and a reply box only while focused", { timeout: 120_000 }, async () => {
