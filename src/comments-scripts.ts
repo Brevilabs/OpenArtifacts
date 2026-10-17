@@ -606,7 +606,8 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
         const t = mhost.getBoundingClientRect().top + msg.top;
         if (t < 48 || t + msg.height > window.innerHeight) window.scrollTo({ top: Math.max(0, t + window.pageYOffset - window.innerHeight * 0.15), behavior: "smooth" });
       } else if (msg.event === "hover" && typeof msg.threadId === "string") {
-        if (msg.threadId !== hoverFrame) { hoverFrame = msg.threadId; hover(); }
+        // The pointer is over the frame, so no passage on the page is under it.
+        if (msg.threadId !== hoverFrame || hoverPage) { hoverFrame = msg.threadId; hoverPage = ""; hover(); }
       } else if (msg.event === "cancel") {
         // The frame dropped an empty draft. The sheet was showing only that draft; the sidebar stays.
         if (draft) endDraft();
@@ -697,7 +698,7 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
         const next = hit ? hit[0] : "";
         if (next !== hoverPage || hoverFrame) { hoverPage = next; hoverFrame = ""; hover(); }
       }, { passive: true });
-      // Into the frame or out of the window: nothing on the page is under the pointer.
+      // Out of the window: nothing on the page is under the pointer. A move into the frame may reach the page as no event at all, so the frame says when the pointer enters it (its hover message).
       document.addEventListener("pointerout", (event) => { if (!event.relatedTarget && hoverPage) { hoverPage = ""; hover(); } });
       // ⌘⌥M (Ctrl+Alt+M elsewhere) opens the composer on the selection, as the Comment button does. It only opens it: posting still takes a click on Send.
       document.addEventListener("keydown", (event) => {
@@ -1563,6 +1564,8 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
       else if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
     } else if (mode === "overlay") post({ event: "close" });
   });
+  // The page is not told when the pointer crosses into this frame, so entering it says no card is under the pointer yet (a card's own pointerenter follows), and the page drops the passage it had lit.
+  document.documentElement.addEventListener("pointerenter", (event) => { if (event.pointerType !== "touch") post({ event: "hover", threadId: "" }); });
   // A press outside an open menu closes it without redrawing, so the press that closed it still lands on what it was aimed at.
   document.addEventListener("pointerdown", (event) => {
     if (!menuId || (event.target instanceof Element && event.target.closest(".menu, .more"))) return;
