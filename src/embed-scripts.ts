@@ -386,7 +386,10 @@ i.sk{display:inline-block;height:10px;border-radius:5px;vertical-align:middle}
  * `main` takes its content's height (`body.fit`) and the frame posts `size`, the
  * row above `main` plus all of `main`, whenever that changes (a line added, a
  * resize); leaving it posts `size` 0, the fixed height, which follows only from
- * the owner's own view. Whether it `fits` is fixed when the frame loads,
+ * the owner's own view. Nothing is posted while the frame has no width
+ * (`innerWidth` 0): Chrome may run it before the page has laid it out, and its
+ * content measured at no width is thousands of pixels tall; the resize that
+ * gives it its width reports. Whether it `fits` is fixed when the frame loads,
  * because the frame is never reloaded (`PAGE_SCRIPT`): one loaded on the shared
  * origin stays silent after the document goes private, and one loaded on the
  * code origin keeps reporting its owner view after the document goes public,
@@ -453,6 +456,9 @@ export const FRAME_SCRIPT = String.raw`(() => {
   const edges = () => {
     document.body.classList.toggle("scrolled", main.scrollTop > 0);
     document.body.classList.toggle("more", main.scrollTop + main.clientHeight < main.scrollHeight - 1);
+    // A frame the page has not laid out yet has no width, and its content measured at none is far
+    // taller than it will be. The resize that gives it its width reports.
+    if (window.innerWidth === 0) return;
     const height = fits && ownerDrawn ? Math.ceil(header.getBoundingClientRect().height + main.scrollHeight) : 0;
     // Leaving the owner view posts 0, so the popover goes back to the fixed height.
     if (height !== reported) { reported = height; post("size", { height: height }); }
