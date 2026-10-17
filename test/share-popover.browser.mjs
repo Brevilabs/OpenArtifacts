@@ -34,7 +34,7 @@
  * `popover-owner.png`, `popover-private.png` and the `popover-pasted*.png` pair, which is how the screenshots in
  * a pull request are made.
  * It also saves `popover-roles.png` and `popover-plan-line.png`, for the role
- * dropdown and the free owner's plan line, `popover-loading.png`, the skeleton
+ * dropdown and the free owner's upgrade card beside an invitee, `popover-free.png` (a free owner with nobody added), `popover-loading.png`, the skeleton
  * a token holder sees while the access read is out, `popover-crowded.png`, `popover-private-six.png` (a private
  * page's popover sized to six people) and `popover-busy-add.png` (Add while its request is out).
  */
@@ -176,7 +176,7 @@ before(async () => {
       OAUTH_GITHUB_CLIENT_SECRET: "y",
       DEFAULT_PLAN: vars.DEFAULT_PLAN,
       PLAN_LIMITS: vars.PLAN_LIMITS,
-      // The plan line and a plan refusal carry an Upgrade link in production, and the popover's height must hold them.
+      // The upgrade card and a plan refusal carry an Upgrade link in production, and the popover's height must hold them.
       UPGRADE_URL: vars.UPGRADE_URL,
     },
   });
@@ -931,11 +931,8 @@ test("the popover is one row and one scroll region, and an owner with nobody add
   await db.prepare("UPDATE accounts SET plan = 'free' WHERE id = ?").bind(OWNER_ACCOUNT).run();
   try {
     await frame.getByRole("radio", { name: "Anyone with the link" }).click();
-    await frame.getByText("Private pages and comments need a paid plan.").waitFor();
-    await fits("a free owner's plan line");
-    await frame.getByRole("radio", { name: "Only those invited" }).click();
-    await frame.getByText("Private sharing needs a paid plan. Nothing was changed.").waitFor();
-    await fits("the refusal after a failed switch");
+    await frame.getByText("Private sharing and comments").waitFor();
+    await fits("a free owner's card");
   } finally {
     await db.prepare("UPDATE accounts SET plan = 'pro' WHERE id = ?").bind(OWNER_ACCOUNT).run();
   }
@@ -1047,7 +1044,7 @@ test("an owner view taller than the popover scrolls under the row instead of squ
 
 test("the owner view with nobody added fits the popover without a scrollbar, and a crowded one scrolls", { timeout: 180_000 }, async () => {
   // The popover is one fixed height, so its tallest owner view with nobody added has to fit it: the private page's
-  // helper line wrapping, the copy notice, and the free owner's plan line.
+  // helper line wrapping, the copy notice, and the free owner's upgrade card.
   const X = await publish("Roomy", "<p>Mine.</p>");
   const context = await newContext(OWNER_ACCOUNT, 900);
   const { page, frame } = await ownerFrame(context, X);
@@ -1073,11 +1070,11 @@ test("the owner view with nobody added fits the popover without a scrollbar, and
   await db.prepare("UPDATE accounts SET plan = 'free' WHERE id = ?").bind(OWNER_ACCOUNT).run();
   try {
     await frame.getByRole("radio", { name: "Anyone with the link" }).click();
-    await until("the free owner view", async () => (await frame.getByText("Private pages and comments need a paid plan.").count()) > 0);
-    await fits("free owner, plan line");
-    await frame.getByRole("radio", { name: "Only those invited" }).click();
-    await frame.getByText("Private sharing needs a paid plan. Nothing was changed.").waitFor();
-    await fits("free owner, plan line and refusal");
+    await until("the free owner view", async () => (await frame.getByText("Private sharing and comments").count()) > 0);
+    await fits("free owner, the card");
+    // Nobody can be added, so the list would hold only You: it is left out.
+    assert.equal(await frame.getByText("Who has access").count(), 0);
+    await shoot(page, "popover-free");
   } finally {
     await db.prepare("UPDATE accounts SET plan = 'pro' WHERE id = ?").bind(OWNER_ACCOUNT).run();
   }
@@ -1298,18 +1295,27 @@ test("the owner sets a role from the popover: no Comments switch, the options co
   await frame.getByText("Only people you add can open this page.").waitFor();
   assert.equal(await frame.getByText("Anyone can view.").count(), 0);
 
-  // On a plan with no roles: the plan line replaces Add people, and each role is plain text.
+  // On a plan with no roles: the card replaces Add people, and each role is plain text.
   await db.prepare("UPDATE accounts SET plan = 'free' WHERE id = ?").bind(OWNER_ACCOUNT).run();
   try {
     await frame.getByRole("radio", { name: "Anyone with the link" }).click();
-    await until("the free owner view", async () => (await frame.getByText("Private pages and comments need a paid plan.").count()) > 0);
+    await until("the free owner view", async () => (await frame.getByText("Private sharing and comments").count()) > 0);
     assert.equal(await frame.getByPlaceholder("Emails, separated by commas").count(), 0);
     assert.equal(await frame.getByLabel(`Access for ${invitee}`).count(), 0);
     await frame.getByText("Can comment", { exact: true }).waitFor();
     assert.equal(await frame.getByRole("button", { name: "Remove" }).count(), 1, "Remove stays");
-    // Pressing Only those invited is refused, with the plan's words, and nothing changes.
-    await frame.getByRole("radio", { name: "Only those invited" }).click();
-    await frame.getByText("Private sharing needs a paid plan. Nothing was changed.").waitFor();
+    await frame.getByText("Who has access").waitFor();
+    // Only those invited is locked: a press sends nothing, and points at the card's Upgrade.
+    const writes = [];
+    page.on("request", (request) => { if (request.method() !== "GET" && request.url().includes("/access")) writes.push(request.url()); });
+    const locked = frame.getByRole("radio", { name: "Only those invited" });
+    assert.equal(await locked.getAttribute("aria-disabled"), "true");
+    // aria-disabled keeps it focusable and pressable; Playwright's actionability check would refuse it.
+    await locked.click({ force: true });
+    await until("the nudge", async () => frame.locator(".up.nudge").count());
+    assert.equal(await frame.getByRole("link", { name: "Upgrade" }).evaluate((element) => element === document.activeElement), true, "Upgrade has focus");
+    assert.equal(await frame.getByText("Nothing was changed.").count(), 0);
+    assert.deepEqual(writes, []);
     assert.equal((await state()).linkAccess, "anyone");
     await shoot(page, "popover-plan-line");
   } finally {
@@ -1372,7 +1378,7 @@ test("the popover tells the page its owner is looking only from a click inside i
     await free.goto(docUrl(X));
     await free.locator("a[data-openartifacts-share]").click();
     const freeFrame = await until("the Share frame", () => frameOf(free, X));
-    await freeFrame.getByText("Private pages and comments need a paid plan.").waitFor();
+    await freeFrame.getByText("Private sharing and comments").waitFor();
     await freeFrame.getByRole("button", { name: "Close" }).click();
     await until("the close", async () => (await events(free)).includes("close"));
     assert.deepEqual((await events(free)).filter((name) => name === "people"), []);
@@ -1410,13 +1416,13 @@ test("a role change the server refuses puts the select back on the role the pers
   await context.close();
 });
 
-test("an owner shown the plan line who comes back to the tab after upgrading sees Add people", { timeout: 120_000 }, async () => {
+test("an owner shown the upgrade card who comes back to the tab after upgrading sees Add people", { timeout: 120_000 }, async () => {
   const X = await publish("Upgraded", "<p>Mine.</p>");
   await db.prepare("UPDATE accounts SET plan = 'free' WHERE id = ?").bind(OWNER_ACCOUNT).run();
   try {
     const context = await newContext(OWNER_ACCOUNT);
     const { frame } = await ownerFrame(context, X);
-    await frame.getByText(/Private pages and comments need a paid plan/).waitFor();
+    await frame.getByText("Private sharing and comments").waitFor();
     assert.equal(await frame.getByPlaceholder("Emails, separated by commas").count(), 0);
     // Paid in the checkout tab; this tab becomes visible again.
     await db.prepare("UPDATE accounts SET plan = 'pro' WHERE id = ?").bind(OWNER_ACCOUNT).run();

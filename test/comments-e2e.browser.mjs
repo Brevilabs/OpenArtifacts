@@ -738,7 +738,7 @@ test("9. a signed-out reader of a public page sees read-only cards, signs in, an
   await context.close();
 });
 
-test("10. a Free-plan owner cannot add anyone: the CLI prints the upgrade hint and the popover shows the plan line, with no Add people", { timeout: 180_000 }, async () => {
+test("10. a Free-plan owner cannot add anyone: the CLI prints the upgrade hint and the popover shows the upgrade card, with no Add people", { timeout: 180_000 }, async () => {
   // No flag: a Free plan has no private pages, so the CLI falls back to a public one.
   const published = await cli("free", ["publish", htmlFile(page(V1)), "--title", "Free report"]);
   assert.equal(published.error, undefined, published.stderr);
@@ -753,7 +753,7 @@ test("10. a Free-plan owner cannot add anyone: the CLI prints the upgrade hint a
 
   const context = await newContext("free");
   const { tab, frame } = await ownerPopover(context, free);
-  await frame.getByText(/Private pages and comments need a paid plan/).waitFor();
+  await frame.getByText("Private sharing and comments").waitFor();
   assert.equal(await frame.getByPlaceholder("Emails, separated by commas").count(), 0);
   const access = await (await request("free", `/api/v1/docs/${free}/access`)).json();
   assert.deepEqual(access.roles, []);
