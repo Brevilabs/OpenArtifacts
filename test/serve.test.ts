@@ -1550,7 +1550,7 @@ describe("an invited-only document", () => {
       expect((await requestRows(doc.docId)).length).toBe(100);
     });
 
-    it("stores nothing once the account is over its allowance, and still answers Request sent", async () => {
+    it("tells the reader when their request allowance is exhausted", async () => {
       const bob = await reader("bob@other.com");
       const docs = [await privateDoc("one"), await privateDoc("two")];
       // The allowance is 10 a minute per account: ten requests for the first document are one row and nine repeats.
@@ -1560,8 +1560,11 @@ describe("an invited-only document", () => {
       const limited = await post(docs[1]!.docId, bob);
 
       expect(limited.status).toBe(200);
-      expect(await limited.text()).toContain("Request sent");
+      const page = (await limited.text()).replaceAll(docs[1]!.docId, "ID");
+      expect(page).toContain("Request not sent");
       expect(await requestRows(docs[1]!.docId)).toEqual([]);
+      // The limit is the account's, so an unknown id gets the same words.
+      expect((await (await post(UNKNOWN_DOC_ID, bob)).text()).replaceAll(UNKNOWN_DOC_ID, "ID")).toBe(page);
     });
 
     it("emails the owner once, with the share page link and no token, and never tells the requester who they are", async () => {
@@ -1589,15 +1592,22 @@ describe("an invited-only document", () => {
       expect(await response.text()).not.toContain("owner@acme.com");
     });
 
-    it("sends no email when the owner's address is unknown, but still lists the request", async () => {
-      const { sent, over } = mailbox();
-      const doc = await privateDoc(); // owned by a license key nobody linked
-      const bob = await reader("bob@other.com");
-
-      await post(doc.docId, bob, over);
-
-      expect(sent).toEqual([]);
-      expect((await requestRows(doc.docId)).length).toBe(1);
+    it("records a missing owner mailbox and sends a new request notice after linking", async () => {
+      const logs = vi.spyOn(console, "info").mockImplementation(() => {});
+      try {
+        const { sent, over } = mailbox();
+        const doc = await privateDoc(); // owned by a license key nobody linked
+        const bob = await reader("bob@other.com");
+        await post(doc.docId, bob, over);
+        expect(sent).toEqual([]);
+        expect((await requestRows(doc.docId)).length).toBe(1);
+        expect(logs.mock.calls.filter(([name]) => name === "email delivery")).toMatchObject([
+          ["email delivery", { email_type: "access_request", outcome: "skipped_no_owner_email", recipient_hash: null }],
+        ]);
+        await ownerAccount(doc);
+        await post(doc.docId, await reader("carol@other.com"), over);
+        expect(sent.map((message) => message.to)).toEqual(["owner@acme.com"]);
+      } finally { logs.mockRestore(); }
     });
 
     it("is not there at all on a server with no reader sign-in", async () => {
@@ -1923,8 +1933,7 @@ describe("an invited-only document", () => {
 
       // The script is the constant, sends exactly one kind of message call, and reports a size from one place,
       // only from the owner view where it fits: embedded by an origin that is set and is not the shared one.
-      // Every view is drawn through draw(), and only the owner view passes true. What a page on either origin
-      // sees is held by test/share-popover.browser.mjs.
+      // Every view is drawn through draw(), and only the owner view passes true.
       const html = await (await getFrom(frameUrl(doc.docId, doc.host), {}, OPEN)).text();
       expect(inlineScript(html)).toBe(FRAME_SCRIPT);
       expect(occurrences(FRAME_SCRIPT, "postMessage(")).toBe(1);
@@ -2535,7 +2544,7 @@ describe("an invited-only document", () => {
       const doc = await privateDoc();
       const bob = await reader("bob@other.com", doc.docId);
       const carol = await reader("carol@other.com"); // not invited, but the public page is open to her
-      const hint = "Open the note in Copilot and run Publish file to OpenArtifacts";
+      const hint = "If your license key is not linked to an OpenArtifacts account, we have no email address for you.";
 
       // A visitor to a public document: the title and link, an invitation to sign in to manage.
       const visitor = await open(pub.docId, null);

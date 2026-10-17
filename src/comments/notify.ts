@@ -17,9 +17,10 @@
  * only for an id that is an account; an owner id with no account (an unlinked
  * license key) has no mailbox and is skipped.
  */
+import type { AnalyticsSink } from "../analytics.js";
 import type { Env } from "../config.js";
 import { accountEmails, readableAccounts, type CommentableDoc } from "../db.js";
-import { commentMessage, emailConfigured, sendEmail, type CommentEvent } from "../email.js";
+import { commentMessage, sendEmail, type CommentEvent } from "../email.js";
 import { sha256Hex } from "../hash.js";
 import { withinLimit } from "../limits.js";
 import { publicDocUrl } from "../urls.js";
@@ -45,34 +46,41 @@ function audience(n: Notification): string[] {
   return n.thread.comments.map((c) => (c.author.kind === "agent" ? (c.author.onBehalfOf ?? c.author.principal) : c.author.principal));
 }
 
-export async function notifyComment(env: Env, requestUrl: URL, n: Notification): Promise<void> {
+export async function notifyComment(env: Env, requestUrl: URL, n: Notification, analytics: AnalyticsSink): Promise<void> {
   try {
-    if (!emailConfigured(env)) return;
     const recipients = [...new Set(audience(n))].filter((id) => id !== n.actor.principal);
     if (recipients.length === 0) return;
     const readers = await readableAccounts(env.DB, n.docId, recipients);
     const emails = await accountEmails(env.DB, recipients.filter((id) => readers.has(id)));
-    if (emails.size === 0) return;
-
-    const label = await labeller(env, n.doc.owner_account, [n.thread], [n.actor.principal]);
-    const actor = label({
-      principal: n.actor.principal,
-      kind: n.actor.kind,
-      onBehalfOf: n.actor.kind === "agent" ? n.actor.principal : null,
-    });
-    const message = commentMessage({
-      event: n.event,
-      actor: actor.name,
-      title: n.doc.title,
-      quote: n.thread.matchedText ?? n.thread.anchor.exact,
-      text: n.text,
-      url: publicDocUrl(env, requestUrl, n.docId),
-      version: n.version,
-    });
+    let prepared: Promise<ReturnType<typeof commentMessage>> | undefined;
+    const message = () => prepared ??= (async () => {
+      const label = await labeller(env, n.doc.owner_account, [n.thread], [n.actor.principal]);
+      const actor = label({
+        principal: n.actor.principal,
+        kind: n.actor.kind,
+        onBehalfOf: n.actor.kind === "agent" ? n.actor.principal : null,
+      });
+      return commentMessage({
+        event: n.event,
+        actor: actor.name,
+        title: n.doc.title,
+        quote: n.thread.matchedText ?? n.thread.anchor.exact,
+        text: n.text,
+        url: publicDocUrl(env, requestUrl, n.docId),
+        version: n.version,
+      });
+    })();
+    // An unlinked license owner has no account, so the reader query omits it.
+    // Log its skipped notification too. Asked of the accounts table, not the
+    // reader filter, which also drops an owner whose page was just deleted.
+    if (recipients.includes(n.doc.owner_account) && !emails.has(n.doc.owner_account)
+      && !(await accountEmails(env.DB, [n.doc.owner_account])).has(n.doc.owner_account)) {
+      await sendEmail(env, analytics, { type: `comment_${n.event}`, docId: n.docId, to: null }, message);
+    }
     const key = await sha256Hex(`comment-email:${n.docId}`);
     for (const to of emails.values()) {
-      if (!(await withinLimit(env.COMMENT_EMAIL_LIMITER, key))) return;
-      await sendEmail(env, to, message);
+      await sendEmail(env, analytics, { type: `comment_${n.event}`, docId: n.docId, to }, message,
+        () => withinLimit(env.COMMENT_EMAIL_LIMITER, key));
     }
   } catch (error) {
     console.error("comment notification failed", { error: error instanceof Error ? error.name : "unknown" });

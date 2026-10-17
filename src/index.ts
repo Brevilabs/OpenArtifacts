@@ -334,7 +334,7 @@ export default {
                 ? READER_NOT_FOUND()
                 : pathIsUnder(url.pathname, SHARE_PREFIX)
                   ? await handleShare(request, url, env, analytics, ctx)
-                  : await handleReader(request, url, env, ctx),
+                  : await handleReader(request, url, env, ctx, analytics),
             );
           }
           // The top bar's page script and, with it, everything the Share

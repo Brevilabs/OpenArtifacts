@@ -25,7 +25,7 @@ Cloudflare, so the only ones in the suite are deliberately broken bindings used
 to test failure paths. The one other exception is the `EMAIL` (Email Service)
 binding: its only observable is the outgoing message, which Miniflare offers no
 way to read from inside workerd, so tests hand the Worker a recording `send`.
-`npm run test:browser` drives the Share popover in Chrome against the same
+`npm run test:browser` drives the Share popover and comments in Chrome against the same
 Worker bundle on Miniflare's real D1 and R2; it is the one test that needs a
 browser (see `docs/development.md`).
 

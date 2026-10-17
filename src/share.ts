@@ -47,6 +47,7 @@ import type { AnalyticsSink } from "./analytics.js";
 import {
   addPerson,
   addWithoutManifest,
+  copilotHint,
   declineRequest,
   getAccess,
   grantableRoles,
@@ -61,7 +62,6 @@ import { readSmallForm } from "./approval/handler.js";
 import type { Publisher } from "./auth.js";
 import { MAX_INVITES_PER_DOC, MAX_NEW_INVITES_PER_OWNER_PER_DAY, type Env } from "./config.js";
 import { accountEmail, findReadableDoc } from "./db.js";
-import { COPILOT_HINT } from "./embed-scripts.js";
 import { emailConfigured } from "./email.js";
 import { accountPlan } from "./entitlement.js";
 import { sameOriginPost } from "./limits.js";
@@ -241,7 +241,7 @@ export async function handleShare(
  * **Copy link** (`publicDocUrl`, the canonical url whichever host the reader
  * came from). `email` is the signed-in reader, or null for a visitor to a public
  * document. A visitor is offered sign-in to manage; a signed-in reader is told
- * how to manage from Copilot, because an owner who published with a license key
+ * how to link their Copilot account, because an owner who published with a license key
  * that is not linked to a browser account looks like any other reader here, and
  * offered **Use another account** in case this one is the wrong one. It lists no
  * people, no mode and no requests.
@@ -259,7 +259,7 @@ async function readerView(
       ? `<div class="actions"><a href="${next}?signin">Is this your page? Sign in to manage</a></div>`
       // Back to the sign-in page, not the visitor view a public document
       // would otherwise show a reader who has just signed out.
-      : `<div class="actions">${useAnotherAccount(`${next}?signin`)}</div>\n<p class="hint">${escapeHtml(COPILOT_HINT)}</p>`;
+      : `<div class="actions">${useAnotherAccount(`${next}?signin`)}</div>\n<p class="hint">${escapeHtml(copilotHint(env))}</p>`;
   return readerPage(
     {
       title: "Share document",

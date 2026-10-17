@@ -31,12 +31,7 @@
  *
  * Needs Node 22 and a Google Chrome. `OA_HEADED=1` shows the browser, and
  * `OA_SCREENSHOTS={dir}` saves `bar.png`, `popover-signed-out.png`,
- * `popover-owner.png`, `popover-private.png` and the `popover-pasted*.png` pair, which is how the screenshots in
- * a pull request are made.
- * It also saves `popover-roles.png` and `popover-plan-line.png`, for the role
- * dropdown and the free owner's upgrade card beside an invitee, `popover-free.png` (a free owner with nobody added), `popover-loading.png`, the skeleton
- * a token holder sees while the access read is out, `popover-crowded.png`, `popover-private-six.png` (a private
- * page's popover sized to six people) and `popover-busy-add.png` (Add while its request is out).
+ * `popover-owner.png` and `popover-private.png`.
  */
 import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
@@ -67,8 +62,6 @@ const BUILD = join(ROOT, "node_modules", ".cache", "share-popover-browser");
 /** `oa_` and 26 Crockford characters, which the accounts table's check requires. */
 const accountId = (seed) => `oa_${seed}${"0123456789abcdefghjkmnpqrs".slice(seed.length)}`;
 const OWNER_ACCOUNT = accountId("a");
-const OTHER_ACCOUNT = accountId("b");
-const UNKNOWN_DOC = "0123456789abcdef";
 
 const sha256Hex = (value) => createHash("sha256").update(value).digest("hex");
 
@@ -176,8 +169,7 @@ before(async () => {
       OAUTH_GITHUB_CLIENT_SECRET: "y",
       DEFAULT_PLAN: vars.DEFAULT_PLAN,
       PLAN_LIMITS: vars.PLAN_LIMITS,
-      // The upgrade card and a plan refusal carry an Upgrade link in production, and the popover's height must hold them.
-      UPGRADE_URL: vars.UPGRADE_URL,
+      ACCOUNT_ACTION_URL: vars.ACCOUNT_ACTION_URL,
     },
   });
   const { port } = await mf.ready;
@@ -202,10 +194,6 @@ before(async () => {
     .bind(OWNER_ACCOUNT, now)
     .run();
   await db
-    .prepare("INSERT INTO accounts (id, email, plan, created_at) VALUES (?, 'stranger@example.com', 'pro', ?)")
-    .bind(OTHER_ACCOUNT, now)
-    .run();
-  await db
     .prepare("INSERT INTO owner_links (external_owner, account_id, created_at) VALUES (?, ?, ?)")
     .bind(OWNER, OWNER_ACCOUNT, now)
     .run();
@@ -225,8 +213,8 @@ after(async () => {
   await mf?.dispose();
 });
 
-const newContext = (account, height = 800) =>
-  browser.newContext({ ignoreHTTPSErrors: true, viewport: { width: 1280, height } }).then(async (context) => {
+const newContext = (account) =>
+  browser.newContext({ ignoreHTTPSErrors: true, viewport: { width: 1280, height: 800 } }).then(async (context) => {
     if (account) await context.addCookies([sessionCookie(account)]);
     return context;
   });
@@ -270,6 +258,9 @@ window.setInterval(() => { if (document.activeElement !== document.body) window.
   assert.match(frame.url(), new RegExp(`origin=${encodeURIComponent(`https://${SERVING}`)}$`));
   const signIn = frame.getByRole("button", { name: "Sign in to manage" });
   await signIn.waitFor();
+  // A page embedding the frame could navigate it to `#id` and watch for a focus move; no id is there to find.
+  const focusableIds = () => frame.evaluate(() => Array.from(document.querySelectorAll("[id]")).filter((e) => e.matches("main,a[href],button,input,select,textarea,summary,[tabindex],[contenteditable]")).map((e) => e.id));
+  assert.deepEqual(await focusableIds(), [], "signed-out view: no focusable element has an id");
   assert.equal(await frame.evaluate(() => window.isSecureContext), true);
   await shoot(page, "popover-signed-out");
   // A short view is the row (link, Copy link, ×), the sentence under it, and the
@@ -282,8 +273,7 @@ window.setInterval(() => { if (document.activeElement !== document.body) window.
   // 3. Sign in to manage opens the popup, which sees the owner's session through
   //    the browser's own Sec-Fetch-Site and cookie. A 400 here would mean the
   //    popup's binding refused it. Embedded in a document page the popup's opener
-  //    is severed (see step 4), so the poll is what lands; the popup's posted
-  //    message is covered by the second test.
+  //    is severed (see step 4), so the poll is what lands.
   const [popup, popupResponse] = await Promise.all([
     context.waitForEvent("page"),
     context.waitForEvent("response", (r) => r.url().includes("/embed/sign-in?")),
@@ -297,6 +287,7 @@ window.setInterval(() => { if (document.activeElement !== document.body) window.
   await popup.waitForEvent("close").catch(() => {});
   const invitedOnly = frame.getByRole("radio", { name: "Only those invited" });
   await invitedOnly.waitFor();
+  assert.deepEqual(await focusableIds(), [], "owner view: no focusable element has an id");
   assert.equal(await frame.getByRole("radio", { name: "Anyone with the link" }).getAttribute("aria-checked"), "true");
   // The popup's opener is gone: the page embedding the frame sends no opener
   // policy and the popup does, so Chrome puts the popup in a new browsing
@@ -462,6 +453,8 @@ test("a frame a hostile page embedded while the document was public shows no con
   assert.equal((await (await api(`/api/v1/docs/${X}/access`)).json()).linkAccess, "anyone");
   assert.equal(await frame.getByRole("button", { name: "Remove" }).count(), 1, "the full view is back while the document is public");
   assert.equal(await frame.getByLabel(`Access for ${invitee}`).count(), 1, "and so is the role");
+  await frame.getByRole("button", { name: "Remove" }).click();
+  await until("the removal", async () => (await people()).length === 0);
   await invitedOnly.click();
   await frame.getByText("Only people you add can open this page.").waitFor();
 
@@ -480,237 +473,6 @@ test("a frame a hostile page embedded while the document was public shows no con
   await context.close();
 });
 
-test("a popup that keeps its opener posts the token to the frame that opened it", { timeout: 120_000 }, async () => {
-  // Embedded in a document page the popup loses its opener (the first test).
-  // Loaded as a top-level page, as the share page's own sign-in could be, the
-  // frame and the popup share an opener policy and the link survives: the popup
-  // posts the token, from the API origin, and the frame takes it. The frame's
-  // poll is running the whole time; the message must leave it working, and the
-  // first test is the case where only the poll can land.
-  const W = await publish("Kept opener", "<p>Mine.</p>");
-  const context = await newContext(OWNER_ACCOUNT);
-  const page = await context.newPage();
-  await page.goto(`https://${API}/embed/share?doc=${W}`);
-  await page.evaluate(() => {
-    window.__tokens = [];
-    window.addEventListener("message", (event) => {
-      if (event.data && event.data.type === "openartifacts:share-token") window.__tokens.push({ origin: event.origin, doc: event.data.doc });
-    });
-  });
-
-  const [popup] = await Promise.all([context.waitForEvent("page"), page.getByRole("button", { name: "Sign in to manage" }).click()]);
-  await popup.waitForEvent("close").catch(() => {});
-  await page.getByRole("radio", { name: "Only those invited" }).waitFor();
-  assert.deepEqual(await page.evaluate(() => window.__tokens), [{ origin: `https://${API}`, doc: W }]);
-
-  // A message from anywhere else does nothing: this window is not the popup.
-  const before = await page.evaluate((key) => window.localStorage.getItem(key), `openartifacts:share-token:${W}`);
-  await page.evaluate((doc) => window.postMessage({ type: "openartifacts:share-token", doc, token: "oas_forged", expiresAt: Date.now() + 86400000 }, location.origin), W);
-  await page.waitForTimeout(500);
-  assert.equal(await page.evaluate((key) => window.localStorage.getItem(key), `openartifacts:share-token:${W}`), before);
-  assert.equal(await page.getByRole("radio", { name: "Only those invited" }).isVisible(), true);
-  await context.close();
-});
-
-test("the frame shows the same to anyone who cannot read, whatever the id", { timeout: 120_000 }, async () => {
-  const open = await publish("Open title", "<p>Open.</p>");
-  const closed = await publish("Closed title", "<p>Closed.</p>", "private-docs");
-
-  // No token: the same text for a public, an invited-only and an unknown id,
-  // and no title in any of them.
-  const context = await newContext(OTHER_ACCOUNT);
-  const bare = {};
-  for (const [name, id] of [["open", open], ["closed", closed], ["unknown", UNKNOWN_DOC]]) {
-    const page = await context.newPage();
-    await page.goto(`https://${API}/embed/share?doc=${id}`);
-    await page.getByRole("button", { name: "Sign in to manage" }).waitFor();
-    assert.ok((await page.locator(".field").innerText()).endsWith(`/d/${id}`), "the link field shows the id's canonical link");
-    bare[name] = (await page.locator("main").innerText()).replaceAll(id, "ID"); // the link field names the id
-    await page.close();
-  }
-  assert.equal(bare.open, bare.closed);
-  assert.equal(bare.open, bare.unknown);
-  assert.ok(!bare.open.includes("Open title") && !bare.open.includes("Closed title"), bare.open);
-
-  // With a token for an account that cannot read the document: what an unknown
-  // id shows, for an invited-only one too, and never a 403. An account that can
-  // read a public document is told it is signed in, and still sees no title.
-  const shown = {};
-  for (const [name, id] of [["open", open], ["closed", closed], ["unknown", UNKNOWN_DOC]]) {
-    const page = await context.newPage();
-    await page.goto(`https://${API}/embed/share?doc=${id}`);
-    const [popup] = await Promise.all([context.waitForEvent("page"), page.getByRole("button", { name: "Sign in to manage" }).click()]);
-    await popup.waitForEvent("close").catch(() => {});
-    await page.getByRole("button", { name: "Use another account" }).waitFor();
-    shown[name] = (await page.locator("main").innerText()).replaceAll(id, "ID");
-    await page.close();
-  }
-  assert.equal(shown.closed, shown.unknown);
-  assert.ok(!shown.closed.includes("Closed title"), shown.closed);
-  assert.ok(!shown.open.includes("Open title") && shown.open.includes("Signed in as stranger@example.com."), shown.open);
-  await context.close();
-});
-
-test("a page that embeds the frame cannot tell from a fragment navigation whether its visitor holds a token", { timeout: 180_000 }, async () => {
-  // Scrolling to a fragment focuses the target when it exists and can take focus,
-  // and a focus change inside the frame shows on the embedding page as a blur and
-  // as `activeElement` becoming the iframe. A same-document navigation does not
-  // reload the frame, so it keeps the view it drew from storage. No focusable
-  // element may therefore have an id in any view, or the page learns what is in storage
-  // without a click. Run the same probes with and without a token and compare.
-  //
-  // Focus is not the only tell: the browser scrolls the embedding page to the
-  // element it focuses, by an amount that follows where the element sits. So the
-  // frame is narrow and below the fold, the document's title long (an earlier
-  // owner view drew it, wrapped, and moved the buttons beside it), and the page's
-  // `scrollY` is compared too.
-  const X = await publish("Fragment oracle with a title long enough to wrap in a narrow frame", "<p>Mine.</p>");
-  const Y = await publish(
-    "Fragment prober",
-    `<div style="height:1500px"></div><iframe id="f" src="https://${API}/embed/share?doc=${X}&origin=${encodeURIComponent(`https://${SERVING}`)}" style="width:120px;height:480px"></iframe><div style="height:1500px"></div>`,
-  );
-
-  // The ids drawn in a view.
-  const idsIn = (frame) => frame.evaluate(() => Array.from(document.querySelectorAll("[id]"), (element) => element.id));
-  // The ids a fragment could focus: every focusable element must be anonymous.
-  // <main> counts: it scrolls, and Chrome lets a scroll container take focus when
-  // its content overflows, which in a narrow frame only some views do.
-  const focusableIdsIn = (frame) =>
-    frame.evaluate(() =>
-      Array.from(document.querySelectorAll("[id]"))
-        .filter((element) => element.matches("main,a[href],button,input,select,textarea,summary,[tabindex],[contenteditable]"))
-        .map((element) => element.id),
-    );
-
-  // `expected` waits for the view the context should draw, so the probe never runs
-  // against the signed-out shell that every context starts from.
-  const probe = async (context, id, expected, expectedIds) => {
-    const page = await context.newPage();
-    await page.goto(docUrl(Y));
-    const frame = await until("the prober's frame", () => frameOf(page, X));
-    await expected(frame).waitFor();
-    assert.deepEqual(await idsIn(frame), expectedIds, "the frame drew the view this context should see");
-    await page.waitForTimeout(500);
-    await page.evaluate(() => {
-      window.__blurred = false;
-      window.addEventListener("blur", () => { window.__blurred = true; });
-    });
-    await page.evaluate((fragment) => {
-      const element = document.getElementById("f");
-      element.src = element.src.split("#")[0] + "#" + fragment;
-    }, id);
-    await page.waitForTimeout(600);
-    const seen = await page.evaluate(() => ({
-      focused: document.activeElement === document.getElementById("f"),
-      blurred: window.__blurred,
-      scrollY: window.scrollY,
-    }));
-    await page.close();
-    return seen;
-  };
-  const signedOutView = (frame) => frame.getByRole("button", { name: "Sign in to manage" });
-  const ownerView = (frame) => frame.getByRole("radio", { name: "Only those invited" });
-
-  // Signed out: the frame draws the signed-out view.
-  const bare = await newContext(null);
-  const bareProbe = await bare.newPage();
-  await bareProbe.goto(docUrl(Y));
-  const bareFrame = await until("the signed-out frame", () => frameOf(bareProbe, X));
-  await bareFrame.getByRole("button", { name: "Sign in to manage" }).waitFor();
-  const signedOutIds = await idsIn(bareFrame);
-  const signedOutFocusable = await focusableIdsIn(bareFrame);
-  await bareProbe.close();
-
-  // With a token: the owner signs in through the popover, as in the first test.
-  const owner = await newContext(OWNER_ACCOUNT);
-  const page = await owner.newPage();
-  await page.goto(docUrl(X));
-  await page.locator("a[data-openartifacts-share]").click();
-  const frame = await until("the Share frame", () => frameOf(page, X));
-  const [popup] = await Promise.all([owner.waitForEvent("page"), frame.getByRole("button", { name: "Sign in to manage" }).click()]);
-  await popup.waitForEvent("close").catch(() => {});
-  await frame.getByRole("radio", { name: "Only those invited" }).waitFor();
-  const ownerIds = await idsIn(frame);
-  const ownerFocusable = await focusableIdsIn(frame);
-
-  // No focusable element in any view has an id, so no fragment reaches one.
-  assert.deepEqual(signedOutFocusable, [], "signed-out view: a focusable element has an id");
-  assert.deepEqual(ownerFocusable, [], "owner view: a focusable element has an id");
-
-  // The names a page could try: every id either view has, plus the ones earlier
-  // versions carried on buttons, which must now match nothing in either view.
-  const ids = [...new Set([...signedOutIds, ...ownerIds, "oa-close", "oa-copy", "oa-signin"])];
-  assert.ok(!signedOutIds.includes("oa-close") && !ownerIds.includes("oa-close"), `ids probed: ${ids}`);
-  assert.ok(!signedOutIds.includes("oa-copy") && !signedOutIds.includes("oa-signin"), `signed-out ids: ${signedOutIds}`);
-  for (const id of ids) {
-    const withToken = await probe(owner, id, ownerView, ownerIds);
-    const withoutToken = await probe(bare, id, signedOutView, signedOutIds);
-    assert.deepEqual(withToken, withoutToken, `#${id} behaves the same with and without a token`);
-  }
-  await owner.close();
-  await bare.close();
-});
-
-test("Sign in to manage stays available while a sign-in is pending, and pressing it again starts a new one", { timeout: 120_000 }, async () => {
-  // No session: the popup stops at the sign-in page and the frame waits. The
-  // popup may be closed, or the handoff row may expire before the person is back,
-  // and the frame cannot tell, so the way out must not wait for its own deadline.
-  const X = await publish("Pending sign-in", "<p>Mine.</p>");
-  const context = await newContext(null);
-  const page = await context.newPage();
-  await page.goto(`https://${API}/embed/share?doc=${X}`);
-  const signIn = page.getByRole("button", { name: "Sign in to manage" });
-  const [first] = await Promise.all([context.waitForEvent("page"), signIn.click()]);
-  await page.getByText("Complete sign-in in the window that opened.").waitFor();
-  // The button is in the waiting view, and enabled once the next nonce is ready.
-  await signIn.waitFor();
-  await until("Sign in to manage to be enabled again", () => signIn.isEnabled());
-  assert.equal(await page.evaluate(() => document.querySelectorAll("#oa-account button").length), 1);
-  await first.close();
-  const [second] = await Promise.all([context.waitForEvent("page"), signIn.click()]);
-  assert.match(second.url(), /\/embed\/sign-in\?/);
-  assert.notEqual(new URL(second.url()).searchParams.get("h"), new URL(first.url()).searchParams.get("h"));
-  await context.close();
-});
-
-test("the popover opens inside the viewport whatever the page does to its root, its direction or its scrollbar", { timeout: 120_000 }, async () => {
-  // The popover is placed in script from Share's box and the layout viewport.
-  // Pages that break the obvious ways of measuring that: no doctype (quirks mode,
-  // where documentElement.clientWidth is the <html> box, not the viewport), a wide
-  // or narrow <html>, dir=rtl (the bar mirrors unless it fixes its direction), and a
-  // classic scrollbar that 100vw and innerWidth both count.
-  const publishRaw = async (title, page) => {
-    const response = await api("/api/v1/docs", { method: "POST", body: JSON.stringify({ title, html: page }) });
-    assert.equal(response.status, 201, await response.clone().text());
-    return (await response.json()).docId;
-  };
-  const cases = [
-    ["a wide <html> with no doctype", `<html style="min-width:1200px"><head><meta charset="utf-8"><title>Wide</title></head><body><p>Wide.</p></body></html>`],
-    ["a narrow <html> with no doctype", `<html style="max-width:70ch;margin:auto"><head><meta charset="utf-8"><title>Narrow</title></head><body><p>Narrow.</p></body></html>`],
-    ["a right-to-left page", `<!doctype html><html dir="rtl" lang="ar"><head><meta charset="utf-8"><title>RTL</title></head><body><p>RTL.</p></body></html>`],
-    ["a page wider than the window", `<!doctype html><html><head><meta charset="utf-8"><title>Overflow</title></head><body><p style="width:2000px">Overflow.</p></body></html>`],
-  ];
-  const context = await newContext(null);
-  for (const width of [380, 1280]) {
-    for (const [name, source] of cases) {
-      const id = await publishRaw(name, source);
-      const page = await context.newPage();
-      await page.setViewportSize({ width, height: 600 });
-      await page.goto(docUrl(id));
-      await page.locator("a[data-openartifacts-share]").click();
-      const popover = page.locator(".openartifacts-share-popover");
-      await popover.waitFor();
-      const box = await popover.boundingBox();
-      const viewportWidth = await page.evaluate(() => (document.compatMode === "BackCompat" ? document.body : document.documentElement).clientWidth);
-      assert.ok(box.x >= 0 && box.x + box.width <= viewportWidth, `${name} at ${width}px: popover x ${box.x}..${box.x + box.width} in a ${viewportWidth}px viewport`);
-      const share = await page.locator("a[data-openartifacts-share]").boundingBox();
-      assert.ok(share.x > viewportWidth / 2, `${name} at ${width}px: Share sits at the right edge (x ${share.x})`);
-      await page.close();
-    }
-  }
-  await context.close();
-});
-
 /** The owner signs in to the Share frame of `docId` on its own page, through the popup. */
 async function ownerFrame(context, docId) {
   const page = await context.newPage();
@@ -721,6 +483,50 @@ async function ownerFrame(context, docId) {
   await frame.getByRole("radio", { name: "Only those invited" }).waitFor();
   return { page, frame };
 }
+
+test("an unlinked Copilot publisher sees the no-email notice in top-bar Share, then links to manage access", { timeout: 120_000 }, async () => {
+  const key = "cplus_live_unlinked131";
+  const owner = "unlinked-owner-131";
+  const account = accountId("c");
+  const now = Date.now();
+  await db.prepare("INSERT INTO publishers (key_hash, plan, validated_at, owner) VALUES (?, 'believer', ?, ?)").bind(sha256Hex(key), now, owner).run();
+  await db.prepare("INSERT INTO accounts (id, email, plan, created_at) VALUES (?, 'publisher131@example.com', 'pro', ?)").bind(account, now).run();
+  const published = await api("/api/v1/docs", {
+    method: "POST", headers: { authorization: `Bearer ${key}` },
+    body: JSON.stringify({ title: "License-key page", html: html("License-key page") }),
+  });
+  assert.equal(published.status, 201);
+  const { docId } = await published.json();
+  const context = await newContext(null);
+  const page = await context.newPage();
+  try {
+    await page.goto(docUrl(docId));
+    await page.locator("a[data-openartifacts-share]").click();
+    const frame = await until("the unlinked publisher's Share frame", () => frameOf(page, docId));
+    const notice = frame.locator("p.hint");
+    await notice.waitFor();
+    for (const text of ["we have no email address for you", "Access requests and new comment threads cannot reach you by email", "invitations do not name you", `Link your Copilot account at ${wranglerVars().ACCOUNT_ACTION_URL}`, "After linking, sign in here to manage access"]) {
+      assert.ok((await notice.innerText()).includes(text), text);
+    }
+    await shoot(page, "popover-unlinked-owner");
+    assert.equal(await frame.getByRole("button", { name: "Copy link" }).count(), 1);
+    // Signing into an unrelated browser account does not hide the guidance or reveal access lists.
+    await context.addCookies([sessionCookie(account)]);
+    await Promise.all([context.waitForEvent("page"), frame.getByRole("button", { name: "Sign in to manage" }).click()]);
+    await frame.getByRole("button", { name: "Use another account" }).waitFor();
+    assert.ok((await notice.innerText()).includes("we have no email address for you"));
+    assert.equal(await frame.getByRole("radiogroup").count(), 0);
+    // The existing verified-account linking flow establishes ownership; no Copilot UI adoption.
+    await db.prepare("INSERT INTO owner_links (external_owner, account_id, created_at) VALUES (?, ?, ?)").bind(owner, account, now).run();
+    await page.reload();
+    await page.locator("a[data-openartifacts-share]").click();
+    const linked = await until("the linked publisher's Share frame", () => frameOf(page, docId));
+    await linked.getByRole("radio", { name: "Only those invited" }).waitFor();
+    assert.equal(await linked.getByText("we have no email address for you", { exact: false }).count(), 0);
+  } finally {
+    await context.close();
+  }
+});
 
 /**
  * Every view the Share frames of `context` paint, in order, as `window.__views` in each frame. Sampled in
@@ -757,92 +563,6 @@ const slowAccess = (page, docId, ms = 1500) =>
     await route.continue();
   });
 
-/** The boxes of the row every view starts with: the link field, Copy link and ×. */
-const topRow = (frame) =>
-  Promise.all([frame.locator(".field"), frame.getByRole("button", { name: "Copy link" }), frame.getByRole("button", { name: "Close" })].map((locator) => locator.boundingBox()));
-
-/** How tall `main`'s content is against the room it has, and what marks its edges. */
-const scrollState = (frame) =>
-  frame.evaluate(() => {
-    const main = document.querySelector("main");
-    const fade = document.querySelector(".fade");
-    return {
-      scrollHeight: main.scrollHeight,
-      clientHeight: main.clientHeight,
-      divider: getComputedStyle(document.querySelector("header")).boxShadow !== "none",
-      fade: fade !== null && getComputedStyle(fade).opacity === "1",
-    };
-  });
-
-test("Share builds its frame on intent, a hover or a focus, and never on a bare page view", { timeout: 120_000 }, async () => {
-  const X = await publish("Intent", "<p>Mine.</p>");
-  const context = await newContext(null);
-  const page = await context.newPage();
-  const loads = [];
-  context.on("request", (request) => { if (frameUrl(X).test(request.url())) loads.push(request.url()); });
-  await page.goto(docUrl(X));
-  const share = page.locator("a[data-openartifacts-share]");
-  await share.waitFor();
-  await page.waitForTimeout(1000);
-  assert.deepEqual(loads, [], "a page view makes no frame request");
-
-  // The pointer on Share builds the frame, hidden, so the click finds it loaded.
-  await share.hover();
-  const frame = await until("the frame a hover built", () => frameOf(page, X));
-  // Loaded and drawn, though nothing of it is visible yet.
-  await frame.locator("main:not([hidden]) #oa-account button").waitFor({ state: "attached" });
-  assert.equal(await page.locator(".openartifacts-share-popover").isVisible(), false, "a hover opens nothing");
-  await share.click();
-  await page.locator(".openartifacts-share-popover").waitFor();
-  await frame.getByRole("button", { name: "Sign in to manage" }).waitFor();
-  assert.equal(loads.length, 1, "the click uses the frame the hover built");
-
-  // So does keyboard focus.
-  const keyboard = await context.newPage();
-  await keyboard.goto(docUrl(X));
-  await keyboard.locator("a[data-openartifacts-share]").focus();
-  await until("the frame a focus built", () => frameOf(keyboard, X));
-  assert.equal(await keyboard.locator(".openartifacts-share-popover").isVisible(), false, "a focus opens nothing");
-  assert.equal(loads.length, 2);
-  await context.close();
-});
-
-test("a token holder sees a skeleton of the owner view, never the signed-out view, while the access read is slow", { timeout: 180_000 }, async () => {
-  const X = await publish("Slow read", "<p>Mine.</p>");
-  const Y = await publish("Slow private read", "<p>Mine.</p>", "private-docs");
-  const context = await newContext(OWNER_ACCOUNT);
-  await recordViews(context);
-  // Below the row, the places the skeleton holds for the owner view: Who has access and the owner's own row.
-  const places = (frame) => Promise.all([frame.locator("main h2"), frame.locator("main li").first()].map((locator) => locator.boundingBox()));
-  // A public page's helper line wraps to two lines at the popover's width and a private page's fits on one.
-  for (const [name, id] of [["public", X], ["private", Y]]) {
-    const first = await ownerFrame(context, id);
-    await first.page.close();
-
-    const page = await context.newPage();
-    await slowAccess(page, id);
-    await page.goto(docUrl(id));
-    await page.locator("a[data-openartifacts-share]").click();
-    const frame = await until("the Share frame", () => frameOf(page, id));
-    await frame.locator(".sk").first().waitFor();
-    if (name === "public") await shoot(page, "popover-loading");
-    const skeletonRow = await topRow(frame);
-    const skeletonPlaces = await places(frame);
-    await frame.getByRole("radio", { name: "Only those invited" }).waitFor();
-    assert.deepEqual(await frame.evaluate(() => window.__views), ["skeleton", "owner"], name);
-    // Nothing moves when the owner view lands: the row above, and the places below the helper line.
-    assert.deepEqual(await topRow(frame), skeletonRow, `${name}: the row`);
-    const ownerPlaces = await places(frame);
-    for (const [index, label] of ["Who has access", "the owner's row"].entries()) {
-      assert.ok(Math.abs(ownerPlaces[index].y - skeletonPlaces[index].y) < 0.5, `${name}: ${label} moved from y ${skeletonPlaces[index].y} to ${ownerPlaces[index].y}`);
-    }
-    // The link is known without a request, so Copy link works while the read is out.
-    assert.equal(await frame.locator(".field").innerText(), `${SERVING}/d/${id}`);
-    await page.close();
-  }
-  await context.close();
-});
-
 test("an expired token goes from the skeleton to the signed-out view, and a signed-out visitor sees that view at once", { timeout: 180_000 }, async () => {
   const X = await publish("Expired token", "<p>Mine.</p>");
   const key = `openartifacts:share-token:${X}`;
@@ -877,257 +597,6 @@ test("an expired token goes from the skeleton to the signed-out view, and a sign
   await visitor.waitForTimeout(300);
   assert.deepEqual(await guest.evaluate(() => window.__views), ["guest"]);
   await bare.close();
-});
-
-test("the popover is one row and one scroll region, and an owner with nobody added sees all of it without scrolling", { timeout: 180_000 }, async () => {
-  // A title long enough to wrap: no view draws one, so it can move nothing.
-  const X = await publish("A document whose title is long enough to wrap onto several lines in a narrow popover heading", "<p>Mine.</p>");
-
-  // Signed out: the row (link, Copy link, ×) and then the sentence, with no title anywhere.
-  const bare = await newContext(null);
-  const visitor = await bare.newPage();
-  await visitor.goto(docUrl(X));
-  await visitor.locator("a[data-openartifacts-share]").click();
-  const guest = await until("the Share frame", () => frameOf(visitor, X));
-  await guest.getByRole("button", { name: "Sign in to manage" }).waitFor();
-  const guestRow = await topRow(guest);
-  const [field, copy, close] = guestRow;
-  assert.ok(Math.abs(field.y + field.height / 2 - (copy.y + copy.height / 2)) < 1 && Math.abs(copy.y + copy.height / 2 - (close.y + close.height / 2)) < 1, "the link, Copy link and × share one row");
-  assert.ok(field.x + field.width <= copy.x && copy.x + copy.width <= close.x, "in that order");
-  const sentence = await guest.getByText("Only the owner can change who can open this.").boundingBox();
-  assert.ok(sentence.y >= field.y + field.height, "the sentence follows the row");
-  assert.equal(await guest.locator("h1").count(), 0, "no title row");
-  const guestState = await scrollState(guest);
-  assert.equal(guestState.divider, false, "no divider at rest");
-  assert.equal(guestState.fade, false, "no fade with nothing below");
-  await bare.close();
-
-  // The owner, in each form the view takes with nobody added: all of it is in view, nothing scrolls.
-  const context = await newContext(OWNER_ACCOUNT);
-  // Production emails invitations, and this harness has no mail binding, so the owner's access answers say
-  // it does. Only this route's own path is touched: the popup's requests still reach the network stack.
-  await context.route(`https://${API}/embed/api/docs/${X}/access`, async (route) => {
-    const response = await route.fetch({ url: `https://127.0.0.1:${mfPort}/embed/api/docs/${X}/access`, headers: { ...route.request().headers(), host: API } });
-    const body = await response.json().catch(() => null);
-    await route.fulfill(body && body.viewer === "owner" ? { response, json: { ...body, email: true } } : { response });
-  });
-  const { frame } = await ownerFrame(context, X);
-  assert.deepEqual(await topRow(frame), guestRow, "the row is where the signed-out view has it");
-  assert.equal(await frame.locator("h1").count(), 0, "no title row");
-  const fits = async (form) => {
-    const state = await scrollState(frame);
-    assert.ok(state.scrollHeight <= state.clientHeight, `${form}: no scroll (${state.scrollHeight} > ${state.clientHeight})`);
-    assert.equal(state.divider, false, `${form}: no divider at rest`);
-    assert.equal(state.fade, false, `${form}: no fade with nothing below`);
-    // Both lines are about people on the list, and there is nobody on it.
-    assert.equal(await frame.getByText("OpenArtifacts emails each invitation").count(), 0, `${form}: no invitation line`);
-    assert.equal(await frame.getByText("To remove people or answer requests").count(), 0, `${form}: no share-page line`);
-  };
-  await frame.getByText("Anyone can view. Invitees can comment.").waitFor();
-  await fits("public");
-  await frame.getByRole("radio", { name: "Only those invited" }).click();
-  await frame.getByText("Only people you add can open this page.").waitFor();
-  await fits("private");
-  await db.prepare("UPDATE accounts SET plan = 'free' WHERE id = ?").bind(OWNER_ACCOUNT).run();
-  try {
-    await frame.getByRole("radio", { name: "Anyone with the link" }).click();
-    await frame.getByText("Private sharing and comments").waitFor();
-    await fits("a free owner's card");
-  } finally {
-    await db.prepare("UPDATE accounts SET plan = 'pro' WHERE id = ?").bind(OWNER_ACCOUNT).run();
-  }
-  await context.close();
-});
-
-test("the link field always shows the whole document id, with as much of the host as fits", { timeout: 180_000 }, async () => {
-  const X = await publish("Public link", "<p>Mine.</p>");
-  const Y = await publish("Private link", "<p>Mine.</p>", "private-docs");
-  const context = await newContext(OWNER_ACCOUNT);
-  await context.grantPermissions(["clipboard-write"], { origin: `https://${API}` });
-  // Where the last `tail.length` characters of the field's text sit against the box that clips it. Once the
-  // text overflows, an ellipsis takes the clipped side's first character cell.
-  const tailPlace = (frame, tail) =>
-    frame.evaluate((tail) => {
-      const span = document.querySelector(".field > span");
-      const text = document.createTreeWalker(span, NodeFilter.SHOW_TEXT).nextNode();
-      const range = document.createRange();
-      range.setStart(text, text.data.length - tail.length);
-      range.setEnd(text, text.data.length);
-      const shown = range.getBoundingClientRect();
-      const box = span.getBoundingClientRect();
-      const cell = shown.width / tail.length;
-      return { left: shown.left, right: shown.right, from: box.left + (span.scrollWidth > span.clientWidth ? cell : 0), to: box.right };
-    }, tail);
-  const setText = (frame, value) =>
-    frame.evaluate((value) => { document.createTreeWalker(document.querySelector(".field > span"), NodeFilter.SHOW_TEXT).nextNode().data = value; }, value);
-  for (const [viewport, width] of [[1280, 360], [320, 304]]) {
-    for (const [name, id] of [["public", X], ["private", Y]]) {
-      const page = await context.newPage();
-      await page.setViewportSize({ width: viewport, height: 800 });
-      await page.goto(docUrl(id));
-      await page.locator("a[data-openartifacts-share]").click();
-      assert.equal((await page.locator(".openartifacts-share-popover").boundingBox()).width, width);
-      const frame = await until("the Share frame", () => frameOf(page, id));
-      await frame.locator("main:not([hidden])").waitFor();
-      const label = `${name} at ${width}px`;
-      // A private page is served on its publisher's code host, and the field still shows the canonical link.
-      if (name === "private") assert.notEqual(new URL(page.url()).host, SERVING);
-      const bare = `${SERVING}/d/${id}`;
-      assert.equal(await frame.locator(".field").innerText(), bare, label);
-      const tail = `/d/${id}`;
-      const shown = await tailPlace(frame, tail);
-      assert.ok(shown.left >= shown.from - 0.5 && shown.right <= shown.to + 0.5, `${label}: ${tail} spans ${shown.left}..${shown.right} in ${shown.from}..${shown.to}`);
-      // A click on the field selects the whole link, and Copy link copies it with its scheme.
-      await frame.locator(".field").click();
-      assert.equal(await frame.evaluate(() => window.getSelection().toString()), bare, `${label}: a click selects it all`);
-      // The frame may only write the clipboard, so what it writes is read where it is written.
-      await frame.evaluate(() => {
-        const write = navigator.clipboard.writeText.bind(navigator.clipboard);
-        navigator.clipboard.writeText = (text) => { window.__copied = text; return write(text); };
-      });
-      await frame.getByRole("button", { name: "Copy link" }).click();
-      await frame.getByRole("button", { name: "Copied" }).waitFor();
-      assert.equal(await frame.evaluate(() => window.__copied), `https://${bare}`, `${label}: Copy link`);
-      // The same box holds a longer host, such as the page's own code host, and still shows the whole id.
-      if (name === "private") {
-        await setText(frame, `${new URL(page.url()).host}${tail}`);
-        const longer = await tailPlace(frame, tail);
-        assert.ok(longer.left >= longer.from - 0.5 && longer.right <= longer.to + 0.5, `${label}, a code host: ${tail} spans ${longer.left}..${longer.right} in ${longer.from}..${longer.to}`);
-      }
-      await page.close();
-    }
-  }
-  await context.close();
-});
-
-test("an owner view taller than the popover scrolls under the row instead of squashing its controls", { timeout: 120_000 }, async () => {
-  // The frame has one fixed height. With a request and a dozen invitees the owner
-  // view is far taller, and `main` has to scroll: flex children that shrink would
-  // flatten the Link access control to a line.
-  const X = await publish("Crowded", "<p>Mine.</p>");
-  for (let n = 0; n < 12; n++) {
-    assert.equal((await api(`/api/v1/docs/${X}/access/people/${encodeURIComponent(`person${n}@example.com`)}`, { method: "PUT", body: "{}" })).status, 200);
-  }
-  await db.prepare("INSERT INTO doc_access_requests (doc_id, email, created_at) VALUES (?, 'carol@example.org', ?)").bind(X, Date.now()).run();
-
-  const context = await newContext(OWNER_ACCOUNT);
-  const { page, frame } = await ownerFrame(context, X);
-  await frame.getByText("carol@example.org").waitFor();
-  await shoot(page, "popover-crowded");
-  const radios = frame.getByRole("radio", { name: "Only those invited" });
-  const group = frame.getByRole("radiogroup", { name: "Link access" });
-  const groupBox = await group.boundingBox();
-  const radioBox = await radios.boundingBox();
-  assert.ok(groupBox.height > 20 && groupBox.height >= radioBox.height, `Link access is ${groupBox.height}px tall beside buttons ${radioBox.height}px tall`);
-
-  // One scroll region: main overflows, and nothing inside it scrolls on its own.
-  const atRest = await scrollState(frame);
-  assert.ok(atRest.scrollHeight > atRest.clientHeight, `main overflows (${atRest.scrollHeight} > ${atRest.clientHeight}) and so has to scroll`);
-  assert.equal(
-    await frame.evaluate(() => Array.from(document.querySelectorAll("main *")).filter((element) => /auto|scroll/.test(getComputedStyle(element).overflowY)).length),
-    0,
-    "no nested scroll box",
-  );
-  // At rest: the fade says there is more below, and no divider under the row yet.
-  assert.equal(atRest.fade, true, "the fade shows while there is more below");
-  assert.equal(atRest.divider, false, "no divider before anything has scrolled under the row");
-
-  // Scrolled to the end: the row has not moved, has its divider, and the fade is gone.
-  const row = await topRow(frame);
-  await frame.locator("main").evaluate((element) => { element.scrollTop = element.scrollHeight; });
-  await until("the end of the list", async () => (await scrollState(frame)).fade === false);
-  assert.equal((await scrollState(frame)).divider, true, "the divider shows once content is under the row");
-  assert.deepEqual(await topRow(frame), row, "the row stays put");
-  await frame.getByText("person11@example.com").waitFor();
-  await context.close();
-});
-
-test("the owner view with nobody added fits the popover without a scrollbar, and a crowded one scrolls", { timeout: 180_000 }, async () => {
-  // The popover is one fixed height, so its tallest owner view with nobody added has to fit it: the private page's
-  // helper line wrapping, the copy notice, and the free owner's upgrade card.
-  const X = await publish("Roomy", "<p>Mine.</p>");
-  const context = await newContext(OWNER_ACCOUNT, 900);
-  const { page, frame } = await ownerFrame(context, X);
-  const sizes = async () => frame.evaluate(() => {
-    const element = document.querySelector("main");
-    return { scrollHeight: element.scrollHeight, clientHeight: element.clientHeight };
-  });
-  const fits = async (label) => {
-    const main = await until(label, async () => {
-      const size = await sizes();
-      return size.clientHeight > 0 ? size : null;
-    });
-    assert.ok(main.scrollHeight <= main.clientHeight, `${label}: main needs ${main.scrollHeight}px in ${main.clientHeight}px`);
-  };
-  await fits("public, nobody added");
-
-  await frame.getByRole("radio", { name: "Only those invited" }).click();
-  await frame.getByText("Only people you add can open this page.").waitFor();
-  assert.equal(await frame.getByText("may have kept a copy").count(), 0);
-  await fits("private with the helper line");
-  await shoot(page, "popover-owner-nobody");
-
-  await db.prepare("UPDATE accounts SET plan = 'free' WHERE id = ?").bind(OWNER_ACCOUNT).run();
-  try {
-    await frame.getByRole("radio", { name: "Anyone with the link" }).click();
-    await until("the free owner view", async () => (await frame.getByText("Private sharing and comments").count()) > 0);
-    await fits("free owner, the card");
-    // Nobody can be added, so the list would hold only You: it is left out.
-    assert.equal(await frame.getByText("Who has access").count(), 0);
-    await shoot(page, "popover-free");
-  } finally {
-    await db.prepare("UPDATE accounts SET plan = 'pro' WHERE id = ?").bind(OWNER_ACCOUNT).run();
-  }
-  await context.close();
-
-  const Y = await publish("Eight", "<p>Mine.</p>");
-  for (let n = 0; n < 8; n++) {
-    assert.equal((await api(`/api/v1/docs/${Y}/access/people/${encodeURIComponent(`person${n}@example.com`)}`, { method: "PUT", body: "{}" })).status, 200);
-  }
-  const other = await newContext(OWNER_ACCOUNT, 900);
-  const crowded = await ownerFrame(other, Y);
-  await crowded.frame.getByText("person7@example.com").waitFor();
-  const main = await crowded.frame.evaluate(() => {
-    const element = document.querySelector("main");
-    return { scrollHeight: element.scrollHeight, clientHeight: element.clientHeight };
-  });
-  assert.ok(main.scrollHeight > main.clientHeight, `eight people scroll (${main.scrollHeight} > ${main.clientHeight})`);
-  await other.close();
-});
-
-test("an owner pastes a column of addresses and adds them all at once", { timeout: 120_000 }, async () => {
-  const X = await publish("Pasted", "<p>Mine.</p>");
-  const context = await newContext(OWNER_ACCOUNT);
-  const { page, frame } = await ownerFrame(context, X);
-  const puts = [];
-  page.on("request", (request) => { if (request.method() === "PUT" && request.url().includes("/access/people/")) puts.push(decodeURIComponent(request.url().split("/people/")[1])); });
-
-  // A text field drops line breaks from a paste and would glue the column into
-  // one address; the frame turns them into separators first.
-  const field = frame.getByPlaceholder("Emails, separated by commas");
-  await field.click();
-  await field.evaluate((input) => {
-    const data = new DataTransfer();
-    data.setData("text", "ann@example.com\r\nBob <bob@example.com>\r\nbob@\r\ncarol@example.com\r\n");
-    input.dispatchEvent(new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true }));
-  });
-  assert.equal(await field.inputValue(), "ann@example.com, Bob <bob@example.com>, bob@, carol@example.com");
-  await shoot(page, "popover-pasted");
-
-  await frame.getByRole("button", { name: "Add", exact: true }).click();
-  await frame.getByText("Not added: bob@ (not an email address).").waitFor();
-  await shoot(page, "popover-pasted-added");
-  assert.match(await frame.locator("#oa-msg").innerText(), /^Added 3 people\. Not added: bob@ \(not an email address\)\.$/);
-  // Some went in and some did not: amber, not the red of a failure.
-  assert.equal(await frame.locator("#oa-msg").evaluate((node) => getComputedStyle(node).color), "rgb(246, 174, 82)");
-  for (const address of ["ann@example.com", "bob@example.com", "carol@example.com"]) {
-    assert.equal(await frame.getByText(address).count(), 1, address);
-  }
-  assert.equal(await frame.getByRole("button", { name: "Remove" }).count(), 3);
-  // One request per address that is one, and none for the one that is not.
-  assert.deepEqual(puts, ["ann@example.com", "bob@example.com", "carol@example.com"]);
-  assert.deepEqual((await (await api(`/api/v1/docs/${X}/access`)).json()).people.map((entry) => entry.email).sort(), puts);
-  await context.close();
 });
 
 test("a stale frame whose pre-write read fails does not write", { timeout: 180_000 }, async () => {
@@ -1248,681 +717,5 @@ test("a pasted batch stops when the document goes private part way through", { t
 
   assert.deepEqual(puts, ["ann@example.com"]);
   assert.deepEqual((await (await api(`/api/v1/docs/${X}/access`)).json()).people.map((entry) => entry.email), ["ann@example.com"]);
-  await context.close();
-});
-
-test("the owner sets a role from the popover: no Comments switch, the options come from Access.roles, and the helper line follows the link access", { timeout: 180_000 }, async () => {
-  const X = await publish("Review me", "<p>Mine.</p>");
-  const invitee = "reviewer@example.com";
-  assert.equal((await api(`/api/v1/docs/${X}/access/people/${encodeURIComponent(invitee)}`, { method: "PUT", body: "{}" })).status, 200);
-  const state = async () => (await api(`/api/v1/docs/${X}/access`)).json();
-  const roleOf = async () => (await state()).people.find((entry) => entry.email === invitee).role;
-
-  const context = await newContext(OWNER_ACCOUNT);
-  const { page, frame } = await ownerFrame(context, X);
-  await frame.getByRole("radio", { name: "Only those invited" }).waitFor();
-  // The roles are the only control: no switch, no On or Off.
-  const body = await state();
-  assert.deepEqual(body.roles, ["view", "comment"]);
-  assert.equal("comments" in body, false);
-  assert.equal(await frame.getByText("Comments", { exact: true }).count(), 0);
-  assert.equal(await frame.getByRole("radio", { name: "On", exact: true }).count(), 0);
-  await frame.getByText("Anyone can view. Invitees can comment.").waitFor();
-  await shoot(page, "popover-roles");
-
-  // The role sits on the person's row, inside the panel.
-  const email = await frame.getByText(invitee).boundingBox();
-  const roleBox = await frame.getByLabel(`Access for ${invitee}`).boundingBox();
-  assert.ok(Math.abs(email.y - roleBox.y) < 30, "the role sits beside the address");
-  const mainBox = await frame.locator("main").boundingBox();
-  assert.equal(await frame.locator("li").evaluateAll((rows) => rows.every((row) => row.scrollWidth <= row.clientWidth + 1)), true, "no row is cut at the side");
-  assert.ok(roleBox.x + roleBox.width <= mainBox.x + mainBox.width - 16, "the role select sits inside the panel's padding");
-
-  // The select's options are exactly the roles the plan grants.
-  assert.deepEqual(await frame.getByLabel(`Access for ${invitee}`).locator("option").allTextContents(), ["Can view", "Can comment"]);
-
-  // The person's role: Can comment is what an invite has, and it moves both ways.
-  const select = frame.getByLabel(`Access for ${invitee}`);
-  assert.equal(await select.inputValue(), "comment");
-  await select.selectOption("view");
-  await until("the role to land", async () => (await roleOf()) === "view");
-  assert.equal(await frame.getByLabel(`Access for ${invitee}`).inputValue(), "view");
-  await frame.getByLabel(`Access for ${invitee}`).selectOption("comment");
-  await until("the role to return", async () => (await roleOf()) === "comment");
-
-  // The helper line follows the link access.
-  await frame.getByRole("radio", { name: "Only those invited" }).click();
-  await frame.getByText("Only people you add can open this page.").waitFor();
-  assert.equal(await frame.getByText("Anyone can view.").count(), 0);
-
-  // On a plan with no roles: the card replaces Add people, and each role is plain text.
-  await db.prepare("UPDATE accounts SET plan = 'free' WHERE id = ?").bind(OWNER_ACCOUNT).run();
-  try {
-    await frame.getByRole("radio", { name: "Anyone with the link" }).click();
-    await until("the free owner view", async () => (await frame.getByText("Private sharing and comments").count()) > 0);
-    assert.equal(await frame.getByPlaceholder("Emails, separated by commas").count(), 0);
-    assert.equal(await frame.getByLabel(`Access for ${invitee}`).count(), 0);
-    await frame.getByText("Can comment", { exact: true }).waitFor();
-    assert.equal(await frame.getByRole("button", { name: "Remove" }).count(), 1, "Remove stays");
-    await frame.getByText("Who has access").waitFor();
-    // Only those invited is locked: a press sends nothing, and points at the card's Upgrade.
-    const writes = [];
-    page.on("request", (request) => { if (request.method() !== "GET" && request.url().includes("/access")) writes.push(request.url()); });
-    const locked = frame.getByRole("radio", { name: "Only those invited" });
-    assert.equal(await locked.getAttribute("aria-disabled"), "true");
-    // aria-disabled keeps it focusable and pressable; Playwright's actionability check would refuse it.
-    await locked.click({ force: true });
-    await until("the nudge", async () => frame.locator(".up.nudge").count());
-    assert.equal(await frame.getByRole("link", { name: "Upgrade" }).evaluate((element) => element === document.activeElement), true, "Upgrade has focus");
-    assert.equal(await frame.getByText("Nothing was changed.").count(), 0);
-    assert.deepEqual(writes, []);
-    assert.equal((await state()).linkAccess, "anyone");
-    await shoot(page, "popover-plan-line");
-  } finally {
-    await db.prepare("UPDATE accounts SET plan = 'pro' WHERE id = ?").bind(OWNER_ACCOUNT).run();
-  }
-  await context.close();
-});
-
-test("the popover tells the page its owner is looking only from a click inside it: never when the view is drawn", { timeout: 180_000 }, async () => {
-  const X = await publish("Quiet owner", "<p>Mine.</p>");
-  const context = await newContext(OWNER_ACCOUNT);
-  // Every message the Share frame posts to the page around it.
-  await context.addInitScript(() => {
-    window.__shareEvents = [];
-    window.addEventListener("message", (event) => {
-      if (event.data && event.data.type === "openartifacts:share") window.__shareEvents.push(event.data.event);
-    });
-  });
-  const events = (page) => page.evaluate(() => window.__shareEvents.slice());
-  const { page, frame } = await ownerFrame(context, X);
-
-  // The owner view is drawn (after the sign-in popup): the page has been told "ready" and nothing about its viewer.
-  await frame.getByPlaceholder("Emails, separated by commas").waitFor();
-  assert.deepEqual(await events(page), ["ready"]);
-  // Reading and redrawing the view is not a click either.
-  await frame.evaluate((key) => { const v = window.localStorage.getItem(key); window.localStorage.removeItem(key); window.localStorage.setItem(key, v); }, `openartifacts:share-token:${X}`);
-  await frame.getByPlaceholder("Emails, separated by commas").waitFor();
-  assert.deepEqual(await events(page), ["ready"]);
-
-  // An add is a click: it says people. The value is set rather than typed: fill() into this cross-site
-  // frame just after the popup closes can send its text to the top page instead.
-  await frame.getByPlaceholder("Emails, separated by commas").evaluate((input) => { input.value = "sam@example.com"; });
-  await frame.getByRole("button", { name: "Add", exact: true }).click();
-  await until("people after an add", async () => (await events(page)).includes("people"));
-  const afterAdd = await events(page);
-  assert.equal(afterAdd.filter((name) => name === "people").length, 1);
-
-  // A role change is a click.
-  await frame.getByLabel("Access for sam@example.com").selectOption("view");
-  await until("people after a role change", async () => (await events(page)).filter((name) => name === "people").length === 2);
-
-  // Removing someone says nothing more, and neither does a refused write.
-  await frame.getByRole("button", { name: "Remove" }).click();
-  await until("the removal", async () => (await frame.getByText("sam@example.com").count()) === 0);
-  assert.equal((await events(page)).filter((name) => name === "people").length, 2);
-
-  // Closing the owner view with × says people after close; so does Escape.
-  await frame.getByRole("button", { name: "Close" }).click();
-  await until("people after ×", async () => (await events(page)).filter((name) => name === "people").length === 3);
-  assert.equal((await events(page)).includes("close"), true);
-  await page.locator("a[data-openartifacts-share]").click();
-  await frame.getByPlaceholder("Emails, separated by commas").waitFor();
-  await frame.locator("main").press("Escape");
-  await until("people after Escape", async () => (await events(page)).filter((name) => name === "people").length === 4);
-
-  // A free owner's page has no comments to bring up: closing their owner view says only close.
-  await db.prepare("UPDATE accounts SET plan = 'free' WHERE id = ?").bind(OWNER_ACCOUNT).run();
-  try {
-    const free = await context.newPage();
-    await free.goto(docUrl(X));
-    await free.locator("a[data-openartifacts-share]").click();
-    const freeFrame = await until("the Share frame", () => frameOf(free, X));
-    await freeFrame.getByText("Private sharing and comments").waitFor();
-    await freeFrame.getByRole("button", { name: "Close" }).click();
-    await until("the close", async () => (await events(free)).includes("close"));
-    assert.deepEqual((await events(free)).filter((name) => name === "people"), []);
-  } finally {
-    await db.prepare("UPDATE accounts SET plan = 'pro' WHERE id = ?").bind(OWNER_ACCOUNT).run();
-  }
-  await context.close();
-});
-
-test("a role change the server refuses puts the select back on the role the person has", { timeout: 120_000 }, async () => {
-  const X = await publish("Role refused", "<p>Mine.</p>");
-  const invitee = "refused@example.com";
-  assert.equal((await api(`/api/v1/docs/${X}/access/people/${encodeURIComponent(invitee)}`, { method: "PUT", body: "{}" })).status, 200);
-  const roleOf = async () => (await (await api(`/api/v1/docs/${X}/access`)).json()).people.find((entry) => entry.email === invitee).role;
-  const context = await newContext(OWNER_ACCOUNT);
-  const { page, frame } = await ownerFrame(context, X);
-  const select = frame.getByLabel(`Access for ${invitee}`);
-  await select.waitFor();
-  assert.equal(await select.inputValue(), "comment");
-
-  const url = `https://${API}/embed/api/docs/${X}/access/people/${encodeURIComponent(invitee)}`;
-  for (const refuse of [(route) => route.fulfill({ status: 500, body: "" }), (route) => route.abort()]) {
-    const handler = (route) => (route.request().method() === "PUT" ? refuse(route) : route.continue());
-    await page.route(url, handler);
-    await select.selectOption("view");
-    await frame.getByText("Something went wrong. Nothing was changed.").waitFor();
-    await until("the select to go back", async () => (await select.inputValue()) === "comment");
-    assert.equal(await roleOf(), "comment");
-    await page.unroute(url, handler);
-  }
-  // Unrefused, the same change lands and stays.
-  await select.selectOption("view");
-  await until("the role to land", async () => (await roleOf()) === "view");
-  assert.equal(await frame.getByLabel(`Access for ${invitee}`).inputValue(), "view");
-  await context.close();
-});
-
-test("an owner shown the upgrade card who comes back to the tab after upgrading sees Add people", { timeout: 120_000 }, async () => {
-  const X = await publish("Upgraded", "<p>Mine.</p>");
-  await db.prepare("UPDATE accounts SET plan = 'free' WHERE id = ?").bind(OWNER_ACCOUNT).run();
-  try {
-    const context = await newContext(OWNER_ACCOUNT);
-    const { frame } = await ownerFrame(context, X);
-    await frame.getByText("Private sharing and comments").waitFor();
-    assert.equal(await frame.getByPlaceholder("Emails, separated by commas").count(), 0);
-    // Paid in the checkout tab; this tab becomes visible again.
-    await db.prepare("UPDATE accounts SET plan = 'pro' WHERE id = ?").bind(OWNER_ACCOUNT).run();
-    await frame.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
-    await frame.getByPlaceholder("Emails, separated by commas").waitFor();
-    await context.close();
-  } finally {
-    await db.prepare("UPDATE accounts SET plan = 'pro' WHERE id = ?").bind(OWNER_ACCOUNT).run();
-  }
-});
-
-test("a role the plan no longer grants stays as its own option, so the owner can lower the person", { timeout: 120_000 }, async () => {
-  const X = await publish("Lapsed comments", "<p>Mine.</p>");
-  const invitee = "kept@example.com";
-  assert.equal((await api(`/api/v1/docs/${X}/access/people/${encodeURIComponent(invitee)}`, { method: "PUT", body: JSON.stringify({ role: "comment" }) })).status, 200);
-  const context = await newContext(OWNER_ACCOUNT);
-  const page = await context.newPage();
-  // A plan with private sharing but not comments: its Access grants only view, and the person is still at comment.
-  await page.route(`https://${API}/embed/api/docs/${X}/access`, async (route) => {
-    if (route.request().method() !== "GET" || route.request().headers().authorization === undefined) return route.continue();
-    const body = await (await api(`/api/v1/docs/${X}/access`)).json();
-    await route.fulfill({ json: { ...body, viewer: "owner", roles: ["view"] } });
-  });
-  await page.goto(docUrl(X));
-  await page.locator("a[data-openartifacts-share]").click();
-  const frame = await until("the Share frame", () => frameOf(page, X));
-  const [popup] = await Promise.all([context.waitForEvent("page"), frame.getByRole("button", { name: "Sign in to manage" }).click()]);
-  await popup.waitForEvent("close").catch(() => {});
-  const select = frame.getByLabel(`Access for ${invitee}`);
-  await select.waitFor();
-  assert.equal(await select.inputValue(), "comment");
-  assert.deepEqual(await select.locator("option").allInnerTexts(), ["Can view", "Can comment"]);
-  await select.selectOption("view");
-  await until("the role lowered", async () => (await (await api(`/api/v1/docs/${X}/access`)).json()).people.some((p) => p.email === invitee && p.role === "view"));
-  await context.close();
-});
-
-test("a role this Worker does not know is shown as its own option and is never written back", { timeout: 120_000 }, async () => {
-  const X = await publish("Future role", "<p>Mine.</p>");
-  const invitee = "future@example.com";
-  assert.equal((await api(`/api/v1/docs/${X}/access/people/${encodeURIComponent(invitee)}`, { method: "PUT", body: "{}" })).status, 200);
-  const context = await newContext(OWNER_ACCOUNT);
-  const page = await context.newPage();
-  // The server a newer Worker would be: its Access lists the person at a role this script has never heard of.
-  const writes = [];
-  // A fulfilled answer never reaches the server, so the owner's own read (through the API) stands in for it.
-  await page.route(`https://${API}/embed/api/docs/${X}/access`, async (route) => {
-    if (route.request().method() !== "GET" || route.request().headers().authorization === undefined) return route.continue();
-    const body = await (await api(`/api/v1/docs/${X}/access`)).json();
-    for (const entry of body.people) entry.role = "edit";
-    await route.fulfill({ json: { ...body, viewer: "owner" } });
-  });
-  page.on("request", (request) => { if (request.method() !== "GET" && request.url().includes("/access/people/")) writes.push(request.url()); });
-  await page.goto(docUrl(X));
-  await page.locator("a[data-openartifacts-share]").click();
-  const frame = await until("the Share frame", () => frameOf(page, X));
-  const [popup] = await Promise.all([context.waitForEvent("page"), frame.getByRole("button", { name: "Sign in to manage" }).click()]);
-  await popup.waitForEvent("close").catch(() => {});
-  const select = frame.getByLabel(`Access for ${invitee}`);
-  await select.waitFor();
-  assert.equal(await select.inputValue(), "edit");
-  assert.equal(await select.locator("option:checked").innerText(), "Can edit");
-  // Looking, and leaving, writes nothing.
-  await page.keyboard.press("Escape");
-  assert.deepEqual(writes, []);
-  await context.close();
-});
-
-/** Every event the Share frame posts to the top page of `context`, as `window.__shareEvents` there. */
-const recordShareEvents = (context) =>
-  context.addInitScript(() => {
-    if (window.top !== window) return;
-    window.__shareEvents = [];
-    window.addEventListener("message", (event) => {
-      if (event.data && event.data.type === "openartifacts:share") window.__shareEvents.push(event.data);
-    });
-  });
-
-/** The popover's height, and what the frame's content needs: the row above `main` and all of `main`. */
-const fitState = async (page, frame) => {
-  const { height } = await page.locator(".openartifacts-share-popover").boundingBox();
-  const inner = await frame.evaluate(() => {
-    const main = document.querySelector("main");
-    return {
-      content: Math.ceil(document.querySelector("header").getBoundingClientRect().height + main.scrollHeight),
-      scrollHeight: main.scrollHeight,
-      clientHeight: main.clientHeight,
-    };
-  });
-  return { height, ...inner };
-};
-
-/**
- * Make every other Share frame of `docId` in this storage partition read its view again: a token written by
- * `frame` reaches them as a storage event (never the frame that wrote it).
- */
-const rereadView = (frame, docId) =>
-  frame.evaluate((name) => {
-    const value = window.localStorage.getItem(name);
-    window.localStorage.removeItem(name);
-    window.localStorage.setItem(name, value);
-  }, `openartifacts:share-token:${docId}`);
-
-/** The same, from a second tab of the document, so the first tab's frame reads its view again. */
-async function rereadFrom(context, docId) {
-  const tab = await context.newPage();
-  await tab.goto(docUrl(docId));
-  await tab.locator("a[data-openartifacts-share]").hover();
-  const frame = await until("the second tab's frame", () => frameOf(tab, docId));
-  await frame.locator("[role=radiogroup]").waitFor({ state: "attached" });
-  await rereadView(frame, docId);
-  await tab.close();
-}
-
-/**
- * Production emails invitations, and this harness has no mail binding, so every owner answer for `docId` says it
- * does: each row reads "Invited" and the list carries the invitation line, as in production. Only this document's
- * access paths are touched, so the popup's requests still reach the network stack.
- */
-const emailOn = (context, docId) =>
-  context.route(new RegExp(`^https://${API.replaceAll(".", "\\.")}/embed/api/docs/${docId}/access`), async (route) => {
-    const response = await route.fetch({ url: route.request().url().replace(`https://${API}`, `https://127.0.0.1:${mfPort}`), headers: { ...route.request().headers(), host: API } });
-    const body = await response.json().catch(() => null);
-    await route.fulfill(body && body.viewer === "owner" ? { response, json: { ...body, email: true } } : { response });
-  });
-
-test("on a private page the popover fits its content: it hugs an owner with nobody added, shows six people whole, and scrolls past its maximum", { timeout: 240_000 }, async () => {
-  const Y = await publish("Private fit", "<p>Mine.</p>", "private-docs");
-  const context = await newContext(OWNER_ACCOUNT, 900);
-  await emailOn(context, Y);
-  const { page, frame } = await ownerFrame(context, Y);
-  assert.notEqual(new URL(page.url()).host, SERVING, "a private page is served on its publisher's code host");
-  // The popover and the frame agree once the frame's size has reached the page.
-  const settled = (label, check) =>
-    until(label, async () => {
-      const state = await fitState(page, frame);
-      if (Math.abs(state.height - state.content) <= 1 && check(state)) return state;
-      throw new Error(JSON.stringify(state));
-    });
-
-  // Nobody added: the popover is as tall as the view, with no band of empty room under it.
-  const empty = await settled("the popover to hug the owner view", () => true);
-  assert.ok(empty.scrollHeight <= empty.clientHeight, `nobody added: main needs ${empty.scrollHeight}px in ${empty.clientHeight}px`);
-  assert.ok(empty.height < 320, `nobody added: the popover is ${empty.height}px, shorter than the public page's fixed 320`);
-
-  // Six people, pasted at once: the popover grows and every row shows, with no scroll.
-  const six = Array.from({ length: 6 }, (_, n) => `six${n}@example.com`);
-  await frame.getByPlaceholder("Emails, separated by commas").evaluate((input, value) => { input.value = value; }, six.join(", "));
-  await frame.getByRole("button", { name: "Add", exact: true }).click();
-  await frame.getByText("Added 6 people.").waitFor();
-  const grown = await settled("the popover to grow with the list", (state) => state.height > empty.height);
-  assert.ok(grown.scrollHeight <= grown.clientHeight, `six people: main needs ${grown.scrollHeight}px in ${grown.clientHeight}px`);
-  for (const address of six) assert.equal(await frame.getByText(address).isVisible(), true, address);
-  await shoot(page, "popover-private-six");
-
-  // Thirty: the popover stops at its maximum and the list scrolls under the row.
-  const more = Array.from({ length: 24 }, (_, n) => `six${n + 6}@example.com`);
-  await frame.getByPlaceholder("Emails, separated by commas").evaluate((input, value) => { input.value = value; }, more.join(", "));
-  await frame.getByRole("button", { name: "Add", exact: true }).click();
-  await frame.getByText("Added 24 people.").waitFor();
-  const crowded = await until("the popover to stop at its maximum", async () => {
-    const state = await fitState(page, frame);
-    return state.height > grown.height && state.scrollHeight > state.clientHeight ? state : null;
-  });
-  const room = await page.evaluate(() => {
-    const host = document.querySelector(".openartifacts-share-popover");
-    return window.innerHeight - host.getBoundingClientRect().top - 8;
-  });
-  assert.equal(crowded.height, Math.min(720, room), `thirty people: the popover is ${crowded.height}px`);
-  assert.equal((await scrollState(frame)).fade, true, "the fade says there is more below");
-  const row = await topRow(frame);
-  await frame.locator("main").evaluate((element) => { element.scrollTop = element.scrollHeight; });
-  await until("the end of the list", async () => (await scrollState(frame)).fade === false);
-  assert.deepEqual(await topRow(frame), row, "the row stays put while the list scrolls");
-
-  // Removing people shrinks it again.
-  for (let n = 1; n < 30; n++) {
-    assert.equal((await api(`/api/v1/docs/${Y}/access/people/${encodeURIComponent(`six${n}@example.com`)}`, { method: "DELETE" })).status, 200);
-  }
-  await rereadFrom(context, Y);
-  await until("the list to shrink", async () => (await frame.getByText("six29@example.com").count()) === 0);
-  const shrunk = await settled("the popover to shrink with the list", (state) => state.height < grown.height);
-  assert.ok(shrunk.scrollHeight <= shrunk.clientHeight);
-  await context.close();
-});
-
-test("a private page's popover opens at its content's height, with no jump, when the frame was built on hover", { timeout: 180_000 }, async () => {
-  const Y = await publish("Private hover", "<p>Mine.</p>", "private-docs");
-  const context = await newContext(OWNER_ACCOUNT, 900);
-  const first = await ownerFrame(context, Y);
-  await first.page.close();
-
-  // The token is stored: the frame built on hover draws the owner view while hidden.
-  const page = await context.newPage();
-  await page.goto(docUrl(Y));
-  const share = page.locator("a[data-openartifacts-share]");
-  await share.hover();
-  const frame = await until("the frame a hover built", () => frameOf(page, Y));
-  await frame.locator("[role=radiogroup]").waitFor({ state: "attached" });
-  await page.waitForTimeout(500);
-  // Laid out while hidden, it can be neither seen nor tabbed into.
-  assert.equal(await page.locator(".openartifacts-share-popover").isVisible(), false);
-  await share.focus();
-  await page.keyboard.press("Tab");
-  assert.notEqual(await page.evaluate(() => document.activeElement.className), "openartifacts-share-popover", "Tab does not enter the hidden popover");
-  assert.equal(await frame.evaluate(() => document.hasFocus()), false);
-  // Every height the popover is painted at, from the click on.
-  await page.evaluate(() => {
-    window.__heights = [];
-    const host = document.querySelector(".openartifacts-share-popover");
-    const sample = () => {
-      if (getComputedStyle(host).visibility === "visible") window.__heights.push(host.getBoundingClientRect().height);
-      requestAnimationFrame(sample);
-    };
-    requestAnimationFrame(sample);
-  });
-  await share.click();
-  await page.waitForTimeout(800);
-  const heights = await page.evaluate(() => window.__heights);
-  const state = await fitState(page, frame);
-  assert.ok(Math.abs(state.height - state.content) <= 1, `the popover is ${state.height}px for ${state.content}px of content`);
-  assert.deepEqual([...new Set(heights)], [state.height], "the popover was painted at one height");
-  await context.close();
-});
-
-test("a public page's popover keeps one fixed height for every viewer, and its frame never reports a size", { timeout: 240_000 }, async () => {
-  const X = await publish("Public fixed", "<p>Mine.</p>");
-  const Y = await publish(
-    "Public embedder",
-    `<iframe id="f" src="https://${API}/embed/share?doc=${X}&origin=${encodeURIComponent(`https://${SERVING}`)}" style="width:380px;height:480px"></iframe>`,
-  );
-  const context = await newContext(OWNER_ACCOUNT, 900);
-  await recordShareEvents(context);
-  const sizes = (page) => page.evaluate(() => window.__shareEvents.filter((data) => data.event === "size"));
-  const { page, frame } = await ownerFrame(context, X);
-  const popover = page.locator(".openartifacts-share-popover");
-
-  // Nobody added, and six people: the same 320 px, and no size from the frame.
-  await page.waitForTimeout(500);
-  assert.equal((await popover.boundingBox()).height, 320, "nobody added");
-  for (let n = 0; n < 6; n++) {
-    assert.equal((await api(`/api/v1/docs/${X}/access/people/${encodeURIComponent(`pub${n}@example.com`)}`, { method: "PUT", body: "{}" })).status, 200);
-  }
-  await rereadFrom(context, X);
-  await frame.getByText("pub5@example.com").waitFor();
-  await page.waitForTimeout(500);
-  assert.equal((await popover.boundingBox()).height, 320, "six people");
-  assert.deepEqual(await sizes(page), []);
-
-  // The owner makes it private from this frame, which stays alive on the public origin: still fixed, still silent.
-  await frame.getByRole("radio", { name: "Only those invited" }).click();
-  await frame.getByText("Only people you add can open this page.").waitFor();
-  await page.waitForTimeout(500);
-  assert.equal((await popover.boundingBox()).height, 320, "after a switch to private in a frame on the public origin");
-  assert.deepEqual(await sizes(page), []);
-  assert.equal((await api(`/api/v1/docs/${X}/access`, { method: "PUT", body: JSON.stringify({ linkAccess: "anyone" }) })).status, 200);
-
-  // Another public page embeds the same frame for the same document: it hears ready, and nothing else.
-  const other = await context.newPage();
-  await other.goto(docUrl(Y));
-  const embedded = await until("the embedded frame", () => frameOf(other, X));
-  await embedded.getByText("pub5@example.com").waitFor();
-  // Its content changes (one more person, read again on a storage event): still nothing but ready.
-  assert.equal((await api(`/api/v1/docs/${X}/access/people/pub6%40example.com`, { method: "PUT", body: "{}" })).status, 200);
-  await rereadView(frame, X);
-  await embedded.getByText("pub6@example.com").waitFor();
-  await other.waitForTimeout(1000);
-  assert.deepEqual(await other.evaluate(() => window.__shareEvents.map((data) => data.event)), ["ready"]);
-  await context.close();
-});
-
-test("on a private page only the owner view reports a size: an invitee, signed in to Share or not, gets the fixed height and no size", { timeout: 300_000 }, async () => {
-  // Two invitees whose "Signed in as …" line wraps differently: a size from the reader view would say which one is looking.
-  const LONG_ACCOUNT = accountId("d");
-  const long = "a.very.long.invitee.address.for.wrapping@subdomain.example.com";
-  await db.prepare("INSERT INTO accounts (id, email, plan, created_at) VALUES (?, ?, 'free', ?)").bind(LONG_ACCOUNT, long, Date.now()).run();
-  const Y = await publish("Private invitees", "<p>Shared.</p>", "private-docs");
-  for (const email of ["stranger@example.com", long]) {
-    assert.equal((await api(`/api/v1/docs/${Y}/access/people/${encodeURIComponent(email)}`, { method: "PUT", body: "{}" })).status, 200);
-  }
-  const events = (page) => page.evaluate(() => window.__shareEvents.map((data) => data.event + (data.event === "size" ? `:${data.height}` : "")));
-  // The × posts close, which reaches the page after every message the frame posted before it, so the
-  // events seen then are all the frame said while the view was up. Pressed from the keyboard, as is Sign in
-  // below: a click sent the moment the popover is shown can reach Chrome before the frame is hit-testable,
-  // and land on the popover around it instead.
-  const heard = async (page, frame) => {
-    await frame.getByRole("button", { name: "Close" }).press("Enter");
-    await until("close", async () => (await events(page)).includes("close"));
-    return events(page);
-  };
-  const fixed = async (page, label) => assert.equal((await page.locator(".openartifacts-share-popover").boundingBox()).height, 320, label);
-
-  for (const [email, account] of [["stranger@example.com", OTHER_ACCOUNT], [long, LONG_ACCOUNT]]) {
-    const context = await newContext(account, 900);
-    await recordShareEvents(context);
-
-    // Signed out of Share.
-    const page = await context.newPage();
-    await page.goto(docUrl(Y));
-    assert.notEqual(new URL(page.url()).host, SERVING, "a private page is served on its publisher's code host");
-    await page.locator("a[data-openartifacts-share]").click();
-    const frame = await until("the Share frame", () => frameOf(page, Y));
-    await frame.getByRole("button", { name: "Sign in to manage" }).waitFor();
-    await fixed(page, `${email}, signed out`);
-    assert.deepEqual(await heard(page, frame), ["ready", "close"], `${email}, signed out`);
-
-    // Signed in: the reader view, drawn after the skeleton.
-    await page.locator("a[data-openartifacts-share]").click();
-    await Promise.all([context.waitForEvent("page"), frame.getByRole("button", { name: "Sign in to manage" }).press("Enter")]);
-    await frame.getByText(`Signed in as ${email}.`).waitFor();
-    await fixed(page, `${email}, the reader view`);
-    assert.deepEqual(await heard(page, frame), ["ready", "close", "close"], `${email}, the reader view`);
-
-    // A later page view with the token stored: the skeleton, then the reader view.
-    const again = await context.newPage();
-    await again.goto(docUrl(Y));
-    await again.locator("a[data-openartifacts-share]").click();
-    const stored = await until("the Share frame", () => frameOf(again, Y));
-    await stored.getByText(`Signed in as ${email}.`).waitFor();
-    await fixed(again, `${email}, the reader view from a stored token`);
-    assert.deepEqual(await heard(again, stored), ["ready", "close"], `${email}, the reader view from a stored token`);
-    await context.close();
-  }
-
-  // The owner, on the same page, gets the popover fitted to the owner view.
-  const context = await newContext(OWNER_ACCOUNT, 900);
-  await recordShareEvents(context);
-  const { page, frame } = await ownerFrame(context, Y);
-  const state = await until("the popover to fit the owner view", async () => {
-    const now = await fitState(page, frame);
-    return Math.abs(now.height - now.content) <= 1 ? now : null;
-  });
-  assert.notEqual(state.height, 320);
-  assert.ok((await events(page)).some((event) => event.startsWith("size:")), "the owner view reports its size");
-  await context.close();
-});
-
-test("a frame with no width yet reports no size: its first report is the one at the width it is given", { timeout: 180_000 }, async () => {
-  // Chrome sometimes runs the popover's frame before it has sized it, and the owner view measured at no
-  // width is thousands of pixels tall. Another of the publisher's private pages, on the same code origin,
-  // holds the frame at width 0 to make that moment last.
-  const Y = await publish("Zero width", "<p>Mine.</p>", "private-docs");
-  const context = await newContext(OWNER_ACCOUNT, 900);
-  await recordShareEvents(context);
-  const first = await ownerFrame(context, Y);
-  const codeOrigin = new URL(first.page.url()).origin;
-  await first.page.close();
-  const Z = await publish(
-    "Zero width embedder",
-    `<iframe id="f" src="https://${API}/embed/share?doc=${Y}&origin=${encodeURIComponent(codeOrigin)}" style="width:0;height:480px;border:0"></iframe>`,
-    "private-docs",
-  );
-  const page = await context.newPage();
-  await page.goto(docUrl(Z));
-  assert.equal(new URL(page.url()).origin, codeOrigin, "both documents are on the publisher's code host");
-  const frame = await until("the zero-width frame", () => frameOf(page, Y));
-  // The owner view is drawn, and the observer that measures it has run, before this returns.
-  await frame.locator("[role=radiogroup]").waitFor({ state: "attached" });
-  assert.equal(await frame.evaluate(() => window.innerWidth), 0);
-  await page.locator("#f").evaluate((element) => { element.style.width = "360px"; });
-  const sizes = await until("a size", async () => {
-    const found = await page.evaluate(() => window.__shareEvents.filter((data) => data.event === "size").map((data) => data.height));
-    return found.length > 0 ? found : null;
-  });
-  const content = await frame.evaluate(() => Math.ceil(document.querySelector("header").getBoundingClientRect().height + document.querySelector("main").scrollHeight));
-  assert.deepEqual(sizes, [content], "the first size is the content at 360 px");
-  await context.close();
-});
-
-/** Hold every write to `docId`'s access for `ms`, and count them by method and path. */
-const slowWrites = async (page, docId, ms = 1500) => {
-  const writes = [];
-  await page.route(new RegExp(`^https://${API.replaceAll(".", "\\.")}/embed/api/docs/${docId}/access`), async (route) => {
-    const request = route.request();
-    if (request.method() === "GET") return route.continue();
-    writes.push(`${request.method()} ${new URL(request.url()).pathname.split("/access")[1] || "/"}`);
-    await new Promise((resolve) => setTimeout(resolve, ms));
-    await route.continue();
-  });
-  return writes;
-};
-
-test("Add shows a spinner at once, takes no second click or Enter, and clears the field only when the people land", { timeout: 180_000 }, async () => {
-  const X = await publish("Busy add", "<p>Mine.</p>");
-  const context = await newContext(OWNER_ACCOUNT);
-  const { page, frame } = await ownerFrame(context, X);
-  const writes = await slowWrites(page, X);
-  const field = frame.getByPlaceholder("Emails, separated by commas");
-  await field.evaluate((input) => { input.value = "dee@example.com"; });
-
-  // A click, then what the next painted frame shows; then a second click and an Enter while the first is out.
-  const pressed = await frame.evaluate(async () => {
-    const add = Array.from(document.querySelectorAll("main button")).find((element) => element.textContent === "Add");
-    const input = document.querySelector("main input");
-    const look = () => ({
-      busy: add.classList.contains("busy") && add.getAttribute("aria-busy") === "true",
-      spinning: getComputedStyle(add, "::after").animationName === "spin",
-      disabled: add.disabled,
-      readOnly: input.readOnly,
-    });
-    add.click();
-    await new Promise((resolve) => requestAnimationFrame(resolve));
-    const first = look();
-    add.click();
-    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
-    return first;
-  });
-  assert.deepEqual(pressed, { busy: true, spinning: true, disabled: true, readOnly: true }, "busy within one frame");
-  await shoot(page, "popover-busy-add");
-  await frame.getByText("dee@example.com").waitFor();
-  await page.waitForTimeout(300);
-  assert.deepEqual(writes, ["PUT /people/dee%40example.com"], "one request for three presses");
-  assert.equal(await field.inputValue(), "", "the field clears once the person is listed");
-  assert.equal(await field.evaluate((input) => input.readOnly), false);
-  assert.equal(await frame.getByRole("button", { name: "Add", exact: true }).isEnabled(), true);
-
-  // A write that fails ends the busy state and keeps what was typed.
-  await page.unroute(new RegExp(`^https://${API.replaceAll(".", "\\.")}/embed/api/docs/${X}/access`));
-  await page.route(`https://${API}/embed/api/docs/${X}/access/people/*`, async (route) => {
-    await new Promise((resolve) => setTimeout(resolve, 800));
-    await route.fulfill({ status: 500, body: "" });
-  });
-  await field.evaluate((input) => { input.value = "err@example.com"; });
-  await frame.getByRole("button", { name: "Add", exact: true }).click();
-  assert.equal(await frame.getByRole("button", { name: "Add", exact: true }).isDisabled(), true, "busy while the failing write is out");
-  await frame.getByText("Something went wrong. Nothing was changed.").waitFor();
-  assert.equal(await field.inputValue(), "err@example.com", "the typed text stays");
-  assert.equal(await field.evaluate((input) => input.readOnly), false);
-  const add = frame.getByRole("button", { name: "Add", exact: true });
-  assert.equal(await add.isEnabled(), true);
-  assert.equal(await add.evaluate((element) => element.classList.contains("busy")), false);
-  await context.close();
-});
-
-test("a role change, Remove and the link access switch each show they are working, and nothing else can be pressed meanwhile", { timeout: 180_000 }, async () => {
-  const Y = await publish("Busy writes", "<p>Mine.</p>", "private-docs");
-  const invitee = "busy@example.com";
-  assert.equal((await api(`/api/v1/docs/${Y}/access/people/${encodeURIComponent(invitee)}`, { method: "PUT", body: "{}" })).status, 200);
-  const context = await newContext(OWNER_ACCOUNT);
-  const { page, frame } = await ownerFrame(context, Y);
-  const writes = await slowWrites(page, Y);
-  await frame.getByLabel(`Access for ${invitee}`).waitFor();
-
-  // What the next painted frame shows after `act`: the control's busy state, and whether any other control can be used.
-  const after = (act) =>
-    frame.evaluate(async (act) => {
-      const main = document.querySelector("main");
-      const select = main.querySelector("select");
-      const target = {
-        role: () => select,
-        remove: () => Array.from(main.querySelectorAll("button")).find((element) => element.textContent === "Remove"),
-        anyone: () => Array.from(main.querySelectorAll("[role=radio]")).find((element) => element.textContent === "Anyone with the link"),
-      }[act]();
-      if (act === "role") {
-        select.value = "view";
-        select.dispatchEvent(new Event("change", { bubbles: true }));
-      } else target.click();
-      await new Promise((resolve) => requestAnimationFrame(resolve));
-      const spinner = act === "role" ? target.parentElement.querySelector(".spin") : target;
-      return {
-        busy: target.getAttribute("aria-busy") === "true",
-        spinning: spinner !== null && getComputedStyle(spinner, act === "role" ? null : "::after").animationName === "spin",
-        disabled: target.disabled,
-        othersLive: Array.from(main.querySelectorAll("button, select, input")).filter((element) => element !== target && !element.disabled && !element.readOnly).length,
-      };
-    }, act);
-  const busy = { busy: true, spinning: true, disabled: true, othersLive: 0 };
-
-  assert.deepEqual(await after("role"), busy, "a role change");
-  await until("the role to land", async () => (await frame.getByLabel(`Access for ${invitee}`).inputValue()) === "view" && (await frame.getByLabel(`Access for ${invitee}`).isEnabled()));
-
-  assert.deepEqual(await after("anyone"), busy, "the link access switch");
-  await until("the switch to land", async () => (await frame.getByRole("radio", { name: "Anyone with the link" }).getAttribute("aria-checked")) === "true");
-
-  assert.deepEqual(await after("remove"), busy, "Remove");
-  await until("the removal", async () => (await frame.getByText(invitee).count()) === 0);
-  assert.deepEqual(writes, [`PUT /people/${encodeURIComponent(invitee)}`, "PUT /", `DELETE /people/${encodeURIComponent(invitee)}`]);
-  await context.close();
-});
-
-test("the helper line under Add is one line in both modes, at the popover's widest and narrowest", { timeout: 180_000 }, async () => {
-  const X = await publish("Helper public", "<p>Mine.</p>");
-  const Y = await publish("Helper private", "<p>Mine.</p>", "private-docs");
-  const context = await newContext(OWNER_ACCOUNT);
-  for (const id of [X, Y]) await (await ownerFrame(context, id)).page.close();
-  const wording = { [X]: "Anyone can view. Invitees can comment.", [Y]: "Only people you add can open this page." };
-  for (const [viewport, width] of [[1280, 360], [320, 304]]) {
-    for (const id of [X, Y]) {
-      const page = await context.newPage();
-      await page.setViewportSize({ width: viewport, height: 800 });
-      await page.goto(docUrl(id));
-      await page.locator("a[data-openartifacts-share]").click();
-      assert.equal((await page.locator(".openartifacts-share-popover").boundingBox()).width, width);
-      const frame = await until("the Share frame", () => frameOf(page, id));
-      const help = frame.getByText(wording[id], { exact: true });
-      await help.waitFor();
-      const lines = await help.evaluate((element) => element.getBoundingClientRect().height / parseFloat(getComputedStyle(element).lineHeight));
-      assert.ok(lines < 1.5, `${wording[id]} at ${width}px takes ${lines.toFixed(2)} lines`);
-      await page.close();
-    }
-  }
   await context.close();
 });

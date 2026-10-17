@@ -1,8 +1,8 @@
 /**
- * Product analytics: five document outcomes, delivered straight to PostHog.
+ * Product analytics: document and email outcomes, delivered straight to PostHog.
  *
  * The module exists to make one property structural rather than a review habit.
- * What leaves this Worker is decided *here*, from a closed union of five event
+ * What leaves this Worker is decided *here*, from a closed union of event
  * shapes, and never by a caller: `properties` is assembled below out of those
  * fields alone, and nothing in the interface accepts a property bag, a
  * `Request`, a title or a url. A call site that wanted to attach one
@@ -20,6 +20,7 @@
  * usage since instrumentation began, not exact all-time counts.
  */
 import type { Env } from "./config.js";
+import type { EmailOutcome, EmailReason, EmailType } from "./email.js";
 import { withinLimit } from "./limits.js";
 import { sha256Hex } from "./hash.js";
 
@@ -63,7 +64,7 @@ export const ANALYTICS_TIMEOUT_MS = 2000;
 export const MAX_USER_AGENT_LENGTH = 512;
 
 /**
- * The five outcomes worth counting, and the only things that can be recorded.
+ * The outcomes worth counting, and the only things that can be recorded.
  *
  * A view event has no `ownerId` field to fill in, so a reader cannot be turned
  * into an account; the publication and access events do have one, because the
@@ -73,6 +74,15 @@ export const MAX_USER_AGENT_LENGTH = 512;
  * people — never an address.
  */
 export type DocumentEvent =
+  | {
+      name: "email_delivery";
+      docId: string | null;
+      atMs: number;
+      emailType: EmailType;
+      recipientHash: string | null;
+      outcome: EmailOutcome;
+      reason: EmailReason;
+    }
   | {
       name: "document_published" | "document_updated" | "document_unshared";
       /** The doc the outcome is about. Hashed to an opaque key; never sent raw. */
@@ -194,17 +204,19 @@ function capturePayload(
   uuid: string,
 ): string {
   const viewed = event.name === "document_viewed";
+  const email = event.name === "email_delivery";
   return JSON.stringify({
     api_key: apiKey,
     event: event.name,
-    distinct_id: viewed ? documentKey : event.ownerId,
+    distinct_id: viewed || email ? documentKey : event.ownerId,
     timestamp: new Date(event.atMs).toISOString(),
     uuid,
     properties: {
       service: "openartifacts",
       environment,
       document_key: documentKey,
-      $process_person_profile: !viewed,
+      $process_person_profile: !viewed && !email,
+      ...(email ? { email_type: event.emailType, recipient_hash: event.recipientHash, outcome: event.outcome, reason: event.reason } : {}),
       $geoip_disable: true,
       ...(event.name === "document_access_changed"
         ? { link_access: event.linkAccess, people: event.people }
@@ -303,7 +315,7 @@ export function analyticsSink(env: Env, ctx: ExecutionContext): AnalyticsSink {
   const viewLimiter = env.VIEW_EVENT_LIMITER;
 
   const send = async (event: DocumentEvent, uuid: string): Promise<void> => {
-    const documentKey = await documentAnalyticsKey(event.docId);
+    const documentKey = event.docId === null ? "no_document" : await documentAnalyticsKey(event.docId);
     if (event.name === "document_viewed" && !(await viewWithinAllowance(viewLimiter, documentKey))) {
       return;
     }

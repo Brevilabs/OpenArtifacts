@@ -186,13 +186,21 @@ export function notAvailablePage(email: string, docId: string, next: string): Re
 }
 
 /**
- * What every request to open a document answers: stored, repeated, unknown
- * id, deleted, public, already allowed, over the cap, rate limited. One status
- * and one set of words, so the route reveals nothing the not-available page
- * does not. Without email on the server the approval cannot be announced, so
- * the page says what will happen instead.
+ * What every request to open a document answers within the account's
+ * allowance: stored, repeated, unknown id, deleted, public, already allowed,
+ * over the cap. One status and one set of words, so the route reveals nothing
+ * the not-available page does not. Only an account over its allowance, which
+ * no document decides, is told the request was not sent. Without email on the
+ * server the approval cannot be announced, so the page says what will happen
+ * instead.
  */
-export function requestSentPage(email: string, docId: string, emailEnabled: boolean): Response {
+export function requestSentPage(email: string, docId: string, emailEnabled: boolean, withinAllowance: boolean): Response {
+  if (!withinAllowance) return readerPage({
+    title: "Request not sent",
+    heading: "Request not sent",
+    message: "We couldn’t record your request. Wait a minute and try again, or ask the owner for the link.",
+    actions: `<div class="actions"><a href="${OPEN_PREFIX}/${escapeHtml(docId)}">Try again</a></div>`,
+  }, 200);
   const address = `<b><bdi>${escapeHtml(email)}</bdi></b>`;
   return readerPage(
     {
