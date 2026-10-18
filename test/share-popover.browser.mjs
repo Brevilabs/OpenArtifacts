@@ -794,8 +794,7 @@ test("Home search opens owned pages by keyboard and click without filtering the 
   await page.goto(`https://${API}/home`);
   const input = page.getByRole("combobox", { name: "Search your pages" });
   await input.waitFor();
-  assert.equal(await page.locator(".cli-hint").innerText(), "Ask any agent to publish with openartifacts publish <file.html> or unpublish with openartifacts unshare <docId>.");
-  assert.deepEqual(await page.locator(".cli-hint code").allTextContents(), ["openartifacts publish <file.html>", "openartifacts unshare <docId>"]);
+  assert.equal(await page.locator(".cli-hint").innerText(), "Ask your agent to publish or unpublish any page with the OpenArtifacts CLI.");
   const rowCount = await page.locator(".pages > li").count();
   await input.fill("HOME SEARCH");
   const options = page.getByRole("option");
