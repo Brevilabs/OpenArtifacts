@@ -10,7 +10,7 @@ import { PROVIDER_ICONS, PROVIDER_LABELS, type ProviderId } from "./approval/pro
 import { POPUP_DONE_SCRIPT } from "./embed-scripts.js";
 import { scriptHashSource } from "./hash.js";
 import { ABOUT_LINK, brandPageHtml, escapeHtml, type BrandPage } from "./page.js";
-import { EMBED_SIGNIN_PATH, OPEN_PREFIX, SHARE_PREFIX, SIGNIN_PREFIX } from "./paths.js";
+import { EMBED_SIGNIN_PATH, HOME_PATH, OPEN_PREFIX, SHARE_PREFIX, SIGNIN_PREFIX } from "./paths.js";
 
 /**
  * Whether a return path is one of the two ways an owner manages a document, the
@@ -80,6 +80,7 @@ export function signInPage(
   note = "",
 ): Response {
   const manage = isManagePath(next);
+  const home = next === HOME_PATH;
   const buttons = providers
     .map(
       (provider) =>
@@ -96,13 +97,17 @@ export function signInPage(
   const email = emailEnabled
     ? `<form class="signup" method="post" action="${SIGNIN_PREFIX}/email">${hidden("next", next)}<div class="actions"><input type="email" name="email" placeholder="Email address" aria-label="Email address" autocomplete="email" style="${EMAIL_FIELD_STYLE}" required><button type="submit">Email me a code</button></div></form>`
     : "";
-  const message = manage
+  const message = home
+    ? "Sign in with the account that published your pages. New here? Signing in creates a free account."
+    : manage
     ? "Sign in with the account that published it. New here? Signing in creates a free account."
     : "The owner shared it with specific people. Sign in with the address they invited. New here? Signing in creates a free account.";
   return readerPage(
     {
-      title: manage ? "Sign in to manage this document" : "Sign in or create an account",
-      heading: manage
+      title: home ? "Sign in to see your pages" : manage ? "Sign in to manage this document" : "Sign in or create an account",
+      heading: home
+        ? "Sign in to see your pages"
+        : manage
         ? "Sign in to manage this document"
         : "Sign in or create an account to open this document",
       message: `${note ? `${escapeHtml(note)} ` : ""}${message}`,
@@ -141,13 +146,14 @@ export function termsPage(
   next: string,
   submit: { action: string; field: string; token: string },
 ): Response {
+  const home = next === HOME_PATH;
   const purpose = isManagePath(next) ? "manage" : "open";
   return readerPage(
     {
       title: "Create your free account",
       heading: "Create your free account.",
-      message: `Continue as <b><bdi>${escapeHtml(email)}</bdi></b> to ${purpose} this document.`,
-      actions: `<form class="signup" method="post" action="${submit.action}">${hidden(submit.field, submit.token)}${hidden("next", next)}<p class="terms">See our <a href="https://openartifacts.ai/privacy">Privacy Policy</a>.</p>${TERMS_CONSENT}<div class="actions"><button type="submit">Create account and ${purpose}</button></div></form>`,
+      message: `Continue as <b><bdi>${escapeHtml(email)}</bdi></b> to ${home ? "see your pages" : `${purpose} this document`}.`,
+      actions: `<form class="signup" method="post" action="${submit.action}">${hidden(submit.field, submit.token)}${hidden("next", next)}<p class="terms">See our <a href="https://openartifacts.ai/privacy">Privacy Policy</a>.</p>${TERMS_CONSENT}<div class="actions"><button type="submit">Create account and ${home ? "continue" : purpose}</button></div></form>`,
     },
     200,
   );

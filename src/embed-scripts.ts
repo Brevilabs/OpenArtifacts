@@ -1048,3 +1048,62 @@ export const FRAME_SCRIPT = String.raw`(() => {
   edges();
 })();
 `;
+
+/**
+ * The Home frame's one script (`GET /embed/home`, `src/embed.ts`): draw a link
+ * to Home when this browser holds a live Share token, and nothing otherwise.
+ *
+ * "Live" is the rule the Share frame's own read uses: a stored token with at
+ * least a minute left. The token is only evidence that someone signed in here
+ * within 24 hours; the link goes to `/home`, which asks the session. It is the
+ * only thing that varies, and it varies only inside the frame: the script posts
+ * no message, takes no focus, observes no size and reports nothing to the page
+ * around it, so the page cannot tell the two views apart. Storage that throws
+ * (blocked) is the signed-out view. DOM is built with `createElement`,
+ * `createElementNS` and `textContent`, never markup.
+ */
+export const HOME_FRAME_SCRIPT = `(function () {
+  var live = false;
+  try {
+    for (var i = 0; i < localStorage.length; i++) {
+      var key = localStorage.key(i);
+      if (key === null || key.indexOf("openartifacts:share-token:") !== 0) continue;
+      var value = null;
+      try { value = JSON.parse(localStorage.getItem(key)); } catch (error) {}
+      if (value && typeof value.token === "string" && typeof value.expiresAt === "number" && value.expiresAt - Date.now() >= 60000) { live = true; break; }
+    }
+  } catch (error) {}
+  if (!live) return;
+  var link = document.createElement("a");
+  link.href = document.documentElement.dataset.home;
+  link.target = "_top";
+  var ns = "http://www.w3.org/2000/svg";
+  var icon = document.createElementNS(ns, "svg");
+  icon.setAttribute("viewBox", "0 0 24 24");
+  icon.setAttribute("aria-hidden", "true");
+  var path = document.createElementNS(ns, "path");
+  path.setAttribute("d", "M3 11l9-8 9 8M5 9.5V20a1 1 0 0 0 1 1h4v-6h4v6h4a1 1 0 0 0 1-1V9.5");
+  icon.appendChild(path);
+  var label = document.createElement("span");
+  label.textContent = "Home";
+  link.appendChild(icon);
+  link.appendChild(label);
+  document.body.appendChild(link);
+})();
+`;
+
+/**
+ * The Home frame's stylesheet: a pill that matches the bar's **Share** button
+ * (`#1d2027`, hairline edge, `#f4f5f7` ink) and fills the frame, on a
+ * transparent body so the bar shows through. The page sizes the frame; below 60px wide
+ * the label goes and the pill is an icon, so a phone's narrower frame needs no
+ * message either way.
+ */
+export const HOME_FRAME_CSS = `:root{color-scheme:dark;font:500 14px/1 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased}
+*{box-sizing:border-box}html,body{height:100%;margin:0;background:transparent}
+a{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;height:100%;padding:0 12px 0 10px;border:1px solid rgba(255,255,255,.08);border-radius:999px;background:#1d2027;color:#f4f5f7;text-decoration:none;white-space:nowrap}
+a:hover{background:#272b33;border-color:rgba(255,255,255,.14)}
+a:focus-visible{outline:2px solid #f6ae52;outline-offset:-2px}
+svg{flex:none;width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
+@media(max-width:60px){a{padding:0}span{display:none}}
+`;

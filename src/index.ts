@@ -16,10 +16,11 @@ import type { Env } from "./config.js";
 import { DEVICE_PREFIX, handleDevice } from "./device.js";
 import { errorResponse } from "./errors.js";
 import { listTokens, revokeToken } from "./api/tokens.js";
-import { EMBED_PREFIX, OPEN_PREFIX, SERVING_PREFIX, SHARE_PREFIX, SIGNIN_PREFIX } from "./paths.js";
+import { EMBED_PREFIX, HOME_PATH, OPEN_PREFIX, SERVING_PREFIX, SHARE_PREFIX, SIGNIN_PREFIX } from "./paths.js";
 import { handlePublisherServing, isolate, legacyLabelResponse, LEGACY_LABEL } from "./private.js";
 import { ORIGIN_CODE } from "./origin-code.js";
 import { handleEmbed } from "./embed.js";
+import { handleHome } from "./home.js";
 import { handleReader } from "./reader.js";
 import { readerSignInConfigured } from "./reader-config.js";
 import { READER_NOT_FOUND, readerIsolate } from "./reader-pages.js";
@@ -137,6 +138,7 @@ export function resolveSurface(hostname: string, pathname: string, config: Surfa
   if (pathIsUnder(pathname, OPEN_PREFIX)) return "api";
   if (pathIsUnder(pathname, SIGNIN_PREFIX)) return "api";
   if (pathIsUnder(pathname, SHARE_PREFIX)) return "api";
+  if (pathname === HOME_PATH) return "api";
   if (pathIsUnder(pathname, EMBED_PREFIX)) return "api";
   if (pathIsUnder(pathname, SERVING_PREFIX)) return "serving";
   return "unknown";
@@ -318,12 +320,13 @@ export default {
             return await handleApproval(request, url, env);
           }
           // Reader sign-in, the door a private document opens through and the
-          // share page: pages a person reaches with a browser, not API routes,
+          // share page and Home: pages a person reaches with a browser, not API routes,
           // so they sit outside `/api/v1` for the same reason approval does.
           if (
             pathIsUnder(url.pathname, OPEN_PREFIX) ||
             pathIsUnder(url.pathname, SIGNIN_PREFIX) ||
-            pathIsUnder(url.pathname, SHARE_PREFIX)
+            pathIsUnder(url.pathname, SHARE_PREFIX) ||
+            url.pathname === HOME_PATH
           ) {
             // A server with no reader sign-in configured has none of these
             // pages, as one that predates private sharing has none.
@@ -332,9 +335,11 @@ export default {
             return readerIsolate(
               !readerSignInConfigured(env)
                 ? READER_NOT_FOUND()
-                : pathIsUnder(url.pathname, SHARE_PREFIX)
-                  ? await handleShare(request, url, env, analytics, ctx)
-                  : await handleReader(request, url, env, ctx, analytics),
+                : url.pathname === HOME_PATH
+                  ? await handleHome(request, url, env)
+                  : pathIsUnder(url.pathname, SHARE_PREFIX)
+                    ? await handleShare(request, url, env, analytics, ctx)
+                    : await handleReader(request, url, env, ctx, analytics),
             );
           }
           // The top bar's page script and, with it, everything the Share

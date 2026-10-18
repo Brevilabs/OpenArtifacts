@@ -719,3 +719,52 @@ test("a pasted batch stops when the document goes private part way through", { t
   assert.deepEqual((await (await api(`/api/v1/docs/${X}/access`)).json()).people.map((entry) => entry.email), ["ann@example.com"]);
   await context.close();
 });
+
+test("the Home frame shows a link only to a browser holding a live token, and the page sees the same layout either way", { timeout: 120_000 }, async () => {
+  const X = await publish("Home bar", "<p>Mine.</p>");
+  const context = await newContext(null);
+  const page = await context.newPage();
+  const homeFrame = () => page.frames().find((frame) => frame.url() === `https://${API}/embed/home`);
+  const layout = async () => ({
+    frame: await page.locator("iframe.openartifacts-home").boundingBox(),
+    share: await page.locator("a[data-openartifacts-share]").boundingBox(),
+    bar: await page.locator(".openartifacts-bar").boundingBox(),
+  });
+  const messages = [];
+  await page.exposeFunction("__reported", (data) => messages.push(data));
+  await page.addInitScript(() => window.addEventListener("message", (event) => window.__reported(String(event.data))));
+
+  // No stored token: the slot is there, at its size, with nothing to focus.
+  await page.goto(docUrl(X));
+  await until("the Home frame", () => homeFrame());
+  const signedOut = await layout();
+  assert.equal(await homeFrame().locator("a").count(), 0);
+  await shoot(page, "home-bar-signed-out");
+
+  // A live token in the frame's own storage draws the link to Home, at the same size.
+  const live = { token: "oas_x", expiresAt: Date.now() + 86_400_000 };
+  await homeFrame().evaluate((value) => localStorage.setItem("openartifacts:share-token:abc", JSON.stringify(value)), live);
+  await page.reload();
+  await until("the Home link", () => homeFrame()?.locator("a").count());
+  assert.equal(await homeFrame().locator("a").getAttribute("href"), `https://${API}/home`);
+  assert.deepEqual(await layout(), signedOut, "the bar and the frame are the same size in both states");
+  await shoot(page, "home-bar-signed-in");
+
+  // An expired token is the signed-out view again.
+  await homeFrame().evaluate(() => localStorage.setItem("openartifacts:share-token:abc", JSON.stringify({ token: "oas_x", expiresAt: Date.now() + 1000 })));
+  await page.reload();
+  await until("the Home frame", () => homeFrame());
+  await page.waitForTimeout(500);
+  assert.equal(await homeFrame().locator("a").count(), 0);
+  assert.deepEqual(messages, [], "the page heard nothing from the frame");
+
+  // Phone width: the frame is narrower and the label goes, by the frame's own CSS.
+  await page.setViewportSize({ width: 390, height: 800 });
+  await homeFrame().evaluate((value) => localStorage.setItem("openartifacts:share-token:abc", JSON.stringify(value)), live);
+  await page.reload();
+  await until("the Home link", () => homeFrame()?.locator("a").count());
+  assert.equal((await page.locator("iframe.openartifacts-home").boundingBox()).width, 36);
+  assert.equal(await homeFrame().locator("span").isVisible(), false);
+  await shoot(page, "home-bar-phone");
+  await context.close();
+});

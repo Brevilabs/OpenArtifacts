@@ -620,6 +620,8 @@ export interface DocListRow {
    */
   version: number | null;
   link_access: LinkAccess;
+  /** People on the doc's invite list: the count Home shows, read in the same scan so no row costs a second query. */
+  people: number;
 }
 
 /**
@@ -666,7 +668,8 @@ export async function listPublisherDocs(
 ): Promise<DocListRow[]> {
   const columns = `d.id AS id, d.title AS title, d.created_at AS created_at,
                    d.updated_at AS updated_at, d.link_access AS link_access,
-                   (SELECT MAX(v.n) FROM versions v WHERE v.doc_id = d.id) AS version`;
+                   (SELECT MAX(v.n) FROM versions v WHERE v.doc_id = d.id) AS version,
+                   (SELECT COUNT(*) FROM doc_invites i WHERE i.doc_id = d.id) AS people`;
   const order = "ORDER BY d.created_at DESC, d.id DESC LIMIT ?";
 
   const statement =

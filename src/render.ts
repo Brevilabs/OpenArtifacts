@@ -328,7 +328,10 @@ export const OPENARTIFACTS_BAR_SPACER =
  */
 export const OPENARTIFACTS_BAR_STYLE =
   "<style>:where(html){scroll-padding-top:48px}" +
-  "@media print{.openartifacts-bar,.openartifacts-bar-spacer,.openartifacts-share-popover{display:none!important}}" +
+  "@media print{.openartifacts-bar,.openartifacts-bar-spacer,.openartifacts-share-popover,.openartifacts-home{display:none!important}}" +
+  // Home is icon-only on a phone: only the frame's width changes, so the page
+  // sends it nothing and the frame needs no message to know.
+  "@media(max-width:600px){.openartifacts-home{width:36px!important}}" +
   ":where(.openartifacts-share):hover{background:#272b33!important;border-color:rgba(255,255,255,0.14)!important}" +
   // The Comments button (`src/comments-scripts.ts`): its border and ink only, never
   // its background, which says whether the sidebar is open.
@@ -421,6 +424,11 @@ export interface TopBar {
   /** `https://{API_HOST}/embed/page.js`: the script that turns the link into a popover. */
   scriptUrl: string;
   /**
+   * `https://{API_HOST}/embed/home`: the Home button's frame. A static tag, the
+   * same for every viewer: the frame decides what it draws.
+   */
+  homeUrl: string;
+  /**
    * Whether the page has comments to show: a thread exists, or a person holds a
    * role of at least `comment`. Derived, never set by the owner. Set only on the shared link (`/d/{docId}`)
    * and left out of a pinned `/v{n}`, which is immutable and must not freeze it.
@@ -438,6 +446,16 @@ export interface TopBar {
 }
 
 /**
+ * The Home frame: fixed in size by the page's own style (the stylesheet narrows
+ * it on a phone), transparent, with the Share button's dark `color-scheme` so
+ * the browser does not paint an opaque canvas behind it on a light document.
+ * `allow-same-origin` is what lets it read its own storage; the sandbox leaves
+ * it no way to open windows or navigate anything but the tab, on a click.
+ */
+const HOME_FRAME_STYLE =
+  "all:initial;flex:none;display:block;width:84px;height:32px;border:0;background:transparent;color-scheme:dark";
+
+/**
  * The top bar, in the order it must land: the spacer first, so it is the first
  * child of `<body>` and the author's content starts below the strip, then the
  * stylesheet, the strip, and the script tag.
@@ -445,7 +463,9 @@ export interface TopBar {
  * **The same bytes for every viewer of a document.** It names no identity, so a
  * public page keeps `max-age=60` and a pinned one `immutable`.
  *
- * Left: the byline's text, for Copilot-rendered HTML that has branding. That
+ * Far left: the Home frame (`/embed/home`), a fixed-size slot that is empty for
+ * a viewer who is not signed in and the same size either way, so the page learns
+ * nothing from it. Then the byline's text, for Copilot-rendered HTML that has branding. That
  * text exists only where the header byline would have: printing it on other
  * pages would be false attribution, or would undo `branding = false`, so those
  * pages get an empty left side. Right: **Share**, a plain link to the share page
@@ -461,6 +481,9 @@ function topBar(bar: TopBar, byline: boolean): string {
     OPENARTIFACTS_BAR_SPACER +
     OPENARTIFACTS_BAR_STYLE +
     `<div class="openartifacts-bar" style="${BAR_STYLE}">` +
+    `<iframe class="openartifacts-home" src="${escapeAttribute(bar.homeUrl)}" title="Home" ` +
+    `sandbox="allow-scripts allow-same-origin allow-top-navigation-by-user-activation" referrerpolicy="no-referrer" ` +
+    `loading="eager" style="${HOME_FRAME_STYLE}"></iframe>` +
     // A flex row, so the text and the link share one centre line. On a narrow
     // strip the link's own text ends in an ellipsis; Share keeps its width.
     `<span style="${SPAN_RESET}display:flex;align-items:center;gap:0.4em;flex:1 1 auto;min-width:0;white-space:nowrap">` +

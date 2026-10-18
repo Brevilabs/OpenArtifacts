@@ -20,6 +20,9 @@ export const SIGNIN_PREFIX = "/signin";
 /** The share page, where an owner manages one document: `/share/{docId}`. */
 export const SHARE_PREFIX = "/share";
 
+/** Home, the signed-in owner's list of their pages: `GET /home` on the API host. */
+export const HOME_PATH = "/home";
+
 /**
  * Everything the top bar's Share button needs from the API host: the page
  * script, the popover frame, its sign-in popup and the routes the frame calls.
@@ -32,6 +35,9 @@ export const PAGE_SCRIPT_PATH = "/embed/page.js";
 
 /** The Share popover's frame, `GET /embed/share?doc={docId}&origin=…`. */
 export const EMBED_SHARE_PATH = "/embed/share";
+
+/** The top bar's Home button, `GET /embed/home`: a link drawn only by a browser holding a live token. */
+export const EMBED_HOME_PATH = "/embed/home";
 
 /** The comments frame, `GET /embed/comments?doc={docId}&origin=…[&v={n}]`. */
 export const EMBED_COMMENTS_PATH = "/embed/comments";

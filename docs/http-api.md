@@ -778,6 +778,25 @@ access or the invite list; a decline, a `GET` and a repeat answer `false`) for t
 does not manage it, and `404` for everyone else. A missing, expired or foreign
 token is `401`.
 
+**Home.** `GET https://{API host}/home` is a page for the signed-in owner: every
+live page in their account's scope (the account's own and those published with a
+linked license key), newest first, 50 to a page with a **Show more** link
+(`?cursor=…`; a cursor the page did not issue starts again from the top). Each row
+shows the title, who can open it (`Public`, `Private · N people` or `Only you`) and
+when it was last published, and links to the page's url. Signed out, it is the
+sign-in page and returns to `/home`. An **Account** button opens
+`ACCOUNT_ACTION_URL` in a new tab, and is drawn only where that is configured.
+`Cache-Control: no-store`, `Referrer-Policy: no-referrer`, no script. `GET` only;
+the serving host never answers it.
+
+**The Home frame.** `GET` or `HEAD https://{API host}/embed/home` is the frame
+behind the top bar's **Home** button: one static document for every viewer, with
+`Cache-Control: public, max-age=300`, an `ETag` (`If-None-Match` answers `304`),
+no cookie, and `frame-ancestors` limited to the serving host and its publishers'
+hosts. Its script draws a link to `/home` only when the frame's own storage holds a
+live Share token (see [private-sharing.md](private-sharing.md)), and posts nothing
+to the page around it. Its address never changes.
+
 **The share page.** `GET https://{API host}/share/{docId}` is the same controls as
 a page, with the session cookie. It is where **Share** leads with no script, the
 request email's **Review request** and the url `share` prints.
