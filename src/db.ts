@@ -660,6 +660,27 @@ export interface DocListCursor {
  * folded into one with `(? IS NULL OR ...)`, which SQLite cannot use the index
  * for at all.
  */
+export async function searchPublisherDocs(
+  db: D1Database,
+  owner: string,
+  query: string,
+): Promise<Array<{ id: string; title: string }>> {
+  return (await db
+    .prepare(
+      `${OWNER_SCOPE_SQL}
+       SELECT d.id AS id, d.title AS title FROM docs d
+        WHERE d.owner IN (SELECT owner FROM owner_scope)
+          AND d.deleted_at IS NULL
+          AND EXISTS (SELECT 1 FROM versions v WHERE v.doc_id = d.id)
+          AND (instr(lower(d.title), lower(?)) > 0
+               OR instr('/d/' || d.id, lower(?)) > 0)
+        ORDER BY d.created_at DESC, d.id DESC
+        LIMIT 8`,
+    )
+    .bind(owner, owner, query, query)
+    .all<{ id: string; title: string }>()).results;
+}
+
 export async function listPublisherDocs(
   db: D1Database,
   owner: string,

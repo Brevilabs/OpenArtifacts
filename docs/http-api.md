@@ -786,8 +786,18 @@ of a page that has a published version shows the title, who can open it (`Public
 when it was last published, and links to the page's url. Signed out, it is the
 sign-in page and returns to `/home`. An **Account** button opens
 `ACCOUNT_ACTION_URL` in a new tab, and is drawn only where that is configured.
-`Cache-Control: no-store`, `Referrer-Policy: no-referrer`, no script. `GET` only;
-the serving host never answers it.
+Home has one hash-authorized typeahead script and same-origin search; it also
+loads the landing page's font families through a stylesheet at
+`fonts.googleapis.com` and fonts from `fonts.gstatic.com`. It remains
+`Cache-Control: no-store`, `Referrer-Policy: no-referrer`.
+
+`GET https://{API host}/home?q=…` requires the same reader session and returns
+`401` JSON when signed out. A trimmed nonempty query returns
+`{"pages":[{"id":"…","title":"…","url":"…"}]}` with up to eight literal
+substring matches in title or `/d/{id}` path across the owner's entire live,
+landed page set, including linked keys. An empty query returns `{"pages":[]}`;
+`cursor` is ignored in search mode. The list itself is not filtered. `GET` only;
+the serving host never answers Home.
 
 **The Home frame.** `GET` or `HEAD https://{API host}/embed/home` is the frame
 behind the top bar's **Home** button: one static document for every viewer, with
