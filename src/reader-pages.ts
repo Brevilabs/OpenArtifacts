@@ -38,7 +38,12 @@ export const READER_CSP = "default-src 'none'; style-src 'unsafe-inline'; img-sr
  * keeps the closed policy.
  */
 export function readerPage(copy: BrandPage, status: number, csp = READER_CSP): Response {
-  return new Response(brandPageHtml(copy), {
+  return readerResponse(brandPageHtml(copy), status, csp);
+}
+
+/** `readerPage`'s headers around a page that is not the brand card, such as Home. */
+export function readerResponse(html: string, status: number, csp = READER_CSP): Response {
+  return new Response(html, {
     status,
     headers: {
       "content-type": "text/html; charset=utf-8",

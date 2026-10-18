@@ -105,10 +105,10 @@ describe("GET /home", () => {
     // Newest first.
     expect(html.indexOf("From my key")).toBeLessThan(html.indexOf("Shared one"));
     expect(html.indexOf("Shared one")).toBeLessThan(html.indexOf("Public one"));
-    expect(html).toContain("Public · Nov 14, 2023");
-    expect(html).toContain("Only you · ");
-    expect(html).toContain("Private · 2 people · ");
-    expect(html).toContain("Private · 1 person · ");
+    expect(html).toContain('<span class="a">Public</span><span class="d">Nov 14, 2023</span>');
+    expect(html).toContain('<span class="a">Only you</span>');
+    expect(html).toContain('<span class="a">Private · 2 people</span>');
+    expect(html).toContain('<span class="a">Private · 1 person</span>');
     expect(html).not.toContain("<script>alert(1)");
     expect(html).toContain("&lt;script&gt;alert(1)");
   });

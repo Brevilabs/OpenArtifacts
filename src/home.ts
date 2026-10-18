@@ -27,23 +27,38 @@ import { accountEmail, listPublisherDocs, type DocListRow } from "./db.js";
 import { escapeHtml } from "./page.js";
 import { HOME_PATH } from "./paths.js";
 import { readerSecret } from "./reader-config.js";
-import { READER_NOT_FOUND, readerPage } from "./reader-pages.js";
+import { READER_NOT_FOUND, readerResponse } from "./reader-pages.js";
+import { FAVICON_LINK, NOINDEX_META, OPENARTIFACTS_MARK_SVG } from "./render.js";
 import { signIn } from "./reader.js";
 import { readSession } from "./session.js";
 import { publicDocUrl } from "./urls.js";
 
 const PAGE_SIZE = 50;
 
+/**
+ * A full page rather than the brand card the sign-in pages use: a list that
+ * grows, and the search it will get, need the width.
+ */
 const HOME_STYLE = `<style>
-main{position:relative;width:min(100%,40rem)}h1{max-width:none;font-size:clamp(1.5rem,5vw,2.25rem);line-height:1.1}
-.account{position:absolute;top:clamp(2rem,6vw,4rem);right:clamp(2rem,6vw,4rem);display:grid;place-items:center;width:28px;height:28px;margin:0;border-radius:50%;background:#1d2027;border:1px solid #2c313b;color:#f4f5f7;font-size:.8rem;font-weight:600;text-decoration:none;text-transform:uppercase}
+:root{color-scheme:dark;font-family:Archivo,"Helvetica Neue",Helvetica,Arial,ui-sans-serif,system-ui,sans-serif}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;color:#e9ebee;background:#07080b}
+header{display:flex;align-items:center;justify-content:space-between;height:56px;padding:0 clamp(1rem,4vw,2rem);border-bottom:1px solid #20242c}
+.brand{display:flex;align-items:center;gap:.75rem;color:#8d94a0;font-family:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace;font-size:.7rem;font-weight:500;letter-spacing:.16em;text-transform:uppercase}
+.mark{display:block;width:1.75rem;height:1.75rem}.mark svg{display:block;width:100%;height:100%}
+.account{display:grid;place-items:center;width:28px;height:28px;border-radius:50%;background:#1d2027;border:1px solid #2c313b;color:#f4f5f7;font-size:.8rem;font-weight:600;text-decoration:none;text-transform:uppercase}
 .account:hover{border-color:#f6ae52;color:#f9c47f}
-ul{margin:2rem 0 0;padding:0;list-style:none}
-li a{display:flex;align-items:baseline;justify-content:space-between;gap:1rem;margin:0;padding:.75rem 0;border-top:1px solid #20242c;color:#f4f5f7;font-weight:500;text-decoration:none}
-li:last-child a{border-bottom:1px solid #20242c}li a:hover .t{color:#f9c47f}
-.t{min-width:0;overflow-wrap:anywhere}.m{flex:none;color:#8d94a0;font-size:.85rem;font-weight:400;text-align:right}
-.more{margin-top:1rem}
-@media(max-width:30rem){li a{flex-direction:column;gap:.15rem}.m{text-align:left}}
+main{max-width:64rem;margin:0 auto;padding:clamp(1.5rem,5vw,3rem) clamp(1rem,4vw,2rem)}
+h1{margin:0 0 1.5rem;color:#f4f5f7;font-size:1.75rem;font-weight:700;letter-spacing:-.02em}
+.empty{color:#8d94a0;line-height:1.7}
+.cols,li a{display:grid;grid-template-columns:minmax(0,1fr) 11rem 7rem;align-items:baseline;gap:1rem;padding:.75rem}
+.cols{padding-block:.5rem;border-bottom:1px solid #20242c;color:#5b626e;font-size:.75rem;letter-spacing:.08em;text-transform:uppercase}
+ul{margin:0;padding:0;list-style:none}
+li a{border-bottom:1px solid #161a20;color:#f4f5f7;font-weight:500;text-decoration:none}
+li a:hover{background:#0d0f14}li a:hover .t{color:#f9c47f}
+.t{overflow-wrap:anywhere}.a,.d{color:#8d94a0;font-size:.875rem;font-weight:400}.d,.cols span:last-child{text-align:right}
+.more{display:inline-block;margin-top:1.5rem;color:#f6ae52;font-weight:600}.more:hover{color:#f9c47f}
+@media(max-width:40rem){.cols{display:none}li a{grid-template-columns:auto 1fr;gap:.2rem .3rem;padding-inline:0}.t{grid-column:1/-1}.d{text-align:left}.d::before{content:"·";margin-right:.3rem}}
 </style>`;
 
 /** `Oct 12, 2026`, in UTC so the page is the same bytes wherever it is read. */
@@ -73,10 +88,10 @@ export async function handleHome(request: Request, url: URL, env: Env): Promise<
   const list = page
     .map(
       (row) =>
-        `<li><a href="${escapeHtml(publicDocUrl(env, url, row.id))}"><span class="t"><bdi>${escapeHtml(row.title)}</bdi></span><span class="m">${access(row)} · ${published(row.updated_at)}</span></a></li>`,
+        `<li><a href="${escapeHtml(publicDocUrl(env, url, row.id))}"><span class="t"><bdi>${escapeHtml(row.title)}</bdi></span><span class="a">${access(row)}</span><span class="d">${published(row.updated_at)}</span></a></li>`,
     )
     .join("");
-  const more = last === undefined ? "" : `<p class="more"><a href="${HOME_PATH}?cursor=${encodeCursor(last)}">Show more</a></p>`;
+  const more = last === undefined ? "" : `<a class="more" href="${HOME_PATH}?cursor=${encodeCursor(last)}">Show more</a>`;
 
   let account: URL | null = null;
   try {
@@ -89,13 +104,29 @@ export async function handleHome(request: Request, url: URL, env: Env): Promise<
       ? ""
       : `<a class="account" href="${escapeHtml(account.toString())}" target="_blank" rel="noopener noreferrer" aria-label="Account">${escapeHtml(email.charAt(0))}</a>`;
 
-  const response = readerPage(
-    {
-      title: "Your pages",
-      heading: "Your pages",
-      message: page.length === 0 ? "Nothing published yet. Ask your agent to publish a page." : "",
-      detail: `${HOME_STYLE}\n${button}${page.length === 0 ? "" : `<ul>${list}</ul>${more}`}`,
-    },
+  const body =
+    page.length === 0
+      ? '<p class="empty">Nothing published yet. Ask your agent to publish a page.</p>'
+      : `<div class="cols" aria-hidden="true"><span>Title</span><span>Access</span><span>Updated</span></div><ul>${list}</ul>${more}`;
+  const response = readerResponse(
+    `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+${NOINDEX_META}
+${FAVICON_LINK}
+<title>Your pages · OpenArtifacts</title>
+${HOME_STYLE}
+</head>
+<body>
+<header><div class="brand"><span class="mark" aria-hidden="true">${OPENARTIFACTS_MARK_SVG}</span>OpenArtifacts</div>${button}</header>
+<main aria-labelledby="page-title">
+<h1 id="page-title">Your pages</h1>
+${body}
+</main>
+</body>
+</html>`,
     200,
   );
   response.headers.set("referrer-policy", "no-referrer");
