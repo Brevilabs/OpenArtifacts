@@ -78,14 +78,16 @@ export async function handleHome(request: Request, url: URL, env: Env): Promise<
   const email = accountId === null ? null : await accountEmail(env.DB, accountId);
   if (accountId === null || email === null) return signIn(env, HOME_PATH);
 
-  // A cursor this page did not issue starts again from the top.
+  // A cursor that does not decode starts again from the top.
   const raw = url.searchParams.get("cursor");
   const after = raw === null ? null : decodeCursor(raw);
   const rows = await listPublisherDocs(env.DB, accountId, after, PAGE_SIZE + 1);
   const page = rows.slice(0, PAGE_SIZE);
   const last = rows.length > PAGE_SIZE ? page.at(-1) : undefined;
 
-  const list = page
+  // A page whose first push never landed has nothing to open; `GET /api/v1/docs` is where it is cleaned up.
+  const shown = page.filter((row) => row.version !== null);
+  const list = shown
     .map(
       (row) =>
         `<li><a href="${escapeHtml(publicDocUrl(env, url, row.id))}"><span class="t"><bdi>${escapeHtml(row.title)}</bdi></span><span class="a">${access(row)}</span><span class="d">${published(row.updated_at)}</span></a></li>`,
@@ -105,7 +107,7 @@ export async function handleHome(request: Request, url: URL, env: Env): Promise<
       : `<a class="account" href="${escapeHtml(account.toString())}" target="_blank" rel="noopener noreferrer" aria-label="Account">${escapeHtml(email.charAt(0))}</a>`;
 
   const body =
-    page.length === 0
+    shown.length === 0 && last === undefined
       ? '<p class="empty">Nothing published yet. Ask your agent to publish a page.</p>'
       : `<div class="cols" aria-hidden="true"><span>Title</span><span>Access</span><span>Updated</span></div><ul>${list}</ul>${more}`;
   const response = readerResponse(

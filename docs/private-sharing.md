@@ -515,9 +515,12 @@ that must never be on a page whose scripts the author writes.
   its own storage for a live Share token and shows a link to `/home` if it finds
   one; it sends no message, takes no focus and reports no size, so the page around
   it sees the same slot either way. Without a token the frame holds the same link,
-  invisible and unclickable until a keyboard focuses it, like a skip link: a frame
-  with nothing focusable is skipped by Tab, and where a Tab lands would tell the
-  page. Accepted residual: the link shows only after a Share or Comments sign-in in
+  invisible until a keyboard focuses it, like a skip link: a frame with nothing
+  focusable is skipped by Tab, and where a Tab lands would tell the page. The
+  invisible link still takes a click and leads to sign-in, because a page that laid
+  the frame over its own button would learn from whether a click left the page.
+  A token written while the page is open, by a sign-in through **Share** or
+  **Comments**, draws the link without a reload. Accepted residual: the link shows only after a Share or Comments sign-in in
   this browser (the token lasts 24 hours), so someone signed in only elsewhere does
   not see it yet.
 - **On a private document's own origin the owner view also reports its size**

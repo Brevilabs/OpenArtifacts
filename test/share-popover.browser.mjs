@@ -744,17 +744,31 @@ test("the Home frame shows a link only to a browser holding a live token, and th
   const messages = [];
   await page.exposeFunction("__reported", (data) => messages.push(data));
   await page.addInitScript(() => window.addEventListener("message", (event) => window.__reported(String(event.data))));
-  // Shown is drawn and clickable; the signed-out link is neither until a keyboard focuses it.
-  const shown = () => homeFrame().locator("a").evaluate((a) => getComputedStyle(a).opacity === "1" && getComputedStyle(a).pointerEvents !== "none");
+  // Shown is drawn; the signed-out link is not until a keyboard focuses it. Both take a click, so a page that laid
+  // the frame over its own button learns nothing from whether the click left the page.
+  const shown = () => homeFrame().locator("a").evaluate((a) => getComputedStyle(a).opacity === "1");
+  const clickable = () => homeFrame().locator("a").evaluate((a) => getComputedStyle(a).pointerEvents !== "none");
   const store = (expiresAt) =>
     homeFrame().evaluate((value) => localStorage.setItem("openartifacts:share-token:abc", value), JSON.stringify({ token: "oas_x", expiresAt }));
 
   // No stored token: the slot is there, at its size, showing nothing.
   await load();
   assert.equal(await shown(), false);
+  assert.equal(await clickable(), true);
   const signedOut = await observed();
   assert.equal(await shown(), true, "a keyboard user who tabs to it sees it");
   await shoot(page, "home-bar-signed-out");
+
+  // A sign-in on this page writes its token from another frame in the partition; Home draws without a reload.
+  await homeFrame().locator("a").evaluate((a) => a.blur());
+  assert.equal(await shown(), false);
+  const other = await context.newPage();
+  await other.goto(docUrl(X));
+  const otherHome = await until("the second Home frame", () => other.frames().find((frame) => frame.url() === `https://${API}/embed/home`));
+  await otherHome.waitForLoadState("load");
+  await otherHome.evaluate((value) => localStorage.setItem("openartifacts:share-token:abc", value), JSON.stringify({ token: "oas_x", expiresAt: Date.now() + 86_400_000 }));
+  await until("Home drawn after the sign-in", async () => (await shown()) || null);
+  await other.close();
 
   // A live token in the frame's own storage draws the link to Home; the page sees exactly what it saw before.
   await store(Date.now() + 86_400_000);

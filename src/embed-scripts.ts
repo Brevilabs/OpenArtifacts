@@ -1063,23 +1063,31 @@ export const FRAME_SCRIPT = String.raw`(() => {
  * one link, so a Tab lands in the frame either way: with nothing focusable in
  * the signed-out view, Chrome skips the frame, and where a Tab landed would tell
  * the page. Signed out, the link shows only while focused, like a skip link, and
- * leads to `/home` through sign-in. Storage that throws
+ * leads to `/home` through sign-in. It still takes a click: a page that laid the
+ * frame over its own button would otherwise learn from whether that click left
+ * the page. A token written later, by a sign-in in the Share or Comments frame,
+ * redraws the link (`storage`). Storage that throws
  * (blocked) is the signed-out view. DOM is built with `createElement`,
  * `createElementNS` and `textContent`, never markup.
  */
 export const HOME_FRAME_SCRIPT = `(function () {
-  var live = false;
-  try {
-    for (var i = 0; i < localStorage.length; i++) {
-      var key = localStorage.key(i);
-      if (key === null || key.indexOf("openartifacts:share-token:") !== 0) continue;
-      var value = null;
-      try { value = JSON.parse(localStorage.getItem(key)); } catch (error) {}
-      if (value && typeof value.token === "string" && typeof value.expiresAt === "number" && value.expiresAt - Date.now() >= 60000) { live = true; break; }
-    }
-  } catch (error) {}
+  function live() {
+    try {
+      for (var i = 0; i < localStorage.length; i++) {
+        var key = localStorage.key(i);
+        if (key === null || key.indexOf("openartifacts:share-token:") !== 0) continue;
+        var value = null;
+        try { value = JSON.parse(localStorage.getItem(key)); } catch (error) {}
+        if (value && typeof value.token === "string" && typeof value.expiresAt === "number" && value.expiresAt - Date.now() >= 60000) return true;
+      }
+    } catch (error) {}
+    return false;
+  }
   var link = document.createElement("a");
-  if (!live) link.className = "ghost";
+  function update() { link.className = live() ? "" : "ghost"; }
+  update();
+  // A sign-in through Share or Comments on this page writes its token from that frame.
+  addEventListener("storage", update);
   link.href = document.documentElement.dataset.home;
   link.target = "_top";
   var ns = "http://www.w3.org/2000/svg";
@@ -1101,7 +1109,7 @@ export const HOME_FRAME_SCRIPT = `(function () {
  * The Home frame's stylesheet: a pill that matches the bar's **Share** button
  * (`#1d2027`, hairline edge, `#f4f5f7` ink) and fills the frame, on a
  * transparent body so the bar shows through. The signed-out view's link is
- * invisible and takes no click until focused. The page sizes the frame; below 60px wide
+ * invisible until focused, and takes a click like the shown one. The page sizes the frame; below 60px wide
  * the label goes and the pill is an icon, so a phone's narrower frame needs no
  * message either way.
  */
@@ -1111,6 +1119,6 @@ a{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;heig
 a:hover{background:#272b33;border-color:rgba(255,255,255,.14)}
 a:focus-visible{outline:2px solid #f6ae52;outline-offset:-2px}
 svg{flex:none;width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
-.ghost:not(:focus){opacity:0;pointer-events:none}
+.ghost:not(:focus){opacity:0}
 @media(max-width:60px){a{padding:0}span{display:none}}
 `;

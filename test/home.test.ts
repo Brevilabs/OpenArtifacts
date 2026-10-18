@@ -47,14 +47,17 @@ async function account(): Promise<{ id: string; email: string; token: string }> 
   return { id, email, token };
 }
 
-/** A live doc row, written directly: Home reads D1 and nothing else. */
-async function doc(owner: string, title: string, at: number, linkAccess: "anyone" | "invited" = "anyone"): Promise<string> {
+/** A live doc row and its first version, written directly: Home reads D1 and nothing else. `landed: false` is a first push that died before its version. */
+async function doc(owner: string, title: string, at: number, linkAccess: "anyone" | "invited" = "anyone", landed = true): Promise<string> {
   const id = newDocId();
   await env.DB.prepare(
     "INSERT INTO docs (id, owner, title, latest_version, created_at, updated_at, link_access) VALUES (?, ?, ?, 1, ?, ?, ?)",
   )
     .bind(id, owner, title, at, at, linkAccess)
     .run();
+  if (landed) {
+    await env.DB.prepare("INSERT INTO versions (doc_id, n, size, title, created_at) VALUES (?, 1, 1, ?, ?)").bind(id, title, at).run();
+  }
   return id;
 }
 
@@ -89,6 +92,7 @@ describe("GET /home", () => {
     const gone = await doc(me.id, "Deleted one", base + 5000);
     await env.DB.prepare("UPDATE docs SET deleted_at = ? WHERE id = ?").bind(Date.now(), gone).run();
     const theirs = await doc(other.id, "Someone else", base + 6000);
+    const failed = await doc(me.id, "Never landed", base + 7000, "anyone", false);
 
     const response = await get(`${API}/home`, HOSTS, await session(me.id));
     expect(response.status).toBe(200);
@@ -99,7 +103,7 @@ describe("GET /home", () => {
 
     expect(html).toContain("Your pages");
     for (const id of [pub, solo, shared, one, linked]) expect(html).toContain(`href="${SERVING}/d/${id}"`);
-    for (const id of [gone, theirs]) expect(html).not.toContain(id);
+    for (const id of [gone, theirs, failed]) expect(html).not.toContain(id);
     expect(html).not.toContain("Deleted one");
     expect(html).not.toContain("Someone else");
     // Newest first.
@@ -210,7 +214,6 @@ describe("the Home frame in a served page's top bar", () => {
     const me = await account();
     const id = await doc(me.id, "A page", Date.now());
     await env.DOCS.put(`docs/${id}/v1.html`, "<!doctype html><html><head><title>A</title></head><body><p>hi</p></body></html>");
-    await env.DB.prepare("INSERT INTO versions (doc_id, n, size, created_at) VALUES (?, 1, 10, ?)").bind(id, Date.now()).run();
 
     const plain = await get(`${SERVING}/d/${id}`);
     const cookied = await get(`${SERVING}/d/${id}`, HOSTS, await session(me.id));
