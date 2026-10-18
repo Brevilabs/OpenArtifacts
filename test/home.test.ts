@@ -85,7 +85,7 @@ describe("GET /home", () => {
     await invite(shared, "b@acme.com");
     const one = await doc(me.id, "Shared one", base + 3000, "invited");
     await invite(one, "a@acme.com");
-    const linked = await doc("cplus_owner_linked", "From my key", base + 4000);
+    const linked = await doc("cplus_owner_linked", "From my key MiXeD 100% Literal", base + 4000);
     await env.DB.prepare("INSERT INTO owner_links (external_owner, account_id, created_at) VALUES (?, ?, ?)")
       .bind("cplus_owner_linked", me.id, Date.now())
       .run();
@@ -126,8 +126,8 @@ describe("GET /home", () => {
     const search = await get(`${API}/home?q=${encodeURIComponent("mIxEd 100%")}`, HOSTS, await session(me.id));
     expect(search.status).toBe(200);
     const results = (await search.json() as { pages: Array<{ id: string; url: string }> }).pages;
-    expect(results.map((row) => row.id)).toEqual([shared, pub]);
-    expect(results.map((row) => row.url)).toEqual([shared, pub].map((id) => `${SERVING}/d/${id}`));
+    expect(results.map((row) => row.id)).toEqual([linked, shared, pub]);
+    expect(results.map((row) => row.url)).toEqual([linked, shared, pub].map((id) => `${SERVING}/d/${id}`));
     expect(results.some((row) => row.id === gone || row.id === theirs || row.id === failed)).toBe(false);
     expect(search.headers.get("cache-control")).toBe("no-store");
     expect(search.headers.get("referrer-policy")).toBe("no-referrer");
