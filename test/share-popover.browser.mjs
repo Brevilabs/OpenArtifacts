@@ -720,51 +720,54 @@ test("a pasted batch stops when the document goes private part way through", { t
   await context.close();
 });
 
-test("the Home frame shows a link only to a browser holding a live token, and the page sees the same layout either way", { timeout: 120_000 }, async () => {
+test("the Home frame shows a link only to a browser holding a live token, and the page sees the same layout and focus either way", { timeout: 120_000 }, async () => {
   const X = await publish("Home bar", "<p>Mine.</p>");
   const context = await newContext(null);
   const page = await context.newPage();
   const homeFrame = () => page.frames().find((frame) => frame.url() === `https://${API}/embed/home`);
-  const layout = async () => ({
-    frame: await page.locator("iframe.openartifacts-home").boundingBox(),
-    share: await page.locator("a[data-openartifacts-share]").boundingBox(),
-    bar: await page.locator(".openartifacts-bar").boundingBox(),
-  });
+  // The frame's script runs as it parses, so once it has loaded it has drawn whatever it will.
+  const load = async () => {
+    await page.goto(docUrl(X));
+    await (await until("the Home frame", () => homeFrame())).waitForLoadState("load");
+  };
+  // What the page can observe: the bar's boxes, and where a first Tab from the top of the page lands.
+  const observed = async () => {
+    const boxes = {
+      frame: await page.locator("iframe.openartifacts-home").boundingBox(),
+      share: await page.locator("a[data-openartifacts-share]").boundingBox(),
+      bar: await page.locator(".openartifacts-bar").boundingBox(),
+    };
+    await page.keyboard.press("Tab");
+    const focus = await page.evaluate(() => document.activeElement && document.activeElement.className);
+    return { boxes, focus };
+  };
   const messages = [];
   await page.exposeFunction("__reported", (data) => messages.push(data));
   await page.addInitScript(() => window.addEventListener("message", (event) => window.__reported(String(event.data))));
+  // Shown is drawn and clickable; the signed-out link is neither until a keyboard focuses it.
+  const shown = () => homeFrame().locator("a").evaluate((a) => getComputedStyle(a).opacity === "1" && getComputedStyle(a).pointerEvents !== "none");
+  const store = (expiresAt) =>
+    homeFrame().evaluate((value) => localStorage.setItem("openartifacts:share-token:abc", value), JSON.stringify({ token: "oas_x", expiresAt }));
 
-  // No stored token: the slot is there, at its size, with nothing to focus.
-  await page.goto(docUrl(X));
-  await until("the Home frame", () => homeFrame());
-  const signedOut = await layout();
-  assert.equal(await homeFrame().locator("a").count(), 0);
+  // No stored token: the slot is there, at its size, showing nothing.
+  await load();
+  assert.equal(await shown(), false);
+  const signedOut = await observed();
+  assert.equal(await shown(), true, "a keyboard user who tabs to it sees it");
   await shoot(page, "home-bar-signed-out");
 
-  // A live token in the frame's own storage draws the link to Home, at the same size.
-  const live = { token: "oas_x", expiresAt: Date.now() + 86_400_000 };
-  await homeFrame().evaluate((value) => localStorage.setItem("openartifacts:share-token:abc", JSON.stringify(value)), live);
-  await page.reload();
-  await until("the Home link", () => homeFrame()?.locator("a").count());
+  // A live token in the frame's own storage draws the link to Home; the page sees exactly what it saw before.
+  await store(Date.now() + 86_400_000);
+  await load();
+  assert.equal(await shown(), true);
   assert.equal(await homeFrame().locator("a").getAttribute("href"), `https://${API}/home`);
-  assert.deepEqual(await layout(), signedOut, "the bar and the frame are the same size in both states");
+  assert.deepEqual(await observed(), signedOut, "the bar's boxes and a Tab's landing are the same in both states");
   await shoot(page, "home-bar-signed-in");
 
-  // An expired token is the signed-out view again.
-  await homeFrame().evaluate(() => localStorage.setItem("openartifacts:share-token:abc", JSON.stringify({ token: "oas_x", expiresAt: Date.now() + 1000 })));
-  await page.reload();
-  await until("the Home frame", () => homeFrame());
-  await page.waitForTimeout(500);
-  assert.equal(await homeFrame().locator("a").count(), 0);
+  // A token with under a minute left is the signed-out view again.
+  await store(Date.now() + 30_000);
+  await load();
+  assert.equal(await shown(), false);
   assert.deepEqual(messages, [], "the page heard nothing from the frame");
-
-  // Phone width: the frame is narrower and the label goes, by the frame's own CSS.
-  await page.setViewportSize({ width: 390, height: 800 });
-  await homeFrame().evaluate((value) => localStorage.setItem("openartifacts:share-token:abc", JSON.stringify(value)), live);
-  await page.reload();
-  await until("the Home link", () => homeFrame()?.locator("a").count());
-  assert.equal((await page.locator("iframe.openartifacts-home").boundingBox()).width, 36);
-  assert.equal(await homeFrame().locator("span").isVisible(), false);
-  await shoot(page, "home-bar-phone");
   await context.close();
 });

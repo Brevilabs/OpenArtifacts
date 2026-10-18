@@ -1051,14 +1051,19 @@ export const FRAME_SCRIPT = String.raw`(() => {
 
 /**
  * The Home frame's one script (`GET /embed/home`, `src/embed.ts`): draw a link
- * to Home when this browser holds a live Share token, and nothing otherwise.
+ * to Home when this browser holds a live Share token, and otherwise the same link
+ * hidden until a keyboard focuses it.
  *
  * "Live" is the rule the Share frame's own read uses: a stored token with at
  * least a minute left. The token is only evidence that someone signed in here
  * within 24 hours; the link goes to `/home`, which asks the session. It is the
  * only thing that varies, and it varies only inside the frame: the script posts
  * no message, takes no focus, observes no size and reports nothing to the page
- * around it, so the page cannot tell the two views apart. Storage that throws
+ * around it, so the page cannot tell the two views apart. Both views hold the
+ * one link, so a Tab lands in the frame either way: with nothing focusable in
+ * the signed-out view, Chrome skips the frame, and where a Tab landed would tell
+ * the page. Signed out, the link shows only while focused, like a skip link, and
+ * leads to `/home` through sign-in. Storage that throws
  * (blocked) is the signed-out view. DOM is built with `createElement`,
  * `createElementNS` and `textContent`, never markup.
  */
@@ -1073,8 +1078,8 @@ export const HOME_FRAME_SCRIPT = `(function () {
       if (value && typeof value.token === "string" && typeof value.expiresAt === "number" && value.expiresAt - Date.now() >= 60000) { live = true; break; }
     }
   } catch (error) {}
-  if (!live) return;
   var link = document.createElement("a");
+  if (!live) link.className = "ghost";
   link.href = document.documentElement.dataset.home;
   link.target = "_top";
   var ns = "http://www.w3.org/2000/svg";
@@ -1095,7 +1100,8 @@ export const HOME_FRAME_SCRIPT = `(function () {
 /**
  * The Home frame's stylesheet: a pill that matches the bar's **Share** button
  * (`#1d2027`, hairline edge, `#f4f5f7` ink) and fills the frame, on a
- * transparent body so the bar shows through. The page sizes the frame; below 60px wide
+ * transparent body so the bar shows through. The signed-out view's link is
+ * invisible and takes no click until focused. The page sizes the frame; below 60px wide
  * the label goes and the pill is an icon, so a phone's narrower frame needs no
  * message either way.
  */
@@ -1105,5 +1111,6 @@ a{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;heig
 a:hover{background:#272b33;border-color:rgba(255,255,255,.14)}
 a:focus-visible{outline:2px solid #f6ae52;outline-offset:-2px}
 svg{flex:none;width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
+.ghost:not(:focus){opacity:0;pointer-events:none}
 @media(max-width:60px){a{padding:0}span{display:none}}
 `;

@@ -512,12 +512,14 @@ that must never be on a page whose scripts the author writes.
 - **The Home frame is fixed in size, posts nothing and varies only inside itself.**
   The top bar's **Home** button is a frame (`GET /embed/home`) whose size is set by
   the page's own style, and whose bytes are the same for everyone. Its script reads
-  its own storage for a live Share token and draws a link to `/home` if it finds
+  its own storage for a live Share token and shows a link to `/home` if it finds
   one; it sends no message, takes no focus and reports no size, so the page around
-  it sees the same slot either way. Accepted residuals: the link appears only after
-  a Share or Comments sign-in in this browser (the token lasts 24 hours), so someone
-  signed in only elsewhere does not see it yet; and the frame is a keyboard tab stop
-  whether or not it holds a link.
+  it sees the same slot either way. Without a token the frame holds the same link,
+  invisible and unclickable until a keyboard focuses it, like a skip link: a frame
+  with nothing focusable is skipped by Tab, and where a Tab lands would tell the
+  page. Accepted residual: the link shows only after a Share or Comments sign-in in
+  this browser (the token lasts 24 hours), so someone signed in only elsewhere does
+  not see it yet.
 - **On a private document's own origin the owner view also reports its size**
   (`size`, the height of its content), and the popover takes it. Only the owner
   view: every other view (signed out, a reader, not found, the skeleton) keeps the

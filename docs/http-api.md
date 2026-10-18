@@ -793,9 +793,9 @@ the serving host never answers it.
 behind the top bar's **Home** button: one static document for every viewer, with
 `Cache-Control: public, max-age=300`, an `ETag` (`If-None-Match` answers `304`),
 no cookie, and `frame-ancestors` limited to the serving host and its publishers'
-hosts. Its script draws a link to `/home` only when the frame's own storage holds a
-live Share token (see [private-sharing.md](private-sharing.md)), and posts nothing
-to the page around it. Its address never changes.
+hosts. Its script shows a link to `/home` when the frame's own storage holds a
+live Share token, and otherwise keeps it invisible until a keyboard focuses it (see
+[private-sharing.md](private-sharing.md)); it posts nothing to the page around it. Its address never changes.
 
 **The share page.** `GET https://{API host}/share/{docId}` is the same controls as
 a page, with the session cookie. It is where **Share** leads with no script, the
