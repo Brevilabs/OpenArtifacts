@@ -509,6 +509,12 @@ that must never be on a page whose scripts the author writes.
   frame's storage partition, and any of them can embed the frame for any id it
   knows; a size report, a focus move or an early message would tell that page, with
   no click, whether its visitor holds a token.
+- **Home is a plain link, the same for every viewer.** The top bar's **Home**
+  leads to `/home` on the API host, which lists the signed-in viewer's own pages
+  or asks them to sign in. Showing it only to signed-in viewers would need a
+  frame that reads a token and hides its link, and every way of hiding it (size,
+  focus, Tab order, a click) would have to look the same to the page in both
+  states, so it would hide nothing from a keyboard or screen-reader user anyway.
 - **On a private document's own origin the owner view also reports its size**
   (`size`, the height of its content), and the popover takes it. Only the owner
   view: every other view (signed out, a reader, not found, the skeleton) keeps the

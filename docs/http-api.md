@@ -451,7 +451,9 @@ src="https://{API host}/embed/page.js">` tag. The strip carries the byline's tex
 (`Shared from Copilot for Obsidian`) on the left, only for Copilot-rendered HTML,
 and **Share** on the right, a plain link to `https://{API host}/share/{docId}`.
 It is the same bytes for every viewer of a document, public or private, and
-names no identity, so public pages stay cacheable. The footer byline is as
+names no identity, so public pages stay cacheable. Ahead of the byline's text,
+**Home** is a plain link to `https://{API host}/home`, the same for every
+viewer. The footer byline is as
 before. On a server without reader sign-in no page carries the top bar or the
 page script, and the header byline is as it was (see [The top bar, the Share
 popover and the share page](#the-top-bar-the-share-popover-and-the-share-page)).
@@ -806,6 +808,26 @@ access or the invite list; a decline, a `GET` and a repeat answer `false`) for t
 "docId", "url", "title"}` for a signed-in account that may read the document but
 does not manage it, and `404` for everyone else. A missing, expired or foreign
 token is `401`.
+
+**Home.** `GET https://{API host}/home` is a page for the signed-in owner: every
+live page in their account's scope (the account's own and those published with a
+linked license key), newest first, 50 to a page with a **Show more** link
+(`?cursor=…`; a cursor that does not decode starts again from the top). Each row
+of a page that has a published version shows the title, who can open it (`Public`, `Private · N people` or `Only you`) and
+when it was last published, and links to the page's url. Signed out, it is the
+sign-in page and returns to `/home`. An **Account** button opens
+`ACCOUNT_ACTION_URL` in a new tab, and is drawn only where that is configured.
+Home has one hash-authorized typeahead script and same-origin search, and loads
+nothing from another origin. It remains
+`Cache-Control: no-store`, `Referrer-Policy: no-referrer`.
+
+`GET https://{API host}/home?q=…` requires the same reader session and returns
+`401` JSON when signed out. A trimmed nonempty query returns
+`{"pages":[{"id":"…","title":"…","url":"…"}]}` with up to eight literal
+substring matches in title or `/d/{id}` path across the owner's entire live,
+landed page set, including linked keys. An empty query returns `{"pages":[]}`;
+`cursor` is ignored in search mode. The list itself is not filtered. `GET` only;
+the serving host never answers Home.
 
 **The share page.** `GET https://{API host}/share/{docId}` is the same controls as
 a page, with the session cookie. It is where **Share** leads with no script, the

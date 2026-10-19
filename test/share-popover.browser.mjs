@@ -719,3 +719,55 @@ test("a pasted batch stops when the document goes private part way through", { t
   assert.deepEqual((await (await api(`/api/v1/docs/${X}/access`)).json()).people.map((entry) => entry.email), ["ann@example.com"]);
   await context.close();
 });
+
+test("Home search opens owned pages by keyboard and click without filtering the list", { timeout: 120_000 }, async () => {
+  const alpha = await publish("Home search alpha", "<p>Alpha</p>");
+  const beta = await publish("Home search beta", "<p>Beta</p>");
+  const context = await newContext(OWNER_ACCOUNT);
+  const page = await context.newPage();
+  await page.goto(`https://${API}/home`);
+  const input = page.getByRole("combobox", { name: "Search your pages" });
+  await input.waitFor();
+  assert.equal(await page.locator(".cli-hint").innerText(), "Ask your agent to publish or unpublish any page with the OpenArtifacts CLI.");
+  const rowCount = await page.locator(".pages > li").count();
+  await input.fill("HOME SEARCH");
+  const options = page.getByRole("option");
+  await until("two Home suggestions", async () => (await options.count()) === 2);
+  await shoot(page, "home-search-suggestions");
+  assert.equal(await page.locator(".pages > li").count(), rowCount);
+  const ids = await options.evaluateAll(nodes => nodes.map(node => node.id));
+  await input.press("ArrowDown");
+  assert.equal(await input.getAttribute("aria-activedescendant"), ids[0]);
+  await input.press("ArrowDown");
+  assert.equal(await input.getAttribute("aria-activedescendant"), ids[1]);
+  await input.press("ArrowUp");
+  assert.equal(await input.getAttribute("aria-activedescendant"), ids[0]);
+  const firstUrl = await options.nth(0).evaluate(node => node.querySelector(".suggestion-url").textContent);
+  const firstId = firstUrl.slice(3);
+  await Promise.all([page.waitForURL(docUrl(firstId)), input.press("Enter")]);
+
+  await page.goto(`https://${API}/home`);
+  const search = page.getByRole("combobox", { name: "Search your pages" });
+  await search.fill("HOME SEARCH");
+  const matches = page.getByRole("option");
+  await until("Home suggestions after Escape", async () => (await matches.count()) === 2);
+  await search.press("Escape");
+  assert.equal(await page.locator("#page-suggestions").isHidden(), true);
+  assert.equal(await search.getAttribute("aria-expanded"), "false");
+  assert.equal(await search.inputValue(), "HOME SEARCH");
+  await search.fill("HOME SEARCH");
+  await until("Home suggestions for click", async () => (await matches.count()) === 2);
+  const otherId = firstId === alpha ? beta : alpha;
+  await Promise.all([page.waitForURL(docUrl(otherId)), matches.filter({ hasText: otherId }).click()]);
+
+  await page.goto(`https://${API}/home`);
+  const finalSearch = page.getByRole("combobox", { name: "Search your pages" });
+  const finalRows = await page.locator(".pages > li").count();
+  await finalSearch.fill("unmatched Home query");
+  await page.getByRole("status").getByText("No matching pages.").waitFor();
+  await finalSearch.fill("");
+  assert.equal(await page.locator("#page-suggestions").isHidden(), true);
+  assert.equal(await page.locator(".pages > li").count(), finalRows);
+  await shoot(page, "home-search-empty");
+  await context.close();
+});
