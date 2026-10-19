@@ -71,11 +71,14 @@ export async function standingOn(
   docId: string,
   caller: Caller | null,
   pinned: number | null = null,
+  ticketed = false,
 ): Promise<Standing | null> {
   if (!isDocId(docId)) return null;
   const principal = caller?.publisher.owner ?? "";
   const doc = await findCommentableDoc(env.DB, docId, principal, pinned);
-  if (doc === null || doc.deleted_at !== null || !doc.allowed) return null;
+  // `ticketed`: an anonymous list holding this document's read ticket, which its own origin
+  // minted behind a grant that could read it (`embed-api.ts`). It reads; it never writes.
+  if (doc === null || doc.deleted_at !== null || !(doc.allowed || (ticketed && caller === null))) return null;
   const canManage = doc.can_manage;
   const mayWrite = canManage || roleAtLeast(doc.role, "comment");
   return { doc, scope: doc.scope_ids, canManage, mayWrite };

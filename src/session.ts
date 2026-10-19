@@ -31,7 +31,9 @@ export const LOGIN_COOKIE = "__Host-oa_login";
  *
  * `share-token` is the Share popover's credential, one account and one
  * document, and `embed-signin` is the ten-minute cookie that ties the popup's
- * return from a provider to the request that opened it. Neither is a session,
+ * return from a provider to the request that opened it. `threads-read` is the
+ * comments frame's read ticket: one document, no account, minted behind the
+ * grant cookie, and it reads only the threads JSON that page already holds. Neither is a session,
  * and no session, grant, login or signup value verifies as either.
  */
 export type Purpose =
@@ -43,7 +45,18 @@ export type Purpose =
   | "email-code"
   | "email-recipient-v1"
   | "share-token"
-  | "embed-signin";
+  | "embed-signin"
+  | "threads-read";
+
+/**
+ * How long a comments read ticket is good for. The page relays a fresh one with
+ * every threads read (every 30 seconds while it is visible), so this only bounds
+ * how long a reader the owner removes can keep reading names on an open page.
+ */
+export const THREADS_READ_TTL_MS = 5 * 60 * 1000;
+
+/** The header the comments frame sends its read ticket in. */
+export const THREADS_READ_HEADER = "x-openartifacts-read-ticket";
 
 /** How long a Share popover token is good for. One sign-in per document per day. */
 export const SHARE_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
