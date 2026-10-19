@@ -511,7 +511,10 @@ that must never be on a page whose scripts the author writes.
   no click, whether its visitor holds a token.
 - **The Home frame is fixed in size, posts nothing and varies only inside itself.**
   The top bar's **Home** button is a frame (`GET /embed/home`) whose size is set by
-  the page's own style, and whose bytes are the same for everyone. Its script reads
+  the page's own style, and whose bytes are the same for everyone. The page script
+  adds it to the bar's slot after the page's `load` event, in a closed shadow root,
+  so it neither delays that event nor becomes the frame a document's own script
+  finds first; where that script is blocked there is no Home button. Its script reads
   its own storage for a live Share token and shows a link to `/home` if it finds
   one; it sends no message, takes no focus and reports no size, so the page around
   it sees the same slot either way. Without a token the frame holds the same link,

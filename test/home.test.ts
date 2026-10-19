@@ -251,7 +251,7 @@ describe("GET /embed/home", () => {
 });
 
 describe("the Home frame in a served page's top bar", () => {
-  it("is in every page's bar, sandboxed, and the bar's bytes do not vary by cookie", async () => {
+  it("has its slot in every page's bar, and the bar's bytes do not vary by cookie", async () => {
     const me = await account();
     const id = await doc(me.id, "A page", Date.now());
     await env.DOCS.put(`docs/${id}/v1.html`, "<!doctype html><html><head><title>A</title></head><body><p>hi</p></body></html>");
@@ -259,12 +259,11 @@ describe("the Home frame in a served page's top bar", () => {
     const plain = await get(`${SERVING}/d/${id}`);
     const cookied = await get(`${SERVING}/d/${id}`, HOSTS, await session(me.id));
     const html = await plain.text();
-    expect(html).toContain('<iframe class="openartifacts-home" src="https://api.openartifacts.ai/embed/home" title="Home"');
-    expect(html).toContain('sandbox="allow-scripts allow-same-origin allow-top-navigation-by-user-activation"');
+    expect(html).toContain('<span class="openartifacts-home" data-openartifacts-home');
     expect(await cookied.text()).toBe(html);
 
-    // A server with no reader sign-in renders no tag asking for /embed/*.
+    // A server with no reader sign-in renders no bar, so no page script to fill the slot.
     const bare = await (await get(`${SERVING}/d/${id}`, { ...HOSTS, READER_SESSION_SECRET: undefined })).text();
-    expect(bare).not.toContain("/embed/home");
+    expect(bare).not.toContain("data-openartifacts-home");
   });
 });

@@ -87,6 +87,22 @@ export const PAGE_SCRIPT = String.raw`(() => {
   if (target.origin !== api || parts.length !== 3 || parts[1] !== "share" || !/^[0-9a-z]{16}$/.test(parts[2])) return;
   const docId = parts[2];
   link.setAttribute("data-openartifacts-share", "bound");
+  // Home (HOME_FRAME_SCRIPT draws it): put in the bar's slot once the page has loaded, so its request never holds up
+  // the page's load event, and in a closed shadow root, so the page's querySelector("iframe") and window.frames find
+  // the author's frames, not this one. allow-same-origin lets it read its own storage; it can navigate only the tab, on a click.
+  const homeSlot = document.querySelector("span[data-openartifacts-home]");
+  if (homeSlot && homeSlot.attachShadow) {
+    const home = () => {
+      const homeFrame = document.createElement("iframe");
+      homeFrame.title = "Home";
+      homeFrame.setAttribute("sandbox", "allow-scripts allow-same-origin allow-top-navigation-by-user-activation");
+      homeFrame.setAttribute("referrerpolicy", "no-referrer");
+      homeFrame.setAttribute("style", "display:block;width:100%;height:100%;border:0;background:transparent;color-scheme:dark");
+      homeFrame.src = api + "/embed/home";
+      homeSlot.attachShadow({ mode: "closed" }).append(homeFrame);
+    };
+    if (document.readyState === "complete") home(); else window.addEventListener("load", home, { once: true });
+  }
   link.setAttribute("aria-haspopup", "dialog");
   link.setAttribute("aria-expanded", "false");
   let host = null, frame = null, fallback = null, timer = 0, ready = false, open = false;

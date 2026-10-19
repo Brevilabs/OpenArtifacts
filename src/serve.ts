@@ -22,7 +22,7 @@ import { threadsResource } from "./comments/resource.js";
 import type { Env } from "./config.js";
 import { findServableVersion } from "./db.js";
 import { ABOUT_LINK, brandPageHtml } from "./page.js";
-import { EMBED_HOME_PATH, PAGE_SCRIPT_PATH, SHARE_PREFIX, docPath, parseDocPath, parseThreadsPath, type DocRoute } from "./paths.js";
+import { PAGE_SCRIPT_PATH, SHARE_PREFIX, docPath, parseDocPath, parseThreadsPath, type DocRoute } from "./paths.js";
 import { readerSignInConfigured } from "./reader-config.js";
 import { renderServedHtml, type TopBar } from "./render.js";
 import { STORED_CONTENT_TYPE, versionObjectKey } from "./storage.js";
@@ -411,7 +411,6 @@ function topBarFor(env: Env, route: DocRoute, version: number, comments: boolean
   return {
     shareUrl: `${api}${SHARE_PREFIX}/${route.docId}`,
     scriptUrl: `${api}${PAGE_SCRIPT_PATH}`,
-    homeUrl: `${api}${EMBED_HOME_PATH}`,
     ...(comments === null ? {} : { comments, version }),
   };
 }

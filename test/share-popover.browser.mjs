@@ -733,7 +733,7 @@ test("the Home frame shows a link only to a browser holding a live token, and th
   // What the page can observe: the bar's boxes, and where a first Tab from the top of the page lands.
   const observed = async () => {
     const boxes = {
-      frame: await page.locator("iframe.openartifacts-home").boundingBox(),
+      frame: await page.locator(".openartifacts-home").boundingBox(),
       share: await page.locator("a[data-openartifacts-share]").boundingBox(),
       bar: await page.locator(".openartifacts-bar").boundingBox(),
     };
@@ -753,6 +753,11 @@ test("the Home frame shows a link only to a browser holding a live token, and th
 
   // No stored token: the slot is there, at its size, showing nothing.
   await load();
+  // The frame is out of the page's reach and its timeline: the page's own iframe lookups find nothing, and the
+  // frame was requested only after the page's load event.
+  assert.deepEqual(await page.evaluate(() => [document.querySelectorAll("iframe").length, window.length]), [0, 0]);
+  const timing = await page.evaluate((url) => [performance.getEntriesByType("navigation")[0].loadEventStart, performance.getEntriesByName(url)[0].startTime], `https://${API}/embed/home`);
+  assert.ok(timing[1] >= timing[0], `Home requested at ${timing[1]} ms, before load at ${timing[0]} ms`);
   assert.equal(await shown(), false);
   assert.equal(await clickable(), true);
   const signedOut = await observed();

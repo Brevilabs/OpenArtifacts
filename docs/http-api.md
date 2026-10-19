@@ -800,7 +800,8 @@ landed page set, including linked keys. An empty query returns `{"pages":[]}`;
 the serving host never answers Home.
 
 **The Home frame.** `GET` or `HEAD https://{API host}/embed/home` is the frame
-behind the top bar's **Home** button: one static document for every viewer, with
+behind the top bar's **Home** button, which the page script (`/embed/page.js`) puts
+in the bar's slot, in a closed shadow root, once the page has loaded: one static document for every viewer, with
 `Cache-Control: public, max-age=300`, an `ETag` (`If-None-Match` answers `304`),
 no cookie, and `frame-ancestors` limited to the serving host and its publishers'
 hosts. Its script shows a link to `/home` when the frame's own storage holds a
