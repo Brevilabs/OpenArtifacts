@@ -1041,7 +1041,11 @@ on the apex.
   sign-in. Without reader sign-in on the server, the apex answers `404` too.
 - On a publisher's origin the grant cookie is required, and the code, deleted,
   public and `canRead` chain is the page's own. `?grant=` is never swapped here. No
-  cookie or an unreadable document is `404` JSON.
+  cookie or an unreadable document is `404` JSON. The answer adds `readTicket`
+  (an added field): a five-minute pass that names the document and no reader, so
+  every reader still gets the same answer apart from its expiry. The page relays it
+  to the comments frame, which reads the same threads from the API host with it
+  (below), so the frame can show the names itself.
 - An unknown id, comments unavailable, a malformed `v` and a version
   that does not exist are `404`; a deleted document is `410`, decided before the
   version so `?v=` cannot tell a deleted document from one that never had it.
@@ -1147,10 +1151,16 @@ also checks the origin.
 
 The frame prefers its own read (its token's, else the anonymous one a public
 document answers) to the `threads` the page relays, and an own read always replaces
-relayed data. It draws relayed data only when it has neither (a private document
-for a reader who has not signed in), and then without author names or agent badges
-and with a line saying to sign in to see them, because the page is the author's and
-could invent a commenter. A hostile page on the document's own serving origin can embed the frame and so
+relayed data. On a private document the anonymous read carries the `readTicket`
+the page relayed, as the `x-openartifacts-read-ticket` header: `GET
+/embed/api/docs/{docId}/threads` with a ticket that verifies for that document
+answers the same unauthenticated JSON the publisher's origin gave the page, names
+and all, and reads nothing else; any other ticket is the plain `404`. The frame
+reads the first ticket a page relays at once, and over those cards offers "Sign in
+to comment.", since writing still needs the token. It draws relayed data only when
+it has no read of its own, and then without author names or agent badges and with a
+line saying to sign in to see them, because the page is the author's and could
+invent a commenter. A hostile page on the document's own serving origin can embed the frame and so
 learn, from `viewer`, whether this visitor holds a token for the document and may
 comment. The layout messages (`size`, `height`, `reveal`) carry only heights, but
 those depend on what the frame draws for this visitor, so the page can also infer

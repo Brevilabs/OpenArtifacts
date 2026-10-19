@@ -11,7 +11,9 @@
  * unauthenticated `ThreadsResponse` (`present.ts`), with display names and no
  * account id, email, viewer or `canResolve`. The same bytes serve every reader,
  * so the author's script, which can read this response, learns nothing about
- * who is looking.
+ * who is looking. A publisher's origin adds `readTicket` (`private.ts`): a
+ * five-minute pass, naming the document and no one, that lets the comments frame
+ * read this same answer from the API host itself, so it can trust the names.
  *
  * Whether the caller may read is the origin's own rule, handed in as `judge`:
  * the apex serves only an `anyone` document and answers `404` for an invited-only
@@ -47,6 +49,7 @@ export async function threadsResource(
   versionParam: string | null,
   principal: string,
   judge: (doc: CommentableDoc) => Verdict | Promise<Verdict>,
+  readTicket: string | null = null,
 ): Promise<Response> {
   // Comments need the reader secret too (`/api/v1` and `/embed/api` answer 404 without it), so a
   // deployment that lost it does not keep serving threads that no other surface will.
@@ -66,7 +69,8 @@ export async function threadsResource(
   // A document that has never had a thread is answered from the row alone: a page with nothing to
   // show costs no Durable Object request, on the shared link or on a pinned one.
   if (!doc.has_threads) {
-    return servingJson(method, 200, await presentThreads(env, at, { version: doc.version, latestVersion: doc.latest_version, commentable, threads: [] }, null));
+    const body = await presentThreads(env, at, { version: doc.version, latestVersion: doc.latest_version, commentable, threads: [] }, null);
+    return servingJson(method, 200, readTicket === null ? body : { ...body, readTicket });
   }
   const listed = await commentsStub(env, docId).list({
     docId,
@@ -79,5 +83,5 @@ export async function threadsResource(
     { version: listed.version, latestVersion: doc.latest_version, commentable, threads: listed.threads as ThreadRecord[] },
     null,
   );
-  return servingJson(method, 200, body);
+  return servingJson(method, 200, readTicket === null ? body : { ...body, readTicket });
 }

@@ -44,8 +44,9 @@ async function send(
   credential: string | null,
   body?: unknown,
   overrides: Partial<Env> = {},
+  extraHeaders: Record<string, string> = {},
 ): Promise<Response> {
-  const headers = new Headers();
+  const headers = new Headers(extraHeaders);
   if (credential !== null) headers.set("authorization", `Bearer ${credential}`);
   const init: RequestInit = { method, headers };
   if (body !== undefined) {
@@ -999,6 +1000,30 @@ describe("the embed family", () => {
     expect((await send("POST", `/embed/api/docs/${pub}/threads`, null, { anchor: fox, body: "x" })).status).toBe(401);
     // A Can-view reader's viewer says so, so the frame hides its Comment button.
     expect((await threadsOf(await send("GET", `/embed/api/docs/${priv}/threads`, await frame(bob, priv)))).viewer).toMatchObject({ canComment: false });
+  });
+
+  it("reads an invited-only document with its read ticket, and with nothing else", async () => {
+    const { alice, priv, pub } = await world();
+    await created(await thread(priv, alice.token));
+    const read = (ticket: string, credential: string | null = null) =>
+      send("GET", `/embed/api/docs/${priv}/threads`, credential, undefined, {}, { "x-openartifacts-read-ticket": ticket });
+    const ticketFor = (docId: string, exp = Date.now() + 60_000) => signPayload(SECRET, "threads-read", { d: docId }, exp);
+
+    const body = await threadsOf(await read(await ticketFor(priv)));
+    expect(body.threads[0]!.comments[0]!.author.name).toBe("Alice's agent");
+    // The anonymous shape: nothing about who is looking.
+    expect(body.viewer).toBeUndefined();
+    expect(body.threads[0]!.comments[0]!.mine).toBeUndefined();
+
+    // Another document's ticket, an expired one, and a token of another purpose are the plain 404, never 401.
+    expect((await read(await ticketFor(pub))).status).toBe(404);
+    expect((await read(await ticketFor(priv, Date.now() - 1))).status).toBe(404);
+    expect((await read(await signPayload(SECRET, "share-token", { a: alice.id, d: priv }, Date.now() + 60_000))).status).toBe(404);
+    // It reads, and only reads.
+    const post = await send("POST", `/embed/api/docs/${priv}/threads`, null, { anchor: fox, body: "x" }, {}, { "x-openartifacts-read-ticket": await ticketFor(priv) });
+    expect(post.status).toBe(401);
+    // A token beside it is judged alone: a wrong one is still 401.
+    expect((await read(await ticketFor(priv), SHARE_TOKEN_PREFIX + "junk")).status).toBe(401);
   });
 
   it("is absent on a server with no reader sign-in", async () => {

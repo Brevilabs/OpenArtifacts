@@ -42,6 +42,7 @@ import {
   GRANT_COOKIE,
   readCookie,
   signPayload,
+  THREADS_READ_TTL_MS,
   verifyPayload,
 } from "./session.js";
 
@@ -201,10 +202,12 @@ async function publisherResponse(
   if (threadsDoc !== null) {
     const principal = readGrant(await verifyPayload(secret, "grant-cookie", readCookie(request, GRANT_COOKIE), atMs));
     if (principal === null) return threadsNotFound(method);
+    // Names no one, so every reader still gets the same answer: see `threadsResource`.
+    const readTicket = await signPayload(secret, "threads-read", { d: threadsDoc }, atMs + THREADS_READ_TTL_MS);
     return await threadsResource(env, method, threadsDoc, url.searchParams.get("v"), principal, async (doc) => {
       const verdict = judgeForPublisher(doc, publisher);
       return verdict === "ok" || verdict === "deleted" ? verdict : "missing";
-    });
+    }, readTicket);
   }
   if (route === null) return servingError(method, "not_found");
 

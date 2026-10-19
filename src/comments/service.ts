@@ -92,8 +92,11 @@ function versionField(value: unknown): number | undefined | null {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 1 && value <= 999_999_999 ? value : null;
 }
 
-/** `GET …/threads?state=&since=&v=`. `caller` is null for an anonymous reader of a public document. */
-export async function listThreads(env: Env, url: URL, caller: Caller | null, docId: string): Promise<Response> {
+/**
+ * `GET …/threads?state=&since=&v=`. `caller` is null for an anonymous reader: of a
+ * public document, or, `ticketed`, of an invited-only one whose read ticket it holds.
+ */
+export async function listThreads(env: Env, url: URL, caller: Caller | null, docId: string, ticketed = false): Promise<Response> {
   const state = url.searchParams.get("state") ?? "all";
   if (!STATES.has(state)) return bad('state must be "open", "resolved" or "all".');
 
@@ -109,7 +112,7 @@ export async function listThreads(env: Env, url: URL, caller: Caller | null, doc
   if (versionParam !== null && !VERSION_PARAM.test(versionParam)) return bad("v must be a version number.");
   const pinned = versionParam === null ? null : Number(versionParam);
 
-  const standing = await standingOn(env, docId, caller, pinned);
+  const standing = await standingOn(env, docId, caller, pinned, ticketed);
   if (standing === null) return docNotFound(docId);
   // The newest version that has bytes, or the one asked for; none means there is no such page to anchor to.
   if (standing.doc.version === null) return docNotFound(docId);
