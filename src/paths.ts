@@ -20,6 +20,9 @@ export const SIGNIN_PREFIX = "/signin";
 /** The share page, where an owner manages one document: `/share/{docId}`. */
 export const SHARE_PREFIX = "/share";
 
+/** Home, the signed-in owner's list of their pages: `GET /home` on the API host. */
+export const HOME_PATH = "/home";
+
 /**
  * Everything the top bar's Share button needs from the API host: the page
  * script, the popover frame, its sign-in popup and the routes the frame calls.

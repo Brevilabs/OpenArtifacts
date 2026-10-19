@@ -620,6 +620,13 @@ export interface DocListRow {
    */
   version: number | null;
   link_access: LinkAccess;
+  /**
+   * People on the doc's invite list: the count Home shows, read in the same scan
+   * so no row costs a second query. `GET /api/v1/docs` shares this query and pays
+   * for it too without returning it: a count over the `(doc_id, email)` primary
+   * key, for at most a page of rows.
+   */
+  people: number;
 }
 
 /**
@@ -658,6 +665,27 @@ export interface DocListCursor {
  * folded into one with `(? IS NULL OR ...)`, which SQLite cannot use the index
  * for at all.
  */
+export async function searchPublisherDocs(
+  db: D1Database,
+  owner: string,
+  query: string,
+): Promise<Array<{ id: string; title: string }>> {
+  return (await db
+    .prepare(
+      `${OWNER_SCOPE_SQL}
+       SELECT d.id AS id, d.title AS title FROM docs d
+        WHERE d.owner IN (SELECT owner FROM owner_scope)
+          AND d.deleted_at IS NULL
+          AND EXISTS (SELECT 1 FROM versions v WHERE v.doc_id = d.id)
+          AND (instr(lower(d.title), lower(?)) > 0
+               OR instr('/d/' || d.id, lower(?)) > 0)
+        ORDER BY d.created_at DESC, d.id DESC
+        LIMIT 8`,
+    )
+    .bind(owner, owner, query, query)
+    .all<{ id: string; title: string }>()).results;
+}
+
 export async function listPublisherDocs(
   db: D1Database,
   owner: string,
@@ -666,7 +694,8 @@ export async function listPublisherDocs(
 ): Promise<DocListRow[]> {
   const columns = `d.id AS id, d.title AS title, d.created_at AS created_at,
                    d.updated_at AS updated_at, d.link_access AS link_access,
-                   (SELECT MAX(v.n) FROM versions v WHERE v.doc_id = d.id) AS version`;
+                   (SELECT MAX(v.n) FROM versions v WHERE v.doc_id = d.id) AS version,
+                   (SELECT COUNT(*) FROM doc_invites i WHERE i.doc_id = d.id) AS people`;
   const order = "ORDER BY d.created_at DESC, d.id DESC LIMIT ?";
 
   const statement =

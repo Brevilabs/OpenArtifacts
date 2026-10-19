@@ -14,7 +14,7 @@
  * session and a session cannot be presented as a grant.
  */
 import { isDocId } from "./ids.js";
-import { EMBED_SIGNIN_PATH, OPEN_PREFIX, SHARE_PREFIX, docPath, parseDocPath } from "./paths.js";
+import { EMBED_SIGNIN_PATH, HOME_PATH, OPEN_PREFIX, SHARE_PREFIX, docPath, parseDocPath } from "./paths.js";
 
 export const SESSION_COOKIE = "__Host-oa_session";
 export const GRANT_COOKIE = "__Host-oa_grant";
@@ -169,7 +169,7 @@ const SHARE_SIGNIN_QUERY = "?signin";
 
 /**
  * A return path the sign-in pages may redirect to: `/open/{docId}[/v{n}]`,
- * `/share/{docId}[?signin]` or the Share popover's popup, `/embed/sign-in?doc=…&h=…`, and
+ * `/share/{docId}[?signin]`, Home (`/home`) or the Share popover's popup, `/embed/sign-in?doc=…&h=…`, and
  * nothing else. Rebuilt from the parsed parts rather than echoed, so what a
  * form field or a cookie carried can never become a different location: no
  * absolute url, no `//host`, no fragment, no other query parameter (the popup's
@@ -179,6 +179,7 @@ const SHARE_SIGNIN_QUERY = "?signin";
 export function returnPath(candidate: string | null): string | null {
   if (candidate === null) return null;
   if (candidate.startsWith(`${EMBED_SIGNIN_PATH}?`)) return popupPath(candidate);
+  if (candidate === HOME_PATH) return HOME_PATH;
   const open = parseDocPath(candidate, OPEN_PREFIX);
   if (open !== null) return docPath(OPEN_PREFIX, open);
   // A bare `?signin` is kept on a share path, and only there: it picks the
