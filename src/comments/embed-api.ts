@@ -19,7 +19,10 @@
  *
  * Listing works without a token too, as the anonymous reader: the same answer
  * the serving origin gives, and `404` for a document only an invited person can
- * read. A token that is present but wrong is `401`, never quietly anonymous,
+ * read, unless the request carries that document's read ticket
+ * (`x-openartifacts-read-ticket`), which its publisher's origin hands the page
+ * with the same answer (`resource.ts`). A ticket that does not verify for this
+ * document is the same `404`, never `401`. A token that is present but wrong is `401`, never quietly anonymous,
  * so the frame clears it and signs in again.
  *
  * No CORS, ever (the frame's calls are same-origin), and no CSRF surface: the
@@ -33,6 +36,7 @@ import { verifyFrameToken } from "../frame-token.js";
 import { isDocId } from "../ids.js";
 import { EMBED_API_PREFIX } from "../paths.js";
 import { readerSecret } from "../reader-config.js";
+import { THREADS_READ_HEADER, verifyPayload } from "../session.js";
 import { NO_STORE, type Caller } from "./access.js";
 import { commentRoute } from "./routes.js";
 import { listThreads, setName } from "./service.js";
@@ -54,7 +58,10 @@ export async function handleCommentsEmbed(
 
   const anonymousList = comments && request.method === "GET" && extra[0] === "threads" && extra.length === 1 &&
     !request.headers.has("authorization");
-  if (anonymousList) return await listThreads(env, url, null, docId!);
+  if (anonymousList) {
+    const ticket = await verifyPayload(readerSecret(env)!, "threads-read", request.headers.get(THREADS_READ_HEADER), now);
+    return await listThreads(env, url, null, docId!, ticket?.d === docId);
+  }
 
   const identity = await verifyFrameToken(request, env, account ? null : docId!, now);
   if (identity === null) return errorResponse("unauthorized", "Sign in again to comment.", NO_STORE);

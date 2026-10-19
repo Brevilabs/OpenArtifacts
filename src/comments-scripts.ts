@@ -899,15 +899,19 @@ button.b.primary{background:var(--send);border-color:var(--send);color:var(--sen
  * **Where it gets cards.** From `/embed/api/docs/{doc}/threads` with its token,
  * which also tells it who is looking (`viewer`, `canResolve`, `mine`). With no
  * token it reads the same resource anonymously (a public document answers), and
- * that read is also its own. Only when it has neither (a private document, for a
- * reader who has not signed in to the API host) does it draw the `threads` JSON
+ * that read is also its own; on a private document it sends the read ticket the
+ * page relayed with that page's threads (`readTicket`), which reads exactly that
+ * answer, names included, so a signed-in reader sees who wrote what without a
+ * click. Only when it has neither (a ticket that failed, or a page that relays
+ * none) does it draw the `threads` JSON
  * the page relays from the serving origin, read-only, and then without any
  * author's name or agent badge and with a line saying to sign in for them: the
  * page is the author's, so what it relays could be invented, and must not appear
  * under real names beside our Sign in button. An own read always replaces it.
  * The plain line under the header (`lineCard`) follows the same split: "Invited to
- * comment? Sign in." only on its own anonymous read's `commentable`, "Continue to
- * see names and comment." over relayed cards, "Select text to comment." for a
+ * comment? Sign in." only on its own anonymous read's `commentable`, "Sign in to
+ * comment." over a private page's ticketed read, "Continue to see names and
+ * comment." over relayed cards, "Select text to comment." for a
  * viewer who may, after "No comments yet." (or "No open comments." when every
  * thread is resolved) when nothing is open. Beside cards (the sidebar's placed
  * cards, the sheet's one thread) only the way to sign in, so the line never pushes
@@ -992,6 +996,8 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
   let signState = "", prepared = null, opened = null, generation = 0, wake = null;
   let confirming = "";
   let showResolved = false, undoId = "", undoTimer = 0, menuId = "", posted = null, focusKey = "", hoverId = "";
+  // ticketSeen/ticketOwed: the first read ticket a page relays is read at once, not on the 5-second throttle; anonByTicket: the anonymous read was a private page's.
+  let ticketSeen = false, ticketOwed = false, anonByTicket = false;
   let modelKey = "", inFlight = false, lastLoad = 0, composing = false, owed = false, stacked = { head: [], flow: [] }, sentNeed = -1, revealOwed = false;
   const texts = {}, errors = {}, busy = {};
 
@@ -1112,15 +1118,17 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
   };
   // Draws only when the data changed: a poll that finds nothing new must not rebuild the box someone is typing in.
   const refreshView = () => {
-    const key = (own ? "own" : anon ? "anon" : "relay") + JSON.stringify(model());
+    const key = (own ? "own" : anon ? "anon" : "relay") + JSON.stringify(model(), (name, value) => (name === "readTicket" ? undefined : value));
     if (key === modelKey) return;
     modelKey = key;
     render();
   };
   const threadsQuery = pinned ? "?v=" + pinned : "";
-  const readAnonymous = async () => {
+  // The read ticket the page relays from a private page's origin: it reads that page's threads from here, names and all, and nothing else.
+  const ticketOf = () => (relayed && typeof relayed.readTicket === "string" ? relayed.readTicket : "");
+  const readAnonymous = async (ticket) => {
     try {
-      const response = await fetch(docPath("/threads" + threadsQuery), { credentials: "omit", cache: "no-store" });
+      const response = await fetch(docPath("/threads" + threadsQuery), { credentials: "omit", cache: "no-store", headers: ticket ? { "x-openartifacts-read-ticket": ticket } : {} });
       const body = response.status === 200 ? await response.json() : null;
       return body && Array.isArray(body.threads) ? body : null;
     } catch (error) {
@@ -1133,15 +1141,22 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     lastLoad = Date.now();
     const result = readToken() === null ? null : await call("GET", docPath("/threads" + threadsQuery));
     const nextOwn = result && result.status === 200 && result.body && Array.isArray(result.body.threads) ? result.body : null;
-    // No own read (no token, or one that was refused): the anonymous read a public document answers.
-    const nextAnon = nextOwn === null ? await readAnonymous() : null;
+    // No own read (no token, or one that was refused): the anonymous read a public document answers, or a private one with its read ticket.
+    const ticket = ticketOf();
+    const nextAnon = nextOwn === null ? await readAnonymous(ticket) : null;
     if (mine !== loadSeq) return;
     inFlight = false;
     own = nextOwn;
     anon = nextAnon;
+    anonByTicket = nextAnon !== null && ticket !== "";
     loaded = true;
     reportViewer();
     refreshView();
+    // The first ticket arrived while this read, made without it, was under way.
+    if (ticketOwed) {
+      ticketOwed = false;
+      if (own === null && anon === null) load();
+    }
   };
 
   // Runs one write, then reloads the cards and tells the page.
@@ -1208,6 +1223,8 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
   // The way to sign in, drawn only where it can lead somewhere: an invitation when its own anonymous read says someone can comment, and the way on when the cards are the page's relayed ones (a private page before the token).
   const signInLine = () => {
     if (!loaded || own !== null) return null;
+    // A private page's reader is its owner or someone it lists, so anyone here may be one sign-in from commenting.
+    if (anon !== null && anonByTicket) return signInBlock("Sign in to comment.");
     if (anon !== null) return anon.commentable === true ? signInBlock("Invited to comment? Sign in.") : null;
     return relayed ? signInBlock("Continue to see names and comment.") : null;
   };
@@ -1534,7 +1551,11 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     } else if (msg.event === "threads") {
       relayed = msg.data && typeof msg.data === "object" && Array.isArray(msg.data.threads) ? msg.data : null;
       // The page is not trusted to trigger reads: a flood of these is one read at most every few seconds, and none while one is under way.
-      if (!inFlight && Date.now() - lastLoad > 5000) load();
+      // The one exception is the first read ticket, read at once (or as soon as the read under way ends) so names show without a wait.
+      const firstTicket = !ticketSeen && ticketOf() !== "";
+      if (firstTicket) ticketSeen = true;
+      if (firstTicket && inFlight) ticketOwed = true;
+      else if (firstTicket || (!inFlight && Date.now() - lastLoad > 5000)) load();
       else if (loaded) refreshView();
     } else if (msg.event === "positions") {
       const next = msg.tops && typeof msg.tops === "object" ? msg.tops : {};

@@ -522,6 +522,26 @@ test("the frame's own read wins over what the page relays", { timeout: 120_000 }
   await context.close();
 });
 
+test("a signed-in reader of a private page sees who commented without signing in to the frame", { timeout: 120_000 }, async () => {
+  const docId = await publish("Names", REPORT, { route: "private-docs" });
+  await agentThread(docId, { exact: "Staffing is unchanged" }, "A named remark.");
+  // Signed in to the API host, but the comments frame holds no token of its own.
+  const context = await newContext(OWNER_ACCOUNT);
+  const tab = await context.newPage();
+  await tab.goto(`https://${API}/open/${docId}`);
+  await tab.waitForURL(new RegExp(`/d/${docId}`));
+  const frame = await until("the comments frame", () => commentsFrame(tab, docId));
+  await openSidebar(tab);
+  await frame.getByText("A named remark.").waitFor();
+  // The read ticket the page relays lets the frame read the names itself: no "A commenter", no button to see them.
+  await until("the author's name", async () => (await frame.locator(".who").first().innerText()).includes("Logan"));
+  assert.equal(await frame.getByText("A commenter").count(), 0);
+  assert.equal(await frame.getByRole("button", { name: "Continue to see names and comment." }).count(), 0);
+  await frame.getByRole("button", { name: "Sign in to comment." }).waitFor();
+  await shoot(tab, "private-names");
+  await context.close();
+});
+
 test("a signed-in Can-view reader on a phone is never offered Comment, not even before the frame answers", { timeout: 120_000 }, async () => {
   const docId = await publish("Can view", REPORT, { route: "private-docs" });
   // A card, so the frame has a reply box to replace with "You can view this page." once it knows.
