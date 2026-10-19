@@ -509,23 +509,12 @@ that must never be on a page whose scripts the author writes.
   frame's storage partition, and any of them can embed the frame for any id it
   knows; a size report, a focus move or an early message would tell that page, with
   no click, whether its visitor holds a token.
-- **The Home frame is fixed in size, posts nothing and varies only inside itself.**
-  The top bar's **Home** button is a frame (`GET /embed/home`) whose size is set by
-  the page's own style, and whose bytes are the same for everyone. The page script
-  adds it to the bar's slot after the page's `load` event, in a closed shadow root,
-  so it neither delays that event nor becomes the frame a document's own script
-  finds first; where that script is blocked there is no Home button. Its script reads
-  its own storage for a live Share token and shows a link to `/home` if it finds
-  one; it sends no message, takes no focus and reports no size, so the page around
-  it sees the same slot either way. Without a token the frame holds the same link,
-  invisible until a keyboard focuses it, like a skip link: a frame with nothing
-  focusable is skipped by Tab, and where a Tab lands would tell the page. The
-  invisible link still takes a click and leads to sign-in, because a page that laid
-  the frame over its own button would learn from whether a click left the page.
-  A token written while the page is open, by a sign-in through **Share** or
-  **Comments**, draws the link without a reload. Accepted residual: the link shows only after a Share or Comments sign-in in
-  this browser (the token lasts 24 hours), so someone signed in only elsewhere does
-  not see it yet.
+- **Home is a plain link, the same for every viewer.** The top bar's **Home**
+  leads to `/home` on the API host, which lists the signed-in viewer's own pages
+  or asks them to sign in. Showing it only to signed-in viewers would need a
+  frame that reads a token and hides its link, and every way of hiding it (size,
+  focus, Tab order, a click) would have to look the same to the page in both
+  states, so it would hide nothing from a keyboard or screen-reader user anyway.
 - **On a private document's own origin the owner view also reports its size**
   (`size`, the height of its content), and the popover takes it. Only the owner
   view: every other view (signed out, a reader, not found, the skeleton) keeps the

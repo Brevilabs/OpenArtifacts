@@ -87,22 +87,6 @@ export const PAGE_SCRIPT = String.raw`(() => {
   if (target.origin !== api || parts.length !== 3 || parts[1] !== "share" || !/^[0-9a-z]{16}$/.test(parts[2])) return;
   const docId = parts[2];
   link.setAttribute("data-openartifacts-share", "bound");
-  // Home (HOME_FRAME_SCRIPT draws it): put in the bar's slot once the page has loaded, so its request never holds up
-  // the page's load event, and in a closed shadow root, so the page's querySelector("iframe") and window.frames find
-  // the author's frames, not this one. allow-same-origin lets it read its own storage; it can navigate only the tab, on a click.
-  const homeSlot = document.querySelector("span[data-openartifacts-home]");
-  if (homeSlot && homeSlot.attachShadow) {
-    const home = () => {
-      const homeFrame = document.createElement("iframe");
-      homeFrame.title = "Home";
-      homeFrame.setAttribute("sandbox", "allow-scripts allow-same-origin allow-top-navigation-by-user-activation");
-      homeFrame.setAttribute("referrerpolicy", "no-referrer");
-      homeFrame.setAttribute("style", "display:block;width:100%;height:100%;border:0;background:transparent;color-scheme:dark");
-      homeFrame.src = api + "/embed/home";
-      homeSlot.attachShadow({ mode: "closed" }).append(homeFrame);
-    };
-    if (document.readyState === "complete") home(); else window.addEventListener("load", home, { once: true });
-  }
   link.setAttribute("aria-haspopup", "dialog");
   link.setAttribute("aria-expanded", "false");
   let host = null, frame = null, fallback = null, timer = 0, ready = false, open = false;
@@ -1063,78 +1047,4 @@ export const FRAME_SCRIPT = String.raw`(() => {
   main.hidden = false;
   edges();
 })();
-`;
-
-/**
- * The Home frame's one script (`GET /embed/home`, `src/embed.ts`): draw a link
- * to Home when this browser holds a live Share token, and otherwise the same link
- * hidden until a keyboard focuses it.
- *
- * "Live" is the rule the Share frame's own read uses: a stored token with at
- * least a minute left. The token is only evidence that someone signed in here
- * within 24 hours; the link goes to `/home`, which asks the session. It is the
- * only thing that varies, and it varies only inside the frame: the script posts
- * no message, takes no focus, observes no size and reports nothing to the page
- * around it, so the page cannot tell the two views apart. Both views hold the
- * one link, so a Tab lands in the frame either way: with nothing focusable in
- * the signed-out view, Chrome skips the frame, and where a Tab landed would tell
- * the page. Signed out, the link shows only while focused, like a skip link, and
- * leads to `/home` through sign-in. It still takes a click: a page that laid the
- * frame over its own button would otherwise learn from whether that click left
- * the page. A token written later, by a sign-in in the Share or Comments frame,
- * redraws the link (`storage`). Storage that throws
- * (blocked) is the signed-out view. DOM is built with `createElement`,
- * `createElementNS` and `textContent`, never markup.
- */
-export const HOME_FRAME_SCRIPT = `(function () {
-  function live() {
-    try {
-      for (var i = 0; i < localStorage.length; i++) {
-        var key = localStorage.key(i);
-        if (key === null || key.indexOf("openartifacts:share-token:") !== 0) continue;
-        var value = null;
-        try { value = JSON.parse(localStorage.getItem(key)); } catch (error) {}
-        if (value && typeof value.token === "string" && typeof value.expiresAt === "number" && value.expiresAt - Date.now() >= 60000) return true;
-      }
-    } catch (error) {}
-    return false;
-  }
-  var link = document.createElement("a");
-  function update() { link.className = live() ? "" : "ghost"; }
-  update();
-  // A sign-in through Share or Comments on this page writes its token from that frame.
-  addEventListener("storage", update);
-  link.href = document.documentElement.dataset.home;
-  link.target = "_top";
-  var ns = "http://www.w3.org/2000/svg";
-  var icon = document.createElementNS(ns, "svg");
-  icon.setAttribute("viewBox", "0 0 24 24");
-  icon.setAttribute("aria-hidden", "true");
-  var path = document.createElementNS(ns, "path");
-  path.setAttribute("d", "M3 11l9-8 9 8M5 9.5V20a1 1 0 0 0 1 1h4v-6h4v6h4a1 1 0 0 0 1-1V9.5");
-  icon.appendChild(path);
-  var label = document.createElement("span");
-  label.textContent = "Home";
-  link.appendChild(icon);
-  link.appendChild(label);
-  document.body.appendChild(link);
-})();
-`;
-
-/**
- * The Home frame's stylesheet: a pill that matches the bar's **Share** button
- * (`#1d2027`, hairline edge, `#f4f5f7` ink) and fills the frame, on a
- * transparent body so the bar shows through. The signed-out view's link is
- * invisible until focused, and takes a click like the shown one. The page sizes the frame; below 60px wide
- * the label goes and the pill is an icon, so a phone's narrower frame needs no
- * message either way.
- */
-export const HOME_FRAME_CSS = `:root{color-scheme:dark;font:500 14px/1 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased}
-*{box-sizing:border-box}html,body{height:100%;margin:0;background:transparent}
-a{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;height:100%;padding:0 12px 0 10px;border:1px solid rgba(255,255,255,.08);border-radius:999px;background:#1d2027;color:#f4f5f7;text-decoration:none;white-space:nowrap}
-a:hover{background:#272b33;border-color:rgba(255,255,255,.14)}
-a:focus-visible{outline:2px solid #f6ae52;outline-offset:-2px}
-svg{flex:none;width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
-.ghost:not(:focus){opacity:0}
-@media(max-width:60px){a{padding:0}span{display:none}}
 `;

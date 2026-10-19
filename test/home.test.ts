@@ -7,9 +7,8 @@ import worker from "../src/index.js";
 import { signPayload } from "../src/session.js";
 
 /**
- * Home (`GET /home`) and its top-bar frame (`GET /embed/home`), through the real
- * Worker and real D1. The frame's privacy is the point of the second half: its
- * bytes and headers are the same for everyone.
+ * Home (`GET /home`) and the top bar's link to it, through the real Worker and
+ * real D1.
  */
 const API = "https://api.openartifacts.ai";
 const SERVING = "https://openartifacts.site";
@@ -104,9 +103,9 @@ describe("GET /home", () => {
     expect(csp).toContain(`script-src ${await scriptHashSource(inlineScript)}`);
     expect(csp).toContain("connect-src 'self'");
     expect(csp).not.toContain("script-src 'unsafe-inline'");
-    expect(html).toContain('<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&amp;family=IBM+Plex+Mono:wght@400;500&amp;display=swap" referrerpolicy="no-referrer">');
-    expect(csp).toContain("style-src 'unsafe-inline' https://fonts.googleapis.com");
-    expect(csp).toContain("font-src https://fonts.gstatic.com");
+    // Nothing from a third party: the fonts are named, not loaded.
+    expect(html).not.toContain("fonts.googleapis.com");
+    expect(csp).not.toMatch(/font-src|https:/);
 
     expect(html).toContain("Your pages");
     for (const id of [pub, solo, shared, one, linked]) expect(html).toContain(`href="${SERVING}/d/${id}"`);
@@ -203,7 +202,7 @@ describe("GET /home", () => {
   it("is the API host's alone, GET only, and absent without reader sign-in", async () => {
     const me = await account();
     const headers = await session(me.id);
-    for (const path of ["/home", "/home?q=Page", "/embed/home"]) {
+    for (const path of ["/home", "/home?q=Page"]) {
       const served = await get(`${SERVING}${path}`, HOSTS, headers);
       expect(served.status).toBe(404);
       expect(await served.text()).not.toContain("Your pages");
@@ -212,46 +211,11 @@ describe("GET /home", () => {
     expect(await (await get(`${API}/home/`, HOSTS, headers)).text()).not.toContain("Your pages");
     const bare = { ...HOSTS, READER_SESSION_SECRET: undefined } as Partial<Env>;
     expect((await get(`${API}/home`, bare, headers)).status).toBe(404);
-    expect((await get(`${API}/embed/home`, bare)).status).toBe(404);
   });
 });
 
-describe("GET /embed/home", () => {
-  it("is one static, cacheable, cookieless document for everyone, framable only by the serving hosts", async () => {
-    const me = await account();
-    const anonymous = await get(`${API}/embed/home`);
-    const signedIn = await get(`${API}/embed/home`, HOSTS, await session(me.id));
-
-    expect(anonymous.status).toBe(200);
-    expect(await signedIn.text()).toBe(await anonymous.clone().text());
-    expect(anonymous.headers.get("set-cookie")).toBeNull();
-    expect(anonymous.headers.get("cache-control")).toBe("public, max-age=300");
-    expect(anonymous.headers.get("referrer-policy")).toBe("no-referrer");
-    const csp = anonymous.headers.get("content-security-policy")!;
-    expect(csp).toMatch(/script-src 'sha256-[A-Za-z0-9+/=]+'/);
-    expect(csp).toContain("frame-ancestors https://openartifacts.site https://*.openartifacts.site");
-    expect(csp).not.toContain("connect-src");
-
-    const html = await anonymous.text();
-    expect(html).toContain('data-home="https://api.openartifacts.ai/home"');
-    // It never reports to the page around it.
-    expect(html).not.toMatch(/postMessage|focus\(|ResizeObserver|autofocus/);
-  });
-
-  it("answers a revalidation with 304 and HEAD with no body", async () => {
-    const etag = (await get(`${API}/embed/home`)).headers.get("etag")!;
-    expect(etag).toMatch(/^"[0-9a-f]{32}"$/);
-    const again = await get(`${API}/embed/home`, HOSTS, { "if-none-match": etag });
-    expect(again.status).toBe(304);
-    const head = await get(`${API}/embed/home`, HOSTS, {}, "HEAD");
-    expect(head.status).toBe(200);
-    expect(await head.text()).toBe("");
-    expect((await get(`${API}/embed/home`, HOSTS, {}, "POST")).status).toBe(404);
-  });
-});
-
-describe("the Home frame in a served page's top bar", () => {
-  it("has its slot in every page's bar, and the bar's bytes do not vary by cookie", async () => {
+describe("Home in a served page's top bar", () => {
+  it("is a plain link to /home in every page's bar, and the bar's bytes do not vary by cookie", async () => {
     const me = await account();
     const id = await doc(me.id, "A page", Date.now());
     await env.DOCS.put(`docs/${id}/v1.html`, "<!doctype html><html><head><title>A</title></head><body><p>hi</p></body></html>");
@@ -259,11 +223,11 @@ describe("the Home frame in a served page's top bar", () => {
     const plain = await get(`${SERVING}/d/${id}`);
     const cookied = await get(`${SERVING}/d/${id}`, HOSTS, await session(me.id));
     const html = await plain.text();
-    expect(html).toContain('<span class="openartifacts-home" data-openartifacts-home');
+    expect(html).toContain('<a class="openartifacts-home" href="https://api.openartifacts.ai/home"');
     expect(await cookied.text()).toBe(html);
 
-    // A server with no reader sign-in renders no bar, so no page script to fill the slot.
+    // A server with no reader sign-in renders no bar, and has no Home to link to.
     const bare = await (await get(`${SERVING}/d/${id}`, { ...HOSTS, READER_SESSION_SECRET: undefined })).text();
-    expect(bare).not.toContain("data-openartifacts-home");
+    expect(bare).not.toContain("openartifacts-home");
   });
 });

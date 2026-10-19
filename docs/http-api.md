@@ -425,7 +425,9 @@ src="https://{API host}/embed/page.js">` tag. The strip carries the byline's tex
 (`Shared from Copilot for Obsidian`) on the left, only for Copilot-rendered HTML,
 and **Share** on the right, a plain link to `https://{API host}/share/{docId}`.
 It is the same bytes for every viewer of a document, public or private, and
-names no identity, so public pages stay cacheable. The footer byline is as
+names no identity, so public pages stay cacheable. Ahead of the byline's text,
+**Home** is a plain link to `https://{API host}/home`, the same for every
+viewer. The footer byline is as
 before. On a server without reader sign-in no page carries the top bar or the
 page script, and the header byline is as it was (see [The top bar, the Share
 popover and the share page](#the-top-bar-the-share-popover-and-the-share-page)).
@@ -786,9 +788,8 @@ of a page that has a published version shows the title, who can open it (`Public
 when it was last published, and links to the page's url. Signed out, it is the
 sign-in page and returns to `/home`. An **Account** button opens
 `ACCOUNT_ACTION_URL` in a new tab, and is drawn only where that is configured.
-Home has one hash-authorized typeahead script and same-origin search; it also
-loads the landing page's font families through a stylesheet at
-`fonts.googleapis.com` and fonts from `fonts.gstatic.com`. It remains
+Home has one hash-authorized typeahead script and same-origin search, and loads
+nothing from another origin. It remains
 `Cache-Control: no-store`, `Referrer-Policy: no-referrer`.
 
 `GET https://{API host}/home?q=…` requires the same reader session and returns
@@ -798,15 +799,6 @@ substring matches in title or `/d/{id}` path across the owner's entire live,
 landed page set, including linked keys. An empty query returns `{"pages":[]}`;
 `cursor` is ignored in search mode. The list itself is not filtered. `GET` only;
 the serving host never answers Home.
-
-**The Home frame.** `GET` or `HEAD https://{API host}/embed/home` is the frame
-behind the top bar's **Home** button, which the page script (`/embed/page.js`) puts
-in the bar's slot, in a closed shadow root, once the page has loaded: one static document for every viewer, with
-`Cache-Control: public, max-age=300`, an `ETag` (`If-None-Match` answers `304`),
-no cookie, and `frame-ancestors` limited to the serving host and its publishers'
-hosts. Its script shows a link to `/home` when the frame's own storage holds a
-live Share token, and otherwise keeps it invisible, though still clickable, until a keyboard focuses it (see
-[private-sharing.md](private-sharing.md)); it posts nothing to the page around it. Its address never changes.
 
 **The share page.** `GET https://{API host}/share/{docId}` is the same controls as
 a page, with the session cookie. It is where **Share** leads with no script, the

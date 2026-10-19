@@ -620,7 +620,12 @@ export interface DocListRow {
    */
   version: number | null;
   link_access: LinkAccess;
-  /** People on the doc's invite list: the count Home shows, read in the same scan so no row costs a second query. */
+  /**
+   * People on the doc's invite list: the count Home shows, read in the same scan
+   * so no row costs a second query. `GET /api/v1/docs` shares this query and pays
+   * for it too without returning it: a count over the `(doc_id, email)` primary
+   * key, for at most a page of rows.
+   */
   people: number;
 }
 

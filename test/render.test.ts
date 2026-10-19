@@ -484,7 +484,7 @@ it("omits the top header for unmarked agent HTML while retaining the footer", as
 });
 
 describe("renderServedHtml — the top bar", () => {
-  const BAR = { shareUrl: "https://api.test/share/x", scriptUrl: "https://api.test/embed/page.js" };
+  const BAR = { shareUrl: "https://api.test/share/x", scriptUrl: "https://api.test/embed/page.js", homeUrl: "https://api.test/home" };
   const SHARE_HREF = `data-openartifacts-share href="${BAR.shareUrl}"`;
   const SCRIPT_TAG = `<script defer src="${BAR.scriptUrl}"></script>`;
   const marked = (html: string) =>
@@ -522,13 +522,11 @@ describe("renderServedHtml — the top bar", () => {
     expect(headOf(html)).toContain(NOINDEX_META);
   });
 
-  it("R7: carries the Home slot once, first in the bar, the same size for every viewer, and no frame tag", async () => {
+  it("R7: carries Home once, first in the bar, as a plain link to /home that is the same for every viewer", async () => {
     const html = await withBar(page("<p>hello</p>"));
-    expect(occurrences(html, '<span class="openartifacts-home" data-openartifacts-home')).toBe(1);
-    expect(html).not.toContain("<iframe");
+    expect(occurrences(html, `<a class="openartifacts-home" href="${BAR.homeUrl}"`)).toBe(1);
     expect(html.indexOf('class="openartifacts-home"')).toBeLessThan(html.indexOf("data-openartifacts-share"));
-    expect(html).toContain("width:84px;height:32px");
-    expect(OPENARTIFACTS_BAR_STYLE).toContain(".openartifacts-home{width:36px!important}");
+    expect(OPENARTIFACTS_BAR_STYLE).toContain(":where(.openartifacts-home-label){display:none!important}");
   });
 
   it("R6: carries the comments switch on the Share link when given one, and nothing when not", async () => {
@@ -580,10 +578,12 @@ describe("renderServedHtml — the top bar", () => {
     const html = await withBar(page("<p>hello</p>"), true, {
       shareUrl: 'https://api.test/share/x"><script>alert(1)</script>',
       scriptUrl: 'https://api.test/embed/page.js"><script>alert(2)</script>',
+      homeUrl: 'https://api.test/home"><script>alert(3)</script>',
     });
 
     expect(html).not.toContain("<script>alert");
     expect(html).toContain("&quot;&gt;&lt;script&gt;alert(1)");
     expect(html).toContain("&quot;&gt;&lt;script&gt;alert(2)");
+    expect(html).toContain("&quot;&gt;&lt;script&gt;alert(3)");
   });
 });

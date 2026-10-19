@@ -306,8 +306,7 @@ async function newContext(account, { viewport = { width: 1280, height: 800 }, si
     const key = `openartifacts:share-token:${signedInTo}`;
     await context.addInitScript(
       ({ key, value, origin }) => {
-        // Only the comments frame: any other frame on the API host (the bar's Home frame) writing would wake it.
-        if (location.origin === origin && location.pathname.startsWith("/embed/comments")) window.localStorage.setItem(key, value);
+        if (location.origin === origin) window.localStorage.setItem(key, value);
       },
       { key, value, origin: `https://${API}` },
     );

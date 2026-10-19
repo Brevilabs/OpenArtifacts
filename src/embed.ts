@@ -4,7 +4,6 @@
  *
  * ```
  * GET|HEAD /embed/page.js                         the script every served page loads
- * GET|HEAD /embed/home                            the Home button's frame (static, cacheable)
  * GET      /embed/share?doc=&origin=              the popover's frame
  * GET      /embed/comments?doc=&origin=[&v=]      the comments frame (src/comments/frame.ts)
  * GET      /embed/sign-in?doc=&h=[&switch=1]      the popup that signs the frame in
@@ -68,7 +67,7 @@ import type { Publisher } from "./auth.js";
 import { stringField } from "./account.js";
 import type { Env } from "./config.js";
 import { accountEmail, findReadableDoc, putEmbedHandoff, takeEmbedHandoff } from "./db.js";
-import { FRAME_CSS, FRAME_SCRIPT, HOME_FRAME_CSS, HOME_FRAME_SCRIPT, PAGE_SCRIPT } from "./embed-scripts.js";
+import { FRAME_CSS, FRAME_SCRIPT, PAGE_SCRIPT } from "./embed-scripts.js";
 import { accountPlan } from "./entitlement.js";
 import { handleCommentsEmbed } from "./comments/embed-api.js";
 import { commentsFrame } from "./comments/frame.js";
@@ -82,11 +81,9 @@ import { escapeHtml } from "./page.js";
 import {
   EMBED_API_PREFIX,
   EMBED_COMMENTS_PATH,
-  EMBED_HOME_PATH,
   EMBED_SHARE_PATH,
   EMBED_SIGNIN_PATH,
   EMBED_TOKEN_PATH,
-  HOME_PATH,
   PAGE_SCRIPT_PATH,
 } from "./paths.js";
 import { readBodyWithin } from "./quota.js";
@@ -163,67 +160,6 @@ async function pageScript(request: Request): Promise<Response> {
     return new Response(null, { status: 304, headers });
   }
   return new Response(request.method === "HEAD" ? null : PAGE_SCRIPT, { status: 200, headers });
-}
-
-/**
- * `GET|HEAD /embed/home`: the top bar's **Home** button, a frame that is the
- * same bytes for everyone and draws a link only to a browser holding a live
- * Share token (`HOME_FRAME_SCRIPT`). Whether it does is the one thing that
- * varies, and it varies inside the frame, where the page around it cannot see:
- * the frame posts nothing and sets no size.
- *
- * Because the bytes are identical for every viewer and every document it is
- * cacheable, and the url is **permanent** like the page script's, since pinned
- * pages carry the tag for a year. It sets no cookie and reads none. Only the
- * serving host and its publishers' hosts may frame it, never another site.
- */
-type HomeFrame = { html: string; etag: string; script: string };
-
-/** Per API host, since the link in the body names it; a deployment has one. */
-const homeFrames = new Map<string, Promise<HomeFrame>>();
-
-function homeFrameParts(api: string): Promise<HomeFrame> {
-  const known = homeFrames.get(api);
-  if (known !== undefined) return known;
-  const built = (async () => {
-    const html = `<!doctype html>
-<html lang="en" data-home="${escapeHtml(`https://${api}${HOME_PATH}`)}">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="robots" content="noindex,nofollow">
-<title>Home · OpenArtifacts</title>
-<style>${HOME_FRAME_CSS}</style>
-</head>
-<body>
-<script>${HOME_FRAME_SCRIPT}</script>
-</body>
-</html>`;
-    return { html, etag: `"${(await sha256Hex(html)).slice(0, 32)}"`, script: await scriptHashSource(HOME_FRAME_SCRIPT) };
-  })();
-  homeFrames.set(api, built);
-  return built;
-}
-
-async function homeFrame(request: Request, env: Env): Promise<Response> {
-  const serving = env.SERVING_HOST?.trim();
-  const api = env.API_HOST?.trim();
-  if ((request.method !== "GET" && request.method !== "HEAD") || !serving || !api) return READER_NOT_FOUND();
-
-  const { html, etag, script } = await homeFrameParts(api);
-  const headers = new Headers({
-    "content-type": "text/html; charset=utf-8",
-    "cache-control": "public, max-age=300",
-    "x-content-type-options": "nosniff",
-    "referrer-policy": "no-referrer",
-    etag,
-    "content-security-policy":
-      `default-src 'none'; script-src ${script}; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; ` +
-      `frame-ancestors https://${serving} https://*.${serving}`,
-  });
-  const ifNoneMatch = request.headers.get("if-none-match");
-  if (ifNoneMatch !== null && etagMatches(ifNoneMatch, etag)) return new Response(null, { status: 304, headers });
-  return new Response(request.method === "HEAD" ? null : html, { status: 200, headers });
 }
 
 /** The frame's JSON and the claim are never cached, and never read a cookie. */
@@ -513,7 +449,6 @@ export async function handleEmbed(
 ): Promise<Response> {
   const now = Date.now();
   if (url.pathname === PAGE_SCRIPT_PATH) return await pageScript(request);
-  if (url.pathname === EMBED_HOME_PATH) return await homeFrame(request, env);
   if (url.pathname === EMBED_SHARE_PATH) return await shareFrame(request, url, env);
   if (url.pathname === EMBED_COMMENTS_PATH) return await commentsFrame(request, url, env);
   if (url.pathname === EMBED_SIGNIN_PATH) return await popup(request, url, env, now);
