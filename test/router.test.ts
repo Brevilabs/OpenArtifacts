@@ -113,23 +113,25 @@ describe("resolveSurface — canonical and legacy domains", () => {
 });
 
 describe("resolveSurface — a publisher's own origin", () => {
-  const LABEL = "0123456789abcdefghjkmnpqrs";
+  const LABEL = "k7m2qx";
+  const LEGACY = "0123456789abcdefghjkmnpqrs";
 
-  it("resolves {26-character label}.{servingHost} to that publisher, and nothing else", () => {
-    expect(LABEL).toHaveLength(26);
+  it("resolves {6-character code}.{servingHost} to that publisher, and nothing else", () => {
+    expect(LABEL).toHaveLength(6);
     expect(resolveSurface(`${LABEL}.openartifacts.site`, "/d/abc", HOSTS)).toBe("publisher-serving");
     // Host names are case-insensitive and may carry a root dot, as for every other host.
     expect(resolveSurface(`${LABEL.toUpperCase()}.OPENARTIFACTS.SITE.`, "/d/abc", HOSTS)).toBe("publisher-serving");
     expect(resolveSurface(`${LABEL}.openartifacts.site.`, "/api/v1/docs", HOSTS)).toBe("publisher-serving");
-    expect(resolvePublisherHost(`${LABEL}.openartifacts.site`, HOSTS.servingHost)).toEqual({ label: LABEL });
+    expect(resolvePublisherHost(`${LABEL}.openartifacts.site`, HOSTS.servingHost)).toEqual({ code: LABEL });
   });
 
   it("fails closed on every other subdomain, and never on an API or document host", () => {
     for (const host of [
       `${LABEL.slice(1)}.openartifacts.site`, // too short
       `${LABEL}x.openartifacts.site`, // too long
-      `${LABEL.slice(0, 25)}i.openartifacts.site`, // not in the alphabet
-      `${LABEL.slice(0, 25)}l.openartifacts.site`, // "l" is not in the alphabet
+      `${LABEL.slice(0, 5)}a.openartifacts.site`, // "a" is not in the alphabet
+      `${LABEL.slice(0, 5)}o.openartifacts.site`, // nor is "o"
+      `${LABEL.slice(0, 5)}1.openartifacts.site`, // nor "1"
       `a.${LABEL}.openartifacts.site`, // more than one label
       `${LABEL}.openartifacts.site.evil.com`,
       `${LABEL}.api.openartifacts.ai`,
@@ -142,12 +144,35 @@ describe("resolveSurface — a publisher's own origin", () => {
     expect(resolveSurface("openartifacts.site", "/d/abc", HOSTS)).toBe("serving");
   });
 
+  it("still recognises the retired 26-character label host, as legacy", () => {
+    expect(resolveSurface(`${LEGACY}.openartifacts.site`, "/d/abc", HOSTS)).toBe("publisher-serving");
+    expect(resolvePublisherHost(`${LEGACY}.openartifacts.site`, HOSTS.servingHost)).toEqual({ legacy: true });
+    expect(resolvePublisherHost(`${LEGACY.slice(1)}.openartifacts.site`, HOSTS.servingHost)).toBeNull();
+  });
+
   it("answers no health check, and serves nothing outside /d", async () => {
     const host = `https://${LABEL}.openartifacts.site`;
     expect((await get(`${host}/health`, PRODUCTION_ENV)).status).toBe(404);
     const api = await get(`${host}/api/v1/docs`, PRODUCTION_ENV);
     expect(api.status).toBe(404);
     expect(api.headers.get("cross-origin-opener-policy")).toBe("same-origin-allow-popups");
+  });
+
+  it("sends a legacy host's document url on to /open, and answers everything else as an unknown host", async () => {
+    const host = `https://${LEGACY}.openartifacts.site`;
+    for (const method of ["GET", "HEAD"]) {
+      const moved = await worker.fetch(new Request(`${host}/d/0123456789abcdef/v3?grant=x`, { method }), env(PRODUCTION_ENV), ctx);
+      expect(moved.status).toBe(302);
+      expect(moved.headers.get("location")).toBe("https://api.openartifacts.ai/open/0123456789abcdef/v3");
+    }
+    const post = await worker.fetch(new Request(`${host}/d/0123456789abcdef`, { method: "POST" }), env(PRODUCTION_ENV), ctx);
+    expect(post.status).toBe(404);
+    for (const path of ["/health", "/api/v1/docs", "/d/0123456789abcdef/threads", "/"]) {
+      const res = await get(`${host}${path}`, PRODUCTION_ENV);
+      const unknown = await get(`https://evil.openartifacts.site${path}`, PRODUCTION_ENV);
+      expect(res.status).toBe(404);
+      expect(await res.text()).toBe(await unknown.text());
+    }
   });
 });
 

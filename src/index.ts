@@ -16,9 +16,11 @@ import type { Env } from "./config.js";
 import { DEVICE_PREFIX, handleDevice } from "./device.js";
 import { errorResponse } from "./errors.js";
 import { listTokens, revokeToken } from "./api/tokens.js";
-import { EMBED_PREFIX, OPEN_PREFIX, SERVING_PREFIX, SHARE_PREFIX, SIGNIN_PREFIX } from "./paths.js";
-import { handlePublisherServing, isolate, PRIVATE_LABEL } from "./private.js";
+import { EMBED_PREFIX, HOME_PATH, OPEN_PREFIX, SERVING_PREFIX, SHARE_PREFIX, SIGNIN_PREFIX } from "./paths.js";
+import { handlePublisherServing, isolate, legacyLabelResponse, LEGACY_LABEL } from "./private.js";
+import { ORIGIN_CODE } from "./origin-code.js";
 import { handleEmbed } from "./embed.js";
+import { handleHome } from "./home.js";
 import { handleReader } from "./reader.js";
 import { readerSignInConfigured } from "./reader-config.js";
 import { READER_NOT_FOUND, readerIsolate } from "./reader-pages.js";
@@ -34,7 +36,7 @@ export { DocComments } from "./comments/object.js";
  * to be served from a sacrificial host that never carries the API — a doc that
  * turns out to be phishing should cost us the serving domain, not the brand
  * domain. A third, `publisher-serving`, is one publisher's own origin
- * (`{label}.{SERVING_HOST}`), where that publisher's invited-only documents are
+ * (`{code}.{SERVING_HOST}`), where that publisher's invited-only documents are
  * served and only that publisher's scripts run.
  */
 export type Surface =
@@ -75,22 +77,24 @@ function hostMatches(hostname: string, configured: string | undefined): boolean 
 }
 
 /**
- * The publisher a host belongs to, or null when it is none. Today that is
- * `{26-character label}.{servingHost}`, the label being the whole subdomain, so
- * `a.b.openartifacts.site` and a short or mixed-case label are the unknown hosts
- * they were before. A publisher's verified custom hostname resolves here later,
- * by lookup; nothing else in the router changes when it does.
+ * The publisher a host belongs to, or null when it is none. That is
+ * `{6-character code}.{servingHost}`, the code being the whole subdomain, so
+ * `a.b.openartifacts.site` and a short or mixed-case code are the unknown hosts
+ * they were before. The retired `{26-character label}` hosts are recognised too,
+ * as `legacy`, so their old links can be sent on to `/open`. A publisher's
+ * verified custom hostname resolves here later, by lookup.
  */
 export function resolvePublisherHost(
   hostname: string,
   servingHost: string | undefined,
-): { label: string } | null {
+): { code: string } | { legacy: true } | null {
   if (!servingHost?.trim()) return null;
   const serving = normalizeHostname(servingHost);
   const host = normalizeHostname(hostname);
   if (!host.endsWith(`.${serving}`)) return null;
   const label = host.slice(0, -serving.length - 1);
-  return PRIVATE_LABEL.test(label) ? { label } : null;
+  if (ORIGIN_CODE.test(label)) return { code: label };
+  return LEGACY_LABEL.test(label) ? { legacy: true } : null;
 }
 
 function pathIsUnder(pathname: string, prefix: string): boolean {
@@ -134,6 +138,7 @@ export function resolveSurface(hostname: string, pathname: string, config: Surfa
   if (pathIsUnder(pathname, OPEN_PREFIX)) return "api";
   if (pathIsUnder(pathname, SIGNIN_PREFIX)) return "api";
   if (pathIsUnder(pathname, SHARE_PREFIX)) return "api";
+  if (pathname === HOME_PATH) return "api";
   if (pathIsUnder(pathname, EMBED_PREFIX)) return "api";
   if (pathIsUnder(pathname, SERVING_PREFIX)) return "serving";
   return "unknown";
@@ -315,12 +320,13 @@ export default {
             return await handleApproval(request, url, env);
           }
           // Reader sign-in, the door a private document opens through and the
-          // share page: pages a person reaches with a browser, not API routes,
+          // share page and Home: pages a person reaches with a browser, not API routes,
           // so they sit outside `/api/v1` for the same reason approval does.
           if (
             pathIsUnder(url.pathname, OPEN_PREFIX) ||
             pathIsUnder(url.pathname, SIGNIN_PREFIX) ||
-            pathIsUnder(url.pathname, SHARE_PREFIX)
+            pathIsUnder(url.pathname, SHARE_PREFIX) ||
+            url.pathname === HOME_PATH
           ) {
             // A server with no reader sign-in configured has none of these
             // pages, as one that predates private sharing has none.
@@ -329,9 +335,11 @@ export default {
             return readerIsolate(
               !readerSignInConfigured(env)
                 ? READER_NOT_FOUND()
-                : pathIsUnder(url.pathname, SHARE_PREFIX)
-                  ? await handleShare(request, url, env, analytics)
-                  : await handleReader(request, url, env, ctx),
+                : url.pathname === HOME_PATH
+                  ? await handleHome(request, url, env)
+                  : pathIsUnder(url.pathname, SHARE_PREFIX)
+                    ? await handleShare(request, url, env, analytics, ctx)
+                    : await handleReader(request, url, env, ctx, analytics),
             );
           }
           // The top bar's page script and, with it, everything the Share
@@ -358,6 +366,9 @@ export default {
         case "publisher-serving": {
           const publisher = resolvePublisherHost(url.hostname, env.SERVING_HOST);
           if (publisher === null) return servingError(request.method, "not_found");
+          if ("legacy" in publisher) {
+            return legacyLabelResponse(request, url, env) ?? errorResponse("not_found", `No route for ${url.pathname}`);
+          }
           return await handlePublisherServing(request, url, env, analytics, publisher);
         }
         default:

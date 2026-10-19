@@ -6,7 +6,8 @@ import { sha256Hex } from "../src/hash.js";
 import { writeManifest } from "../src/manifest.js";
 import { newAccountId, newApiToken, newTokenId } from "../src/ids.js";
 import worker from "../src/index.js";
-import { rebuildSql, rowsFromManifest, type ListedObject } from "../src/rebuild.js";
+import { originCode } from "../src/origin-code.js";
+import { originRows, rebuildSql, rowsFromManifest, type ListedObject } from "../src/rebuild.js";
 import { signPayload } from "../src/session.js";
 import { docObjectPrefix, manifestObjectKey, versionObjectKey } from "../src/storage.js";
 
@@ -99,6 +100,7 @@ async function expectedFromD1(docId: string) {
     linkAccess: d.link_access,
     commentsEnabled: d.comments_enabled === 1,
     hasThreads: d.has_threads === 1,
+    originCode: (await env.DB.prepare("SELECT code FROM publisher_origins WHERE owner = ?").bind(d.owner).first<{ code: string }>())?.code ?? null,
     createdAt: d.created_at,
     updatedAt: d.updated_at,
     deletedAt: d.deleted_at,
@@ -597,6 +599,8 @@ describe("the columns the manifest and the rebuild were written against", () => 
       "has_threads",
     ]);
     expect(await columns("doc_invites")).toEqual(["doc_id", "email", "role", "created_at"]);
+    // Its code rides in each of its owner's manifests as `originCode`; `created_at` is rebuilt from the doc's.
+    expect(await columns("publisher_origins")).toEqual(["owner", "code", "created_at"]);
   });
 });
 
@@ -680,6 +684,79 @@ describe("rebuilding D1 from R2 alone", () => {
   });
 });
 
+describe("a publisher's origin code in the manifest", () => {
+  it("is null before a code exists, and follows the owner's code once one is allocated", async () => {
+    const o = await owner();
+    const priv = await publish(o.token, "private-docs", "Private");
+    expect(await expectInSync(priv)).toMatchObject({ originCode: null });
+
+    const code = await originCode(env.DB, o.id);
+    await writeManifest(env as unknown as Env, priv);
+    expect(await expectInSync(priv)).toMatchObject({ originCode: code });
+    expect((await manifestOf(priv)).schema).toBe(1);
+  });
+
+  it("is written to R2 when the owner's first open allocates the code, with no later change to the doc", async () => {
+    const o = await owner();
+    const priv = await publish(o.token, "private-docs", "Private");
+    expect(await manifestOf(priv)).toMatchObject({ originCode: null });
+
+    const opened = await send("POST", `/api/v1/docs/${priv}/open`, o.token);
+    expect(opened.status).toBe(200);
+    const code = new URL(((await opened.json()) as { url: string }).url).hostname.split(".")[0];
+
+    expect(await manifestOf(priv)).toMatchObject({ originCode: code });
+    await expectInSync(priv);
+  });
+
+  it("comes back with the rebuild: the same owner has the same code, and no code has two owners", async () => {
+    const o = await owner();
+    const priv = await publish(o.token, "private-docs", "Private");
+    const code = await originCode(env.DB, o.id);
+    await writeManifest(env as unknown as Env, priv);
+
+    const manifest = await manifestOf(priv);
+    const stored = await env.DOCS.list({ prefix: docObjectPrefix(priv) });
+    const objects: ListedObject[] = stored.objects.map((object) => ({
+      key: object.key, size: object.size, uploaded: object.uploaded.getTime(),
+    }));
+    const rebuilt = rowsFromManifest(priv, manifest, objects);
+    expect(rebuilt.origin).toMatchObject({ owner: o.id, code });
+
+    // A manifest written before the field existed rebuilds without a code.
+    const { originCode: _dropped, ...old } = manifest;
+    expect(rowsFromManifest(priv, old, objects).origin).toBeNull();
+    // A malformed code makes the manifest unreadable, so the doc rebuilds closed.
+    expect(rowsFromManifest(priv, { ...manifest, originCode: "NOPE" }, objects).doc.owner).toBe("");
+
+    // Lose the whole table, then rebuild it from the manifest alone.
+    await env.DB.prepare("DELETE FROM publisher_origins WHERE owner = ?").bind(o.id).run();
+    await env.DB.batch([
+      env.DB.prepare("DELETE FROM storage_usage WHERE doc_id = ?").bind(priv),
+      env.DB.prepare("DELETE FROM versions WHERE doc_id = ?").bind(priv),
+      env.DB.prepare("DELETE FROM docs WHERE id = ?").bind(priv),
+    ]);
+    const sql = rebuildSql([rebuilt]);
+    expect(sql).toContain("INSERT OR IGNORE INTO publisher_origins");
+    await env.DB.exec(sql.trim());
+    expect(await originCode(env.DB, o.id)).toBe(code);
+  });
+
+  it("keeps the first of two manifests that disagree, and reports it", () => {
+    const base = { schema: 1, linkAccess: "invited", createdAt: 1, updatedAt: 1, deletedAt: null, latestVersion: 1, people: [], title: "T" };
+    const rows = [
+      rowsFromManifest("a", { ...base, owner: "o1", originCode: "222222" }, []),
+      rowsFromManifest("b", { ...base, owner: "o1", originCode: "333333" }, []), // one owner, two codes
+      rowsFromManifest("c", { ...base, owner: "o2", originCode: "222222" }, []), // one code, two owners
+      rowsFromManifest("d", { ...base, owner: "o1", originCode: "222222" }, []), // agreeing repeat
+    ];
+    const { rows: kept, conflicts } = originRows(rows);
+    expect(kept).toEqual([{ owner: "o1", code: "222222", created_at: 1 }]);
+    expect(conflicts).toHaveLength(2);
+    expect(rebuildSql(rows)).toContain("-- origin code conflict");
+  });
+});
+
 describe("rebuilding into a database that is not empty", () => {
   it("fails instead of merging a stale snapshot, and brings back no removed invite", async () => {
     const id = "livedoc00000000000000000000000000";
@@ -697,36 +774,6 @@ describe("rebuilding into a database that is not empty", () => {
   });
 });
 
-describe("POST /admin/v1/manifests/backfill (temporary)", () => {
-  it("needs the admin key", async () => {
-    expect((await send("POST", "/admin/v1/manifests/backfill", null)).status).toBe(401);
-    expect((await send("POST", "/admin/v1/manifests/backfill", "wrong")).status).toBe(401);
-    expect((await send("POST", "/admin/v1/manifests/backfill", (await owner()).token)).status).toBe(401);
-  });
-
-  it("writes a manifest for every existing doc, deleted ones included, and is safe to repeat", async () => {
-    const o = await owner();
-    const live = await publish(o.token, "docs", "Live");
-    const priv = await publish(o.token, "private-docs", "Priv");
-    await send("PUT", person(priv, "alice@acme.com"), o.token, { role: "view" });
-    const gone = await publish(o.token, "docs", "Gone");
-    await send("DELETE", `/api/v1/docs/${gone}`, o.token);
-    const ids = [live, priv, gone];
-
-    // The state before manifests existed.
-    for (const id of ids) await env.DOCS.delete(manifestObjectKey(id));
-
-    const first = await send("POST", "/admin/v1/manifests/backfill", ADMIN);
-    expect(first.status).toBe(200);
-    expect(first.headers.get("cache-control")).toBe("no-store");
-    const body = (await first.json()) as { written: number; cursor?: string };
-    expect(body.written).toBeGreaterThanOrEqual(3);
-    expect(body.cursor).toBeUndefined();
-    const snapshots = await Promise.all(ids.map((id) => expectInSync(id)));
-    expect(snapshots[1]).toMatchObject({ linkAccess: "invited", people: [{ email: "alice@acme.com", role: "view" }] });
-    expect(snapshots[2]!.deletedAt).toEqual(expect.any(Number));
-
-    await send("POST", "/admin/v1/manifests/backfill", ADMIN);
-    expect(await Promise.all(ids.map((id) => manifestOf(id)))).toEqual(snapshots);
-  });
+it("has no manifest backfill route any more", async () => {
+  expect((await send("POST", "/admin/v1/manifests/backfill", ADMIN)).status).toBe(404);
 });

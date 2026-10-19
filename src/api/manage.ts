@@ -206,7 +206,7 @@ const CURSOR_PATTERN = /^([0-9]{1,15})\.([0-9a-z]+)$/;
  * so, and leaves us free to change what a page resumes on without clients
  * having built a parser for it.
  */
-function encodeCursor(row: DocListRow): string {
+export function encodeCursor(row: DocListRow): string {
   return base64UrlEncode(`${row.created_at}.${row.id}`);
 }
 
@@ -216,7 +216,7 @@ function encodeCursor(row: DocListRow): string {
  * into a comparison, so a timestamp has to be a real integer and an id has to be
  * a real id before either goes near D1.
  */
-function decodeCursor(raw: string): DocListCursor | null {
+export function decodeCursor(raw: string): DocListCursor | null {
   const decoded = base64UrlDecode(raw);
   if (decoded === null) return null;
 

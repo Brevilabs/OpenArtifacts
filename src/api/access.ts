@@ -55,7 +55,7 @@ import {
   type LinkAccess,
 } from "../db.js";
 import { commentRoute } from "../comments/routes.js";
-import { emailConfigured, inviteMessage, sendEmail } from "../email.js";
+import { emailConfigured, inviteMessage, sendEmail, type EmailOutcome } from "../email.js";
 import { docNotFound, errorResponse } from "../errors.js";
 import { sha256Hex } from "../hash.js";
 import { isDocId } from "../ids.js";
@@ -113,6 +113,18 @@ export function planRefusal(env: Env, publisher: Publisher, what = "Private shar
 /** The document's mode, invite list and pending requests, as `readAccess` reads them. */
 export type AccessState = NonNullable<Awaited<ReturnType<typeof readAccess>>>;
 
+function ownerEmailNotice(env: Env): string {
+  const fix = env.ACCOUNT_ACTION_URL?.trim()
+    ? `Link your Copilot account at ${env.ACCOUNT_ACTION_URL.trim()} to enable these emails.`
+    : "Ask your server operator to link your license to a verified account to enable these emails.";
+  return `Access requests and new comment threads cannot reach you by email, and invitations do not name you. ${fix}`;
+}
+
+/** Conditional guidance, identical for every document, even when ownership is unknown. */
+export function copilotHint(env: Env): string {
+  return `Published from Copilot? If your license key is not linked to an OpenArtifacts account, we have no email address for you. ${ownerEmailNotice(env)} After linking, sign in here to manage access.`;
+}
+
 /**
  * Why an operation did nothing. `not_found` covers a missing, deleted and
  * someone else's document alike; `full` is the 101st person; `invite_quota` is
@@ -126,9 +138,9 @@ export type AccessRefusal = "not_found" | "bad_email" | "full" | "plan" | "plan_
 /**
  * What an operation did. `state` is read after the write, and `changed` says
  * whether the write changed the link access or the invite list, so a caller can
- * tell a switch from a repeat: the share page shows its notice only after a real
- * switch to private. A decline, a read and a repeat answer `false`, even when a
- * pending request was deleted: `changed` lines up with when
+ * tell a switch from a repeat: the Share popover counts only a real switch to
+ * private as its own (`FRAME_SCRIPT`). A decline, a read and a repeat answer
+ * `false`, even when a pending request was deleted: `changed` lines up with when
  * `document_access_changed` is recorded, and requests are not recorded.
  */
 export type AccessResult =
@@ -191,7 +203,8 @@ export async function setMode(
  * Add a person, which is also how a request is approved. An address that is
  * already on the list stays as it is, unless `role` names a different one. The
  * invite email goes out only on the call that added the address, so a retry does
- * not mail the same person twice. Needs the plan, except for a pure repeat: an
+ * not mail the same person twice, and after the answer (`ctx.waitUntil`), so the
+ * owner never waits on the mail service. Needs the plan, except for a pure repeat: an
  * address already listed, with no role or the same role and no request to
  * approve, answers on any plan, mails nobody and records nothing. A role
  * change, a new address and an approval still reach the plan check.
@@ -205,11 +218,13 @@ export async function addPerson(
   rawEmail: string,
   role: InviteRole | undefined,
   analytics: AnalyticsSink,
+  ctx: ExecutionContext,
 ): Promise<AccessResult> {
-  const result = await addWithoutManifest(env, requestUrl, principal, docId, rawEmail, role, analytics);
-  // After the email and the event, so a failed put cannot swallow either: the
-  // retry it invites is a pure repeat, which mails nobody. Written on a pure
-  // repeat too, since that retry is what repairs a failed manifest write.
+  const result = await addWithoutManifest(env, requestUrl, principal, docId, rawEmail, role, analytics, ctx);
+  // After the email is scheduled and the event recorded, so a failed put cannot
+  // swallow either: the retry it invites is a pure repeat, which mails nobody.
+  // Written on a pure repeat too, since that retry is what repairs a failed
+  // manifest write.
   if (result.ok) await writeManifest(env, docId);
   return result;
 }
@@ -223,6 +238,7 @@ export async function addWithoutManifest(
   rawEmail: string,
   role: InviteRole | undefined,
   analytics: AnalyticsSink,
+  ctx: ExecutionContext,
 ): Promise<AccessResult> {
   const doc = isDocId(docId) ? await findManagedDoc(env.DB, docId, principal.owner) : null;
   if (doc === null) return refused("not_found");
@@ -260,7 +276,7 @@ export async function addWithoutManifest(
     return refused(state.people.length >= MAX_INVITES_PER_DOC ? "full" : "invite_quota");
   }
 
-  if (added) await invite(env, requestUrl, doc.publisher_id, docId, doc.title, email, granted);
+  if (added) ctx.waitUntil(invite(env, requestUrl, doc.publisher_id, docId, doc.title, email, granted, analytics));
   if (added || roleChanged) recordChange(analytics, docId, doc.publisher_id, state);
   return { ok: true, state, changed: added || roleChanged };
 }
@@ -324,14 +340,14 @@ function recordChange(analytics: AnalyticsSink, docId: string, ownerId: string, 
 }
 
 /**
- * Mail the invite, best effort, and never throws. The address is on the list
- * whether or not this succeeds, and the link always points at the sacrificial
- * domain, so a failure costs the invitee an email and nothing else. Everything
- * after the insert is inside the `try`, the limiter and the sharer's address
- * included: a throw there would answer `500` for a person who is already listed,
- * and the retry is a pure repeat that mails nobody. Bounded per publisher by a
- * binding, keyed by the canonical publisher id so a license key, its linked
- * account and the share page draw on one allowance.
+ * Mail the invite, best effort, after the answer (`waitUntil`): the answer does
+ * not wait on the mail service, and says only that the server can mail
+ * (`Access.email`), never that this one was delivered. The address is on the
+ * list whether or not this succeeds, and the link always points at the
+ * sacrificial domain, so a failure costs the invitee an email and nothing else.
+ * It never throws, so nothing here can surface as an unhandled rejection. Bounded per
+ * publisher by a binding, keyed by the canonical publisher id so a license key,
+ * its linked account and the share page draw on one allowance.
  */
 async function invite(
   env: Env,
@@ -341,15 +357,12 @@ async function invite(
   title: string,
   email: string,
   role: InviteRole,
-): Promise<void> {
-  try {
-    if (!emailConfigured(env)) return;
-    if (!(await withinLimit(env.INVITE_EMAIL_LIMITER, await sha256Hex(`invite:${publisherId}`)))) return;
+  analytics: AnalyticsSink,
+): Promise<EmailOutcome> {
+  return await sendEmail(env, analytics, { type: "invite", docId, to: email }, async () => {
     const sharer = await ownerEmail(env.DB, publisherId);
-    await sendEmail(env, email, inviteMessage(sharer, title, publicDocUrl(env, requestUrl, docId), email, role));
-  } catch (error) {
-    console.error("invite email failed", { error: error instanceof Error ? error.name : "unknown" });
-  }
+    return inviteMessage(sharer, title, publicDocUrl(env, requestUrl, docId), email, role);
+  }, async () => withinLimit(env.INVITE_EMAIL_LIMITER, await sha256Hex(`invite:${publisherId}`)));
 }
 
 /**
@@ -514,7 +527,7 @@ export async function handleDocSection(
   if (people && method === "PUT") {
     const role = await roleOf(request);
     if (role === null) return errorResponse("bad_request", 'Expected {"role": "view" | "comment"} or no body.');
-    result = await addPerson(env, url, publisher, docId, decodeAddress(person), role, analytics);
+    result = await addPerson(env, url, publisher, docId, decodeAddress(person), role, analytics, ctx);
   } else if (people) {
     result = await removePerson(env, publisher, docId, decodeAddress(person), analytics);
   } else if (requests) {
@@ -573,7 +586,7 @@ async function openOwn(env: Env, publisher: Publisher, docId: string, requestUrl
   if (found.link_access === "anyone") {
     return Response.json({ url: publicDocUrl(env, requestUrl, docId), expiresAt: now + 60_000 }, { headers: NO_STORE });
   }
-  const grant = await grantUrl(env, found.owner, { docId, pinned: null }, publisher.owner, now);
+  const grant = await grantUrl(env, found.owner, { docId, pinned: null }, publisher.owner, now, found.origin_code);
   return grant
     ? Response.json(grant, { headers: NO_STORE })
     : errorResponse("not_found", "No API route for this request.");

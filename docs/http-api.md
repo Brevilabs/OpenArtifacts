@@ -15,7 +15,7 @@ The surfaces:
 | --- | --- | --- | --- |
 | API | `/api/v1/*` | required | Publisher-facing. JSON in, JSON out. |
 | Serving | `/d/*` | none | Reader-facing. Public HTML on `openartifacts.site`, which never sets a cookie. |
-| Private serving | `/d/*` on `{label}.openartifacts.site` | grant cookie | One publisher's invited-only documents per origin. Sets one read-only grant cookie. See [Private documents](#private-documents). |
+| Private serving | `/d/*` on `{code}.openartifacts.site` | grant cookie | One publisher's invited-only documents per origin. Sets one read-only grant cookie. See [Private documents](#private-documents). |
 | Reader | `/open/*` (`GET`, and `POST /open/{docId}/request`), `/signin/*`, `/share/*`, `/embed/sign-in` | session | Human-facing HTML pages on the API host: sign in, the door a private document opens through, requesting access, the share page, and the Share popover's sign-in popup. Not a client surface. |
 | Embed | `/embed/page.js`, `/embed/share`, `/embed/sign-in`, `/embed/token`, `/embed/api/*` | none, the session (sign-in only) or the popover token | The top bar's page script, the Share popover frame, its sign-in popup and the routes the frame calls, on the API host. Not a client surface. See [The top bar, the Share popover and the share page](#the-top-bar-the-share-popover-and-the-share-page). |
 | Comments | `/api/v1/docs/{docId}/threads…`, `/d/{docId}/threads`, `/embed/comments`, `/embed/api/docs/{docId}/threads…` | token, none, or the popover token | Inline comments: the agent routes, the unauthenticated threads resource on the serving origin, and the frame and its JSON. See [Comments](#comments). |
@@ -425,7 +425,9 @@ src="https://{API host}/embed/page.js">` tag. The strip carries the byline's tex
 (`Shared from Copilot for Obsidian`) on the left, only for Copilot-rendered HTML,
 and **Share** on the right, a plain link to `https://{API host}/share/{docId}`.
 It is the same bytes for every viewer of a document, public or private, and
-names no identity, so public pages stay cacheable. The footer byline is as
+names no identity, so public pages stay cacheable. Ahead of the byline's text,
+**Home** is a plain link to `https://{API host}/home`, the same for every
+viewer. The footer byline is as
 before. On a server without reader sign-in no page carries the top bar or the
 page script, and the header byline is as it was (see [The top bar, the Share
 popover and the share page](#the-top-bar-the-share-popover-and-the-share-page)).
@@ -548,13 +550,19 @@ when the server has one and the caller signed in with an account, when the plan 
 comments. `requests` are the addresses that asked to open the document and
 have not been answered.
 
+Invites and access are managed from
+Share in the published page's top bar, not Copilot's publish dialog. Share also
+shows conditional linking guidance to unlinked license-key publishers before
+they can authenticate as the owner.
+
 - `PUT …/access` takes `{"linkAccess": "anyone" | "invited"}`. Switching to
   `anyone` keeps the list and the requests, and switching back restores them.
 - `PUT …/access/people/{email}` adds one address (URL-encode the `@`; it is
   lowercased and trimmed). The body is optional: `{"role": "view" | "comment"}`,
   default `comment`, or `view` on a plan that grants no higher role and on a server without comments; any other body, including an unknown role, is `400
   bad_request`. The call that adds an address sends it an invite email where the
-  server has email; a repeat does not, and a repeat that names a different role
+  server has email, after the response, so the answer never waits on the mail
+  service; a repeat does not, and a repeat that names a different role
   updates the role. At most 100 people per document; the 101st is `400`.
   An owner may add at most 100 new invites in a rolling 24 hours, across all
   their documents: past that, an add that would list a new address, approvals
@@ -631,7 +639,7 @@ and the full serving header policy. Unknown ids are still `404` and deleted ones
    that is public now redirects to the canonical url; a reader who may read an
    invited-only one (the owner's account, or an account whose address is on the
    list) is redirected to
-   `https://{label}.{serving host}/d/{docId}[/v{n}]?grant=…`; anyone else, and every
+   `https://{code}.{serving host}/d/{docId}[/v{n}]?grant=…`; anyone else, and every
    unknown or deleted id, gets `404` with **This document isn't available to
    {email}**, **Request access** and **Use another account**, and no title or
    content. The same page serves not invited, removed, deleted and never existed.
@@ -639,25 +647,35 @@ and the full serving header policy. Unknown ids are still `404` and deleted ones
    session and `Sec-Fetch-Site: same-origin`; the address comes from the session,
    never from the form. It always answers the same **Request sent** page, with the
    same status and words, whether it stored a request, found one already pending,
-   or the id is unknown, deleted, public or already allowed. At most one row is
+   or the id is unknown, deleted, public or already allowed. Only an account over
+   its per-account allowance, which no document decides, gets **Request not sent**
+   (`200`) instead. At most one row is
    stored per document and address, and the owner is emailed once per new row
    when the server has their address. It is rate limited per account.
-3. **`GET /d/{docId}[/v{n}]` on `{label}.{serving host}`.** The label is a one-way
-   hash of the *document owner's* id, so a label host belongs to one publisher
-   and answers `404` for any document whose owner does not hash to its label.
+3. **`GET /d/{docId}[/v{n}]` on `{code}.{serving host}`.** The code is 6 random
+   characters from `23456789bcdfghjkmnpqrstvwxz`, allocated once for the
+   *document owner's* id, stored, and never changed or reassigned. (This replaces
+   the earlier 26-character label, a one-way hash of the owner id; the wording
+   changed from a derived hash to a stored random code.) A code host belongs to
+   one publisher and answers `404` for any document whose owner's code is not its
+   own. The code is an address, not a password: it grants nothing and reveals
+   nothing about the owner. The retired 26-character label hosts still answer a
+   `GET` or `HEAD` of `/d/{docId}[/v{n}]` with `302` to `/open` on the API host,
+   which sends the reader to their code host; every other request to one is the
+   `404` an unknown host gets. That legacy branch is removed in a later cleanup.
    A valid `?grant=` is swapped for a cookie with a bodiless `303` to the clean
    path. A missing, expired or foreign grant or cookie is `302` to
    `https://{API host}/open/{docId}[/v{n}]`. With a valid cookie: deleted is
    `410`, a document that is public now is `302` to the public url, a reader who
-   is not allowed is `302` to `/open` (a label host never renders the unavailable
+   is not allowed is `302` to `/open` (a code host never renders the unavailable
    page), and an allowed one is served.
 
 | | Lifetime | Holds |
 | --- | --- | --- |
 | Reader session `__Host-oa_session`, on the API host | 30 days | An account id. Read only by `/open/*`, `/share/*`, `/signin/*` and `/embed/sign-in`; `/api/v1` ignores it. |
 | Popover token, in the Share frame's own storage | 24 hours | An account id and one document id; prefixed `oas_`, which `/api/v1` refuses. Accepted only by `/embed/api/docs/{docId}/…` for that document, and by `PUT /embed/api/account` (the display name) with a token for any document. |
-| URL grant `?grant=` | 60 seconds | An origin label and a principal. Never stays in the address bar. |
-| Origin cookie `__Host-oa_grant`, on the publisher's origin | 1 hour | An origin label and a principal. Every document is checked again on every request. |
+| URL grant `?grant=` | 60 seconds | An origin code and a principal. Never stays in the address bar. |
+| Origin cookie `__Host-oa_grant`, on the publisher's origin | 1 hour | An origin code and a principal. Every document is checked again on every request. |
 
 Each cookie is `HttpOnly; Secure; SameSite=Lax; Path=/` with no `Domain`. The
 grant names an origin, not a document, so one cookie opens every invited-only
@@ -665,7 +683,7 @@ document of that publisher the reader may read, and the invite list is read agai
 on every request. Removing a person takes effect on their next request; copies a
 reader already fetched cannot be recalled.
 
-Responses from a label host that serve a document are `Cache-Control: private,
+Responses from a code host that serve a document are `Cache-Control: private,
 no-store`, pinned versions included, with `Cross-Origin-Opener-Policy:
 same-origin-allow-popups` and `Cross-Origin-Resource-Policy: same-origin`
 (present on every response from that host, errors and redirects too), and carry
@@ -685,7 +703,7 @@ stale-while-revalidate=86400`, an `ETag` (`If-None-Match` answers `304`),
 **Its address is permanent**: pinned `/v{n}` pages are served `immutable` for a
 year and carry the tag, so the path never moves or changes meaning, and a fix to
 the script reaches pages through that cache lifetime. It turns **Share** into a
-popover and, where comments are available, runs the comments margin (see [Comments](#comments)). It holds no credential and reads no cookie or
+popover and, where comments are available, runs the comments sidebar (see [Comments](#comments)). It holds no credential and reads no cookie or
 storage. Where a page's own policy blocks it, or scripts do not run, **Share** is
 still the plain link to the share page.
 
@@ -696,17 +714,17 @@ writes. `origin` is the page's own origin, which the script fills in.
 
 - *Per-document `frame-ancestors`.* A public document may be framed by
   `https://{serving host}`; an invited-only one by its publisher's own origin
-  `https://{label}.{serving host}` only; an unknown or deleted one by nobody
+  `https://{code}.{serving host}` only; an unknown or deleted one by nobody
   (`'none'`). The policy names that origin only when the caller's `origin`
   parameter equals it, so the header echoes what the caller already named and
-  never publishes an invited-only document's label. The browser checks it against
+  never publishes an invited-only document's code. The browser checks it against
   the real ancestor, so a forged `origin` frames nothing.
 - *The frame reveals nothing to non-readers.* Anyone can load it with any id.
   Until a token shows the viewer can read the document, the body is the same for
   a public, an invited-only, an unknown and a deleted id once the id is replaced:
-  **Share**, "Only the owner can change who can open this.", **Copy link** for the
-  canonical address (built from the id, with no lookup) and "Is this your page?
-  **Sign in to manage**". No title, no mode, no list. The one thing that varies is
+  the canonical address (built from the id, with no lookup) with **Copy link**,
+  "Only the owner can change who can open this." and "Is this your page? **Sign in
+  to manage**". No title, no mode, no list. The one thing that varies is
   `data-origin`, which echoes the caller's own `origin` when it matches the
   document's serving origin. With a token, a non-reader gets what an unknown id
   gets, never `403`.
@@ -762,6 +780,26 @@ access or the invite list; a decline, a `GET` and a repeat answer `false`) for t
 does not manage it, and `404` for everyone else. A missing, expired or foreign
 token is `401`.
 
+**Home.** `GET https://{API host}/home` is a page for the signed-in owner: every
+live page in their account's scope (the account's own and those published with a
+linked license key), newest first, 50 to a page with a **Show more** link
+(`?cursor=…`; a cursor that does not decode starts again from the top). Each row
+of a page that has a published version shows the title, who can open it (`Public`, `Private · N people` or `Only you`) and
+when it was last published, and links to the page's url. Signed out, it is the
+sign-in page and returns to `/home`. An **Account** button opens
+`ACCOUNT_ACTION_URL` in a new tab, and is drawn only where that is configured.
+Home has one hash-authorized typeahead script and same-origin search, and loads
+nothing from another origin. It remains
+`Cache-Control: no-store`, `Referrer-Policy: no-referrer`.
+
+`GET https://{API host}/home?q=…` requires the same reader session and returns
+`401` JSON when signed out. A trimmed nonempty query returns
+`{"pages":[{"id":"…","title":"…","url":"…"}]}` with up to eight literal
+substring matches in title or `/d/{id}` path across the owner's entire live,
+landed page set, including linked keys. An empty query returns `{"pages":[]}`;
+`cursor` is ignored in search mode. The list itself is not filtered. `GET` only;
+the serving host never answers Home.
+
 **The share page.** `GET https://{API host}/share/{docId}` is the same controls as
 a page, with the session cookie. It is where **Share** leads with no script, the
 request email's **Review request** and the url `share` prints.
@@ -770,8 +808,8 @@ request email's **Review request** and the url `share` prints.
 | --- | --- |
 | No session, a live public document | The title, "Only the owner can change who can open this.", **Copy link**, and "Is this your page? **Sign in to manage**" (`?signin` selects the sign-in page) |
 | No session, anything else, or `?signin` | The sign-in page, the same bytes for an invited-only, an unknown and a deleted id, returning to `/share/{docId}` |
-| A signed-in account that owns the document | **Link access**, **Add people**, **Requests** with **Approve** and **Decline**, **Who has access** with **Remove** and, where the plan grants two or more roles, a role select beside each person (a plan that grants none sees a plan line instead of **Add people**, **Approve** and the select), **Copy link**, and, after a switch from public to private, the line "People who opened it while it was public may have kept a copy." |
-| A signed-in account that may read it | The title, the same sentence, **Copy link**, **Use another account** and a line telling a Copilot owner to manage access in Copilot |
+| A signed-in account that owns the document | **Link access**, **Add people**, **Requests** with **Approve** and **Decline**, **Who has access** with **Remove** and, where the plan grants two or more roles, a role select beside each person (a plan that grants none sees a plan line instead of **Add people**, **Approve** and the select), and **Copy link** |
+| A signed-in account that may read it | The title, the same sentence, **Copy link**, **Use another account** and conditional no-email guidance telling an unlinked Copilot owner how to link their account and then manage access here |
 | A signed-in account that may not, unknown, deleted | The unavailable page as `/open`, `404`, never `403` |
 
 Its writes are `POST /share/{docId}` forms (`op` of `link`, `add`, `remove` or
@@ -942,9 +980,15 @@ order. A write refused at steps 1 to 4 never spends the rate limit:
    gets `404`, never `403`.
 3. The owner's plan has comments: else `402 limit_reached` (`limit: "comments"`) to
    the owner and `404` to everyone else.
-4. A person has a display name: else `409 name_required`. Agents are exempt, being
-   named after their account. `PUT /api/v1/account` (or the frame's equivalent)
-   sets it: trimmed, 1 to 64 characters, no control characters, else `400`.
+4. A person has a display name. Sign-in sets it from the provider's name when the
+   account has none; a person with none who comments is named from their email before
+   the `@`, without any `+tag` (`Reader` if that is empty), and the write proceeds. That
+   name is shown to everyone who can read the comments. Agents are named after
+   their account. `PUT /api/v1/account` (or the frame's equivalent) sets it: trimmed,
+   1 to 64 characters, no control characters, else `400`. The same rule decides whether
+   a provider's name is used. Originally this step was "else `409 name_required`;
+   agents are exempt". `409 name_required` is no longer returned since 2026-10-16;
+   clients written against it keep working.
 5. The rate limit.
 
 A write that passes the rate limit and is then refused for its content (a malformed
@@ -979,7 +1023,7 @@ recipient an email and nothing else.
 
 ```http
 GET|HEAD https://openartifacts.site/d/{docId}/threads[?v={n}]            a public document
-GET|HEAD https://{label}.openartifacts.site/d/{docId}/threads[?v={n}]    an invited-only one
+GET|HEAD https://{code}.openartifacts.site/d/{docId}/threads[?v={n}]      an invited-only one
 ```
 
 The same `Threads` JSON, unauthenticated: no `viewer`, `canResolve` or `mine`, and
@@ -995,7 +1039,7 @@ on the apex.
 - On the apex only a public document answers. An invited-only one is `404` JSON,
   never the redirect to `/open` a page request gets, since a script cannot follow a
   sign-in. Without reader sign-in on the server, the apex answers `404` too.
-- On a publisher's origin the grant cookie is required, and the label, deleted,
+- On a publisher's origin the grant cookie is required, and the code, deleted,
   public and `canRead` chain is the page's own. `?grant=` is never swapped here. No
   cookie or an unreadable document is `404` JSON.
 - An unknown id, comments unavailable, a malformed `v` and a version
@@ -1053,11 +1097,24 @@ attribute, since it is immutable and its path names the version. Otherwise it fe
 `/d/{docId}/threads[?v=n]` same-origin, and does nothing more unless the answer
 lists a thread or says `commentable`. The Share popover tells the page when its
 owner adds a person, changes a role or closes it, and the page then asks again and,
-from then on in that tab, treats its viewer as the owner and stays active. Then it adds `💬 N` (open threads) beside **Share**,
-paints highlights with `CSS.highlights` (it never changes the author's DOM), shows a
-**Comment** button over a selection, and embeds the comments frame: in the page's
-margin when at least 256 px are free beside the content, else as a bottom sheet
-shown on a highlight tap or **Comment**. It holds no credential, polls the threads
+from then on in that tab, treats its viewer as the owner and stays active. A page
+that stays inert (no thread and nobody at `comment`, public or invited-only) also asks
+once per page load, on the first selection of the author's text and not before:
+it builds the comments frame hidden and waits for `viewer`; on `canComment: true` it
+behaves as after the Share popover's event and shows **Comment** for that selection,
+otherwise nothing changes and it does not ask again. It adds no message. Then it adds a
+**Comments** button (with the open-thread count, `Comments 3`; the bubble and the
+count at phone width) just left of **Share**, paints every open thread's passage
+with `CSS.highlights` (it never changes the author's DOM) whether or not the
+comments are open, shows a **Comment** button over a selection, and embeds the
+comments frame, closed on every page load. **Comments**, a highlight or
+**Comment** opens it: where the viewport is at least 880 px wide and the window
+scrolls the page, as a 320 px sidebar for which the page narrows (an adopted
+stylesheet pads `<html>` on the right while it is open), with each card level with
+its passage and the threads whose text changed at the top; elsewhere as a bottom
+sheet that lists the open threads, or shows the one tapped, or the draft. A
+resolved thread has no highlight and no card: the frame lists it behind an
+`N resolved` count in its header, and offers Undo for a few seconds after a resolve. It holds no credential, polls the threads
 resource every 30 seconds while the tab is visible, and learns of the viewer only
 that `canComment` flag.
 
@@ -1068,20 +1125,25 @@ also checks the origin.
 
 | Direction | `event` | Payload |
 | --- | --- | --- |
-| page → frame | `mode` | `{mode: "margin" \| "overlay"}` |
-| page → frame | `visible` | `{shown}`: the margin is shown or the sheet is open |
+| page → frame | `mode` | `{mode: "margin" \| "overlay"}`: the sidebar, or the bottom sheet |
+| page → frame | `theme` | `{dark}`: whether the page's own background is dark, so the cards are drawn to match |
+| page → frame | `visible` | `{shown}`: the sidebar or the sheet is open |
 | page → frame | `threads` | `{data, version}`: the threads resource JSON |
 | page → frame | `positions` | `{tops, lost, height}`: each placed thread's top in document coordinates, the ids it could not place, and the document height |
 | page → frame | `draft` | `{anchor \| null, top}`: a selection awaiting its comment |
 | page → frame | `focus` | `{threadId}` (empty clears) |
+| page → frame | `hover` | `{threadId}`: the thread whose passage or card is under the pointer (empty clears); its card lifts |
+| page → frame | `dismiss` | none: a click on the page; the frame drops the draft if nothing is typed in it |
 | frame → page | `ready` | none |
 | frame → page | `viewer` | `{canComment}`, after every read of the frame's own: `false` when signed out, the server's answer when signed in |
 | frame → page | `changed` | none: refetch now |
 | frame → page | `focus` | `{threadId}` |
-| frame → page | `close` | none: hide the sheet or cancel the draft |
-| frame → page | `size` | `{height}`: how tall the margin's stacked cards need the column to be (margin mode) |
-| frame → page | `height` | `{px}`: the height of the overlay sheet's content (overlay mode); `0` means the frame has nothing to show and the page closes the sheet |
-| frame → page | `reveal` | `{top, height}`: where the focused card sits in the margin, so the page can scroll it into view |
+| frame → page | `hover` | `{threadId}`: the card under the pointer (empty clears), also sent empty when the pointer enters the frame, which the page may not otherwise learn; its passage takes the active yellow, and the passage the page lit itself is dropped |
+| frame → page | `cancel` | none: the frame dropped an empty draft; the page unmarks its passage, and closes the sheet |
+| frame → page | `close` | none: the reader closed the comments (the header's close button, or Escape on the sheet) |
+| frame → page | `size` | `{height}`: how tall the sidebar's stacked cards need the column to be (`margin` mode) |
+| frame → page | `height` | `{px}`: the height of the sheet's content (`overlay` mode) |
+| frame → page | `reveal` | `{top, height}`: where the active card sits in the sidebar, so the page can scroll it into view |
 
 The frame prefers its own read (its token's, else the anonymous one a public
 document answers) to the `threads` the page relays, and an own read always replaces
@@ -1092,11 +1154,10 @@ could invent a commenter. A hostile page on the document's own serving origin ca
 learn, from `viewer`, whether this visitor holds a token for the document and may
 comment. The layout messages (`size`, `height`, `reveal`) carry only heights, but
 those depend on what the frame draws for this visitor, so the page can also infer
-whether they may resolve a thread, whether a comment is theirs and whether they
-have set a display name. It learns nothing else about them, and no message in
+whether they may resolve a thread and whether a comment is theirs. It learns nothing else about them, and no message in
 either direction carries a credential.
 
-**Signing in.** The margin's sign-in line runs the Share popover's flow
+**Signing in.** The comments frame's sign-in line runs the Share popover's flow
 (`/embed/sign-in`, `POST /embed/token`) and keeps the token under the same storage
 key, so one sign-in serves both frames. The Share popover's owner view draws a
 select on each person whose options are `Access.roles` (`PUT …/access/people/{email}`
@@ -1273,7 +1334,7 @@ exposes this API payload to a reader.
 | `quota_exceeded` | 429 | License-key publishing ceiling, device-flow rate limit, or the daily invite cap reached. |
 | `limit_reached` | 402 | Account-token publish would exceed a plan limit. Carries the exceeded limit's identifier (`limit`), current plan name (`plan`), and optional `upgrade_url` inside `error`. Also returned, for license keys as well as account tokens, for adding a person or setting a role when the plan lacks that role's flag, and for a switch to `invited` (`limit: "privateSharing"`). |
 | `anchor_not_found` | 400 | A new comment's quote is not in the version it names. See [Comments](#comments). |
-| `name_required` | 409 | A person (not an agent) with no display name tried to write a comment. |
+| `name_required` | 409 | A person (not an agent) with no display name tried to write a comment. No longer returned since 2026-10-16, when names came from sign-in or the email; clients written against it keep working. |
 | `internal` | 500 | Our fault, including the license server being unreachable for a key we have never seen. |
 | `authorization_pending` | 400 | `POST /device/token`: nobody has approved the code yet. |
 | `slow_down` | 400 | `POST /device/token`: polled faster than the `interval`. Also `POST /embed/token`, over its per-address limit. |

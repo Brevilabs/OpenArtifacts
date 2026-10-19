@@ -83,24 +83,40 @@ documents that publisher already owns.
 | --- | --- | --- |
 | `openartifacts.site` | Public documents, unchanged. A redirect for invited-only ones. | None, ever |
 | `api.openartifacts.ai` | The bearer API, reader sign-in, `/open/{docId}`, `/open/{docId}/request`, the share page, the top bar's script and the Share popover (`/embed/*`) | The reader session cookie |
-| `{label}.openartifacts.site` | One publisher's invited-only documents, every version of each. Later, the publisher's custom domain takes this seat. | That publisher's read-only grant cookie |
+| `{code}.openartifacts.site` | One publisher's invited-only documents, every version of each. Later, the publisher's custom domain takes this seat. | That publisher's read-only grant cookie |
 
-`label` is the first 16 bytes of `SHA-256("openartifacts-origin-v1:" + docs.owner)`
-in lowercase Crockford base32: 26 characters, derived from the owner id the
-serving path already reads, and never stored. It is one-way, so the hostname in
-DNS and TLS SNI reveals neither the owner nor the document.
+`code` is 6 random characters from `23456789bcdfghjkmnpqrstvwxz` (no vowels, so
+no words; no `0`, `1`, `o`, `l` or `i`), drawn once per `docs.owner` the first
+time a publisher origin is needed and stored in `publisher_origins` (migration
+`0017`; `src/origin-code.ts`). `owner` is the primary key and `code` is `UNIQUE`:
+a random collision fails the insert and allocation draws again, a few times at
+most. Rows are never updated or deleted, not when the account or its documents go,
+so **a code is never reassigned** and a stale link can never reach another
+publisher. The code is random, so the hostname in DNS and TLS SNI reveals neither
+the owner nor the document, and it is **an address, not a password**: knowing it
+grants nothing, because every request still needs a grant cookie and passes
+`canRead`. Each document's manifest records its owner's code (`originCode`) so a
+rebuilt D1 maps every owner to the same code.
+
+This replaced a 26-character label that was a one-way hash of the owner id, never
+stored. The old hosts keep working while links are in the wild: a `GET` or `HEAD`
+of `/d/{docId}[/v{n}]` on one is `302` to `/open`, which mints the code host, and
+anything else on one is the `404` of an unknown host. That branch is removed in a
+later cleanup. Changing the hostname is a new browser origin, so a cookie or local
+storage from the old one does not carry over; the reader is signed in again by one
+redirect.
 
 - **`docs.owner` never changes**, not even when a license key is later linked to
   an account (`owner_links` joins scopes and rewrites no row), so a document's
   origin is stable for life. A linked publisher whose documents sit under two
-  owner ids has two label hosts, which costs them one extra sign-in redirect and
+  owner ids has two code hosts, which costs them one extra sign-in redirect and
   nothing else.
-- **The label comes from the document's owner, never from the caller.** `/open`
-  and the owner route read `docs.owner` from the document's own row. A label
-  derived from the reader's account or the caller's key would send a linked
+- **The code comes from the document's owner, never from the caller.** `/open`
+  and the owner route read `docs.owner` from the document's own row. A code
+  taken from the reader's account or the caller's key would send a linked
   publisher to a host that answers `404`.
-- **A label host answers `404` for any document whose owner does not hash to its
-  label**, before it reveals anything else about the document, so a host never
+- **A code host answers `404` for any document whose owner's code is not its
+  own** (one join in the read the host already makes), before it reveals anything else about the document, so a host never
   serves, or even confirms, another publisher's document. The same rule, "this
   host serves this publisher's documents only", is what a custom hostname will
   enforce through a verified host-to-owner mapping.
@@ -117,9 +133,9 @@ DNS and TLS SNI reveals neither the owner nor the document.
 ```
 reader  → openartifacts.site/d/{docId}        302, no-store → api.openartifacts.ai/open/{docId}
 reader  → api.openartifacts.ai/open/{docId}   session? canRead?
-                                              302 → {label}.openartifacts.site/d/{docId}?grant=…   (valid 60 s)
-reader  → {label}.openartifacts.site/d/…?grant=…   303 + Set-Cookie (1 h), to the clean url
-reader  → {label}.openartifacts.site/d/{docId}     200, private, no-store
+                                              302 → {code}.openartifacts.site/d/{docId}?grant=…   (valid 60 s)
+reader  → {code}.openartifacts.site/d/…?grant=…   303 + Set-Cookie (1 h), to the clean url
+reader  → {code}.openartifacts.site/d/{docId}     200, private, no-store
 ```
 
 ### What each host does, in order
@@ -138,7 +154,7 @@ pinned `/v{n}` that does not exist reads the same as one that does.
 2. A session, and the document is live and now `anyone`: `302` to the canonical
    public url.
 3. A session, and `canRead` says allowed: `302` to
-   `https://{label}.{SERVING_HOST}/d/{docId}[/v{n}]?grant=…`, the label being
+   `https://{code}.{SERVING_HOST}/d/{docId}[/v{n}]?grant=…`, the code being
    that of the document's own owner.
 4. Anything else (not on the list, removed, deleted, never existed): `404` with
    **This document isn't available to {email}**, **Request access** and **Use
@@ -146,24 +162,24 @@ pinned `/v{n}` that does not exist reads the same as one that does.
    page, so there is exactly one copy of the **Request access** form, and it
    posts with the session cookie.
 
-**`{label}.openartifacts.site/d/{docId}[/v{n}]`** (`GET` and `HEAD`; anything else
+**`{code}.openartifacts.site/d/{docId}[/v{n}]`** (`GET` and `HEAD`; anything else
 is `404`):
 
-1. A `?grant=` that verifies for this label sets `__Host-oa_grant` and answers a
+1. A `?grant=` that verifies for this code sets `__Host-oa_grant` and answers a
    bodiless `303` to the same path without the query. This step reads no
-   database. A grant that is bad, expired or for another label answers `302` to
+   database. A grant that is bad, expired or for another code answers `302` to
    `https://{API_HOST}/open/{docId}[/v{n}]`.
 2. No cookie, or an invalid or expired one: the same `302` to `/open`, again with
    no database read.
 3. A valid cookie: one D1 read returns the document, its owner, and whether the
    cookie's principal passes `canRead`. Then, in this order: unknown id is `404`;
-   an owner that does not hash to this label is `404`; deleted is `410`; `anyone`
+   an owner whose code is not this one is `404`; deleted is `410`; `anyone`
    is `302` to the public url; not allowed is `302` to `/open`; an allowed
    document with no version is `404`; otherwise `200`.
 
-A label host never renders the not-available page: it must post with the session
+A code host never renders the not-available page: it must post with the session
 cookie, which this origin can never hold. No loop is possible, because `/open`
-redirects to a label host only when `canRead` says allowed, the same predicate
+redirects to a code host only when `canRead` says allowed, the same predicate
 this host applies. A reader with a cookie for this origin who opens a second
 document from the same publisher gets it in one request if invited, with no
 redirect.
@@ -173,7 +189,7 @@ with the same CSP and robots headers as every served document, plus
 `Cache-Control: private, no-store` (pinned versions included),
 `Cross-Origin-Opener-Policy: same-origin-allow-popups` and
 `Cross-Origin-Resource-Policy: same-origin`. The two isolation headers are set on
-every response from a label host, errors and redirects included, and a `500`
+every response from a code host, errors and redirects included, and a `500`
 carries them too.
 
 ### The three lifetimes
@@ -181,7 +197,7 @@ carries them too.
 | | Lifetime | Holds |
 | --- | --- | --- |
 | Reader session `__Host-oa_session`, on the API host | 30 days | An account id |
-| URL grant `?grant=` | 60 seconds | A publisher's origin label and a principal |
+| URL grant `?grant=` | 60 seconds | A publisher's origin code and a principal |
 | Origin cookie `__Host-oa_grant`, on that publisher's origin | 1 hour | The same grant, re-signed |
 
 All three are `HttpOnly; Secure; SameSite=Lax; Path=/` with no `Domain`, so each
@@ -379,11 +395,12 @@ exists, and the invite email that add sends is the notice to the requester.
   already read it, no request is pending and the list is under the cap.
 - **It says nothing.** The **Request sent** page is the same status and the same
   words for every outcome: stored, repeated, unknown id, deleted, public, already
-  allowed, a full list and a rate limit. The owner's email, the one slow step,
-  runs after the response is decided. Without an email binding the page says what
-  will happen instead ("the link will open for {email}").
+  allowed and a full list. The owner's email, the one slow step, runs after the
+  response is decided. Without an email binding the page says what will happen
+  instead ("the link will open for {email}").
 - **Rate limit:** per account, by `REQUEST_ACCESS_LIMITER`. Over the limit stores
-  nothing and still shows **Request sent**.
+  nothing and shows **Request not sent**. The limit is the account's, not the
+  document's, so the page is the same for every id.
 - **Approve and decline.** Approving is `PUT …/access/people/{email}` (or **Approve** on
   the share page): one batch inserts the invite and deletes the request, and the
   invite email goes out. It needs the plan, like any add. Declining deletes the
@@ -391,9 +408,9 @@ exists, and the invite email that add sends is the notice to the requester.
   declined address that asks again is a new row.
 - **The owner is emailed on a new row only.** The address is resolved through the
   owner scope: an account owner's own, a license owner's linked account (through
-  `owner_links`), nothing for an unlinked license owner, who sees the request in
-  Copilot's dialog, in `share` and on the share page. The message is from
-  `EMAIL_FROM`, with no reply-to: subject `{requester} asked to open "{title}"`,
+  `owner_links`), nothing for an unlinked license owner. After linking, that
+  owner sees the request in the published page's Share view and on the share page.
+  The message is from `EMAIL_FROM`, with no reply-to: subject `{requester} asked to open "{title}"`,
   the requester's address, the title, "Nothing has been shared yet.", a **Review
   request** link to `https://{API_HOST}/share/{docId}`, and a line for Copilot
   users. **The link carries no token**, so a forwarded email approves nothing and
@@ -435,9 +452,11 @@ who is looking.
 **The page script.** `GET /embed/page.js` on the API host turns **Share** into a
 popover anchored under the button. It is a constant that holds no credential,
 reads no cookie and no storage, defines no global and binds only our own link. It
-creates the frame on the first click only, so a page view costs no frame request,
-then hides and shows it and never reloads it, so a switch made inside the frame
-can never re-run its `frame-ancestors` check against the page it is on. The
+creates the frame on the first sign of intent (the pointer entering **Share**,
+**Share** taking focus, or the click), hidden, so the click usually finds it
+loaded; a page view with no pointer or focus on **Share** costs no frame request.
+It then hides and shows the frame and never reloads it, so a switch made inside the
+frame can never re-run its `frame-ancestors` check against the page it is on. The
 popover sits in a closed shadow root hanging off `<html>`, out of reach of author
 CSS and of a transformed or flex `<body>`. A modified click (a new tab) keeps the
 plain link; if the frame does not say it is ready within four seconds (an author
@@ -479,26 +498,95 @@ that must never be on a page whose scripts the author writes.
   (what the frame's `postMessage` and `frame-ancestors` need; it tells the caller
   only what it already named). With a token, a non-reader sees what an unknown id
   shows, never `403`.
-- **It tells the page around it nothing about its viewer.** It has one fixed
-  height (at most 480 px) and scrolls inside it. It posts the page exactly three
-  messages: `ready`, once, before it reads its storage; `close`, only after a
-  click or key press inside it; and `people`, only after the owner's own click
+- **It tells a page on the shared origin nothing about its viewer.** There it
+  has one fixed height for everyone (320 px, less on a short viewport) and
+  scrolls inside it. It posts the page `ready`, once, before it reads its
+  storage; `close`, only after a click or key press inside it; and `people`,
+  only after the owner's own click
   inside it (an add, a role change, or closing it), so the page asks for its
   threads again. That one
   tells the page its visitor is the owner, but only on the owner's own click. Every public page on `openartifacts.site` shares the
   frame's storage partition, and any of them can embed the frame for any id it
   knows; a size report, a focus move or an early message would tell that page, with
   no click, whether its visitor holds a token.
-- **Its views** follow the table: the owner gets **Link access**, **Add people**,
-  each person with **Remove**, **Requests** with **Approve** and **Decline**, the
-  notice after a switch to private, and **Copy link**; any other reader gets **Copy
-  link** and "Only the owner can change who can open this."; someone not yet signed
-  in gets **Copy link** and **Sign in to manage**. Writes call the same operations
-  as `/api/v1` and the share page, so the plan check and the `402` message, both
-  invite caps, the invite email and `document_access_changed` are identical on all
-  three. Where comments are available it also carries a **Comments** Off/On switch
-  under Link access and a **Can view / Can comment** select on each person (the
-  owner's view only; see [comments.md](comments.md)).
+- **Home is a plain link, the same for every viewer.** The top bar's **Home**
+  leads to `/home` on the API host, which lists the signed-in viewer's own pages
+  or asks them to sign in. Showing it only to signed-in viewers would need a
+  frame that reads a token and hides its link, and every way of hiding it (size,
+  focus, Tab order, a click) would have to look the same to the page in both
+  states, so it would hide nothing from a keyboard or screen-reader user anyway.
+- **On a private document's own origin the owner view also reports its size**
+  (`size`, the height of its content), and the popover takes it. Only the owner
+  view: every other view (signed out, a reader, not found, the skeleton) keeps the
+  one fixed height there too and posts nothing. The page around the frame is the
+  publisher's, so the owner view's height tells its scripts only what their author
+  knows, but an invitee's would not: the reader view's "Signed in as {email}."
+  wraps by address, so its height would say which invitee is looking, and any
+  report from a view other than the signed-out one would say the visitor has
+  signed in to Share. Leaving the owner view posts `0`, the fixed height again,
+  which follows only from the owner's own view. The frame decides once, as it
+  loads, whether it may report at all: only when the origin it was embedded by is
+  set and is not the shared one. `frame-ancestors` admits only the document's
+  serving origin at load, so that origin is the publisher's
+  `{code}.openartifacts.site`, which runs only that publisher's scripts. A frame
+  loaded on the shared origin stays silent after the document goes private; one
+  loaded on the code origin keeps reporting its owner view, to the same
+  publisher's page, after it goes public; and a code origin cannot load the frame
+  for a public document at all. A frame the page has not yet given a width
+  reports nothing (its content measured at no width is thousands of pixels tall);
+  the resize that sizes it reports.
+- **Its layout** is the same in every view. A row at the top holds the link
+  field, **Copy link** (an icon) and ×; it is the primary action, so it never scrolls away,
+  and it belongs to the frame's shell, not to a view, so nothing a view draws moves
+  it. There is no title row. Everything else is one scroll region under it, never a
+  nested scroll box; the row gets a hairline divider only once content has scrolled
+  under it, and a fade at the foot shows only while there is more below. Escape and
+  a click outside close the popover. The field drops the scheme and always shows
+  the end of the link, `/d/{id}`, cutting the host from its start when the whole
+  link does not fit; a click selects all of it, and **Copy link** copies the full
+  url.
+- **Its height** on the shared origin is one for every viewer, so it says nothing
+  about who is looking, and is chosen so that the owner view with nobody added
+  shows whole, with no scrollbar, in each of its forms: public, private, and a
+  free owner's upgrade card. The tallest of these, measured in Chrome at the
+  popover's 360 px width, is 285 px; the popover is
+  320 px, capped by the viewport. A list of people scrolls. On a private
+  document's own origin the owner view's popover is as tall as what the frame
+  shows, up to 720 px and the viewport below the bar less 8 px, and scrolls past
+  that; it follows the content as people are added or removed and a line appears,
+  and the frame is laid out while hidden, so the popover opens at its height.
+  Every other view there has the fixed height.
+- **Its views** follow the table: the owner gets the **Link access** choice
+  (Anyone with the link / Only those invited), the address field with **Add**, one
+  helper line, one line at the popover's narrowest width ("Only people you add
+  can open this page." on a private page, "Anyone can view. Invitees can
+  comment." on a public one), **Who has access** (**You**, **Owner**, then each person with a **Can view
+  / Can comment** select and **Remove**, see [comments.md](comments.md)), and
+  **Requests** with **Approve** and **Decline** when some are pending. A plan
+  that grants no role (a free one) gets, in place of the address field, one card:
+  "Private sharing and comments", "Choose who can open this page, and let them
+  comment on it. Included in paid plans." and **Upgrade**; its **Only those
+  invited** shows a lock and, pressed, sends nothing but points at the card, and
+  **Who has access** is left out while it would hold only **You**. Any other
+  reader gets "Only the owner can change who can open this."; someone not yet
+  signed in gets that sentence and **Sign in to manage**. Writes call the same
+  operations as `/api/v1` and the share page, so the plan check and the `402`
+  message, both invite caps, the invite email and `document_access_changed` are
+  identical on all three. While a write is out, the control it came from shows a
+  spinner and every control under the row is disabled (the address field
+  read-only), so a second press sends nothing; the answer draws the new view, or
+  an error leaves what was typed in place.
+- **Loading.** A frame with a stored token never paints the signed-out view. The
+  shell's views are hidden until the frame's script has chosen the first one: no
+  token is the signed-out view at once; a token is a skeleton of the owner view
+  (the real row, with a working **Copy link**, since the link needs no request,
+  then muted blocks where Link access, Add people, the helper line and the owner's
+  row will be, pulsing gently except under reduced motion; the helper line is one
+  line in both views, so nothing below it moves) until the access read
+  answers. What replaces it is the answer: the owner view, the reader view, the
+  not-found view, or the signed-out view after a `401`. A frame whose script never
+  runs never says `ready`, and the page script shows its plain share-page link
+  after four seconds.
 
 **Signing in to the popover.** The frame cannot see the reader session, so
 **Sign in to manage** opens a top-level popup at `/embed/sign-in?doc={docId}&h=…`,
@@ -572,9 +660,10 @@ switch to invited itself, and that is not proof of anything about the page aroun
 it. A hostile public page can lay the frame invisibly over its own content and
 trick the owner into one click on **Only those invited**, and the switch is then
 made in the hostile page's frame. So that frame draws only what the owner needs
-right after a switch: the mode control, the notice and **Add people**, which needs
+right after a switch: the mode control and **Add people**, which needs
 typed input. **Approve**, **Decline** and **Remove**, each a single click on a
-private document, are left out, with a link to the share page for them. Before every
+private document, are left out, with a link to the share page for them once anyone
+is listed. Before every
 write on a frame embedded by the public origin the frame also reads the mode
 again, so a click on a view drawn while the document was public does nothing once
 the document is private, and the read fails closed: a failed, malformed or
@@ -583,9 +672,10 @@ round trip between that read and the write.
 
 ## The share page
 
-`https://{API_HOST}/share/{docId}` is the top-level form of the same controls: the
-dialog Copilot renders, served by the Worker, so it exists for whoever published the
-document and for self-hosters. It is behind the reader session, and it is where
+`https://{API_HOST}/share/{docId}` is the top-level form of the published page's
+Share controls, served by the Worker for publishers and self-hosters. Copilot's
+publish dialog only chooses public or private; people and access are managed here.
+It is behind the reader session, and it is where
 **Share** leads when scripts do not run, where the request email's **Review
 request** leads, and the url `share <docId>` prints:
 
@@ -599,14 +689,15 @@ request** leads, and the url `share <docId>` prints:
   dialog. **Link access** (Anyone with the link / Only those invited), **Add
   people**, **Requests** (only when some are pending, each with **Approve** and
   **Decline**), **Who has access** (**You**, **Owner**, then each invitee with
-  **Remove**), **Copy link**, and after a switch from public to private the line
-  "People who opened it while it was public may have kept a copy." There is no
-  role control.
+  **Remove**, and a role select with **Update** where the plan grants two or more
+  roles), **Copy link**, and a helper line under **Add people** in the popover's
+  words.
 - A session whose account may read the document but does not manage it: the
   reader view. The title, "Only the owner can change who can open this.", **Copy
-  link**, **Use another account**, and a line saying that a page published from
-  Copilot is managed from Copilot. That line is for an owner whose license key is
-  not linked to a browser account, who looks like any other reader here. It lists no
+  link**, **Use another account**, and conditional guidance for a Copilot owner
+  whose license key is not linked to a browser account: no owner notification
+  emails or named invitations, with instructions to link and then sign in here.
+  An unlinked owner looks like any other reader here. It lists no
   people, no mode and no requests. A session whose account has no email row is
   treated as no session.
 - Anyone else, and every unknown or deleted id: the same not-available page as
@@ -783,9 +874,12 @@ subdomain needs a paid certificate for `*.docs.example.net`.
   reader sign-in). Pressing **Sign in to manage** again then completes at once from
   the new session. Two that do not overlap are independent, because the popup's
   binding cookie is per handshake.
-- **The popover is one fixed height**, so its short views have room to spare; the
-  alternative is a frame that reports its size, which would tell any page that can
-  embed it whether its visitor manages the document.
+- **The popover is one fixed height on a public page**, so its short views have
+  room to spare and a long list scrolls in 320 px; the alternative is a frame that
+  reports its size there, which would tell any page that can embed it whether its
+  visitor manages the document. Only the owner view on a private page fits its
+  content; an invitee's view there stays fixed, since its height would say which
+  invitee is looking.
 - **Browsers with no Fetch Metadata** (Safari before 16.4) cannot sign in to the
   popover and use the share page.
 - **A popover token outlives sign-out** by up to 24 hours. It can do only what that
@@ -794,8 +888,11 @@ subdomain needs a paid certificate for `*.docs.example.net`.
 - **A waiting frame polls** once every two seconds for at most ten minutes, and
   gives up quietly after that.
 - **A Copilot owner whose license key is not linked to a browser account** reaches
-  only the reader view, or the none view, in the popover and on the share page,
-  which tells them to manage access in Copilot.
+  only the reader view, or the none view, in the popover. The same conditional
+  no-email and account-linking guidance appears in both views and before sign-in,
+  without revealing whether the document has an unlinked owner. The share page's
+  reader view also provides this guidance. Link through `ACCOUNT_ACTION_URL`
+  (or ask the server operator), then sign in to manage access from Share.
 
 ## State in the manifest
 

@@ -15,7 +15,7 @@
     "deploy": "node scripts/check-account-actions.cjs && wrangler deploy",
     "typecheck": "tsc --noEmit && npm run typecheck -w packages/openartifacts",
     "test": "vitest run && npm test -w packages/openartifacts",
-    "test:browser": "node --test --test-concurrency=1 test/share-popover.browser.mjs test/comments.browser.mjs test/comments-e2e.browser.mjs",
+    "test:browser": "node --test --test-concurrency=1 test/share-popover.browser.mjs test/comments.browser.mjs",
     "test:watch": "vitest"
   },
   "devDependencies": {

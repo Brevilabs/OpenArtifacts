@@ -1,6 +1,8 @@
 import { createExecutionContext, env, runInDurableObject, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { NO_ANALYTICS } from "../src/analytics.js";
 import type { DocComments } from "../src/comments/object.js";
+import { notifyComment, type Notification } from "../src/comments/notify.js";
 import { MAX_COMMENTS, MAX_THREADS } from "../src/comments/object.js";
 import type { Env } from "../src/config.js";
 import { readableAccounts } from "../src/db.js";
@@ -145,6 +147,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
@@ -888,18 +891,18 @@ describe("threads", () => {
 });
 
 describe("display names", () => {
-  it("asks a person for a name before their first comment, and never asks an agent", async () => {
+  it("names a person from their email before the @, without a +tag, on their first comment instead of asking, and keeps a chosen name", async () => {
     const { priv } = await world();
     const erin = await person("erin@acme.com", null);
     await invite(priv, erin.email, "comment");
 
-    const refused = await thread(priv, await frame(erin, priv));
-    expect(refused.status).toBe(409);
-    expect((await errorOf(refused)).code).toBe("name_required");
-    const reply = await send("POST", `/embed/api/docs/${priv}/threads/th_x/comments`, await frame(erin, priv), { body: "x" });
-    expect(reply.status).toBe(409);
+    const first = await thread(priv, await frame(erin, priv));
+    expect(first.status).toBe(201);
+    expect(await env.DB.prepare("SELECT display_name FROM accounts WHERE id = ?").bind(erin.id).first()).toEqual({
+      display_name: "erin",
+    });
 
-    // An agent acting for the same nameless account is exempt, and is "An agent" until it has a name.
+    // An agent acting for the same account is named after it.
     const agent = await created(await thread(priv, erin.token));
     expect(agent.anchorStatus).toBe("anchored");
 
@@ -910,6 +913,7 @@ describe("display names", () => {
 
     const names = (await threadsOf(await listThreads(priv, erin.token))).threads.flatMap((t) => t.comments.map((c) => c.author));
     expect(names).toEqual([
+      { name: "Erin E.", kind: "human" },
       { name: "Erin E.'s agent", kind: "agent" },
       { name: "Erin E.", kind: "human" },
     ]);
@@ -1130,7 +1134,21 @@ describe("notifications", () => {
     expect(mailTo(owner.email)[0]!.text).toContain("thanks");
   });
 
-  it("mails nobody for an unlinked license key's comments: it has no account, so no mailbox", async () => {
+  it("does not record a missing mailbox for an owner who has one but can no longer read the page", async () => {
+    const logs = vi.spyOn(console, "info").mockImplementation(() => {});
+    try {
+      const owner = await person("deleted-page-owner@acme.com", "Owner");
+      // An id with no row reads like a page deleted before the background send: nobody can read it.
+      const gone = { event: "thread", docId: "doc_does_not_exist_00000000", doc: { owner_account: owner.id, title: "Gone" },
+        actor: { principal: "someone-else", kind: "human" } } as unknown as Notification;
+      await notifyComment(env as Env, new URL("https://api.openartifacts.ai/"), gone, NO_ANALYTICS);
+      expect(logs.mock.calls.filter(([name]) => name === "email delivery")).toEqual([]);
+      expect(sent).toEqual([]);
+    } finally { logs.mockRestore(); }
+  });
+
+  it("records why an unlinked license owner gets no comment email, then mails them once linked", async () => {
+    const logs = vi.spyOn(console, "info").mockImplementation(() => {});
     const { alice } = await world();
     const KEY = "cplus_live_a1b2c3d4e5f60718";
     await env.DB.prepare("INSERT INTO publishers (key_hash, plan, validated_at, owner) VALUES (?, 'believer', ?, 'lic-nomail')")
@@ -1142,12 +1160,22 @@ describe("notifications", () => {
     const made = await created(await thread(own, KEY, fox, "from a key with no account"));
     expect(sent).toEqual([]);
 
-    // Alice replies: the thread's only other writer is the key, which cannot be mailed, and nothing throws.
+    // Alice starts a new thread: the missing owner mailbox is an explicit skip.
+    await created(await thread(own, alice.token, fox, "new thread"));
+    expect(logs.mock.calls.filter(([name, fields]) => name === "email delivery" && fields.email_type === "comment_thread")).toMatchObject([
+      ["email delivery", { outcome: "skipped_no_owner_email", recipient_hash: null }],
+    ]);
+    // Alice replies: the thread's only other writer is the key, which cannot be mailed.
     await send("POST", `/api/v1/docs/${own}/threads/${made.threadId}/comments`, alice.token, { body: "reply" });
     expect(sent).toEqual([]);
     // The key resolves: Alice, who has an account, is told.
     await send("POST", `/api/v1/docs/${own}/threads/${made.threadId}/resolve`, KEY);
     expect(sent.map((m) => m.to)).toEqual([alice.email]);
+    const linked = await person("linked-owner@acme.com", "Owner");
+    expect(await linkExternalOwner(env.DB, "lic-nomail", linked.id, Date.now())).toBe("linked");
+    sent.length = 0;
+    await created(await thread(own, alice.token, fox, "after linking"));
+    expect(sent.map((m) => m.to)).toEqual([linked.email]);
   });
 
   it("mails only people who can read the document now, however they once took part", async () => {
@@ -1210,7 +1238,8 @@ describe("notifications", () => {
     expect(sent.map((m) => m.to)).toEqual([owner.email]);
   });
 
-  it("sends nothing when mail is unconfigured, and survives a limiter that says no and a sender that throws", async () => {
+  it("sends nothing when mail is unconfigured, and records a refused limiter or failed sender", async () => {
+    const logs = vi.spyOn(console, "info").mockImplementation(() => {});
     const { alice, priv } = await world();
     await created(await send("POST", `/api/v1/docs/${priv}/threads`, alice.token, { anchor: fox, body: "a" }, { EMAIL: undefined }));
     expect(sent).toEqual([]);
@@ -1225,6 +1254,7 @@ describe("notifications", () => {
     expect(posted.status).toBe(201);
     expect(attempts).toBe(1); // it was tried, to the owner, and its failure changed nothing
     expect(sent).toEqual([]);
+    expect(logs.mock.calls.filter(([name]) => name === "email delivery").map(([, fields]) => fields.outcome)).toEqual(["failed", "skipped_limit", "failed"]);
   });
 });
 

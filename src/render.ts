@@ -329,11 +329,13 @@ export const OPENARTIFACTS_BAR_SPACER =
 export const OPENARTIFACTS_BAR_STYLE =
   "<style>:where(html){scroll-padding-top:48px}" +
   "@media print{.openartifacts-bar,.openartifacts-bar-spacer,.openartifacts-share-popover{display:none!important}}" +
-  ":where(.openartifacts-share):hover{background:#272b33!important;border-color:rgba(255,255,255,0.14)!important}" +
-  // The comments button (`src/comments-scripts.ts`): its border and ink only, never
-  // its background, which says whether the margin is shown.
+  // Home is its icon alone on a phone, so the byline keeps the room.
+  "@media(max-width:600px){:where(.openartifacts-home){padding:0 9px!important}:where(.openartifacts-home-label){display:none!important}}" +
+  ":where(.openartifacts-share,.openartifacts-home):hover{background:#272b33!important;border-color:rgba(255,255,255,0.14)!important}" +
+  // The Comments button (`src/comments-scripts.ts`): its border and ink only, never
+  // its background, which says whether the sidebar is open.
   ":where(.openartifacts-comments-button):hover{border-color:rgba(255,255,255,0.14)!important;color:#f4f5f7!important}" +
-  ":where(.openartifacts-share):focus-visible,:where(.openartifacts-comments-button):focus-visible,:where(.openartifacts-byline):focus-visible{" +
+  ":where(.openartifacts-share,.openartifacts-home):focus-visible,:where(.openartifacts-comments-button):focus-visible,:where(.openartifacts-byline):focus-visible{" +
   "outline:2px solid #f6ae52!important;outline-offset:2px!important}" +
   ":where(.openartifacts-byline):is(:hover,:focus-visible) .openartifacts-byline-text{text-decoration:underline!important}" +
   "</style>";
@@ -400,7 +402,7 @@ const SHARE_ICON =
   `mask:url(${SHARE_ICON_SRC}) center/contain no-repeat"></span>`;
 
 /**
- * Share is the one action on the strip: a raised dark pill, a step lighter
+ * Share, and Home at the other end, are the strip's actions: a raised dark pill, a step lighter
  * than the strip, with a hairline edge (`#f4f5f7` on `#1d2027`, 15:1). Its
  * hover and focus ring are in `OPENARTIFACTS_BAR_STYLE`. It never wraps.
  */
@@ -435,7 +437,22 @@ export interface TopBar {
    * names its version in its path.
    */
   version?: number;
+  /** `https://{API_HOST}/home`: where **Home** leads, the same for every viewer. */
+  homeUrl: string;
 }
+
+/** Home's glyph, a house, painted the way `SHARE_ICON` is and for its reasons. */
+const HOME_ICON_SRC =
+  "data:image/svg+xml," +
+  encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" ' +
+      'stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">' +
+      '<path d="M3 11l9-8 9 8M5 9.5V20a1 1 0 0 0 1 1h4v-6h4v6h4a1 1 0 0 0 1-1V9.5"/></svg>',
+  );
+const HOME_ICON =
+  `<span aria-hidden="true" style="all:initial;display:block;flex:none;width:16px;height:16px;` +
+  `background-color:#f4f5f7;-webkit-mask:url(${HOME_ICON_SRC}) center/contain no-repeat;` +
+  `mask:url(${HOME_ICON_SRC}) center/contain no-repeat"></span>`;
 
 /**
  * The top bar, in the order it must land: the spacer first, so it is the first
@@ -445,7 +462,10 @@ export interface TopBar {
  * **The same bytes for every viewer of a document.** It names no identity, so a
  * public page keeps `max-age=60` and a pinned one `immutable`.
  *
- * Left: the byline's text, for Copilot-rendered HTML that has branding. That
+ * Far left: **Home**, a plain link to `/home` in Share's style, for every viewer.
+ * It is the same for everyone so the page learns nothing from it: `/home` itself
+ * decides, listing the signed-in viewer's own pages or asking them to sign in.
+ * Then the byline's text, for Copilot-rendered HTML that has branding. That
  * text exists only where the header byline would have: printing it on other
  * pages would be false attribution, or would undo `branding = false`, so those
  * pages get an empty left side. Right: **Share**, a plain link to the share page
@@ -461,6 +481,8 @@ function topBar(bar: TopBar, byline: boolean): string {
     OPENARTIFACTS_BAR_SPACER +
     OPENARTIFACTS_BAR_STYLE +
     `<div class="openartifacts-bar" style="${BAR_STYLE}">` +
+    `<a class="openartifacts-home" href="${escapeAttribute(bar.homeUrl)}" style="${SHARE_STYLE}">${HOME_ICON}` +
+    `<span class="openartifacts-home-label" style="${SPAN_RESET}-webkit-font-smoothing:antialiased">Home</span></a>` +
     // A flex row, so the text and the link share one centre line. On a narrow
     // strip the link's own text ends in an ellipsis; Share keeps its width.
     `<span style="${SPAN_RESET}display:flex;align-items:center;gap:0.4em;flex:1 1 auto;min-width:0;white-space:nowrap">` +

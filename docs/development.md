@@ -124,30 +124,18 @@ a frame or a popup. The browser test does:
 ```bash
 npm run test:browser   # Node 22 and Google Chrome
 OA_HEADED=1 npm run test:browser             # watch it
-OA_SCREENSHOTS=/some/dir npm run test:browser # bar.png, popover-*.png, and the comments shots
+OA_SCREENSHOTS=/some/dir npm run test:browser # bar.png, popover-*.png, and a comments sidebar
 ```
 
-`npm run test:browser` runs three files, one after the other (`--test-concurrency=1`):
-`test/share-popover.browser.mjs`, `test/comments.browser.mjs` and
-`test/comments-e2e.browser.mjs`. All need Google
+`npm run test:browser` runs two files, one after the other (`--test-concurrency=1`):
+`test/share-popover.browser.mjs` and `test/comments.browser.mjs`. Both need Google
 Chrome installed (they drive the machine's own through `playwright-core`; nothing
 is downloaded). `OA_HEADED=1` shows the window and `OA_SCREENSHOTS=dir` writes
-screenshots to `dir` (the comments test writes the margin, the draft card, a
-resolved and an orphaned thread, the Can-view reader, the phone bottom sheet and
-the popover's role select). The comments test uses the same harness plus the
-`COMMENTS` Durable Object binding, and covers selecting and posting through the
-frame after a real sign-in, card placement, highlights that leave the author's DOM
-untouched, the bar's count and toggle, the narrow-viewport sheet, and an orphaned
-thread after a version without its text.
-
-`test/comments-e2e.browser.mjs` is the whole story in twelve ordered steps (each
-relies on the one before): the owner and the owner's agent drive the real
-`openartifacts` CLI code in-process against the Worker, and Alice, Bob, a
-stranger, a signed-out reader, a Free-plan owner and a phone drive Chrome, from
-publishing a private page and granting Alice Can comment, through a comment, a reply and
-a resolve across versions, to the unshare. Its Worker is wrapped so the `EMAIL`
-binding hands each message to the test, which asserts who was told and what the
-email carried.
+screenshots to `dir`. The comments test uses the same harness plus the
+`COMMENTS` Durable Object binding, and covers the page finding the text the
+server anchored, posting through the frame, a hostile page that embeds or relays
+into the frame, who is offered Comment, typing that survives redraws, and reads
+and writes at the version on screen.
 
 `test/share-popover.browser.mjs` bundles the Worker (`wrangler deploy --dry-run`)
 and runs it under Miniflare over HTTPS with real D1 and R2 and no `upstream`, so
@@ -160,10 +148,9 @@ loads only public documents on the apex; the label-host path is covered by
 the bar and the popover on their real hosts. It signs a reader session
 in Node, opens a page, presses **Share**, signs in through the real popup, and
 switches a document to private; it also checks that a hostile page embedding the
-frame learns nothing and that the frame says the same about every id a viewer
-cannot read. The browser's own policy decides every request (Fetch Metadata,
-cookies, CSP, `frame-ancestors`, the opener policy), so the test never uses
-`context.route`, which would bypass it. It needs no license server and no network.
+frame learns nothing, and that a stale frame writes nothing. The browser's own
+policy decides every request (Fetch Metadata, cookies, CSP, `frame-ancestors`,
+the opener policy), so the test never uses `context.route`, which would bypass it. It needs no license server and no network.
 
 ## Comments locally
 

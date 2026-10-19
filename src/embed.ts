@@ -5,7 +5,7 @@
  * ```
  * GET|HEAD /embed/page.js                         the script every served page loads
  * GET      /embed/share?doc=&origin=              the popover's frame
- * GET      /embed/comments?doc=&origin=[&v=]      the margin's frame (src/comments/frame.ts)
+ * GET      /embed/comments?doc=&origin=[&v=]      the comments frame (src/comments/frame.ts)
  * GET      /embed/sign-in?doc=&h=[&switch=1]      the popup that signs the frame in
  * POST     /embed/token  {doc, nonce}             the frame collects its token
  * GET|PUT|DELETE /embed/api/docs/{docId}/access…  the frame's JSON, behind the token
@@ -50,6 +50,7 @@ import type { AnalyticsSink } from "./analytics.js";
 import {
   accessBody,
   addPerson,
+  copilotHint,
   declineRequest,
   decodeAddress,
   getAccess,
@@ -66,7 +67,7 @@ import type { Publisher } from "./auth.js";
 import { stringField } from "./account.js";
 import type { Env } from "./config.js";
 import { accountEmail, findReadableDoc, putEmbedHandoff, takeEmbedHandoff } from "./db.js";
-import { COPILOT_HINT, FRAME_CSS, FRAME_SCRIPT, PAGE_SCRIPT } from "./embed-scripts.js";
+import { FRAME_CSS, FRAME_SCRIPT, PAGE_SCRIPT } from "./embed-scripts.js";
 import { accountPlan } from "./entitlement.js";
 import { handleCommentsEmbed } from "./comments/embed-api.js";
 import { commentsFrame } from "./comments/frame.js";
@@ -173,9 +174,8 @@ function frameScriptHash(): Promise<string> {
 }
 
 /**
- * The link glyph in the shell's Copy link, as the frame script draws it. Static
- * markup, so the no-token view needs no script to look right. Its size and
- * stroke come from the stylesheet (`FRAME_CSS`).
+ * The link glyph in the shell's Copy link, as the frame script draws it after
+ * "Copied". Its size and stroke come from the stylesheet (`FRAME_CSS`).
  */
 const LINK_ICON_SVG =
   '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>' +
@@ -186,10 +186,12 @@ const LINK_ICON_SVG =
  * frame, as the same shell for every document id.
  *
  * Until a token proves the viewer can read the document the body is the same
- * bytes for a public, an invited-only, an unknown and a deleted document:
- * `Share`, **Copy link** for the canonical address (built from the id, no
- * lookup) and **Sign in to manage**. No title, no mode, no list. Only the
- * document's title, from `/embed/api/…` after a token, ever follows. Which
+ * bytes for a public, an invited-only, an unknown and a deleted document: the
+ * row every view starts with (the canonical address, built from the id with no
+ * lookup, **Copy link** and ×), then "Only the owner can change who can open
+ * this." and **Sign in to manage**. No title, no mode, no list. `main` is
+ * `hidden` until the script has chosen the first view, so a frame holding a
+ * token paints its skeleton, never this signed-out view (`FRAME_CSS`). Which
  * origin may embed it is `frameContext`'s (`src/frame-shell.ts`).
  */
 async function shareFrame(request: Request, url: URL, env: Env): Promise<Response> {
@@ -200,6 +202,7 @@ async function shareFrame(request: Request, url: URL, env: Env): Promise<Respons
   // Built from the id alone, like the link beside it, so showing it leaks nothing.
   const link = publicDocUrl(env, url, doc);
   const bareLink = link.replace(/^https?:\/\//, "");
+  const hint = escapeHtml(copilotHint(env));
   const body = `<!doctype html>
 <html lang="en">
 <head>
@@ -210,12 +213,12 @@ async function shareFrame(request: Request, url: URL, env: Env): Promise<Respons
 <style>${FRAME_CSS}</style>
 </head>
 <body>
-<main data-doc="${escapeHtml(doc)}" data-link="${escapeHtml(link)}" data-origin="${origin === null ? "" : escapeHtml(origin)}" data-hint="${escapeHtml(COPILOT_HINT)}">
-<header><h1 id="oa-title">Share</h1><button type="button" aria-label="Close">×</button></header>
+<header><div class="field"><span><bdi>${escapeHtml(bareLink)}</bdi></span></div><button type="button" class="primary tall">${LINK_ICON_SVG}<span>Copy link</span></button><button type="button" class="x" aria-label="Close">×</button></header>
+<main data-doc="${escapeHtml(doc)}" data-link="${escapeHtml(link)}" data-origin="${origin === null ? "" : escapeHtml(origin)}" data-hint="${hint}" hidden>
 <p class="muted">Only the owner can change who can open this.</p>
-<div class="foot"><div class="field"><span>${escapeHtml(bareLink)}</span></div><button type="button" class="primary tall">${LINK_ICON_SVG}<span>Copy link</span></button></div>
-<div class="bottom"><p id="oa-msg" class="err" role="alert"></p><p class="muted" id="oa-account">Is this your page? <button type="button" class="link" disabled>Sign in to manage</button></p><p class="muted hint">${escapeHtml(COPILOT_HINT)}</p></div>
+<div class="bottom"><p id="oa-msg" class="err" role="alert"></p><p class="muted" id="oa-account">Is this your page? <button type="button" class="link" disabled>Sign in to manage</button></p><p class="muted hint">${hint}</p></div>
 </main>
+<div class="fade" aria-hidden="true"></div>
 <script>${FRAME_SCRIPT}</script>
 </body>
 </html>`;
@@ -377,6 +380,7 @@ async function frameApi(
   env: Env,
   analytics: AnalyticsSink,
   now: number,
+  ctx: ExecutionContext,
 ): Promise<Response> {
   const [docs, docId, access, kind, person, ...rest] = url.pathname.slice(EMBED_API_PREFIX.length + 1).split("/");
   const method = request.method;
@@ -426,7 +430,7 @@ async function frameApi(
     // The popover's role select sends {role}; Approve and the add box send no body.
     const role = await roleOf(request);
     if (role === null) return errorResponse("bad_request", 'Expected {"role": "view" | "comment"} or no body.', NO_STORE);
-    return answer(await addPerson(env, url, principal, docId, decodeAddress(person), role, analytics));
+    return answer(await addPerson(env, url, principal, docId, decodeAddress(person), role, analytics, ctx));
   }
   if (people) return answer(await removePerson(env, principal, docId, decodeAddress(person), analytics));
   if (requests) return answer(await declineRequest(env, principal, docId, decodeAddress(person)));
@@ -453,7 +457,7 @@ export async function handleEmbed(
     // The comments family first; null means the path is not one of its routes.
     const comments = await handleCommentsEmbed(request, url, env, now, ctx);
     if (comments !== null) return comments;
-    return await frameApi(request, url, env, analytics, now);
+    return await frameApi(request, url, env, analytics, now, ctx);
   }
   return READER_NOT_FOUND();
 }

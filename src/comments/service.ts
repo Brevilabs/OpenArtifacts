@@ -29,7 +29,9 @@
  * plan lapsed or a role lowered never costs anyone the ability to take back what
  * they wrote.
  */
-import { markHasThreads, setDisplayName } from "../db.js";
+import { analyticsSink } from "../analytics.js";
+import { accountEmail, markHasThreads, setDisplayName, setDisplayNameIfUnset } from "../db.js";
+import { MAX_NAME, nameFromEmail, normalizeDisplayName } from "../display-name.js";
 import { writeManifest } from "../manifest.js";
 import type { Env } from "../config.js";
 import { docNotFound, errorResponse } from "../errors.js";
@@ -54,12 +56,6 @@ import { labeller, presentThread, presentThreads, type Viewer } from "./present.
 
 /** A request body is a few fields; the quote and the text bound it. */
 const MAX_REQUEST_BYTES = 32 * 1024;
-
-/** The longest display name, after trimming. */
-export const MAX_NAME = 64;
-
-/** Control characters and the two Unicode line separators, which no name has. */
-const CONTROL = new RegExp("[\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]");
 
 const STATES = new Set(["open", "resolved", "all"]);
 
@@ -164,9 +160,14 @@ async function authoriseWrite(env: Env, docId: string, caller: Caller, now: numb
   if (!(await ownerHasComments(env, standing.doc.owner, now))) {
     return standing.canManage ? commentsPlanRefusal(env, caller.publisher) : docNotFound(docId);
   }
-  // A person is named on their cards; an agent is named after the person it acts for.
+  // A person is named on their cards; an agent is named after the person it acts for. Nobody is
+  // asked: a person with no name (sign-in sends one when the provider has it) is named from their
+  // email, which `PUT …/account` can still change.
   if (caller.kind === "human" && standing.doc.viewer_name === null) {
-    return errorResponse("name_required", "Choose a display name before commenting.", NO_STORE);
+    const email = await accountEmail(env.DB, standing.doc.principal_id);
+    const name = nameFromEmail(email ?? "");
+    await setDisplayNameIfUnset(env.DB, standing.doc.principal_id, name);
+    standing.doc.viewer_name = name;
   }
   if (!(await withinLimit(env.COMMENT_WRITE_LIMITER, await sha256Hex(`comment:${standing.doc.principal_id}`)))) {
     return errorResponse("quota_exceeded", "Too many comments. Try again in a minute.", {
@@ -273,7 +274,7 @@ export async function createThread(
       thread: result.thread as ThreadRecord,
       text: fields.body.trim(),
       version,
-    }),
+    }, analyticsSink(env, caller.ctx)),
   );
   return Response.json(
     { threadId: result.threadId, commentId: result.commentId, anchorStatus: result.anchorStatus },
@@ -319,7 +320,7 @@ export async function replyToThread(
       thread: result.thread as ThreadRecord,
       text: fields.body.trim(),
       version,
-    }),
+    }, analyticsSink(env, caller.ctx)),
   );
   return Response.json({ commentId: result.commentId }, { status: 201, headers: NO_STORE });
 }
@@ -370,7 +371,7 @@ export async function changeThreadState(
         thread,
         text: null,
         version,
-      }),
+      }, analyticsSink(env, caller.ctx)),
     );
   }
   const viewer: Viewer = {
@@ -411,8 +412,8 @@ export async function setName(request: Request, env: Env, owner: string): Promis
   if (fields === null || !onlyKeys(fields, ["displayName"]) || typeof fields.displayName !== "string") {
     return bad('Expected {"displayName": "…"}.');
   }
-  const name = fields.displayName.normalize("NFC").trim();
-  if (name.length < 1 || name.length > MAX_NAME || CONTROL.test(name)) {
+  const name = normalizeDisplayName(fields.displayName);
+  if (name === null) {
     return bad(`displayName must be 1 to ${MAX_NAME} characters with no control characters.`);
   }
   if (!(await setDisplayName(env.DB, owner, name))) {

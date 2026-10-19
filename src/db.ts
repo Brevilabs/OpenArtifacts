@@ -620,6 +620,13 @@ export interface DocListRow {
    */
   version: number | null;
   link_access: LinkAccess;
+  /**
+   * People on the doc's invite list: the count Home shows, read in the same scan
+   * so no row costs a second query. `GET /api/v1/docs` shares this query and pays
+   * for it too without returning it: a count over the `(doc_id, email)` primary
+   * key, for at most a page of rows.
+   */
+  people: number;
 }
 
 /**
@@ -658,6 +665,27 @@ export interface DocListCursor {
  * folded into one with `(? IS NULL OR ...)`, which SQLite cannot use the index
  * for at all.
  */
+export async function searchPublisherDocs(
+  db: D1Database,
+  owner: string,
+  query: string,
+): Promise<Array<{ id: string; title: string }>> {
+  return (await db
+    .prepare(
+      `${OWNER_SCOPE_SQL}
+       SELECT d.id AS id, d.title AS title FROM docs d
+        WHERE d.owner IN (SELECT owner FROM owner_scope)
+          AND d.deleted_at IS NULL
+          AND EXISTS (SELECT 1 FROM versions v WHERE v.doc_id = d.id)
+          AND (instr(lower(d.title), lower(?)) > 0
+               OR instr('/d/' || d.id, lower(?)) > 0)
+        ORDER BY d.created_at DESC, d.id DESC
+        LIMIT 8`,
+    )
+    .bind(owner, owner, query, query)
+    .all<{ id: string; title: string }>()).results;
+}
+
 export async function listPublisherDocs(
   db: D1Database,
   owner: string,
@@ -666,7 +694,8 @@ export async function listPublisherDocs(
 ): Promise<DocListRow[]> {
   const columns = `d.id AS id, d.title AS title, d.created_at AS created_at,
                    d.updated_at AS updated_at, d.link_access AS link_access,
-                   (SELECT MAX(v.n) FROM versions v WHERE v.doc_id = d.id) AS version`;
+                   (SELECT MAX(v.n) FROM versions v WHERE v.doc_id = d.id) AS version,
+                   (SELECT COUNT(*) FROM doc_invites i WHERE i.doc_id = d.id) AS people`;
   const order = "ORDER BY d.created_at DESC, d.id DESC LIMIT ?";
 
   const statement =
@@ -886,7 +915,7 @@ export async function startDeviceHandshake(
       `UPDATE device_codes
           SET provider = ?, state = ?, verifier = ?,
               account_id = NULL, confirm_token = NULL,
-              pending_subject = NULL, pending_email = NULL
+              pending_subject = NULL, pending_email = NULL, pending_name = NULL
         WHERE user_code = ? AND confirm_token IS NULL
           AND approved_at IS NULL AND denied_at IS NULL AND expires_at > ?
         RETURNING user_code`,
@@ -959,12 +988,12 @@ export async function holdProvenIdentity(
   accountId: string | null,
   confirmToken: string,
   nowMs: number,
-  identity?: { subject: string; email: string },
+  identity?: { subject: string; email: string; name?: string },
 ): Promise<boolean> {
   const held = await db
     .prepare(
       `UPDATE device_codes
-          SET account_id = ?, confirm_token = ?, verifier = NULL, pending_subject = ?, pending_email = ?
+          SET account_id = ?, confirm_token = ?, verifier = NULL, pending_subject = ?, pending_email = ?, pending_name = ?
         WHERE state = ?
           AND verifier IS NOT NULL
           AND approved_at IS NULL
@@ -972,7 +1001,7 @@ export async function holdProvenIdentity(
           AND expires_at > ?
         RETURNING user_code`,
     )
-    .bind(accountId, confirmToken, identity?.subject ?? null, identity?.email ?? null, state, nowMs)
+    .bind(accountId, confirmToken, identity?.subject ?? null, identity?.email ?? null, identity?.name ?? null, state, nowMs)
     .first<{ user_code: string }>();
 
   return held !== null;
@@ -1016,8 +1045,8 @@ export async function confirmDeviceApproval(
     db
       .prepare(
         `INSERT INTO accounts
-      (id, email, created_at, plan, plan_checked_at, newsletter_opt_in, newsletter_choice_at)
-      SELECT ?, pending_email, ?, ?, ?, ?, ? FROM device_codes d
+      (id, email, created_at, plan, plan_checked_at, newsletter_opt_in, newsletter_choice_at, display_name)
+      SELECT ?, pending_email, ?, ?, ?, ?, ?, pending_name FROM device_codes d
       WHERE ${live} AND NOT EXISTS (
         SELECT 1 FROM identities i WHERE i.provider = d.provider AND i.subject = d.pending_subject
       ) ON CONFLICT DO NOTHING`,
@@ -1053,7 +1082,7 @@ export async function confirmDeviceApproval(
       .prepare(
         `UPDATE device_codes
       SET approved_at = ?, state = NULL, confirm_token = NULL,
-          pending_subject = NULL, pending_email = NULL
+          pending_subject = NULL, pending_email = NULL, pending_name = NULL
       WHERE confirm_token = ? AND approved_at IS NULL AND denied_at IS NULL
         AND account_id IS NOT NULL AND expires_at > ?
         AND (pending_subject IS NULL OR ? = 1)
@@ -1112,7 +1141,7 @@ export async function denyDeviceApproval(
     .prepare(
       `UPDATE device_codes
           SET denied_at = ?, state = NULL, confirm_token = NULL, verifier = NULL,
-              pending_subject = NULL, pending_email = NULL
+              pending_subject = NULL, pending_email = NULL, pending_name = NULL
         WHERE confirm_token = ?
           AND approved_at IS NULL
           AND denied_at IS NULL
@@ -1508,6 +1537,8 @@ export async function countLiveTokens(db: D1Database, accountId: string): Promis
 export interface ReadableDoc {
   /** The document's owner id, which names its publisher's origin. */
   owner: string;
+  /** The owner's stored origin code, or null before one is allocated. */
+  origin_code: string | null;
   /** For the Share popover's reader view, shown only once a token has proved `canRead`. */
   title: string;
   deleted_at: number | null;
@@ -1546,6 +1577,7 @@ export async function findReadableDoc(
     .prepare(
       `${OWNER_SCOPE_SQL}
        SELECT d.owner AS owner, d.title AS title, d.deleted_at AS deleted_at, d.link_access AS link_access,
+              (SELECT code FROM publisher_origins po WHERE po.owner = d.owner) AS origin_code,
               ${HAS_COMMENTS_SQL} AS has_comments,
               (SELECT MAX(v.n) FROM versions v
                 WHERE v.doc_id = d.id AND (? IS NULL OR v.n = ?)) AS version,
@@ -1568,6 +1600,8 @@ export async function findReadableDoc(
 export interface CommentableDoc {
   /** The document's owner id, which names its publisher's origin. */
   owner: string;
+  /** The owner's stored origin code, or null before one is allocated. */
+  origin_code: string | null;
   title: string;
   deleted_at: number | null;
   link_access: LinkAccess;
@@ -1633,6 +1667,7 @@ export async function findCommentableDoc(
     .prepare(
       `${OWNER_SCOPE_SQL}
        SELECT d.owner AS owner, d.title AS title, d.deleted_at AS deleted_at, d.link_access AS link_access,
+              (SELECT code FROM publisher_origins po WHERE po.owner = d.owner) AS origin_code,
               d.has_threads AS has_threads,
               ${COMMENTER_LISTED_SQL} AS commentable,
               (SELECT MAX(v.n) FROM versions v
@@ -1691,6 +1726,14 @@ export async function setDisplayName(db: D1Database, owner: string, name: string
     .bind(name, owner, owner)
     .first();
   return updated !== null;
+}
+
+/** Name an account only if it has no name yet, so a name a person chose is never overwritten. */
+export async function setDisplayNameIfUnset(db: D1Database, accountId: string, name: string): Promise<void> {
+  await db
+    .prepare("UPDATE accounts SET display_name = ? WHERE id = ? AND display_name IS NULL")
+    .bind(name, accountId)
+    .run();
 }
 
 /** D1 allows 100 bound parameters a statement; names and emails are read in chunks under it. */

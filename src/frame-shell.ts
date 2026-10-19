@@ -1,6 +1,6 @@
 /**
  * What the two frames on the API host (the Share popover's, `/embed/share`, and
- * the comments margin's, `/embed/comments`) share: which origin may embed them,
+ * the comments frame, `/embed/comments`) share: which origin may embed them,
  * and the policy that says so.
  *
  * **The frame reveals nothing to a non-reader.** Anyone can load either with any
@@ -9,23 +9,23 @@
  * The one thing that varies is `frame-ancestors`, and with it `data-origin` (the
  * target of the frame's `postMessage`). The lookup here decides only that: the
  * document's serving origin is `https://{SERVING_HOST}` when it is live and
- * public, its publisher's `https://{label}.{SERVING_HOST}` when it is live and
+ * public, its publisher's `https://{code}.{SERVING_HOST}` when it is live and
  * invited-only, and none otherwise. The frame may be embedded only by that
  * origin, and the policy echoes the caller's own `origin` parameter only when it
  * equals it, so the header tells a caller nothing it did not already name. (The
  * parameter is why: the request is anonymous and serving pages send
  * `no-referrer`, so the server cannot see the embedder, and a header derived
- * from the row alone would publish an invited-only document's label origin to
+ * from the row alone would publish an invited-only document's code origin to
  * anyone holding the link.) The browser checks the policy against the real
  * ancestor, so a forged parameter frames nothing. A private document's frames
  * can therefore be embedded only by its own publisher's pages, never by another
- * publisher's. Residual, accepted: someone who already knows a label and holds a
+ * publisher's. Residual, accepted: someone who already knows a code and holds a
  * link can confirm the pairing.
  */
 import type { Env } from "./config.js";
 import { findReadableDoc } from "./db.js";
 import { isDocId } from "./ids.js";
-import { publisherOrigin } from "./private.js";
+import { codeOrigin } from "./private.js";
 
 export interface FrameContext {
   doc: string;
@@ -46,7 +46,9 @@ export async function frameContext(url: URL, env: Env): Promise<FrameContext | n
       ? env.SERVING_HOST?.trim()
         ? `https://${env.SERVING_HOST.trim()}`
         : null
-      : ((await publisherOrigin(env, row.owner))?.origin ?? null);
+      : row.origin_code === null
+        ? null
+        : codeOrigin(env, row.origin_code);
   const servingOrigin = serving?.toLowerCase() ?? null;
   const matched = servingOrigin !== null && (url.searchParams.get("origin") ?? "").toLowerCase() === servingOrigin;
   return { doc, origin: matched ? servingOrigin : null };

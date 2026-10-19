@@ -25,7 +25,7 @@
  * account that can neither manage nor read gets the not-available page `/open`
  * shows, never `403`. `?signin` asks a visitor to a public document for the
  * sign-in page, which is where **Is this your page? Sign in to manage** leads;
- * like `?notice`, it only selects a page.
+ * it only selects a page.
  *
  * **It writes through the same operations as `/api/v1`** (`api/access.ts`), with
  * the session account as the principal, so the plan gate, the invite email,
@@ -33,8 +33,7 @@
  * two. Approving a request is `op=add`; declining is `op=decline`.
  *
  * **A write rides a cookie, so it is held to the strictest origin check**
- * (`sameOriginPost`). `GET` never writes and no query parameter changes state:
- * `?notice=private` only selects a constant line of copy.
+ * (`sameOriginPost`). `GET` never writes and no query parameter changes state.
  *
  * **Roles.** Each person has a role from the ladder (`roles.ts`). The dialog
  * draws **Add people** only for an owner whose plan grants some role
@@ -48,6 +47,7 @@ import type { AnalyticsSink } from "./analytics.js";
 import {
   addPerson,
   addWithoutManifest,
+  copilotHint,
   declineRequest,
   getAccess,
   grantableRoles,
@@ -62,7 +62,6 @@ import { readSmallForm } from "./approval/handler.js";
 import type { Publisher } from "./auth.js";
 import { MAX_INVITES_PER_DOC, MAX_NEW_INVITES_PER_OWNER_PER_DAY, type Env } from "./config.js";
 import { accountEmail, findReadableDoc } from "./db.js";
-import { COPILOT_HINT } from "./embed-scripts.js";
 import { emailConfigured } from "./email.js";
 import { accountPlan } from "./entitlement.js";
 import { sameOriginPost } from "./limits.js";
@@ -83,9 +82,6 @@ import {
 import { signIn } from "./reader.js";
 import { readSession } from "./session.js";
 import { publicDocUrl } from "./urls.js";
-
-/** The one line shown after a public document is switched to invited-only. */
-const COPY_NOTICE = "People who opened it while it was public may have kept a copy.";
 
 /**
  * Room for the longest list the page can be asked to add. At worst that is
@@ -162,6 +158,7 @@ export async function handleShare(
   url: URL,
   env: Env,
   analytics: AnalyticsSink,
+  ctx: ExecutionContext,
 ): Promise<Response> {
   const docId = shareRoute(url.pathname);
   const secret = readerSecret(env);
@@ -202,9 +199,7 @@ export async function handleShare(
   if (!writing) {
     const result = await getAccess(env, principal, docId);
     if (result.ok) {
-      return await dialog(env, url, await withCurrentPlan(env, principal), docId, result.state, {
-        notice: url.searchParams.get("notice") === "private",
-      });
+      return await dialog(env, url, await withCurrentPlan(env, principal), docId, result.state, {});
     }
     // Not the owner. A reader who may open the document sees its link, nothing
     // more; anyone else sees what `/open` shows them.
@@ -219,17 +214,16 @@ export async function handleShare(
   if (form === null) return READER_NOT_FOUND();
   const found = form.get("op") === "add" ? parseAddresses(form.get("email") ?? "") : null;
   if (found !== null && found.emails.length + found.bad.length > 1) {
-    return (await addMany(env, url, principal, docId, found, analytics)) ?? unavailable();
+    return (await addMany(env, url, principal, docId, found, analytics, ctx)) ?? unavailable();
   }
-  const result = await write(env, url, principal, docId, form, analytics);
+  const result = await write(env, url, principal, docId, form, analytics, ctx);
   if (result === null) return READER_NOT_FOUND();
   if (result.ok) {
     // Post, redirect, get: a reload shows the page and repeats nothing.
-    const switchedToPrivate = result.changed && form.get("op") === "link" && form.get("linkAccess") === "invited";
     return new Response(null, {
       status: 303,
       headers: {
-        location: switchedToPrivate ? `${next}?notice=private` : next,
+        location: next,
         "cache-control": "no-store",
         "referrer-policy": "no-referrer",
       },
@@ -247,7 +241,7 @@ export async function handleShare(
  * **Copy link** (`publicDocUrl`, the canonical url whichever host the reader
  * came from). `email` is the signed-in reader, or null for a visitor to a public
  * document. A visitor is offered sign-in to manage; a signed-in reader is told
- * how to manage from Copilot, because an owner who published with a license key
+ * how to link their Copilot account, because an owner who published with a license key
  * that is not linked to a browser account looks like any other reader here, and
  * offered **Use another account** in case this one is the wrong one. It lists no
  * people, no mode and no requests.
@@ -265,7 +259,7 @@ async function readerView(
       ? `<div class="actions"><a href="${next}?signin">Is this your page? Sign in to manage</a></div>`
       // Back to the sign-in page, not the visitor view a public document
       // would otherwise show a reader who has just signed out.
-      : `<div class="actions">${useAnotherAccount(`${next}?signin`)}</div>\n<p class="hint">${escapeHtml(COPILOT_HINT)}</p>`;
+      : `<div class="actions">${useAnotherAccount(`${next}?signin`)}</div>\n<p class="hint">${escapeHtml(copilotHint(env))}</p>`;
   return readerPage(
     {
       title: "Share document",
@@ -287,6 +281,7 @@ async function write(
   docId: string,
   form: URLSearchParams,
   analytics: AnalyticsSink,
+  ctx: ExecutionContext,
 ): Promise<AccessResult | null> {
   const op = form.get("op");
   const raw = form.get("email") ?? "";
@@ -297,11 +292,11 @@ async function write(
     const mode = form.get("linkAccess");
     return mode === "anyone" || mode === "invited" ? await setMode(env, principal, docId, mode, analytics) : null;
   }
-  if (op === "add") return await addPerson(env, url, principal, docId, address, undefined, analytics);
+  if (op === "add") return await addPerson(env, url, principal, docId, address, undefined, analytics, ctx);
   if (op === "role") {
     // A role this Worker does not know parses to null and changes nothing: it is never rewritten.
     const role = parseInviteRole(form.get("role"));
-    return role === null ? null : await addPerson(env, url, principal, docId, address, role, analytics);
+    return role === null ? null : await addPerson(env, url, principal, docId, address, role, analytics, ctx);
   }
   if (op === "remove") return await removePerson(env, principal, docId, address, analytics);
   if (op === "decline") return await declineRequest(env, principal, docId, address);
@@ -327,12 +322,13 @@ async function addMany(
   docId: string,
   found: ReturnType<typeof parseAddresses>,
   analytics: AnalyticsSink,
+  ctx: ExecutionContext,
 ): Promise<Response | null> {
   let added = 0;
   let stop: DialogError | undefined;
   for (const address of found.emails) {
     // The batch snapshots the manifest once, after the loop.
-    const result = await addWithoutManifest(env, url, principal, docId, address, undefined, analytics);
+    const result = await addWithoutManifest(env, url, principal, docId, address, undefined, analytics, ctx);
     if (result.ok) added += 1;
     else if (result.refusal === "not_found") return null;
     else {
@@ -359,7 +355,7 @@ async function dialog(
   principal: Publisher,
   docId: string,
   state: AccessState,
-  shown: { notice?: boolean; error?: DialogError; report?: string; quiet?: boolean },
+  shown: { error?: DialogError; report?: string; quiet?: boolean },
 ): Promise<Response> {
   const action = `${SHARE_PREFIX}/${docId}`;
   const form = (op: string, fields: Record<string, string>, body: string, cls = "") =>
@@ -395,7 +391,7 @@ async function dialog(
       ? `<p>Private pages and comments need a paid plan.${upgrade === undefined ? "" : ` <a href="${escapeHtml(upgrade)}">Upgrade</a>`}</p>`
       : "";
   const helper = roles?.includes("comment")
-    ? `<p class="hint">${state.link_access === "anyone" ? "Anyone with the link can view. Can comment lets a person you add comment." : "Only people you add can open it. Can comment lets them comment too."}</p>`
+    ? `<p class="hint">${state.link_access === "anyone" ? "Anyone can view. Invitees can comment." : "Only people you add can open this page."}</p>`
     : "";
   // A lapsed or free owner adds nobody, and approving a request adds a person.
   const mayAdd = roles === undefined || roles.length > 0;
@@ -419,7 +415,6 @@ async function dialog(
   const url = publicDocUrl(env, requestUrl, docId);
   const detail = `${SHARE_STYLE}
 ${message === null ? "" : `<p${shown.quiet === true ? "" : ' class="err"'} role="alert">${message}</p>`}
-${shown.notice === true ? `<p>${COPY_NOTICE}</p>` : ""}
 <section><h2>Link access</h2>${form(
     "link",
     {},

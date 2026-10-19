@@ -32,6 +32,10 @@ It is a small API-first publishing service with inline comments on a quoted pass
   share page where scripts do not run).
   Private sharing is a paid-plan feature on the hosted service, and a self-hosted
   server needs a sign-in method configured to offer it.
+- **See your pages in one place.** **Home** in the top bar of any served page
+  opens a list of everything your account has published, with who can open each,
+  after you sign in. Only you can see it. A self-hosted server with reader
+  sign-in has it too.
 - **Comment on a passage.** The owner gives named people **Can comment** (a paid-plan
   feature); they and the owner's agent select text, comment and reply, and the owner resolves the
   thread against the version that fixed it. Threads follow their quote across

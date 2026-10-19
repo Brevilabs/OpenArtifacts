@@ -1,13 +1,15 @@
 /**
- * The three emails private sharing sends: an invite, a sign-in code, and a note
- * to an owner that someone asked to open their document.
+ * Sharing, sign-in and comment emails, with one recorded outcome per recipient.
  *
  * All go through the Cloudflare Email Service binding from a dedicated
  * sending subdomain, so abuse cannot touch the brand domain's mail reputation.
  * The binding is optional like the OAuth secrets: without it nothing is sent,
  * the code form is not offered, and Google and GitHub sign-in still work.
  */
+import type { AnalyticsSink } from "./analytics.js";
+import { documentAnalyticsKey } from "./analytics.js";
 import type { Env } from "./config.js";
+import { macHex } from "./session.js";
 import { escapeHtml } from "./page.js";
 import { roleAtLeast, type InviteRole } from "./roles.js";
 
@@ -15,22 +17,78 @@ export function emailConfigured(env: Env): boolean {
   return env.EMAIL !== undefined && Boolean(env.EMAIL_FROM?.trim());
 }
 
-/** True when the message was handed to Email Service. Never throws. */
+export type EmailType = "invite" | "access_request" | "signin_code" | "comment_thread" | "comment_reply" | "comment_resolved";
+export type EmailOutcome = "sent" | "failed" | "skipped_limit" | "skipped_no_owner_email";
+export type EmailReason = "accepted" | "no_owner_email" | "not_configured" | "preparation_failed" | "sending_limit" | "send_failed";
+export type EmailMessage = { subject: string; text: string; html: string };
+
+/** Same folding as accounts and invites; no provider-specific dot or plus folding. */
+export async function emailRecipientHash(secret: string, address: string): Promise<string> {
+  return `email_v1_${await macHex(secret, "email-recipient-v1", address.trim().toLowerCase())}`;
+}
+
+/**
+ * One decision, one structured log and one analytics record per intended email.
+ * Preparation and the limiter run here too, so a failure cannot disappear before
+ * reaching the sender. No message, address, code or exception text enters telemetry.
+ * `sent` means accepted by Email Service, not delivered to an inbox.
+ */
 export async function sendEmail(
   env: Env,
-  to: string,
-  message: { subject: string; text: string; html: string },
-): Promise<boolean> {
-  if (env.EMAIL === undefined || !env.EMAIL_FROM?.trim()) return false;
+  analytics: AnalyticsSink,
+  context: { type: EmailType; docId: string | null; to: string | null | (() => Promise<string | null>) },
+  message: () => EmailMessage | Promise<EmailMessage>,
+  allowed?: () => Promise<boolean>,
+): Promise<EmailOutcome> {
+  let outcome: EmailOutcome = "failed";
+  let reason: EmailReason = "preparation_failed";
+  let to: string | null = null;
   try {
-    await env.EMAIL.send({ from: { email: env.EMAIL_FROM.trim(), name: "OpenArtifacts" }, to, ...message });
-    return true;
-  } catch (error) {
-    // Name only. The message can quote the recipient, and a log is read far more
-    // casually than the table the address came from.
-    console.error("email delivery failed", { error: error instanceof Error ? error.name : "unknown" });
-    return false;
+    to = typeof context.to === "function" ? await context.to() : context.to;
+    reason = "not_configured";
+    if (to === null) {
+      outcome = "skipped_no_owner_email";
+      reason = "no_owner_email";
+    } else if (emailConfigured(env)) {
+      reason = "preparation_failed";
+      if (allowed !== undefined && !(await allowed())) {
+        outcome = "skipped_limit";
+        reason = "sending_limit";
+      } else {
+        const prepared = await message();
+        reason = "send_failed";
+        await env.EMAIL!.send({ from: { email: env.EMAIL_FROM!.trim(), name: "OpenArtifacts" }, to, ...prepared });
+        outcome = "sent";
+        reason = "accepted";
+      }
+    }
+  } catch {
+    // Only the fixed reason above is safe: sender errors may quote addresses or content.
   }
+  await recordEmailDelivery(env, analytics, { ...context, to }, outcome, reason);
+  return outcome;
+}
+
+/** Also used when sign-in refuses a code before reaching the sender. */
+export async function recordEmailDelivery(
+  env: Env,
+  analytics: AnalyticsSink,
+  context: { type: EmailType; docId: string | null; to: string | null },
+  outcome: EmailOutcome,
+  reason: EmailReason,
+): Promise<void> {
+  const secret = env.READER_SESSION_SECRET?.trim();
+  const recipientHash = context.to === null || !secret ? null : await emailRecipientHash(secret, context.to);
+  const atMs = Date.now();
+  console.info("email delivery", {
+    email_type: context.type,
+    document_key: context.docId === null ? "no_document" : await documentAnalyticsKey(context.docId),
+    recipient_hash: recipientHash,
+    outcome,
+    reason,
+    at_ms: atMs,
+  });
+  analytics.record({ name: "email_delivery", docId: context.docId, atMs, emailType: context.type, recipientHash, outcome, reason });
 }
 
 /** A title is publisher-supplied text headed for a mail header: one short line. */

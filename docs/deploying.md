@@ -479,22 +479,17 @@ snapshots its own `threads.json`). For those, and for anything within 30 days,
 D1 Time Travel (`wrangler d1 time-travel restore`) is the first resort; this is
 the fallback when it cannot be used.
 
-**One-time backfill, after the first deploy that writes manifests.** Documents
-that existed before it have none. With the Worker's `ADMIN_API_KEY`, call the
-temporary route until it stops returning a `cursor`:
-
-```bash
-curl -s -X POST -H "authorization: Bearer $ADMIN_API_KEY" \
-  "https://api.openartifacts.ai/admin/v1/manifests/backfill"
-# then again with ?cursor=<the cursor it returned>, until none comes back
-```
-
-Each call writes 15 documents (sized for the 50 subrequests of a Workers Free
-invocation), so a few hundred documents is a few dozen calls. It writes a manifest
-for every row, withdrawn documents included, and is safe to repeat. Spot-check
-three, including a private one and a withdrawn one:
+Documents published before manifests existed got theirs from a one-time admin
+backfill, run in production on 2026-10-16 and again after migration `0016` on
+2026-10-17. The route has been removed; from then on every write to a document's
+state keeps its own manifest. A self-hosted deployment that has not run migration
+`0016`, its step 3 and then the backfill upgrades through commit `f26c7eb`, the
+last with the route: deploy it, follow that commit's `docs/deploying.md` through
+the backfill, and only then deploy a later Worker. Skipping it leaves older
+documents with no manifest, or with one that still says `comment` for an invite
+step 3 lowered, and a rebuild would make the first private with no owner and
+restore the second's grant. To inspect one:
 `npx wrangler r2 object get symposium-docs/docs/<docId>/manifest.json --remote --pipe`.
-The route is removed in the PR after this has been run.
 
 **Rebuild.** This is for a D1 that is lost, not damaged. A partial loss is
 restored with D1 Time Travel, never with this. Recreate the database (a new
@@ -557,9 +552,10 @@ says what each piece is for.
    `*.openartifacts.site` record, `AAAA` to `100::`. The route that catches it,
    `*.openartifacts.site/*`, is in `wrangler.jsonc` (a custom domain cannot be a
    wildcard). Universal SSL already covers first-level wildcards. The Worker
-   serves only a 26-character label there and fails closed on every other
+   serves only a 6-character publisher code there (and redirects the retired
+   26-character labels to `/open`) and fails closed on every other
    subdomain. This is one publisher origin per publisher
-   (`{label}.openartifacts.site`), not one per document, so it is the only record
+   (`{code}.openartifacts.site`), not one per document, so it is the only record
    and route needed however many documents there are.
 3. **The sending domain.** Onboard `mail.openartifacts.ai` in Cloudflare Email
    Service (Compute → Email Service → Email Sending → Onboard Domain). The
@@ -685,7 +681,13 @@ on the free Workers plan.
    `0016` before the deploy that reads it. `0016` also marks `has_threads` on
    every document whose `comments_enabled` is `1`, the only ones a thread could
    have been written to. It leaves the invites alone: step 3 lowers them. The
-   deploy workflow refuses to ship over an unapplied migration.
+   deploy workflow refuses to ship over an unapplied migration. Apply
+   `0017_publisher_origins.sql` before the deploy that reads it too: it adds the
+   `publisher_origins` table (a publisher's 6-character origin code), is additive,
+   and the live Worker ignores it. Codes are allocated lazily, on a publisher's first
+   open of an invited-only page, which also rewrites that doc's `manifest.json`
+   so R2 holds the code. A manifest written before then has no code and needs no
+   backfill; a code, once allocated, is never changed or deleted.
 2. Deploy. `wrangler deploy` applies the Durable Object itself: the `COMMENTS`
    binding in `durable_objects.bindings` and the
    `migrations: [{"tag": "v1", "new_sqlite_classes": ["DocComments"]}]` block in
@@ -727,9 +729,9 @@ on the free Workers plan.
      done
    ```
 
-   Last, rewrite every manifest from D1 with `POST /admin/v1/manifests/backfill` (under
-   **One-time backfill** above), since these updates change roles without
-   rewriting them, and a rebuild would otherwise bring back `comment`.
+   In production this was followed on 2026-10-17 by the manifest backfill, since
+   removed. A deployment that runs this step later does so on commit `f26c7eb`
+   and follows it with that backfill (see above).
 4. The comment limiters are in the same deploy; see below.
 
 **The comment limiters.** Two more optional `ratelimits` bindings, on the same

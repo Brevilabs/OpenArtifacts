@@ -6,7 +6,8 @@ import { PAGE_SCRIPT } from "../src/embed-scripts.js";
 import { DOC_ID_LENGTH } from "../src/ids.js";
 import { newAccountId } from "../src/ids.js";
 import { linkExternalOwner } from "../src/owners.js";
-import { grantUrl, originLabel, PRIVATE_LABEL } from "../src/private.js";
+import { ORIGIN_CODE, originCode } from "../src/origin-code.js";
+import { grantUrl } from "../src/private.js";
 import { readerSignInConfigured } from "../src/reader-config.js";
 import { signPayload, verifyPayload } from "../src/session.js";
 import { FAVICON_LINK, NOINDEX_META, OPENARTIFACTS_FOOTER, OPENARTIFACTS_HEADER, OPENARTIFACTS_MARK_SVG } from "../src/render.js";
@@ -862,7 +863,7 @@ describe("an invited-only document", () => {
     const { docId } = (await response.json()) as { docId: string };
     await env.DB.prepare("UPDATE docs SET link_access = ? WHERE id = ?").bind(mode, docId).run();
     const row = await env.DB.prepare("SELECT owner FROM docs WHERE id = ?").bind(docId).first<{ owner: string }>();
-    return { docId, owner: row!.owner, host: `https://${await originLabel(row!.owner)}.openartifacts.site` };
+    return { docId, owner: row!.owner, host: `https://${await originCode(env.DB, row!.owner)}.openartifacts.site` };
   }
 
   /** What `/open` would redirect `principal` to. */
@@ -955,7 +956,7 @@ describe("an invited-only document", () => {
 
   it("lets a grant, a grant cookie and a session expire, at the lifetimes the design gives", async () => {
     const doc = await privateDoc();
-    const label = await originLabel(doc.owner);
+    const label = await originCode(env.DB, doc.owner);
     const SECRET_K = PRIVATE.READER_SESSION_SECRET;
     const signIn = `${API}/open/${doc.docId}`;
 
@@ -1138,7 +1139,7 @@ describe("an invited-only document", () => {
     expect(opened.status).toBe(302);
     const target = new URL(opened.headers.get("location")!);
     expect(target.origin).toBe(doc.host);
-    expect(target.origin).not.toBe(`https://${await originLabel(alice)}.openartifacts.site`);
+    expect(target.origin).not.toBe(`https://${await originCode(env.DB, alice)}.openartifacts.site`);
     expect(target.pathname).toBe(`/d/${doc.docId}`);
     expect((await getFrom(target.toString(), {}, PRIVATE)).status).toBe(303);
   });
@@ -1185,19 +1186,114 @@ describe("an invited-only document", () => {
     expect(configured({ API_HOST: " " })).toBe(false);
   });
 
-  it("names a publisher's origin by a one-way hash of docs.owner, the same for all of their documents", async () => {
-    const labels = await Promise.all(["account-a", "account-b", "user_123"].map(originLabel));
+  it("names a publisher's origin by a stored random code per docs.owner, the same for all of their documents", async () => {
+    const labels = await Promise.all(["account-a", "account-b", "user_123"].map((owner) => originCode(env.DB, owner)));
     expect(new Set(labels).size).toBe(3);
-    for (const label of labels) expect(label).toMatch(PRIVATE_LABEL);
-    expect(await originLabel("account-a")).toBe(labels[0]);
+    for (const label of labels) expect(label).toMatch(ORIGIN_CODE);
+    expect(await originCode(env.DB, "account-a")).toBe(labels[0]);
 
     const one = await privateDoc("one");
     const two = await privateDoc("two");
     expect(one.docId).not.toBe(two.docId);
     expect(one.host).toBe(two.host);
-    expect(one.host).toBe(`https://${await originLabel(one.owner)}.openartifacts.site`);
+    expect(one.host).toBe(`https://${await originCode(env.DB, one.owner)}.openartifacts.site`);
     expect(one.host).not.toContain(one.docId);
     expect(one.host).not.toContain(one.owner);
+  });
+
+  describe("a publisher's origin code", () => {
+    const CODE_HOST = /^https:\/\/[23456789bcdfghjkmnpqrstvwxz]{6}\.openartifacts\.site$/;
+
+    it("is allocated once per owner, never changes, and differs between owners", async () => {
+      const a = await originCode(env.DB, "code-owner-a");
+      const b = await originCode(env.DB, "code-owner-b");
+      expect(a).toMatch(ORIGIN_CODE);
+      expect(b).toMatch(ORIGIN_CODE);
+      expect(a).not.toBe(b);
+      expect(await originCode(env.DB, "code-owner-a")).toBe(a);
+      const rows = await env.DB.prepare("SELECT COUNT(*) AS n FROM publisher_origins WHERE owner = ?").bind("code-owner-a").first<{ n: number }>();
+      expect(rows!.n).toBe(1);
+    });
+
+    it("draws a fresh code when the random one is another owner's, and gives up after a bounded number of tries", async () => {
+      const taken = await originCode(env.DB, "collide-first");
+      const draws = [taken, taken, "kkkkkk"];
+      expect(await originCode(env.DB, "collide-second", () => draws.shift()!)).toBe("kkkkkk");
+      expect(draws).toEqual([]);
+      // The owner's own existing row is returned without drawing at all.
+      expect(await originCode(env.DB, "collide-second", () => { throw new Error("drew"); })).toBe("kkkkkk");
+      await expect(originCode(env.DB, "collide-third", () => taken)).rejects.toThrow("could not allocate");
+      const none = await env.DB.prepare("SELECT code FROM publisher_origins WHERE owner = ?").bind("collide-third").first();
+      expect(none).toBeNull();
+    });
+
+    it("sends /open to the owner's six-character host with a grant, and that host serves the page after the swap", async () => {
+      const doc = await privateDoc();
+      const alice = await reader("alice@acme.com", doc.docId);
+      const opened = await getFrom(`${API}/open/${doc.docId}`, { headers: { cookie: await sessionFor(alice) } }, PRIVATE);
+      expect(opened.status).toBe(302);
+      const target = new URL(opened.headers.get("location")!);
+      expect(target.origin).toMatch(CODE_HOST);
+      expect(target.origin).toBe(`https://${await originCode(env.DB, doc.owner)}.openartifacts.site`);
+      expect(target.pathname).toBe(`/d/${doc.docId}`);
+      expect(target.searchParams.get("grant")).not.toBeNull();
+
+      const swapped = await getFrom(target.toString(), {}, PRIVATE);
+      expect(swapped.status).toBe(303);
+      const served = await getFrom(`${target.origin}/d/${doc.docId}`, { headers: { cookie: swapped.headers.get("set-cookie")!.split(";")[0]! } }, PRIVATE);
+      expect(served.status).toBe(200);
+      expect(await served.text()).toContain("for invited eyes");
+    });
+
+    it("answers another owner's document on a code host exactly as a missing one", async () => {
+      const mine = await privateDoc();
+      const theirs = await privateDoc("theirs", KEY_Q);
+      expect(theirs.host).not.toBe(mine.host);
+      const cookie = await cookieFor(mine, mine.owner);
+
+      const other = await getFrom(`${mine.host}/d/${theirs.docId}`, { headers: { cookie } }, PRIVATE);
+      const missing = await getFrom(`${mine.host}/d/${"z".repeat(16)}`, { headers: { cookie } }, PRIVATE);
+      expect(other.status).toBe(404);
+      expect(missing.status).toBe(404);
+      expect(await other.text()).toBe(await missing.text());
+
+      // A grant minted for the other host does not swap here.
+      const foreign = new URL(await grantFor(theirs, theirs.owner));
+      const crossed = await getFrom(`${mine.host}${foreign.pathname}${foreign.search}`, {}, PRIVATE);
+      expect(crossed.headers.get("set-cookie")).toBeNull();
+    });
+
+    it("sends a retired 26-character label host's document url to /open, and nothing else", async () => {
+      const doc = await privateDoc();
+      const legacy = "https://0123456789abcdefghjkmnpqrs.openartifacts.site";
+      for (const suffix of ["", "/v1"]) {
+        const moved = await getFrom(`${legacy}/d/${doc.docId}${suffix}`, {}, PRIVATE);
+        expect(moved.status).toBe(302);
+        expect(moved.headers.get("location")).toBe(`${API}/open/${doc.docId}${suffix}`);
+      }
+      expect((await getFrom(`${legacy}/api/v1/docs`, {}, PRIVATE)).status).toBe(404);
+      // It reads nothing about the document: another publisher's id and one that never existed get the
+      // same redirect, and /open applies the usual checks (404 for anyone who may not read it).
+      const theirs = await privateDoc("theirs", KEY_Q);
+      for (const id of [theirs.docId, "z".repeat(16)]) {
+        const moved = await getFrom(`${legacy}/d/${id}`, {}, PRIVATE);
+        expect(moved.status).toBe(302);
+        expect(moved.headers.get("location")).toBe(`${API}/open/${id}`);
+      }
+    });
+
+    it("lets the Share and comments frames be embedded by the code origin, and by nothing before a code exists", async () => {
+      const doc = await privateDoc();
+      for (const frame of ["share", "comments"]) {
+        const frameUrl = (origin: string) => `${API}/embed/${frame}?doc=${doc.docId}&origin=${encodeURIComponent(origin)}`;
+        const csp = async (origin: string) => (await getFrom(frameUrl(origin), {}, PRIVATE)).headers.get("content-security-policy")!;
+        expect(await csp(doc.host)).toContain(`frame-ancestors ${doc.host}`);
+        expect(await csp("https://0123456789abcdefghjkmnpqrs.openartifacts.site")).toContain("frame-ancestors 'none'");
+      }
+      await env.DB.prepare("DELETE FROM publisher_origins WHERE owner = ?").bind(doc.owner).run();
+      const none = await getFrom(`${API}/embed/share?doc=${doc.docId}&origin=${encodeURIComponent(doc.host)}`, {}, PRIVATE);
+      expect(none.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+    });
   });
 
   // ---- Stage S3: sign-in first, requesting access, the top bar and the share page ----
@@ -1454,7 +1550,7 @@ describe("an invited-only document", () => {
       expect((await requestRows(doc.docId)).length).toBe(100);
     });
 
-    it("stores nothing once the account is over its allowance, and still answers Request sent", async () => {
+    it("tells the reader when their request allowance is exhausted", async () => {
       const bob = await reader("bob@other.com");
       const docs = [await privateDoc("one"), await privateDoc("two")];
       // The allowance is 10 a minute per account: ten requests for the first document are one row and nine repeats.
@@ -1464,8 +1560,11 @@ describe("an invited-only document", () => {
       const limited = await post(docs[1]!.docId, bob);
 
       expect(limited.status).toBe(200);
-      expect(await limited.text()).toContain("Request sent");
+      const page = (await limited.text()).replaceAll(docs[1]!.docId, "ID");
+      expect(page).toContain("Request not sent");
       expect(await requestRows(docs[1]!.docId)).toEqual([]);
+      // The limit is the account's, so an unknown id gets the same words.
+      expect((await (await post(UNKNOWN_DOC_ID, bob)).text()).replaceAll(UNKNOWN_DOC_ID, "ID")).toBe(page);
     });
 
     it("emails the owner once, with the share page link and no token, and never tells the requester who they are", async () => {
@@ -1493,15 +1592,22 @@ describe("an invited-only document", () => {
       expect(await response.text()).not.toContain("owner@acme.com");
     });
 
-    it("sends no email when the owner's address is unknown, but still lists the request", async () => {
-      const { sent, over } = mailbox();
-      const doc = await privateDoc(); // owned by a license key nobody linked
-      const bob = await reader("bob@other.com");
-
-      await post(doc.docId, bob, over);
-
-      expect(sent).toEqual([]);
-      expect((await requestRows(doc.docId)).length).toBe(1);
+    it("records a missing owner mailbox and sends a new request notice after linking", async () => {
+      const logs = vi.spyOn(console, "info").mockImplementation(() => {});
+      try {
+        const { sent, over } = mailbox();
+        const doc = await privateDoc(); // owned by a license key nobody linked
+        const bob = await reader("bob@other.com");
+        await post(doc.docId, bob, over);
+        expect(sent).toEqual([]);
+        expect((await requestRows(doc.docId)).length).toBe(1);
+        expect(logs.mock.calls.filter(([name]) => name === "email delivery")).toMatchObject([
+          ["email delivery", { email_type: "access_request", outcome: "skipped_no_owner_email", recipient_hash: null }],
+        ]);
+        await ownerAccount(doc);
+        await post(doc.docId, await reader("carol@other.com"), over);
+        expect(sent.map((message) => message.to)).toEqual(["owner@acme.com"]);
+      } finally { logs.mockRestore(); }
     });
 
     it("is not there at all on a server with no reader sign-in", async () => {
@@ -1808,7 +1914,9 @@ describe("an invited-only document", () => {
         expect(html).not.toContain("data-title");
         expect(html).not.toContain("title=");
         expect(html).toContain("Sign in to manage");
-        expect(html).toContain("<h1 id=\"oa-title\">Share</h1>");
+        // No title row; the views live in a main the script shows once it has chosen the first.
+        expect(html).not.toContain("<h1");
+        expect(html).toMatch(/<main [^>]*\shidden>/);
         expect(html).toContain(`data-link="https://openartifacts.site/d/${docId}"`);
       }
 
@@ -1823,12 +1931,19 @@ describe("an invited-only document", () => {
       expect(new Set(refused).size).toBe(1);
       expect(refused[0]).toContain('data-origin=""');
 
-      // The script is the constant, sends exactly one kind of message call, and reports no size.
+      // The script is the constant, sends exactly one kind of message call, and reports a size from one place,
+      // only from the owner view where it fits: embedded by an origin that is set and is not the shared one.
+      // Every view is drawn through draw(), and only the owner view passes true.
       const html = await (await getFrom(frameUrl(doc.docId, doc.host), {}, OPEN)).text();
       expect(inlineScript(html)).toBe(FRAME_SCRIPT);
       expect(occurrences(FRAME_SCRIPT, "postMessage(")).toBe(1);
       expect(FRAME_SCRIPT).not.toContain("ResizeObserver");
-      expect(FRAME_SCRIPT).not.toContain('"size"');
+      expect(occurrences(FRAME_SCRIPT, '"size"')).toBe(1);
+      expect(FRAME_SCRIPT).toContain('const fits = parentOrigin !== "" && parentOrigin !== publicOrigin && window.parent !== window;');
+      expect(FRAME_SCRIPT).toContain("const height = fits && ownerDrawn ? ");
+      expect(occurrences(FRAME_SCRIPT, "ownerDrawn = ")).toBe(2); // its declaration, and draw()
+      expect(occurrences(FRAME_SCRIPT, "main.replaceChildren(")).toBe(1);
+      expect(occurrences(FRAME_SCRIPT, "draw(kids, true)")).toBe(1);
       expect(FRAME_SCRIPT).not.toContain("autofocus");
       // A focusable element carries no id, in the shell or in the views the script draws.
       // <main> counts: it scrolls, and a scroller takes focus when its content overflows.
@@ -2429,7 +2544,7 @@ describe("an invited-only document", () => {
       const doc = await privateDoc();
       const bob = await reader("bob@other.com", doc.docId);
       const carol = await reader("carol@other.com"); // not invited, but the public page is open to her
-      const hint = "Open the note in Copilot and run Publish file to OpenArtifacts";
+      const hint = "If your license key is not linked to an OpenArtifacts account, we have no email address for you.";
 
       // A visitor to a public document: the title and link, an invitation to sign in to manage.
       const visitor = await open(pub.docId, null);
@@ -2535,7 +2650,6 @@ describe("an invited-only document", () => {
       expect(html).toContain("Approve");
       expect(html).toContain("Decline");
       expect(html.indexOf("Requests")).toBeLessThan(html.indexOf("Who has access"));
-      expect(html).not.toContain("may have kept a copy");
       expect(html).not.toContain('name="comments"');
       expect(html).toContain('<option value="comment" selected>Can comment</option>');
     });
@@ -2649,20 +2763,16 @@ describe("an invited-only document", () => {
       expect(sent.map((message) => message.to)).toEqual(["bob@other.com"]);
     });
 
-    it("switches the link access, and shows the copy notice only after a switch to private", async () => {
+    it("switches the link access, and returns to the page as it is after either switch", async () => {
       const doc = await privateDoc("a public page", KEY, "anyone");
       const owner = await ownerAccount(doc);
 
       const toPrivate = await write(doc.docId, owner, { op: "link", linkAccess: "invited" });
       expect(toPrivate.status).toBe(303);
-      expect(toPrivate.headers.get("location")).toBe(`/share/${doc.docId}?notice=private`);
+      expect(toPrivate.headers.get("location")).toBe(`/share/${doc.docId}`);
       expect((await access(doc.docId)).linkAccess).toBe("invited");
-      expect(await (await open(doc.docId, owner, PRIVATE, "?notice=private")).text()).toContain(
-        "People who opened it while it was public may have kept a copy.",
-      );
-      expect(await (await open(doc.docId, owner)).text()).not.toContain("may have kept a copy");
 
-      // A repeat is not a switch, and going back to public needs no plan and shows no notice.
+      // A repeat changes nothing, and going back to public needs no plan.
       expect((await write(doc.docId, owner, { op: "link", linkAccess: "invited" })).headers.get("location")).toBe(`/share/${doc.docId}`);
       const toPublic = await write(doc.docId, owner, { op: "link", linkAccess: "anyone" });
       expect(toPublic.headers.get("location")).toBe(`/share/${doc.docId}`);
@@ -2709,7 +2819,7 @@ describe("an invited-only document", () => {
       const html = await (await open(doc.docId, owner)).text();
 
       expect(html).not.toMatch(/<h2>Comments<\/h2>|name="comments"|Needs a paid plan/);
-      expect(html).toContain("Only people you add can open it. Can comment lets them comment too.");
+      expect(html).toContain("Only people you add can open this page.");
       expect(html).not.toContain("Private pages and comments need a paid plan.");
       expect(html).toContain('<option value="view">Can view</option><option value="comment" selected>Can comment</option>');
       expect(html).toContain('<option value="view" selected>Can view</option><option value="comment">Can comment</option>');
@@ -2717,8 +2827,8 @@ describe("an invited-only document", () => {
 
       await env.DB.prepare("UPDATE docs SET link_access = 'anyone' WHERE id = ?").bind(doc.docId).run();
       const pub = await (await open(doc.docId, owner)).text();
-      expect(pub).toContain("Anyone with the link can view. Can comment lets a person you add comment.");
-      expect(pub).not.toContain("Only people you add can open it. Can comment");
+      expect(pub).toContain("Anyone can view. Invitees can comment.");
+      expect(pub).not.toContain("Only people you add can open this page");
     });
 
     it("shows a plan that grants no role the plan line and roles as text: no Add people, no select, no Approve, and Remove and Decline still work", async () => {
@@ -2790,7 +2900,7 @@ describe("an invited-only document", () => {
       try {
         const html = await (await open(doc.docId, owner, { ...PRIVATE, LICENSE_API_URL: "https://license.test", LICENSE_API_KEY: "ours" })).text();
         expect(html).not.toContain("Private pages and comments need a paid plan.");
-        expect(html).toContain("Can comment lets them comment too.");
+        expect(html).toContain("Only people you add can open this page.");
       } finally {
         vi.unstubAllGlobals();
       }
@@ -2946,7 +3056,7 @@ describe("an invited-only document", () => {
       expect((await sendTo("POST", SHARE(doc.docId), { headers: SAME_ORIGIN, body: new URLSearchParams({ op: "add", email: "x@acme.com" }) }, PRIVATE)).status).toBe(200); // sign-in, no write
       expect((await write(doc.docId, owner, { op: "mystery", email: "x@acme.com" })).status).toBe(404);
 
-      await open(doc.docId, owner, PRIVATE, "?op=add&email=bob@other.com&linkAccess=anyone&notice=private");
+      await open(doc.docId, owner, PRIVATE, "?op=add&email=bob@other.com&linkAccess=anyone");
       const state = await access(doc.docId);
       expect([state.linkAccess, state.people]).toEqual(["invited", []]);
       for (const method of ["PUT", "DELETE", "PATCH"]) {
@@ -3053,7 +3163,7 @@ describe("GET /d/{docId}/threads", () => {
     await stub.createThread({ ...base, principal: alice, kind: "human", onBehalfOf: null, anchor: { exact: "first draft" }, body: "Why first?" });
     await stub.createThread({ ...base, principal: alice, kind: "agent", onBehalfOf: alice, anchor: { exact: "first" }, body: "Same, from my agent" });
     const row = await env.DB.prepare("SELECT owner FROM docs WHERE id = ?").bind(docId).first<{ owner: string }>();
-    return { docId, alice, owner: row!.owner, host: `https://${await originLabel(row!.owner)}.openartifacts.site` };
+    return { docId, alice, owner: row!.owner, host: `https://${await originCode(env.DB, row!.owner)}.openartifacts.site` };
   }
 
   interface Served {
@@ -3264,7 +3374,7 @@ describe("GET /d/{docId}/threads", () => {
 
       // A cookie names its origin: this publisher's, replayed on a document of another label, is nothing.
       await env.DB.prepare("UPDATE docs SET owner = 'someone-else' WHERE id = ?").bind(other.docId).run();
-      const otherHost = `https://${await originLabel("someone-else")}.openartifacts.site`;
+      const otherHost = `https://${await originCode(env.DB, "someone-else")}.openartifacts.site`;
       const replay = await getFrom(`${otherHost}/d/${other.docId}/threads`, { headers: { cookie: await cookieFor(doc, doc.owner) } }, HOSTS);
       expect(replay.status).toBe(404);
       // And this host does not confirm another publisher's document either.

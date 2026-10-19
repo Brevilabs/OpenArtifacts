@@ -25,7 +25,7 @@ Cloudflare, so the only ones in the suite are deliberately broken bindings used
 to test failure paths. The one other exception is the `EMAIL` (Email Service)
 binding: its only observable is the outgoing message, which Miniflare offers no
 way to read from inside workerd, so tests hand the Worker a recording `send`.
-`npm run test:browser` drives the Share popover in Chrome against the same
+`npm run test:browser` drives the Share popover and comments in Chrome against the same
 Worker bundle on Miniflare's real D1 and R2; it is the one test that needs a
 browser (see `docs/development.md`).
 
@@ -41,7 +41,7 @@ easy to undo by accident:
 
 - **404, never 403.** A doc belonging to another publisher must be
   indistinguishable from one that never existed, on every endpoint. That covers
-  `/open`, `/share`, the request route and the label hosts as well as `/api/v1`.
+  `/open`, `/share`, the request route and the code hosts as well as `/api/v1`.
 - **404 vs 410.** A deleted doc keeps its D1 row forever so its url answers 410.
   Delete destroys the R2 objects; it must never delete the row.
 
@@ -65,7 +65,7 @@ These are day-one decisions, not retrofits:
   document requires nothing. New pages from the CLI start invited-only when the
   plan allows it (`--public` opts out). An invited-only document is the exception, and it
   is never served from `openartifacts.site`: **no origin that runs more than one
-  publisher's scripts may ever hold a credential**, and a label host serves one
+  publisher's scripts may ever hold a credential**, and a code host serves one
   publisher only (`docs/private-sharing.md`).
 - **Documents belong to an account, not to the credential that published them.**
   `docs.owner` is an app-sites `User.id`, and it is always *derived* — from a
@@ -115,10 +115,6 @@ publishers cache, access requests and comments (which snapshot to `threads.json`
 are not in R2; D1 Time Travel (30 days) is what covers them, so D1 stays a
 system of record for those.
 
-The one-time backfill route (`POST /admin/v1/manifests/backfill`) is temporary:
-remove it, with `src/manifest-backfill.ts` and its tests, in the PR after it has
-been run.
-
 ## Owed now that the serving domain has landed
 
 Before the cutover, the serving split uses the old hosts: documents on
@@ -137,7 +133,7 @@ domain, and both are easy to miss because nothing fails loudly without them:
   not the `Cache-Control` the worker sends, and `/d/{docId}` has no extension.
   Without an explicit Cache Rule on the serving zone (or the Cache API inside the
   worker), attaching a domain changes nothing and every read still hits D1 and R2.
-  The rule matches `hostname eq openartifacts.site` only: label hosts
+  The rule matches `hostname eq openartifacts.site` only: code hosts
   (`{label}.openartifacts.site`) serve private bytes and are never cache-rule
   targets.
 - **Then delete must purge that cache.** Pinned `/v{n}` urls are served
@@ -152,7 +148,7 @@ domain, and both are easy to miss because nothing fails loudly without them:
 
 All four canonical, legacy, and retired host vars are set in `wrangler.jsonc`,
 which makes the router resolve by an explicit host allowlist (those four hosts
-plus `{26-char label}.{SERVING_HOST}`, the publisher origins) and fail closed on
+plus `{6-char code}.{SERVING_HOST}`, the publisher origins, and the retired 26-char label hosts, which only redirect to `/open`) and fail closed on
 everything else. Leave them set together. Path-prefix fallback exists only for
 local development when every host var is empty.
 

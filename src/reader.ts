@@ -29,6 +29,7 @@
  * recycled-mailbox refusal in docs/identity.md holds for every provider-backed
  * account, and an address with no account goes through the Terms first.
  */
+import { NO_ANALYTICS, type AnalyticsSink } from "./analytics.js";
 import { APPROVAL_PREFIX, CONFIRM_TOKEN_FIELD, READER_USER_CODE_PREFIX, readSmallForm } from "./approval/handler.js";
 import {
   arcticOAuthClient,
@@ -46,7 +47,7 @@ import {
   ownerEmail,
   sweepExpired,
 } from "./db.js";
-import { codeMessage, emailConfigured, requestMessage, sendEmail } from "./email.js";
+import { codeMessage, emailConfigured, recordEmailDelivery, requestMessage, sendEmail } from "./email.js";
 import { sha256Hex } from "./hash.js";
 import { isDocId, newAccountId, newHandshakeToken } from "./ids.js";
 import { sameOriginPost, withinClientLimit, withinLimit } from "./limits.js";
@@ -99,13 +100,14 @@ export async function handleReader(
   url: URL,
   env: Env,
   ctx?: ExecutionContext,
+  analytics: AnalyticsSink = NO_ANALYTICS,
 ): Promise<Response> {
   const now = Date.now();
   if (url.pathname === OPEN_PREFIX || url.pathname.startsWith(`${OPEN_PREFIX}/`)) {
     const requested = requestRoute(url.pathname);
     if (requested !== null) {
       return request.method === "POST"
-        ? await requestAccess(request, url, env, ctx, requested, now)
+        ? await requestAccess(request, url, env, ctx, requested, now, analytics)
         : READER_NOT_FOUND();
     }
     return request.method === "GET" ? await open(request, url, env, now) : READER_NOT_FOUND();
@@ -128,7 +130,7 @@ export async function handleReader(
 
   if (section === "start" && provider !== undefined) return await start(request, url, env, provider, next, now);
   if (provider !== undefined) return READER_NOT_FOUND();
-  if (section === "email") return await mailCode(request, env, form, next, now);
+  if (section === "email") return await mailCode(request, env, form, next, now, analytics);
   if (section === "code") return await verifyCode(request, env, form, next, now);
   if (section === "confirm") return await confirm(env, form, next, now);
   if (section === "confirm-email") return await confirmEmail(env, form, next, now);
@@ -183,7 +185,7 @@ async function open(request: Request, url: URL, env: Env, now: number): Promise<
       return servingRedirect(`https://${servingHost}${docPath(SERVING_PREFIX, route)}`, 302);
     }
     if (found.allowed) {
-      const grant = await grantUrl(env, found.owner, route, accountId, now);
+      const grant = await grantUrl(env, found.owner, route, accountId, now, found.origin_code);
       if (grant !== null) return servingRedirect(grant.url, 302);
     }
   }
@@ -197,11 +199,12 @@ async function open(request: Request, url: URL, env: Env, now: number): Promise<
  * in. The only place a reader acts on a document they cannot open, so it is
  * built to say nothing.
  *
- * The page is the same bytes with the same status for every outcome: a stored
- * request, a repeat, an unknown or deleted id, a public document, an account
- * that is already allowed, a full list, and a rate limit. Nothing in the
- * response depends on the document, and the owner's email, the one slow step,
- * runs after the response is decided, so timing does not either. The address
+ * Within the account's allowance the page is the same bytes with the same
+ * status for every outcome: a stored request, a repeat, an unknown or deleted
+ * id, a public document, an account that is already allowed, and a full list.
+ * Only the per-account limit, which no document decides, answers **Request not
+ * sent**. The owner's email, the one slow step, runs after the response is
+ * decided, so timing says nothing either. The address
  * that goes on the list is the session account's own `accounts.email`, never a
  * field, and the form that posts here carries none.
  */
@@ -212,6 +215,7 @@ async function requestAccess(
   ctx: ExecutionContext | undefined,
   docId: string,
   now: number,
+  analytics: AnalyticsSink,
 ): Promise<Response> {
   const secret = readerSecret(env);
   if (secret === null || !sameOriginPost(request, url, true)) return READER_NOT_FOUND();
@@ -222,15 +226,14 @@ async function requestAccess(
   const email = await accountEmail(env.DB, accountId);
   if (email === null) return signIn(env, next);
 
-  if (await withinLimit(env.REQUEST_ACCESS_LIMITER, await sha256Hex(`request:${accountId}`))) {
-    const added = await insertAccessRequest(env.DB, docId, accountId, now, MAX_PENDING_REQUESTS_PER_DOC);
-    if (added !== null) {
-      const notified = notifyOwner(env, docId, added);
-      if (ctx === undefined) await notified;
-      else ctx.waitUntil(notified);
-    }
+  const allowed = await withinLimit(env.REQUEST_ACCESS_LIMITER, await sha256Hex(`request:${accountId}`));
+  const added = allowed ? await insertAccessRequest(env.DB, docId, accountId, now, MAX_PENDING_REQUESTS_PER_DOC) : null;
+  if (added !== null) {
+    const notified = notifyOwner(env, docId, added, analytics);
+    if (ctx === undefined) await notified;
+    else ctx.waitUntil(notified);
   }
-  return requestSentPage(email, docId, emailConfigured(env));
+  return requestSentPage(email, docId, emailConfigured(env), allowed);
 }
 
 /**
@@ -243,17 +246,12 @@ async function notifyOwner(
   env: Env,
   docId: string,
   added: { email: string; title: string; owner: string },
+  analytics: AnalyticsSink,
 ): Promise<void> {
-  try {
-    if (!emailConfigured(env)) return;
-    const to = await ownerEmail(env.DB, added.owner);
-    if (to === null) return;
-    // `API_HOST` is set: the reader surface answers only when `readerSignInConfigured` says so.
+  await sendEmail(env, analytics, { type: "access_request", docId, to: () => ownerEmail(env.DB, added.owner) }, () => {
     const manage = `https://${env.API_HOST!.trim()}${SHARE_PREFIX}/${docId}`;
-    await sendEmail(env, to, requestMessage(added.email, added.title, manage));
-  } catch (error) {
-    console.error("request email failed", { error: error instanceof Error ? error.name : "unknown" });
-  }
+    return requestMessage(added.email, added.title, manage);
+  });
 }
 
 /**
@@ -398,19 +396,26 @@ async function mailCode(
   form: URLSearchParams,
   next: string,
   now: number,
+  analytics: AnalyticsSink,
 ): Promise<Response> {
   const secret = readerSecret(env);
   if (secret === null || !emailConfigured(env)) return READER_NOT_FOUND();
   const email = normalizeEmail(form.get("email") ?? "");
   if (email === null) return signIn(env, next, "That doesn’t look like an email address.");
 
+  const target = new URL(next, "https://local.invalid");
+  const route = parseDocPath(target.pathname, OPEN_PREFIX) ?? parseDocPath(target.pathname, SHARE_PREFIX);
+  const embedDoc = target.searchParams.get("doc");
+  const docId = route?.docId ?? (embedDoc !== null && isDocId(embedDoc) ? embedDoc : null);
+  const context = { type: "signin_code" as const, docId, to: email };
   // The client's allowance first: a client that is already refused must not go on
   // spending the buckets of whatever addresses it types, which would lock those
-  // addresses out of their own sign-in. `||` stops at the first refusal.
-  if (
-    !(await withinClientLimit(env.SIGNIN_EMAIL_CLIENT_LIMITER, request)) ||
-    !(await withinLimit(env.SIGNIN_EMAIL_LIMITER, await sha256Hex(`signin:${email}`)))
-  ) {
+  // addresses out of their own sign-in. Its refusal records nothing either, or a
+  // refused client could post as fast as it likes and every post would still be
+  // an analytics event; every record below is inside the client's allowance.
+  if (!(await withinClientLimit(env.SIGNIN_EMAIL_CLIENT_LIMITER, request))) return TOO_MANY();
+  if (!(await withinLimit(env.SIGNIN_EMAIL_LIMITER, await sha256Hex(`signin:${email}`)))) {
+    await recordEmailDelivery(env, analytics, context, "skipped_limit", "sending_limit");
     return TOO_MANY();
   }
 
@@ -430,9 +435,12 @@ async function mailCode(
   )
     .bind(email, await codeHash(secret, email, code), now + SIGNIN_TTL_MS, now, now, MAX_CODE_ATTEMPTS)
     .first();
-  if (stored === null) return TOO_MANY();
+  if (stored === null) {
+    await recordEmailDelivery(env, analytics, context, "skipped_limit", "sending_limit");
+    return TOO_MANY();
+  }
 
-  if (!(await sendEmail(env, email, codeMessage(code)))) {
+  if (await sendEmail(env, analytics, context, () => codeMessage(code)) !== "sent") {
     return readerPage(
       {
         title: "Couldn’t send the code",
