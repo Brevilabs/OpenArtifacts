@@ -102,7 +102,8 @@ to the account that issued the token. Existing document URLs do not change.
 **Publishing follows the account's plan.** First approval uses the deployment's
 default plan. Every token shares its account's limits, and a plan change takes
 effect on the next request without signing in again. The hosted free plan has
-three live documents, six publishes/updates per UTC day, and 1 MiB HTML per doc.
+three live documents, 30 publishes/updates per UTC day, 1 MiB HTML per doc,
+and 250 MiB across retained versions.
 Listing and unsharing never require available publishing quota.
 
 **Revocation is immediate.** A revoked token fails on its very next request,
@@ -1420,8 +1421,9 @@ collection and usage; linking does not grant a second allowance.
 | Limit | Hosted free account | Hosted paid account / paid license |
 | --- | --- | --- |
 | HTML per doc | 1 MiB | 10 MiB |
-| Pushes per UTC day | 6 | 100 |
+| Pushes per UTC day | 30 | 500 (license key alone: 100) |
 | Live docs held | 3 | 500 |
+| Stored across retained versions | 250 MiB | 5 GiB (license key alone: no cap) |
 
 Account plan refusals use `402 limit_reached`. License-key refusals are unchanged:
 `413 too_large` for HTML size, `429 quota_exceeded` for document/daily limits.
