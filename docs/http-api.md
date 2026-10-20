@@ -102,7 +102,8 @@ to the account that issued the token. Existing document URLs do not change.
 **Publishing follows the account's plan.** First approval uses the deployment's
 default plan. Every token shares its account's limits, and a plan change takes
 effect on the next request without signing in again. The hosted free plan has
-three live documents, six publishes/updates per UTC day, and 1 MiB HTML per doc.
+three live documents, 30 publishes/updates per UTC day, 1 MiB HTML per doc,
+and 250 MiB across retained versions.
 Listing and unsharing never require available publishing quota.
 
 **Revocation is immediate.** A revoked token fails on its very next request,
@@ -1383,7 +1384,7 @@ ceilings, plus the optional boolean `privateSharing` (the plan may make document
 invited-only and add people to them; absent means it may not). HTML is measured in UTF-8 bytes and cannot exceed the 10 MiB safety bound:
 
 ```json
-{"free":{"documents":3,"pushesPerDay":6,"htmlBytes":1048576},"pro":{"documents":500,"pushesPerDay":100,"htmlBytes":10485760}}
+{"free":{"documents":3,"pushesPerDay":30,"htmlBytes":1048576,"storageBytes":262144000},"pro":{"documents":500,"pushesPerDay":500,"htmlBytes":10485760,"storageBytes":5368709120}}
 ```
 
 `DEFAULT_PLAN` (default `free`) selects the plan for newly created accounts.
@@ -1392,7 +1393,8 @@ Apply `0005_account_plans.sql` before deploying this version, following the
 `free`; their tokens and documents remain valid. Unknown plans or malformed
 configuration fail closed for publishing, but do not block listing or unsharing.
 Absent or blank `PLAN_LIMITS` uses the built-in map with one `free` entry:
-3 documents, 6 pushes/day and 1 MiB HTML. `PLAN_LIMITS` replaces that map.
+3 documents, 30 pushes/day, 1 MiB HTML and 250 MiB (`storageBytes` 262144000)
+across retained versions. `PLAN_LIMITS` replaces that map.
 
 ### Change an account's plan
 
@@ -1420,8 +1422,9 @@ collection and usage; linking does not grant a second allowance.
 | Limit | Hosted free account | Hosted paid account / paid license |
 | --- | --- | --- |
 | HTML per doc | 1 MiB | 10 MiB |
-| Pushes per UTC day | 6 | 100 |
+| Pushes per UTC day | 30 | 500 (license key alone: 100) |
 | Live docs held | 3 | 500 |
+| Stored across retained versions | 250 MiB | 5 GiB (license key alone: no cap) |
 
 Account plan refusals use `402 limit_reached`. License-key refusals are unchanged:
 `413 too_large` for HTML size, `429 quota_exceeded` for document/daily limits.

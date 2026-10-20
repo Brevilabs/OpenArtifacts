@@ -14,7 +14,7 @@ export interface PlanLimits {
 }
 
 const DEFAULT_PLANS: Record<string, PlanLimits> = {
-  free: { documents: 3, pushesPerDay: 6, htmlBytes: 1024 * 1024 },
+  free: { documents: 3, pushesPerDay: 30, htmlBytes: 1024 * 1024, storageBytes: 250 * 1024 * 1024 },
 };
 
 /** Finite positive ceilings only; the HTML memory safety bound is never configurable. */
