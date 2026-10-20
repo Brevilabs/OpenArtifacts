@@ -50,9 +50,8 @@ It is a small API-first publishing service with inline comments on a quoted pass
   recalled.
 - **Bound abuse.** Hosted free accounts get three live documents, 30
   publishes/updates per UTC day, 1 MiB HTML per document, and 250 MiB across
-  retained versions. Paid plans allow 500 documents, 500 pushes per day, 10 MiB,
-  and 5 GiB across retained versions. Copilot license keys used directly allow
-  500 documents, 100 pushes per day, and 10 MiB.
+  retained versions. Paid plans and paid Copilot license keys allow 500
+  documents, 500 pushes per day, 10 MiB, and 5 GiB across retained versions.
   All credentials share their account's allowance. Unsharing frees a document
   slot, not a daily push. Standalone checkout is not available yet.
 

@@ -56,7 +56,7 @@ export interface DeleteDeps {
  * The prefix is the source of truth here, not the `versions` rows: R2 is the
  * system of record, and a push that wrote an object and died before its row
  * would leave bytes behind that a row-driven delete would silently miss. A doc
- * can hold more than a page of versions — 100 pushes a day compounds — so this
+ * can hold more than a page of versions — 500 pushes a day compounds — so this
  * pages rather than assuming one listing covers it.
  */
 async function deleteDocObjects(

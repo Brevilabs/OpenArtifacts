@@ -292,7 +292,7 @@ describe("DELETE /api/v1/docs/{docId}", () => {
 
   it("clears a doc holding more objects than one R2 listing returns", async () => {
     const docId = await seedDoc(ownerA, seededId(1), Date.now());
-    // 100 pushes a day compounds: a long-lived doc outgrows R2's 1000-key
+    // 500 pushes a day compounds: a long-lived doc outgrows R2's 1000-key
     // listing page, and a delete that read only the first page would leave the
     // rest of the doc sitting in the bucket forever.
     //

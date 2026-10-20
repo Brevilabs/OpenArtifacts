@@ -25,7 +25,7 @@
  */
 import type { AnalyticsSink } from "../analytics.js";
 import { maySharePrivately, type Publisher } from "../auth.js";
-import { MAX_DOCS_PER_PUBLISHER, MAX_DOC_BYTES, MAX_PUSHES_PER_DAY } from "../config.js";
+import { MAX_DOCS_PER_PUBLISHER, MAX_DOC_BYTES, MAX_PUSHES_PER_DAY, MAX_STORED_BYTES_PER_PUBLISHER } from "../config.js";
 import { limitReached, planLimits, type PlanLimits } from "../plans.js";
 import type { Env } from "../config.js";
 import { planRefusal } from "./access.js";
@@ -184,7 +184,7 @@ async function storeVersion(
   const bytes = new TextEncoder().encode(html);
   const key = versionObjectKey(docId, version);
 
-  if (!(await reserveStorage(env.DB, publisher.owner, docId, version, bytes.byteLength, limits?.storageBytes))) {
+  if (!(await reserveStorage(env.DB, publisher.owner, docId, version, bytes.byteLength, limits ? limits.storageBytes : MAX_STORED_BYTES_PER_PUBLISHER))) {
     return "full";
   }
   // An uncertain put/metadata failure keeps the reservation until reconciliation.
@@ -220,9 +220,9 @@ async function storeVersion(
   return "stored";
 }
 
-function storageFull(env: Env, publisher: Publisher, limits: PlanLimits): Response {
-  return limitReached(env, publisher, "storageBytes",
-    `Your ${limits.storageBytes} byte storage allowance is full, including retained versions and pending uploads. Unshare documents to free space. Existing pages remain available.`);
+function storageFull(env: Env, publisher: Publisher, limits: PlanLimits | null): Response {
+  const message = `Your ${limits?.storageBytes ?? MAX_STORED_BYTES_PER_PUBLISHER} byte storage allowance is full, including retained versions and pending uploads. Unshare documents to free space. Existing pages remain available.`;
+  return limits ? limitReached(env, publisher, "storageBytes", message) : errorResponse("quota_exceeded", message);
 }
 
 function pushed(
@@ -327,7 +327,7 @@ export async function createDoc(
     await refundDailyPush(env.DB, publisher.owner, day);
     if (result === "full") {
       await rollbackCreate(env.DB, docId);
-      return storageFull(env, publisher, limits!);
+      return storageFull(env, publisher, limits);
     }
     return docNotFound(docId);
   }
@@ -400,7 +400,7 @@ export async function updateDoc(
   const result = await storeVersion(env, docId, version, parsed.body.html, title, now, publisher, limits);
   if (result !== "stored") {
     await refundDailyPush(env.DB, publisher.owner, day);
-    return result === "full" ? storageFull(env, publisher, limits!) : docNotFound(docId);
+    return result === "full" ? storageFull(env, publisher, limits) : docNotFound(docId);
   }
 
   // Only now: the title and timestamp in "my docs" describe what the public url

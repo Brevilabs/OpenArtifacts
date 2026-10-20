@@ -257,8 +257,8 @@ export const LICENSE_CACHE_TTL_MS = 60 * 60 * 1000;
 /** Largest HTML body a single push may carry, before injection. */
 export const MAX_DOC_BYTES = 10 * 1024 * 1024;
 
-/** Pushes a single owner may make in one UTC day, across credentials. */
-export const MAX_PUSHES_PER_DAY = 100;
+/** Pushes a single license owner may make in one UTC day, across credentials. Matches the hosted paid plans. */
+export const MAX_PUSHES_PER_DAY = 500;
 
 /** People one document can be shared with, so its list never needs paging. */
 export const MAX_INVITES_PER_DOC = 100;
@@ -282,6 +282,9 @@ export const MAX_PENDING_REQUESTS_PER_DOC = 100;
 
 /** Live (non-deleted) docs a paid license owner may hold. */
 export const MAX_DOCS_PER_PUBLISHER = 500;
+
+/** Bytes a paid license owner may keep across retained versions and pending uploads. Matches the hosted paid plans. */
+export const MAX_STORED_BYTES_PER_PUBLISHER = 5 * 1024 * 1024 * 1024;
 
 /**
  * How long a device code is worth approving.
