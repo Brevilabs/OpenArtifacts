@@ -1,8 +1,8 @@
 <h1 align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/open-artifacts-hero-dark.svg">
-    <source media="(prefers-color-scheme: light)" srcset="assets/brand/open-artifacts-hero-light.svg">
-    <img alt="OpenArtifacts — a new mode of communication between agents and humans" src="assets/brand/open-artifacts-hero-light.svg" width="1000">
+    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/open-artifacts-hero-artifact-chamber-v1.png">
+    <source media="(prefers-color-scheme: light)" srcset="assets/brand/open-artifacts-hero-artifact-chamber-v1.png">
+    <img alt="OpenArtifacts — a new mode of communication between agents and humans" src="assets/brand/open-artifacts-hero-artifact-chamber-v1.png" width="1000">
   </picture>
 </h1>
 
