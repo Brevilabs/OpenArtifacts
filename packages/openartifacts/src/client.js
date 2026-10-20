@@ -13,16 +13,19 @@ export class APIError extends Error {
 
 /**
  * The fetch-only OpenArtifacts client. Keeping it free of Node APIs lets the
- * same calls be tested directly against the local Worker.
- * @param {{host: string, token?: string, fetcher?: typeof fetch}} options
+ * same calls be tested directly against the local Worker. `clientId` names the
+ * app that wraps the CLI, such as `obsidian-copilot`; the server reads it only as
+ * a display hint.
+ * @param {{host: string, token?: string, clientId?: string, fetcher?: typeof fetch}} options
  */
-export function createClient({ host, token, fetcher = fetch }) {
+export function createClient({ host, token, clientId, fetcher = fetch }) {
   const base = host.replace(/\/$/, "");
 
   /** @param {string} path @param {RequestInit} [init] @param {number[]} [allowed] @param {boolean} [authenticated] */
   async function request(path, init = {}, allowed = [], authenticated = true) {
     const headers = new Headers(init.headers);
     if (token && authenticated) headers.set("authorization", `Bearer ${token}`);
+    if (clientId && authenticated) headers.set("x-openartifacts-client", clientId);
     if (init.body !== undefined) headers.set("content-type", "application/json");
     const response = await fetcher(path.startsWith("http") ? path : `${base}${path}`, {
       ...init,

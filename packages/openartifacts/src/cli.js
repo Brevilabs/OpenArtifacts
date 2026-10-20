@@ -538,7 +538,7 @@ export async function main(args) {
   }
 
   const token = await credential(host, directory);
-  const client = createClient({ host, token });
+  const client = createClient({ host, token, clientId: process.env.OPENARTIFACTS_CLIENT });
   if (command === "account" && !token.startsWith("oat_")) {
     throw new Error("This command needs an OpenArtifacts account token. Run `openartifacts login`; unset OPENARTIFACTS_TOKEN if it contains a license key.");
   }

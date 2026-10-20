@@ -10,7 +10,7 @@ import { APIError } from "../src/client.js";
 
 /** Point the CLI at a scratch config directory and host for one test. */
 async function withEnvironment(values, run) {
-  const names = ["OPENARTIFACTS_CONFIG_DIR", "OPENARTIFACTS_API_HOST", "OPENARTIFACTS_TOKEN"];
+  const names = ["OPENARTIFACTS_CONFIG_DIR", "OPENARTIFACTS_API_HOST", "OPENARTIFACTS_TOKEN", "OPENARTIFACTS_CLIENT"];
   const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
   const log = console.log;
   const lines = [];
@@ -209,6 +209,7 @@ async function publishingServer() {
         method: request.method,
         path: request.url,
         authorization: request.headers.authorization,
+        client: request.headers["x-openartifacts-client"],
         body: body ? JSON.parse(body) : undefined,
       });
       response.setHeader("content-type", "application/json");
@@ -272,7 +273,10 @@ async function publishingServer() {
       }
       response.statusCode = request.method === "POST" ? 201 : 200;
       const mode = request.url === "/api/v1/private-docs" ? { linkAccess: "invited" } : request.url === "/api/v1/docs" ? { linkAccess: "anyone" } : {};
-      response.end(JSON.stringify({ docId, url, version: requests.length, ...mode }));
+      // The server offers account linking on a create only to a named client.
+      const guidance = request.method === "POST" && request.headers["x-openartifacts-client"] === "obsidian-copilot"
+        ? { guidance: { message: "Link your account.", url: "https://example.test/account" } } : {};
+      response.end(JSON.stringify({ docId, url, version: requests.length, ...mode, ...guidance }));
     });
   });
   server.listen(0, "127.0.0.1");
@@ -451,6 +455,24 @@ test("a new page starts private when no flag is given, and its receipt says so",
         manageUrl: `${remote.host}/share/9f2k4mvq7t0xbz3n`,
       });
     });
+  } finally {
+    remote.server.close();
+  }
+});
+
+test("a wrapping app named in OPENARTIFACTS_CLIENT is sent to the server and its guidance printed", async () => {
+  const { directory, page } = await publishFixture("client");
+  const remote = await publishingServer();
+  try {
+    await withEnvironment({ ...publishEnvironment(directory, remote), OPENARTIFACTS_CLIENT: "obsidian-copilot" }, async (lines) => {
+      await main(["publish", page]);
+      assert.deepEqual(JSON.parse(lines[0]).guidance, { message: "Link your account.", url: "https://example.test/account" });
+    });
+    await withEnvironment(publishEnvironment(directory, remote), async (lines) => {
+      await main(["publish", page]);
+      assert.equal(JSON.parse(lines[0]).guidance, undefined);
+    });
+    assert.deepEqual(remote.requests.map((request) => request.client), ["obsidian-copilot", undefined]);
   } finally {
     remote.server.close();
   }

@@ -133,7 +133,10 @@ to the installed SKILL.md.
 The first authenticated command opens the browser device flow and stores the resulting
 token with owner-only permissions. Set `OPENARTIFACTS_TOKEN` to supply a credential
 without browser sign-in; it accepts an OpenArtifacts token or a Brevilabs license key.
-Set `OPENARTIFACTS_API_HOST` to target a self-hosted deployment.
+Set `OPENARTIFACTS_API_HOST` to target a self-hosted deployment. An app that wraps
+the CLI sets `OPENARTIFACTS_CLIENT` to its name, which the CLI sends as
+`X-OpenArtifacts-Client`; a publish receipt then may carry a `guidance` object
+with a `message` and a `url` for that app to show.
 
 ## Account and browser actions
 
