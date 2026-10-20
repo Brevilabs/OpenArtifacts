@@ -1528,7 +1528,7 @@ These additive routes are served on the API host. They use no browser cookies.
 cannot access it. It returns `200` with `cache-control: no-store`:
 
 ```json
-{"accountId":"oa_…","plan":"free","limits":{"documents":3,"pushesPerDay":6,"htmlBytes":1048576},"usage":{"documents":1,"pushesToday":2},"externalLinked":false,"refresh":{"status":"refreshed","checkedAt":1800000000000,"expiresAt":null}}
+{"accountId":"oa_…","plan":"free","limits":{"documents":3,"pushesPerDay":30,"htmlBytes":1048576,"storageBytes":262144000},"usage":{"documents":1,"pushesToday":2,"storedBytes":48213},"externalLinked":false,"refresh":{"status":"refreshed","checkedAt":1800000000000,"expiresAt":null}}
 ```
 
 Limits reflect the deployment configuration. Usage counts live documents and
@@ -1624,12 +1624,12 @@ revision migration is replaced, not upgraded in place.
 
 The trusted entitlement response may additionally include
 `storageAllowance: "lifetime_5gib"` with `plan: "plus"`. Only this explicit
-signal maps to configured `pro_lifetime`; absent/null retains the previous
-mapping. A plain `pro` plan or null expiry never implies a storage allowance.
-The resolved plan follows the same cache, outage and newer-refresh rules above.
-`pro_lifetime` has 500 documents, 100 daily pushes, 10 MiB per upload and
-5,368,709,120 bytes across retained HTML versions and outstanding writes, and
-includes private sharing like `pro`.
+signal maps to configured `pro_lifetime`; absent/null maps to `pro`. The
+resolved plan follows the same cache, outage and newer-refresh rules above.
+On the hosted service both `pro` and `pro_lifetime` have 500 documents, 500
+daily pushes, 10 MiB per upload and 5,368,709,120 bytes across retained HTML
+versions and outstanding writes, and include private sharing. The hosted `free`
+plan allows 262,144,000 bytes.
 
 Account responses add `usage.storedBytes`; capped plans add `limits.storageBytes`.
 The CLI's `account` command prints these when supplied and remains compatible
