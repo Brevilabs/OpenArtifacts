@@ -1422,12 +1422,13 @@ collection and usage; linking does not grant a second allowance.
 | Limit | Hosted free account | Hosted paid account / paid license |
 | --- | --- | --- |
 | HTML per doc | 1 MiB | 10 MiB |
-| Pushes per UTC day | 30 | 500 (license key alone: 100) |
+| Pushes per UTC day | 30 | 500 |
 | Live docs held | 3 | 500 |
-| Stored across retained versions | 250 MiB | 5 GiB (license key alone: no cap) |
+| Stored across retained versions | 250 MiB | 5 GiB |
 
-Account plan refusals use `402 limit_reached`. License-key refusals are unchanged:
-`413 too_large` for HTML size, `429 quota_exceeded` for document/daily limits.
+Account plan refusals use `402 limit_reached`. License-key refusals use
+`413 too_large` for HTML size and `429 quota_exceeded` for document, daily and
+storage limits.
 The absolute 10 MiB HTML ceiling and the bounded request reader remain safety
 limits on every plan; exceeding those returns `413 too_large`.
 
