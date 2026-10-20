@@ -1384,7 +1384,7 @@ ceilings, plus the optional boolean `privateSharing` (the plan may make document
 invited-only and add people to them; absent means it may not). HTML is measured in UTF-8 bytes and cannot exceed the 10 MiB safety bound:
 
 ```json
-{"free":{"documents":3,"pushesPerDay":6,"htmlBytes":1048576},"pro":{"documents":500,"pushesPerDay":100,"htmlBytes":10485760}}
+{"free":{"documents":3,"pushesPerDay":30,"htmlBytes":1048576,"storageBytes":262144000},"pro":{"documents":500,"pushesPerDay":500,"htmlBytes":10485760,"storageBytes":5368709120}}
 ```
 
 `DEFAULT_PLAN` (default `free`) selects the plan for newly created accounts.
@@ -1393,7 +1393,8 @@ Apply `0005_account_plans.sql` before deploying this version, following the
 `free`; their tokens and documents remain valid. Unknown plans or malformed
 configuration fail closed for publishing, but do not block listing or unsharing.
 Absent or blank `PLAN_LIMITS` uses the built-in map with one `free` entry:
-3 documents, 6 pushes/day and 1 MiB HTML. `PLAN_LIMITS` replaces that map.
+3 documents, 30 pushes/day, 1 MiB HTML and 250 MiB (`storageBytes` 262144000)
+across retained versions. `PLAN_LIMITS` replaces that map.
 
 ### Change an account's plan
 
