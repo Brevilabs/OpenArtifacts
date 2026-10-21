@@ -557,8 +557,9 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       hideTip();
       window.getSelection().removeAllRanges();
       if (focusId) { focusId = ""; send({ event: "focus", threadId: "" }); }
-      // The pointer may still rest on a thread's passage that the draft covers (a keyboard draft): its hover layer would stack on the open and draft ones. It comes back on the next pointer move.
-      if (hoverPage && ranges.has(hoverPage) && overlaps(ranges.get(hoverPage), draftRange)) hoverPage = "";
+      // The pointer may still rest on a thread's passage that the draft covers (a keyboard draft), or its card does: that hover layer would stack on the open and draft ones. It comes back on the next pointer move.
+      const hovered = hoverFrame || hoverPage;
+      if (hovered && ranges.has(hovered) && overlaps(ranges.get(hovered), draftRange)) { hoverFrame = ""; hoverPage = ""; }
       // Opened before the draft is measured: the sidebar narrows the page and its text reflows. And the frame is told it is shown before the draft arrives: a frame that is not shown draws nothing, so a draft that came first found no field to focus.
       openPanel();
       reveal(draftRange);

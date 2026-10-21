@@ -969,3 +969,24 @@ test("a keyboard draft on one passage leaves the hover layer on a different thre
   assert.deepEqual(await painted(tab, "openartifacts-focus"), [hovered]);
   await context.close();
 });
+
+test("a keyboard draft on a passage whose card is hovered is painted as open and draft only", { timeout: 120_000 }, async () => {
+  const docId = await publish("Keyboard draft, card hover", REPORT);
+  const quote = "Revenue grew 18% quarter over quarter";
+  await agentThread(docId, { exact: quote, section: "growth" }, "Which quarter?");
+  const context = await newContext(ALICE, { signedInTo: docId });
+  const tab = await context.newPage();
+  await tab.goto(docUrl(docId));
+  const frame = await until("the comments frame", () => commentsFrame(tab, docId));
+  await until("the highlight", async () => (await painted(tab, "openartifacts-open")).length === 1);
+  await openSidebar(tab);
+  await cardFor(frame, "Which quarter?").hover();
+  await until("the hover layer", async () => (await painted(tab, "openartifacts-focus")).length === 1);
+  assert.equal(await select(tab, quote), true);
+  const mac = await tab.evaluate(() => /Mac|iPhone|iPad/.test(navigator.platform));
+  await tab.keyboard.press(mac ? "Meta+Alt+KeyM" : "Control+Alt+KeyM");
+  await until("the draft", async () => (await painted(tab, "openartifacts-draft")).length === 1);
+  assert.deepEqual(await painted(tab, "openartifacts-open"), [quote]);
+  assert.deepEqual(await painted(tab, "openartifacts-focus"), []);
+  await context.close();
+});
