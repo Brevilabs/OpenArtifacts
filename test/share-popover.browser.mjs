@@ -708,11 +708,15 @@ test("the owner view is invite, people, general access, above a pinned footer", 
 
 test("a menu commits only on a click, Enter or Space, never on a stray key", { timeout: 120_000 }, async () => {
   const X = await publish("Stray keys", "<p>Mine.</p>");
+  // Enough people that main scrolls, with the one under test last.
   const person = "kim@example.com";
-  assert.equal((await api(`/api/v1/docs/${X}/access/people/${encodeURIComponent(person)}`, { method: "PUT", body: "{}" })).status, 200);
+  for (const address of ["a1@example.com", "a2@example.com", "a3@example.com", "a4@example.com", person]) {
+    assert.equal((await api(`/api/v1/docs/${X}/access/people/${encodeURIComponent(address)}`, { method: "PUT", body: "{}" })).status, 200);
+  }
   const context = await newContext(OWNER_ACCOUNT);
   const { page, frame } = await ownerFrame(context, X);
   const state = async () => (await (await api(`/api/v1/docs/${X}/access`)).json());
+  const roleOfKim = async () => (await state()).people.find((entry) => entry.email === person).role;
   const writes = [];
   page.on("request", (request) => { if (request.method() !== "GET" && request.url().includes("/embed/api/")) writes.push(`${request.method()} ${request.url()}`); });
   const popover = page.locator(".openartifacts-share-popover");
@@ -743,8 +747,24 @@ test("a menu commits only on a click, Enter or Space, never on a stray key", { t
     await frame.locator(".pop").waitFor({ state: "detached" });
     assert.deepEqual(writes, []);
   }
-  assert.equal((await state()).people[0].role, "comment");
+  assert.equal(await roleOfKim(), "comment");
   assert.equal((await state()).linkAccess, "anyone");
+
+  // Tab leaves an open menu without a write, back on its button and on to the next control.
+  const last = accessOf(frame, `Access for ${person}`);
+  await last.focus();
+  await page.keyboard.press("Enter");
+  await frame.locator(".pop").waitFor();
+  await page.keyboard.press("Tab");
+  await frame.locator(".pop").waitFor({ state: "detached" });
+  assert.equal(await frame.evaluate(() => document.activeElement.getAttribute("aria-label")), "General access", "Tab moved on from the button");
+  assert.deepEqual(writes, []);
+  // Scrolling the list closes an open menu, which would otherwise stay where its button was.
+  await last.click();
+  await frame.locator(".pop").waitFor();
+  await frame.locator("main").evaluate((node) => { node.scrollTop = 40; });
+  await frame.locator(".pop").waitFor({ state: "detached" });
+  assert.deepEqual(writes, []);
 
   // Enter on an option writes: open with Enter, move up to Can view, press Enter.
   const role = accessOf(frame, `Access for ${person}`);
@@ -753,7 +773,7 @@ test("a menu commits only on a click, Enter or Space, never on a stray key", { t
   await frame.locator(".pop").waitFor();
   await page.keyboard.press("ArrowUp");
   await page.keyboard.press("Enter");
-  await until("the role to be saved", async () => (await state()).people[0].role === "view");
+  await until("the role to be saved", async () => (await roleOfKim()) === "view");
   assert.equal(writes.length, 1);
   // Space does as well.
   await role.waitFor();
@@ -763,7 +783,7 @@ test("a menu commits only on a click, Enter or Space, never on a stray key", { t
   await frame.locator(".pop").waitFor();
   await page.keyboard.press("ArrowDown");
   await page.keyboard.press("Space");
-  await until("the role to be saved again", async () => (await state()).people[0].role === "comment");
+  await until("the role to be saved again", async () => (await roleOfKim()) === "comment");
   await context.close();
 });
 

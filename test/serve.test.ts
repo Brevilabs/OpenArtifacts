@@ -2253,6 +2253,9 @@ describe("an invited-only document", () => {
         url: `https://openartifacts.site/d/${doc.docId}`,
         title: "Secret",
       });
+      // Where comments are not bound, a listed Can comment reader can only view.
+      const unbound = await embedApi(`${doc.docId}/access`, await tokenFor(invitee, doc.docId), {}, { ...config, COMMENTS: undefined });
+      expect(await unbound.json()).toMatchObject({ viewer: "reader", role: "view" });
       const nobody = await embedApi(`${doc.docId}/access`, await tokenFor(stranger, doc.docId), {}, config);
       expect(nobody.status).toBe(404);
       expect(await nobody.text()).not.toContain("Secret");

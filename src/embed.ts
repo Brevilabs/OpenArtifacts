@@ -68,6 +68,7 @@ import type { Env } from "./config.js";
 import { accountEmail, displayNames, findReadableDoc, inviteRole, putEmbedHandoff, takeEmbedHandoff } from "./db.js";
 import { FRAME_CSS, FRAME_SCRIPT, PAGE_SCRIPT } from "./embed-scripts.js";
 import { accountPlan } from "./entitlement.js";
+import { ownerHasComments } from "./comments/access.js";
 import { handleCommentsEmbed } from "./comments/embed-api.js";
 import { commentsFrame } from "./comments/frame.js";
 import { docNotFound, errorResponse } from "./errors.js";
@@ -87,6 +88,7 @@ import {
   PAGE_SCRIPT_PATH,
 } from "./paths.js";
 import { readBodyWithin } from "./quota.js";
+import { roleAtLeast } from "./roles.js";
 import { readerSecret } from "./reader-config.js";
 import { popupDonePage, popupRefusedPage, READER_NOT_FOUND, TOO_MANY } from "./reader-pages.js";
 import { signIn } from "./reader.js";
@@ -384,6 +386,10 @@ const noStore = (response: Response): Response => {
  * credential is a header a cross-site page cannot attach without a preflight
  * that fails, never a cookie.
  */
+async function readerCanComment(env: Env, owner: string, docId: string, email: string, now: number): Promise<boolean> {
+  return env.COMMENTS !== undefined && roleAtLeast(await inviteRole(env.DB, docId, email), "comment") && (await ownerHasComments(env, owner, now));
+}
+
 async function frameApi(
   request: Request,
   url: URL,
@@ -441,8 +447,9 @@ async function frameApi(
       {
         viewer: "reader",
         account: email,
-        // This account's role on the invite list; a reader who is not listed (a public page) can view.
-        role: (await inviteRole(env.DB, docId, email)) ?? "view",
+        // What this account may do here: comment only where the threads resource would let it (a listed
+        // role of comment or better, comments bound, and the owner's plan including them), else view.
+        role: (await readerCanComment(env, readable.owner, docId, email, now)) ? "comment" : "view",
         docId,
         url: publicDocUrl(env, url, docId),
         title: readable.title,

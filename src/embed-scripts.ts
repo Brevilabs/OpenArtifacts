@@ -998,6 +998,9 @@ export const FRAME_SCRIPT = String.raw`(() => {
     if (openMenu !== null && !openMenu.pop.contains(event.target) && !openMenu.trigger.contains(event.target)) closeMenu(false);
   }, true);
   window.addEventListener("blur", () => closeMenu(false));
+  // The popup is fixed in the frame, so it would stay put while its button moves.
+  window.addEventListener("resize", () => closeMenu(false));
+  main.addEventListener("scroll", () => closeMenu(false));
   // The options are a list of {value, label, danger}, with null for a separator; pick gets the value chosen.
   const menu = (ariaLabel, options, current, pick) => {
     const shown = options.find((option) => option !== null && option.value === current);
@@ -1017,7 +1020,7 @@ export const FRAME_SCRIPT = String.raw`(() => {
       pop.addEventListener("keydown", (event) => {
         const at = items.indexOf(document.activeElement);
         if (event.key === "Escape") { event.preventDefault(); closeMenu(true); }
-        else if (event.key === "Tab") closeMenu(false);
+        else if (event.key === "Tab") closeMenu(true);
         else if (event.key === "ArrowDown") { event.preventDefault(); items[Math.min(items.length - 1, at + 1)].focus(); }
         else if (event.key === "ArrowUp") { event.preventDefault(); items[Math.max(0, at - 1)].focus(); }
         else if (event.key === "Home") { event.preventDefault(); items[0].focus(); }
