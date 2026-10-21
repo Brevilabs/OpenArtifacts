@@ -882,11 +882,24 @@ test("on a phone Comment docks at the bottom centre, clear of the system's menu,
   await context.close();
 });
 
-for (const [theme, head, underlined] of [
-  ["dark", "<style>body{color:#e9ebee;background:#1b1d24}</style>", true],
-  ["light", "", false],
+const MARK_RULES = {
+  dark: [
+    "::highlight(openartifacts-open){background-color:rgba(255,176,32,.2)}",
+    "::highlight(openartifacts-focus){background-color:rgba(255,176,32,.2);text-decoration:underline;text-decoration-color:rgba(255,176,32,.9);text-decoration-thickness:2px}",
+    "::highlight(openartifacts-draft){background-color:rgba(255,176,32,.36);text-decoration:underline;text-decoration-color:rgba(255,176,32,.9);text-decoration-thickness:2px}",
+  ],
+  light: [
+    "::highlight(openartifacts-open){background-color:rgba(255,200,0,.28)}",
+    "::highlight(openartifacts-focus){background-color:rgba(255,200,0,.5)}",
+    "::highlight(openartifacts-draft){background-color:rgba(255,184,0,.5)}",
+  ],
+};
+
+for (const [theme, head] of [
+  ["dark", "<style>body{color:#e9ebee;background:#1b1d24}</style>"],
+  ["light", ""],
 ]) {
-  test(`a ${theme} page's open, active and draft passages are marked ${underlined ? "with an underline on the last two" : "without an underline"}`, { timeout: 120_000 }, async () => {
+  test(`a ${theme} page's open, active and draft passages are marked with exactly the ${theme} colours`, { timeout: 120_000 }, async () => {
     const html = page(REPORT, head);
     const docId = await publish(`Marks, ${theme}`, "", { html });
     await agentThread(docId, { exact: "Revenue grew 18% quarter over quarter", section: "growth" }, "Which quarter?");
@@ -896,9 +909,14 @@ for (const [theme, head, underlined] of [
     await tab.goto(docUrl(docId));
     const frame = await until("the comments frame", () => commentsFrame(tab, docId));
     await until("both highlights", async () => (await painted(tab, "openartifacts-open")).length === 2);
-    const rules = () => tab.evaluate(() => document.adoptedStyleSheets.flatMap((sheet) => [...sheet.cssRules].map((rule) => rule.cssText)).filter((text) => text.includes("openartifacts-")));
-    const text = (await rules()).join("\n");
-    assert.equal(text.includes("underline"), underlined, text);
+    const rules = await tab.evaluate(() => document.adoptedStyleSheets.flatMap((sheet) => [...sheet.cssRules].map((rule) => rule.cssText)).filter((text) => text.includes("openartifacts-")));
+    // Compared as the browser serialises them, so build the expectation the same way.
+    const expected = await tab.evaluate((texts) => {
+      const sheet = new CSSStyleSheet();
+      sheet.replaceSync(texts.join(""));
+      return [...sheet.cssRules].map((rule) => rule.cssText);
+    }, MARK_RULES[theme]);
+    assert.deepEqual(rules, expected);
     await openSidebar(tab);
     await cardFor(frame, "Which accounts?").click();
     await until("the active thread", async () => (await painted(tab, "openartifacts-focus")).length === 1);
