@@ -787,6 +787,34 @@ test("a menu commits only on a click, Enter or Space, never on a stray key", { t
   await context.close();
 });
 
+test("where comments are not bound, an invitee is just invited, and there is no role to choose", { timeout: 120_000 }, async () => {
+  const X = await publish("No comments here", "<p>Mine.</p>");
+  const person = "lee@example.com";
+  assert.equal((await api(`/api/v1/docs/${X}/access/people/${encodeURIComponent(person)}`, { method: "PUT", body: "{}" })).status, 200);
+  const context = await newContext(OWNER_ACCOUNT);
+  const { page } = await ownerFrame(context, X);
+  // The access answer of a server with no comments object leaves `roles` out; the stored role is still `comment`.
+  await page.route(`https://${API}/embed/api/docs/${X}/access`, async (route) => {
+    const request = route.request();
+    if (request.method() !== "GET") return route.continue();
+    const response = await route.fetch({ url: `https://127.0.0.1:${mfPort}/embed/api/docs/${X}/access`, headers: { ...request.headers(), host: API } });
+    const body = await response.json();
+    delete body.roles;
+    await route.fulfill({ response, json: body });
+  });
+  await page.reload();
+  await page.locator("a[data-openartifacts-share]").click();
+  const frame = await until("the Share frame", () => frameOf(page, X));
+  const menu = accessOf(frame, `Access for ${person}`);
+  await menu.waitFor();
+  assert.equal(await menu.innerText(), "Invited");
+  assert.equal(await frame.getByPlaceholder("Invite people by email").count(), 1, "people can still be invited");
+  await menu.click();
+  assert.deepEqual(await frame.getByRole("option").allInnerTexts(), ["Invited", "Remove access"]);
+  assert.equal(await frame.getByText("Can comment").count(), 0, "no role is claimed");
+  await context.close();
+});
+
 test("a reader sees their own row and role, with Use another account in the footer", { timeout: 120_000 }, async () => {
   const X = await publish("Read only", "<p>Mine.</p>");
   const context = await newContext(accountId("e"));

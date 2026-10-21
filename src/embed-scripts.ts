@@ -1111,10 +1111,12 @@ export const FRAME_SCRIPT = String.raw`(() => {
     // role is selected exactly. One this script does not offer stays as its own option, so it is never
     // rewritten, and one the plan no longer grants can still be lowered to one it does. Where the server has no
     // comments there is no role to choose, and the current one is the only label.
+    // With no comments on this server a stored role is not something anyone can do, so a person is just invited.
+    const listedLabel = (role) => (roles === null ? "Invited" : roleLabel(role));
     const accessMenu = (entry) => {
       const offered = roles === null ? [entry.role] : roles.includes(entry.role) ? roles : roles.concat([entry.role]);
       const address = "/access/people/" + encodeURIComponent(entry.email);
-      const options = offered.map((role) => ({ value: role, label: roleLabel(role) })).concat([null, { value: "remove", label: "Remove access", danger: true }]);
+      const options = offered.map((role) => ({ value: role, label: listedLabel(role) })).concat([null, { value: "remove", label: "Remove access", danger: true }]);
       const trigger = menu("Access for " + entry.email, options, entry.role, (chosen) => {
         if (chosen === entry.role) return;
         if (chosen === "remove") write("DELETE", address, undefined, false, trigger);
@@ -1139,7 +1141,7 @@ export const FRAME_SCRIPT = String.raw`(() => {
       ].filter((kid) => kid !== null)), "req"))));
     }
     const ownerName = typeof body.name === "string" && body.name !== "" ? body.name : body.account;
-    const invitees = body.people.map((entry) => person(entry.email, null, body.email ? null : "Send them the link", narrow ? node("span", { class: "role" }, [roleLabel(entry.role)]) : accessMenu(entry)));
+    const invitees = body.people.map((entry) => person(entry.email, null, body.email ? null : "Send them the link", narrow ? node("span", { class: "role" }, [listedLabel(entry.role)]) : accessMenu(entry)));
     kids.push(node("h2", {}, ["People with access"]), node("ul", {}, [person(body.account, ownerName, body.account, node("span", { class: "role" }, ["Owner"]), "", true)].concat(invitees)));
     // Both lines are about people on the list, so they wait for someone to be on it.
     const listed = body.people.length > 0 || body.requests.length > 0;
