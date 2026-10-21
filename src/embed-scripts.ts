@@ -890,8 +890,8 @@ export const FRAME_SCRIPT = String.raw`(() => {
       // Only a write that changed the mode counts, so a repeat of "Only those
       // invited" on a stale view does not vouch for the frame.
       if (modeAfter && parsed.changed && parsed.linkAccess === "invited") switched = true;
-      // The owner's own click made the page public: its url is the apex now, and a tab on the code host is on the wrong origin.
-      if (modeAfter && parsed.changed && parsed.linkAccess === "anyone" && fits) post("moved");
+      // The owner's own click left the page public (whether this write or a concurrent one changed it): its url is the apex now, and a tab on the code host is on the wrong origin.
+      if (modeAfter && parsed.linkAccess === "anyone" && fits) post("moved");
       present(parsed);
       // An add, an approval or a role change the owner just made with a click: the page may now have
       // someone who can comment, and the owner is looking.
