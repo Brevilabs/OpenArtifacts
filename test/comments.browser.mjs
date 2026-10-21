@@ -881,3 +881,32 @@ test("on a phone Comment docks at the bottom centre, clear of the system's menu,
   });
   await context.close();
 });
+
+for (const [theme, head, underlined] of [
+  ["dark", "<style>body{color:#e9ebee;background:#1b1d24}</style>", true],
+  ["light", "", false],
+]) {
+  test(`a ${theme} page's open, active and draft passages are marked ${underlined ? "with an underline on the last two" : "without an underline"}`, { timeout: 120_000 }, async () => {
+    const html = page(REPORT, head);
+    const docId = await publish(`Marks, ${theme}`, "", { html });
+    await agentThread(docId, { exact: "Revenue grew 18% quarter over quarter", section: "growth" }, "Which quarter?");
+    await agentThread(docId, { exact: "Renewal risk is concentrated in three accounts" }, "Which accounts?");
+    const context = await newContext(ALICE, { signedInTo: docId });
+    const tab = await context.newPage();
+    await tab.goto(docUrl(docId));
+    const frame = await until("the comments frame", () => commentsFrame(tab, docId));
+    await until("both highlights", async () => (await painted(tab, "openartifacts-open")).length === 2);
+    const rules = () => tab.evaluate(() => document.adoptedStyleSheets.flatMap((sheet) => [...sheet.cssRules].map((rule) => rule.cssText)).filter((text) => text.includes("openartifacts-")));
+    const text = (await rules()).join("\n");
+    assert.equal(text.includes("underline"), underlined, text);
+    await openSidebar(tab);
+    await cardFor(frame, "Which accounts?").click();
+    await until("the active thread", async () => (await painted(tab, "openartifacts-focus")).length === 1);
+    await tab.mouse.move(5, 5);
+    await shoot(tab, `marks-${theme}-active`);
+    await pressComment(tab, "Staffing is unchanged");
+    await until("the draft", async () => (await painted(tab, "openartifacts-draft")).length === 1);
+    await shoot(tab, `marks-${theme}-draft`);
+    await context.close();
+  });
+}
