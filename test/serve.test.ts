@@ -2220,6 +2220,7 @@ describe("an invited-only document", () => {
       const invitee = await reader("alice@acme.com", doc.docId);
       const stranger = await reader("mallory@evil.example");
       await env.DB.prepare("INSERT INTO doc_access_requests (doc_id, email, created_at) VALUES (?, 'bob@other.com', ?)").bind(doc.docId, Date.now()).run();
+      await env.DB.prepare("UPDATE accounts SET display_name = 'Alice Ames' WHERE email = 'alice@acme.com'").run();
 
       const mine = await embedApi(`${doc.docId}/access`, await tokenFor(owner, doc.docId), {}, config);
       expect(mine.status).toBe(200);
@@ -2227,12 +2228,14 @@ describe("an invited-only document", () => {
       expect(await mine.json()).toMatchObject({
         viewer: "owner",
         account: "owner@acme.com",
+        // The owner has no display name, so the one derived from the address; the invitee's is the account's.
+        name: "owner",
         title: "Secret",
         docId: doc.docId,
         url: `https://openartifacts.site/d/${doc.docId}`,
         linkAccess: "invited",
         email: true,
-        people: [{ email: "alice@acme.com", role: "comment" }],
+        people: [{ email: "alice@acme.com", role: "comment", name: "Alice Ames" }],
         requests: [{ email: "bob@other.com" }],
       });
 

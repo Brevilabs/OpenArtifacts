@@ -494,15 +494,15 @@ that must never be on a page whose scripts the author writes.
   pairing.
 - **The frame reveals nothing to non-readers.** Anyone can load it with any id.
   Until a token shows the viewer can read the document, every id looks the same,
-  private, public, unknown or deleted: **Copy link** for the canonical url, built
-  from the id with no lookup, and **Sign in to manage**. No title, no link-access
-  mode, no list. The bodies are equal after replacing the id, except `data-origin`,
+  private, public, unknown or deleted: the word "Share" as the title, **Copy link**
+  for the canonical url, built from the id with no lookup, and **Sign in to manage**.
+  No document title, no link-access mode, no list. The bodies are equal after replacing the id, except `data-origin`,
   which echoes the caller's own `origin` only when it equals the serving origin
   (what the frame's `postMessage` and `frame-ancestors` need; it tells the caller
   only what it already named). With a token, a non-reader sees what an unknown id
   shows, never `403`.
 - **It tells a page on the shared origin nothing about its viewer.** There it
-  has one fixed height for everyone (320 px, less on a short viewport) and
+  has one fixed height for everyone (416 px, less on a short viewport) and
   scrolls inside it. It posts the page `ready`, once, before it reads its
   storage; `close`, only after a click or key press inside it; and `people`,
   only after the owner's own click
@@ -538,54 +538,63 @@ that must never be on a page whose scripts the author writes.
   for a public document at all. A frame the page has not yet given a width
   reports nothing (its content measured at no width is thousands of pixels tall);
   the resize that sizes it reports.
-- **Its layout** is the same in every view. A row at the top holds the link
-  field, **Copy link** (an icon) and ×; it is the primary action, so it never scrolls away,
-  and it belongs to the frame's shell, not to a view, so nothing a view draws moves
-  it. There is no title row. Everything else is one scroll region under it, never a
-  nested scroll box; the row gets a hairline divider only once content has scrolled
-  under it, and a fade at the foot shows only while there is more below. Escape and
-  a click outside close the popover. The field drops the scheme and always shows
-  the end of the link, `/d/{id}`, cutting the host from its start when the whole
-  link does not fit; a click selects all of it, and **Copy link** copies the full
-  url.
+- **Its layout** is the same in every view, and is the layout of Google Docs' and
+  Claude's share popovers. A header holds the document's title (one line, cut with
+  an ellipsis) and ×; a footer, pinned under the content, holds a sentence about
+  who can open the link and **Copy link**, the primary button, with a lock on it
+  while the page is invited-only. Both belong to the frame's shell, not to a view,
+  so nothing a view draws moves them, and the shell's title is the word "Share",
+  the same bytes for every id, until the owner or reader view lands. Everything
+  between is one scroll region, never a nested scroll box; the header gets a
+  hairline divider only once content has scrolled under it, and a fade at the foot
+  of the region shows only while there is more below. Escape and a click outside
+  close the popover. The popover is 400 px wide (less on a narrow viewport; the
+  narrowest, 304 px, cuts long addresses with an ellipsis).
 - **Its height** on the shared origin is one for every viewer, so it says nothing
   about who is looking, and is chosen so that the owner view with nobody added
   shows whole, with no scrollbar, in each of its forms: public, private, and a
-  free owner's upgrade card. The tallest of these, measured in Chrome at the
-  popover's 360 px width, is 285 px; the popover is
-  320 px, capped by the viewport. A list of people scrolls. On a private
+  free owner's upgrade card. Measured in Chrome at 400 px, the public and the
+  private form are 345 px and the free owner's card 404 px; the popover is
+  416 px, capped by the viewport. A list of people scrolls. On a private
   document's own origin the owner view's popover is as tall as what the frame
-  shows, up to 720 px and the viewport below the bar less 8 px, and scrolls past
-  that; it follows the content as people are added or removed and a line appears,
-  and the frame is laid out while hidden, so the popover opens at its height.
-  Every other view there has the fixed height.
-- **Its views** follow the table: the owner gets the **Link access** choice
-  (Anyone with the link / Only those invited), the address field with **Add**, one
-  helper line, one line at the popover's narrowest width ("Only people you add
-  can open this page." on a private page, "Anyone can view. Invitees can
-  comment." on a public one), **Who has access** (**You**, **Owner**, then each person with a **Can view
-  / Can comment** select and **Remove**, see [comments.md](comments.md)), and
-  **Requests** with **Approve** and **Decline** when some are pending. A plan
-  that grants no role (a free one) gets, in place of the address field, one card:
-  "Private sharing and comments", "Choose who can open this page, and let them
-  comment on it. Included in paid plans." and **Upgrade**; its **Only those
-  invited** shows a lock and, pressed, sends nothing but points at the card, and
-  **Who has access** is left out while it would hold only **You**. Any other
-  reader gets "Only the owner can change who can open this."; someone not yet
-  signed in gets that sentence and **Sign in to manage**. Writes call the same
+  shows (header, content and footer), up to 720 px and the viewport below the bar
+  less 8 px, and scrolls past that; it follows the content as people are added or
+  removed and a line appears, and the frame is laid out while hidden, so the
+  popover opens at its height. Every other view there has the fixed height.
+- **Its views** follow the table. The owner gets, top to bottom: the invite field
+  (**Invite people by email**, with an **Invite** button inside its right edge
+  once it has text; Enter and a pasted list work); **Requests**, when some are
+  pending, each as a row with **Approve** and **Decline**; **People with access**,
+  the owner first ("{name} (you)", the address under it, **Owner** at the right)
+  and then each invitee as a row with an initials avatar, the name where that
+  address has an account with one (otherwise the address alone), and a borderless
+  select of the roles the plan grants (**Can view / Can comment**, see
+  [comments.md](comments.md)) then **Remove access**; and **General access**, an
+  icon (a lock, or a globe) and a select of **Only people invited** and **Anyone
+  with the link**. The footer's sentence is "Only you can open this link" on a
+  private page with nobody added, "Only people invited can open this link" with
+  people, and "Anyone with the link can view" on a public one, with "Invitees can
+  comment." added where the plan grants the comment role. A plan that grants no
+  role (a free one) gets, in place of the invite field, one card: "Private sharing
+  and comments", "Choose who can open this page, and let them comment on it.
+  Included in paid plans." and **Upgrade**; choosing **Only people invited** there
+  sends nothing, puts the select back and points at the card. Any other reader gets
+  "Only the owner can change who can open this."; someone not yet signed in gets
+  that sentence and **Sign in to manage**; those views and the footer's sentence
+  are empty of mode. Writes call the same
   operations as `/api/v1` and the share page, so the plan check and the `402`
   message, both invite caps, the invite email and `document_access_changed` are
   identical on all three. While a write is out, the control it came from shows a
-  spinner and every control under the row is disabled (the address field
+  spinner and every control in the content is disabled (the invite field
   read-only), so a second press sends nothing; the answer draws the new view, or
   an error leaves what was typed in place.
 - **Loading.** A frame with a stored token never paints the signed-out view. The
   shell's views are hidden until the frame's script has chosen the first one: no
   token is the signed-out view at once; a token is a skeleton of the owner view
-  (the real row, with a working **Copy link**, since the link needs no request,
-  then muted blocks where Link access, Add people, the helper line and the owner's
-  row will be, pulsing gently except under reduced motion; the helper line is one
-  line in both views, so nothing below it moves) until the access read
+  (a muted bar where the title goes, the real footer with a working **Copy link**,
+  since the link needs no request, and muted blocks in the sizes of the invite
+  field, the owner's row and General access, pulsing gently except under reduced
+  motion, so the owner view lands where they were) until the access read
   answers. What replaces it is the answer: the owner view, the reader view, the
   not-found view, or the signed-out view after a `401`. A frame whose script never
   runs never says `ready`, and the page script shows its plain share-page link
@@ -661,10 +670,11 @@ the public serving origin, it never draws the full owner view of an invited-only
 document: it shows one constant line. The one exception is a frame that made the
 switch to invited itself, and that is not proof of anything about the page around
 it. A hostile public page can lay the frame invisibly over its own content and
-trick the owner into one click on **Only those invited**, and the switch is then
+trick the owner into one click on **Only people invited**, and the switch is then
 made in the hostile page's frame. So that frame draws only what the owner needs
-right after a switch: the mode control and **Add people**, which needs
-typed input. **Approve**, **Decline** and **Remove**, each a single click on a
+right after a switch: the General access select and the invite field, which needs
+typed input. **Approve**, **Decline** and **Remove access** (and a role, which sits
+in the same select), each a single click on a
 private document, are left out, with a link to the share page for them once anyone
 is listed. Before every
 write on a frame embedded by the public origin the frame also reads the mode
@@ -878,7 +888,7 @@ subdomain needs a paid certificate for `*.docs.example.net`.
   the new session. Two that do not overlap are independent, because the popup's
   binding cookie is per handshake.
 - **The popover is one fixed height on a public page**, so its short views have
-  room to spare and a long list scrolls in 320 px; the alternative is a frame that
+  room to spare and a long list scrolls in 416 px; the alternative is a frame that
   reports its size there, which would tell any page that can embed it whether its
   visitor manages the document. Only the owner view on a private page fits its
   content; an invitee's view there stays fixed, since its height would say which

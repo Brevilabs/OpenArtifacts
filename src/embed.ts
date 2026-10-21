@@ -66,12 +66,13 @@ import {
 import type { Publisher } from "./auth.js";
 import { stringField } from "./account.js";
 import type { Env } from "./config.js";
-import { accountEmail, findReadableDoc, putEmbedHandoff, takeEmbedHandoff } from "./db.js";
+import { accountEmail, displayNamesByEmail, findReadableDoc, putEmbedHandoff, takeEmbedHandoff } from "./db.js";
 import { FRAME_CSS, FRAME_SCRIPT, PAGE_SCRIPT } from "./embed-scripts.js";
 import { accountPlan } from "./entitlement.js";
 import { handleCommentsEmbed } from "./comments/embed-api.js";
 import { commentsFrame } from "./comments/frame.js";
 import { docNotFound, errorResponse } from "./errors.js";
+import { nameFromEmail } from "./display-name.js";
 import { frameContext, frameHeaders } from "./frame-shell.js";
 import { verifyFrameToken } from "./frame-token.js";
 import { scriptHashSource, sha256Hex } from "./hash.js";
@@ -174,8 +175,8 @@ function frameScriptHash(): Promise<string> {
 }
 
 /**
- * The link glyph in the shell's Copy link, as the frame script draws it after
- * "Copied". Its size and stroke come from the stylesheet (`FRAME_CSS`).
+ * The link glyph in the footer's Copy link, as the frame script draws it after
+ * "Copied" (or swaps for a lock on an invited-only page). Its size and stroke come from the stylesheet (`FRAME_CSS`).
  */
 const LINK_ICON_SVG =
   '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>' +
@@ -186,10 +187,13 @@ const LINK_ICON_SVG =
  * frame, as the same shell for every document id.
  *
  * Until a token proves the viewer can read the document the body is the same
- * bytes for a public, an invited-only, an unknown and a deleted document: the
- * row every view starts with (the canonical address, built from the id with no
- * lookup, **Copy link** and ×), then "Only the owner can change who can open
- * this." and **Sign in to manage**. No title, no mode, no list. `main` is
+ * bytes for a public, an invited-only, an unknown and a deleted document: a
+ * header (the fixed word "Share", and ×), then "Only the owner can change who
+ * can open this." and **Sign in to manage**, then a footer with an empty
+ * sentence and **Copy link** (the canonical address is built from the id with
+ * no lookup). The word in the header is the same bytes for every id: the script
+ * swaps in the document's title only once the owner or reader view lands. No
+ * mode, no list. `main` is
  * `hidden` until the script has chosen the first view, so a frame holding a
  * token paints its skeleton, never this signed-out view (`FRAME_CSS`). Which
  * origin may embed it is `frameContext`'s (`src/frame-shell.ts`).
@@ -199,9 +203,8 @@ async function shareFrame(request: Request, url: URL, env: Env): Promise<Respons
   if (context === null) return READER_NOT_FOUND();
   const { doc, origin } = context;
 
-  // Built from the id alone, like the link beside it, so showing it leaks nothing.
+  // Built from the id alone, so putting it in the page leaks nothing.
   const link = publicDocUrl(env, url, doc);
-  const bareLink = link.replace(/^https?:\/\//, "");
   const hint = escapeHtml(copilotHint(env));
   const body = `<!doctype html>
 <html lang="en">
@@ -213,12 +216,13 @@ async function shareFrame(request: Request, url: URL, env: Env): Promise<Respons
 <style>${FRAME_CSS}</style>
 </head>
 <body>
-<header><div class="field"><span><bdi>${escapeHtml(bareLink)}</bdi></span></div><button type="button" class="primary tall">${LINK_ICON_SVG}<span>Copy link</span></button><button type="button" class="x" aria-label="Close">×</button></header>
+<header><span class="title">Share</span><button type="button" class="x" aria-label="Close">×</button></header>
 <main data-doc="${escapeHtml(doc)}" data-link="${escapeHtml(link)}" data-origin="${origin === null ? "" : escapeHtml(origin)}" data-hint="${hint}" hidden>
 <p class="muted">Only the owner can change who can open this.</p>
 <div class="bottom"><p id="oa-msg" class="err" role="alert"></p><p class="muted" id="oa-account">Is this your page? <button type="button" class="link" disabled>Sign in to manage</button></p><p class="muted hint">${hint}</p></div>
 </main>
 <div class="fade" aria-hidden="true"></div>
+<footer><p class="status"></p><button type="button" class="primary">${LINK_ICON_SVG}<span>Copy link</span></button></footer>
 <script>${FRAME_SCRIPT}</script>
 </body>
 </html>`;
@@ -410,15 +414,31 @@ async function frameApi(
   };
   const principal = method === "GET" ? cached : await withCurrentPlan(env, cached);
   // `changed` says whether a write changed anything. The frame needs it to tell
-  // its own switch to private from a repeat on a stale view.
-  const owner = (state: AccessState, changed = false, who = principal) =>
-    Response.json({ viewer: "owner", account: email, title: state.title, changed, ...accessBody(env, url, docId, state, who) }, { headers: NO_STORE });
-  const answer = (result: AccessResult) =>
-    result.ok ? owner(result.state, result.changed) : noStore(refusalResponse(env, principal, docId, result.refusal));
+  // its own switch to private from a repeat on a stale view. `name` is the
+  // owner's display name, and each person's is null where that address has no
+  // account with one: the frame's own fields, which `/api/v1` does not carry.
+  const owner = async (state: AccessState, changed = false, who = principal) => {
+    const body = accessBody(env, url, docId, state, who);
+    const names = await displayNamesByEmail(env.DB, [email, ...body.people.map((person) => person.email)]);
+    return Response.json(
+      {
+        viewer: "owner",
+        account: email,
+        name: names.get(email) ?? nameFromEmail(email),
+        title: state.title,
+        changed,
+        ...body,
+        people: body.people.map((person) => ({ ...person, name: names.get(person.email) ?? null })),
+      },
+      { headers: NO_STORE },
+    );
+  };
+  const answer = async (result: AccessResult) =>
+    result.ok ? await owner(result.state, result.changed) : noStore(refusalResponse(env, principal, docId, result.refusal));
 
   if (method === "GET") {
     const managed = await getAccess(env, principal, docId);
-    if (managed.ok) return owner(managed.state, false, await withCurrentPlan(env, principal));
+    if (managed.ok) return await owner(managed.state, false, await withCurrentPlan(env, principal));
     const readable = await findReadableDoc(env.DB, docId, null, accountId);
     if (readable === null || readable.deleted_at !== null || !readable.allowed) return noStore(docNotFound(docId));
     return Response.json(

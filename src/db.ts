@@ -1775,6 +1775,25 @@ export async function displayNames(db: D1Database, ids: string[]): Promise<Map<s
 }
 
 /**
+ * Display names by email address: the accounts among these addresses (stored
+ * lowercased) that have set one. Addresses with no account or no name are absent.
+ */
+export async function displayNamesByEmail(db: D1Database, emails: string[]): Promise<Map<string, string>> {
+  const names = new Map<string, string>();
+  const unique = [...new Set(emails.filter((email) => email !== ""))];
+  if (unique.length === 0) return names;
+  const statements = chunks(unique, ID_CHUNK).map((part) =>
+    db
+      .prepare(`SELECT email, display_name AS name FROM accounts WHERE display_name IS NOT NULL AND email IN (${part.map(() => "?").join(",")})`)
+      .bind(...part),
+  );
+  for (const result of await db.batch<{ email: string; name: string }>(statements)) {
+    for (const row of result.results) names.set(row.email, row.name);
+  }
+  return names;
+}
+
+/**
  * Which of these accounts can read `docId` right now: `CAN_READ_SQL`'s rule for
  * each (a public document, the account owns it or a key linked to it does, or its
  * address is on the invite list), and nobody once it is deleted. Notifications go
