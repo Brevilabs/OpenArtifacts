@@ -261,8 +261,8 @@ the key's owner is not linked to an account, and the Worker has
               "url": "https://openartifacts.ai/account"}}
 ```
 
-`message` is human text and can change. `url` is `ACCOUNT_ACTION_URL` as
-configured, with nothing added: no code, owner or key. `PUT`, `GET`, `DELETE`
+`message` is human text and can change. `url` is the `ACCOUNT_ACTION_URL`
+account page, in normalized URL form, with nothing added: no code, owner or key. `PUT`, `GET`, `DELETE`
 and every error never carry `guidance`, and a failure to work it out never
 fails a stored publish.
 
