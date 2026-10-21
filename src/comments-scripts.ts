@@ -548,6 +548,7 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       tipHost.style.left = Math.round(Math.max(8, Math.min(x, viewport().clientWidth * z - wide - 8)) / z) + "px";
       tipHost.style.top = Math.round((first.top - 44 >= 48 ? first.top - 44 : last.bottom + 8) / z) + "px";
     };
+    const overlaps = (a, b) => a.compareBoundaryPoints(Range.START_TO_END, b) > 0 && a.compareBoundaryPoints(Range.END_TO_START, b) < 0;
     const startDraft = (held) => {
       const cap = capture() || (held ? capture(held) : null);
       if (!cap) return;
@@ -556,8 +557,8 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       hideTip();
       window.getSelection().removeAllRanges();
       if (focusId) { focusId = ""; send({ event: "focus", threadId: "" }); }
-      // The pointer may still rest on a thread's passage (a keyboard draft): its hover layer would stack on the open and draft ones. It comes back on the next pointer move.
-      hoverPage = "";
+      // The pointer may still rest on a thread's passage that the draft covers (a keyboard draft): its hover layer would stack on the open and draft ones. It comes back on the next pointer move.
+      if (hoverPage && ranges.has(hoverPage) && overlaps(ranges.get(hoverPage), draftRange)) hoverPage = "";
       // Opened before the draft is measured: the sidebar narrows the page and its text reflows. And the frame is told it is shown before the draft arrives: a frame that is not shown draws nothing, so a draft that came first found no field to focus.
       openPanel();
       reveal(draftRange);
