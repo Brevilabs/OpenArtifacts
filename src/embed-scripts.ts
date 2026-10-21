@@ -180,6 +180,8 @@ export const PAGE_SCRIPT = String.raw`(() => {
       place();
     } else if (data.event === "close") hide(true);
     else if (data.event === "people" && commentsSwitched) commentsSwitched();
+    // The owner's click made this page public, so this origin no longer serves it: go to the apex.
+    else if (data.event === "moved") window.location.reload();
   });
   document.addEventListener("keydown", (event) => { if (open && event.key === "Escape") hide(true); }, true);
   document.addEventListener("pointerdown", (event) => { if (open && event.target !== host && !link.contains(event.target)) hide(false); }, true);
@@ -375,7 +377,8 @@ i.sk{display:inline-block;height:10px;border-radius:5px;vertical-align:middle}
  * Escape); `people`, only after the owner's own click inside the owner view
  * (an add, a role change, or × / Escape, the last only where the plan grants Can
  * comment): it says this visitor is the owner, so it is never sent when a view
- * is drawn; and `size`, only from the owner view where the frame `fits` (below). Embedded by the
+ * is drawn; `moved`, only on the publisher's origin (where the frame `fits`), only after the
+ * owner's own click made the page public, so the page around it goes to the apex at once; and `size`, only from the owner view where the frame `fits` (below). Embedded by the
  * shared serving origin, nothing the frame sends, and nothing it does that an
  * embedding page can observe (a size change, a focus move), depends on what is
  * in storage. Any page on `openartifacts.site` can embed this frame for any
@@ -887,6 +890,8 @@ export const FRAME_SCRIPT = String.raw`(() => {
       // Only a write that changed the mode counts, so a repeat of "Only those
       // invited" on a stale view does not vouch for the frame.
       if (modeAfter && parsed.changed && parsed.linkAccess === "invited") switched = true;
+      // The owner's own click made the page public: its url is the apex now, and a tab on the code host is on the wrong origin.
+      if (modeAfter && parsed.changed && parsed.linkAccess === "anyone" && fits) post("moved");
       present(parsed);
       // An add, an approval or a role change the owner just made with a click: the page may now have
       // someone who can comment, and the owner is looking.

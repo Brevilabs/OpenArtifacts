@@ -581,6 +581,36 @@ test("a signed-in Can-view reader on a phone is never offered Comment, not even 
   await context.close();
 });
 
+test("the owner of a private page who makes it public in Share lands on the apex as soon as the switch lands, with Comment working", { timeout: 120_000 }, async () => {
+  const docId = await publish("Private, then public", REPORT, { route: "private-docs", comments: false });
+  await db.prepare("INSERT INTO doc_invites (doc_id, email, role, created_at) VALUES (?, 'bob@example.com', 'view', ?)").bind(docId, Date.now()).run();
+  const context = await newContext(OWNER_ACCOUNT, { signedInTo: docId });
+  const tab = await context.newPage();
+  await tab.goto(`https://${API}/open/${docId}`);
+  await tab.waitForURL(new RegExp(`/d/${docId}`));
+  assert.notEqual(new URL(tab.url()).host, SERVING, "an invited-only page is served from the code host");
+  await tab.evaluate(() => { window.__sameDocument = true; });
+  const shareFrame = () => tab.frames().find((frame) => frame.url().includes("/embed/share"));
+  const share = tab.locator("a[data-openartifacts-share]");
+
+  // Closing the popover without making the page public leaves the tab where it is.
+  await share.click();
+  const access = () => shareFrame()?.getByRole("button", { name: "General access", exact: true });
+  await until("the owner view", async () => (await access()?.isVisible()) === true);
+  await tab.keyboard.press("Escape");
+
+  // Reopened: still the same document, so the close did not reload it.
+  await share.click();
+  await until("the owner view again", async () => (await access()?.isVisible()) === true);
+  assert.equal(await tab.evaluate(() => window.__sameDocument === true), true, "closing Share without a change does not reload");
+  await access().click();
+  await shareFrame().getByRole("option", { name: "Anyone with the link", exact: true }).click();
+  await tab.waitForURL(`https://${SERVING}/d/${docId}`);
+  await select(tab, "Staffing is unchanged");
+  await until("the Comment button on the apex", () => tab.locator(".openartifacts-comment-tip").isVisible());
+  await context.close();
+});
+
 test("typing in a card survives the page re-measuring and the frame redrawing on every few keystrokes", { timeout: 120_000 }, async () => {
   // A page whose own script keeps moving its text (a ticker, a clock): every move re-measures the sidebar and sends new positions, which redraw the cards, while the reader types.
   const docId = await publish("Ticker", REPORT, { html: page(REPORT, "<style>main.tick{padding-top:3px}</style>") });
