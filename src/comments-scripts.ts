@@ -348,14 +348,16 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
     };
     // Whether that background is dark. The frame draws its cards in the matching theme.
     let dark = null, fill = "";
-    // One translucent yellow for every thread and no underline, which reads as a link; stronger for the active thread (its focus layer sits on its open one) and the draft (on its own). On a dark page the same yellows are fainter: a strong one under the page's light text is a mustard block it cannot be read on (on a near-black page these keep light-grey text at 4.5:1; any visible tint lowers a page's own contrast, so a page that starts near 4.5:1 dips slightly below it).
+    // One translucent yellow for every thread and no underline, which reads as a link; stronger for the active thread (its focus layer sits on its open one) and the draft (on its own). On a dark page the highlight is a warmer amber and the active thread and the draft also get an amber underline, so they read beyond the tint: an open thread is .20 (1.5:1 against a #111 page, 1.6:1 against #1b1d24), the active one .36 once layered (2.3:1) and the draft .36 (2.3:1). Light-grey #e9ebee text on #111 keeps 10.5:1 on an open thread, 6.8:1 on the active one and the draft, and 4.8:1 where a draft covers an open thread, so none of them goes under 4.5:1 except while the pointer is over a draft that covers an open thread, where the three layers stack to about .59 and #e9ebee falls to 3.7:1 (white 4.4:1); any visible tint lowers a page's own contrast, so a page that starts near 4.5:1 dips slightly below it.
     let marks = null;
     const markColours = (onDark) => {
       if (!marks) return;
-      const [openA, focusA, draftA] = onDark ? [".09", ".06", ".145"] : [".28", ".5", ".5"];
-      marks.replaceSync("::highlight(openartifacts-open){background-color:rgba(255,200,0," + openA + ")}" +
-        "::highlight(openartifacts-focus){background-color:rgba(255,200,0," + focusA + ")}" +
-        "::highlight(openartifacts-draft){background-color:rgba(255,184,0," + draftA + ")}");
+      const [openA, focusA, draftA] = onDark ? [".2", ".2", ".36"] : [".28", ".5", ".5"];
+      const rgb = onDark ? "255,176,32" : "255,200,0";
+      const line = onDark ? ";text-decoration:underline;text-decoration-color:rgba(255,176,32,.9);text-decoration-thickness:2px" : "";
+      marks.replaceSync("::highlight(openartifacts-open){background-color:rgba(" + rgb + "," + openA + ")}" +
+        "::highlight(openartifacts-focus){background-color:rgba(" + rgb + "," + focusA + ")" + line + "}" +
+        "::highlight(openartifacts-draft){background-color:rgba(" + (onDark ? rgb : "255,184,0") + "," + draftA + ")" + line + "}");
     };
     const isDark = (c) => {
       const lin = (v) => (v / 255 <= 0.04045 ? v / 255 / 12.92 : Math.pow((v / 255 + 0.055) / 1.055, 2.4));
