@@ -542,6 +542,55 @@ test("a signed-in reader of a private page sees who commented without signing in
   await context.close();
 });
 
+for (const theme of ["light", "dark"]) {
+  test(`an agent's comment shows the person's name and a sparkle with a tooltip, not "'s agent" or a badge (${theme})`, { timeout: 120_000 }, async () => {
+    const dark = theme === "dark" ? "<style>body{background:#16171a;color:#ddd}</style>" : "";
+    const docId = await publish("Agent byline", REPORT, { html: page(REPORT, dark) });
+    // A thread by Alice, answered by the owner's agent, then resolved by it.
+    const alice = await mf.dispatchFetch(`https://${API}/embed/api/docs/${docId}/threads`, { method: "POST", headers: { authorization: `Bearer ${frameToken(ALICE, docId).token}`, "content-type": "application/json" }, body: JSON.stringify({ anchor: { exact: "Staffing is unchanged" }, body: "Is this the final number?" }) });
+    assert.equal(alice.status, 201, await alice.clone().text());
+    const threadId = (await alice.json()).threadId;
+    const reply = await api(`/api/v1/docs/${docId}/threads/${threadId}/comments`, { method: "POST", headers: { "OpenArtifacts-Agent": "Claude Code" }, body: JSON.stringify({ body: "Yes, confirmed with finance." }) });
+    assert.equal(reply.status, 201, await reply.clone().text());
+    const authors = (await threadsOf(docId))[0].comments.map((c) => c.author);
+    assert.deepEqual(authors[1].person, { name: "Logan" });
+    assert.deepEqual(authors[1].agent, { name: "Claude Code" });
+
+    const context = await newContext(OWNER_ACCOUNT, { signedInTo: docId });
+    const tab = await context.newPage();
+    await tab.goto(docUrl(docId));
+    const frame = await until("the comments frame", () => commentsFrame(tab, docId));
+    await openSidebar(tab);
+    await frame.getByText("Yes, confirmed with finance.").waitFor();
+    const who = frame.locator(".who").filter({ hasText: "Logan" });
+    assert.equal(await who.count(), 1);
+    assert.equal((await who.innerText()).toLowerCase().includes("agent"), false);
+    assert.equal(await frame.getByText("agent's", { exact: false }).count(), 0, "no \"'s agent\" label");
+    assert.equal(await frame.locator(".badge").count(), 0);
+    const mark = who.locator("svg.agent-mark");
+    assert.equal(await mark.getAttribute("aria-label"), "via Claude Code");
+    assert.equal(await mark.locator("title").textContent(), "via Claude Code");
+    assert.equal(await frame.locator(".who svg.agent-mark").count(), 1, "only the agent has the icon");
+    await shoot(tab, `agent-byline-${theme}`);
+
+    const resolved = await api(`/api/v1/docs/${docId}/threads/${threadId}/resolve`, { method: "POST", body: "{}" });
+    assert.equal(resolved.status, 200);
+    await tab.reload();
+    const again = await until("the comments frame", () => commentsFrame(tab, docId));
+    await openSidebar(tab);
+    // The page relays its read first and the frame's own lands after, redrawing the list; the line telling a commenter what to do is drawn only by that own read.
+    await again.getByText("Select text to comment.").waitFor();
+    await again.getByRole("button", { name: "1 resolved" }).click();
+    const line = again.locator(".where");
+    await until("the resolved line", async () => (await line.innerText()).includes("by Logan"));
+    // This resolve named no client, so the server stored the license key's default.
+    assert.equal(await line.locator("svg.agent-mark").count(), 1);
+    assert.equal(await line.locator("svg.agent-mark").getAttribute("aria-label"), "via Copilot");
+    await shoot(tab, `agent-byline-${theme}-resolved`);
+    await context.close();
+  });
+}
+
 test("a signed-in Can-view reader on a phone is never offered Comment, not even before the frame answers", { timeout: 120_000 }, async () => {
   const docId = await publish("Can view", REPORT, { route: "private-docs" });
   // A card, so the frame has a reply box to replace with "You can view this page." once it knows.

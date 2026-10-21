@@ -1783,6 +1783,15 @@ export async function inviteRole(db: D1Database, docId: string, email: string): 
   return row?.role ?? null;
 }
 
+/** An account's id and every external owner id linked to it: all the ids its comments may be stored under. */
+export async function ownerIdentities(db: D1Database, account: string): Promise<Set<string>> {
+  const { results } = await db
+    .prepare(`SELECT external_owner AS id FROM owner_links WHERE account_id = ?`)
+    .bind(account)
+    .all<{ id: string }>();
+  return new Set([account, ...results.map((row) => row.id)]);
+}
+
 /**
  * Which of these accounts can read `docId` right now: `CAN_READ_SQL`'s rule for
  * each (a public document, the account owns it or a key linked to it does, or its

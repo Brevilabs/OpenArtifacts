@@ -262,11 +262,11 @@ carries only `docs.has_threads`. Source: `src/comments/object.ts`.
 
 | Table | Key | Columns |
 | --- | --- | --- |
-| `threads` | `id` (`th_...`) | `created_version`, `created_by`, `created_at`, `updated_at`, `section`, `anchor_exact`, `anchor_prefix`, `anchor_suffix`, `state` (CHECK `open`/`resolved`), `resolved_by`, `resolved_kind`, `resolved_on_behalf_of`, `resolved_at`, `resolved_at_version` |
-| `comments` | `id` (`cm_...`) | `thread_id`, `author`, `author_kind` (CHECK `human`/`agent`), `on_behalf_of`, `body`, `created_at`, `at_version`; index `comments_by_thread (thread_id, created_at)` |
+| `threads` | `id` (`th_...`) | `created_version`, `created_by`, `created_at`, `updated_at`, `section`, `anchor_exact`, `anchor_prefix`, `anchor_suffix`, `state` (CHECK `open`/`resolved`), `resolved_by`, `resolved_kind`, `resolved_on_behalf_of`, `resolved_agent_name`, `resolved_at`, `resolved_at_version` |
+| `comments` | `id` (`cm_...`) | `thread_id`, `author`, `author_kind` (CHECK `human`/`agent`), `on_behalf_of`, `agent_name`, `body`, `created_at`, `at_version`; index `comments_by_thread (thread_id, created_at)` |
 | `anchors` | `(thread_id, version)` | `status` (CHECK `anchored`/`orphaned`), `matched_text`; memo of where a thread sits in each version |
 
-- Tables are created lazily on first use. Caps: 500 threads, 2000 comments, 4000 characters per body.
+- Tables are created lazily on first use. `agent_name` and `resolved_agent_name` (the client an agent wrote through, from `OpenArtifacts-Agent`) were added later, as nullable columns added on first use to tables that predate them. Caps: 500 threads, 2000 comments, 4000 characters per body.
 - Key-value storage: one key, `purged` (`true`), left as a tombstone after withdrawal. Withdrawal calls `purge()`, which deletes all storage and sets it.
 - Authors are stored as owner or account ids; display names are joined from D1 `accounts.display_name` on read.
 

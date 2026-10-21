@@ -189,12 +189,33 @@ function writeVersion(requested: number | undefined, standing: Standing): number
   return version <= latest ? version : null;
 }
 
+/** The client name `OpenArtifacts-Agent` carries: 1 to 64 printable ASCII characters once trimmed, so it is also a legal header value. */
+const AGENT_NAME = /^[\x20-\x7e]{1,64}$/;
+
+/** What an agent write that names no client is stored as, by the credential that made it: an account token is the CLI's, a license key is Obsidian Copilot's. */
+const DEFAULT_CLIENT = { account: "OpenArtifacts CLI", licenseKey: "Copilot" };
+
+/**
+ * The client an agent write comes from: its `OpenArtifacts-Agent` header, else the default for the
+ * credential. Null for a person (the frame never sends it), `undefined` when the header is not valid.
+ */
+function agentNameOf(request: Request, caller: Caller): string | null | undefined {
+  if (caller.kind === "human") return null;
+  const raw = request.headers.get("openartifacts-agent");
+  if (raw === null) return caller.publisher.authKind === "account" ? DEFAULT_CLIENT.account : DEFAULT_CLIENT.licenseKey;
+  const name = raw.trim();
+  return AGENT_NAME.test(name) ? name : undefined;
+}
+
+const BAD_AGENT = "OpenArtifacts-Agent must be 1 to 64 printable ASCII characters.";
+
 /** The writer, as the object stores it. */
-function writer(standing: Standing, caller: Caller) {
+function writer(standing: Standing, caller: Caller, agentName: string | null) {
   return {
     principal: standing.doc.principal_id,
     kind: caller.kind,
     onBehalfOf: caller.kind === "agent" ? standing.doc.principal_id : null,
+    agentName,
   };
 }
 
@@ -245,6 +266,8 @@ export async function createThread(
   if (requested === null || typeof fields.body !== "string" || typeof fields.anchor !== "object" || fields.anchor === null) {
     return bad('Expected {"anchor": {...}, "body": "…", "version"?: n}.');
   }
+  const agentName = agentNameOf(request, caller);
+  if (agentName === undefined) return bad(BAD_AGENT);
 
   const now = Date.now();
   const standing = await authoriseWrite(env, docId, caller, now);
@@ -261,7 +284,7 @@ export async function createThread(
 
   const result = await commentsStub(env, docId).createThread({
     docId,
-    ...writer(standing, caller),
+    ...writer(standing, caller, agentName),
     anchor: fields.anchor as never,
     body: fields.body,
     version,
@@ -298,6 +321,8 @@ export async function replyToThread(
   if (fields === null || !onlyKeys(fields, ["body", "version"])) return bad('Expected {"body": "…"}.');
   const requested = versionField(fields.version);
   if (requested === null || typeof fields.body !== "string") return bad('Expected {"body": "…"}.');
+  const agentName = agentNameOf(request, caller);
+  if (agentName === undefined) return bad(BAD_AGENT);
 
   const now = Date.now();
   const standing = await authoriseWrite(env, docId, caller, now);
@@ -307,7 +332,7 @@ export async function replyToThread(
 
   const result = await commentsStub(env, docId).reply({
     docId,
-    ...writer(standing, caller),
+    ...writer(standing, caller, agentName),
     threadId,
     body: fields.body,
     version,
@@ -346,6 +371,8 @@ export async function changeThreadState(
   if (fields === null || !onlyKeys(fields, ["version"])) return bad('Expected {"version"?: n} or no body.');
   const requested = versionField(fields.version);
   if (requested === null) return bad("version must be a version number.");
+  const agentName = agentNameOf(request, caller);
+  if (agentName === undefined) return bad(BAD_AGENT);
 
   const now = Date.now();
   const standing = await authoriseWrite(env, docId, caller, now);
@@ -355,7 +382,7 @@ export async function changeThreadState(
 
   const result = await commentsStub(env, docId)[to]({
     docId,
-    ...writer(standing, caller),
+    ...writer(standing, caller, agentName),
     threadId,
     isOwner: standing.canManage,
     scope: standing.scope,

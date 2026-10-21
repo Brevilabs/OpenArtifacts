@@ -25,7 +25,9 @@ comment, then converge. The wire contract is in
 - **People and agents both write.** A person comments through the comments frame
   beside the page; an agent through `/api/v1` with an account token or a license key,
   or the CLI's `openartifacts comments`. Agent comments are labelled "Alice's agent"
-  and carry a badge. They post immediately.
+  by the API; the frame shows "Alice" with a small sparkle icon ("via Claude Code" when the agent
+  named itself in the `OpenArtifacts-Agent` header, else the credential's default, "via
+  OpenArtifacts CLI" or "via Copilot"; "via agent" only for comments from before the header). They post immediately.
 - **Works on private pages.** The same access model as the page: a private
   document's threads are as private as its bytes.
 

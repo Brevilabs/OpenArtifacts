@@ -263,11 +263,14 @@ Commands:
   comments list <docId> [--open|--resolved|--all] [--since <iso>]
                      Print a document's comment threads as JSON (open ones by default)
   comments add <docId> --quote <text> --body <text> [--prefix <text>] [--suffix <text>]
-        [--section <id>] [--version <n>]
+        [--section <id>] [--version <n>] [--agent <name>]
                      Start a thread on text quoted from the page
-  comments reply <docId> <threadId> --body <text>
-  comments resolve <docId> <threadId> [--version <n>]
-  comments reopen <docId> <threadId>
+  comments reply <docId> <threadId> --body <text> [--agent <name>]
+  comments resolve <docId> <threadId> [--version <n>] [--agent <name>]
+  comments reopen <docId> <threadId> [--agent <name>]
+                     --agent names the tool posting (shown to readers as "via <name>");
+                     OPENARTIFACTS_AGENT sets it for every comment write. Without either,
+                     Claude Code, Codex, Gemini CLI and Cursor are detected from their environment
   comments delete <docId> <commentId>
                      Delete your own comment; deleting a thread's first comment deletes the thread
   comments name <name>
@@ -384,11 +387,56 @@ const VERSION = /^[1-9][0-9]{0,8}$/;
  */
 const COMMENT_LIMITS = { body: 4000, quote: 1000, context: 32, section: 128, name: 64 };
 
+/** The client name the server accepts in `OpenArtifacts-Agent`: 1 to 64 printable ASCII characters once trimmed (a legal header value). */
+const AGENT_NAME = /^[\x20-\x7e]{1,64}$/;
+
+/** @param {string} label what the value came from @param {string} value @returns {string} the trimmed name */
+function agentName(label, value) {
+  const name = value.trim();
+  if (!AGENT_NAME.test(name)) throw new Error(`${label} must be 1 to 64 printable ASCII characters.`);
+  return name;
+}
+
+/**
+ * The agents that mark the shells they run commands in, as `[variable, value, name]`: a value of
+ * `undefined` matches any value. Each rule is checked against the agent's own source or docs:
+ * - CLAUDECODE=1: "Set to 1 in subprocesses Claude Code spawns", https://code.claude.com/docs/en/env-vars
+ * - CODEX_THREAD_ID: injected into every shell tool command's environment, openai/codex
+ *   codex-rs/core/src/exec_env.rs (`create_env`). Its CODEX_SANDBOX variables are not used: they
+ *   are set only under a sandbox or with the network off.
+ * - GEMINI_CLI=1: set on every shell command, google-gemini/gemini-cli
+ *   packages/core/src/services/shellExecutionService.ts (GEMINI_CLI_IDENTIFICATION_ENV_VAR).
+ * - CURSOR_AGENT=1: set in the agent's terminal, confirmed by Cursor staff in
+ *   https://forum.cursor.com/t/cursor-cli-is-not-setting-cursor-agent-1-environment-variable-while-executing-bash-commands/132427
+ * Agents nest and their variables are inherited, so the first match wins; an agent with no
+ * verifiable marker (OpenCode, GitHub Copilot CLI) is left out rather than guessed.
+ * @type {Array<[string, string | undefined, string]>}
+ */
+const DETECTED_AGENTS = [
+  ["CLAUDECODE", "1", "Claude Code"],
+  ["CODEX_THREAD_ID", undefined, "Codex"],
+  ["GEMINI_CLI", "1", "Gemini CLI"],
+  ["CURSOR_AGENT", "1", "Cursor"],
+];
+
+/**
+ * The client a comment write names: `--agent`, else OPENARTIFACTS_AGENT, else the agent the
+ * environment shows, else nothing (the server then stores its default for the credential).
+ * @param {string | undefined} flag an already checked `--agent` @param {NodeJS.ProcessEnv} env
+ * @returns {string | undefined}
+ */
+export function commentAgent(flag, env) {
+  if (flag) return flag;
+  if (env.OPENARTIFACTS_AGENT?.trim()) return agentName("OPENARTIFACTS_AGENT", env.OPENARTIFACTS_AGENT);
+  const found = DETECTED_AGENTS.find(([name, value]) => (value === undefined ? Boolean(env[name]) : env[name] === value));
+  return found?.[2];
+}
+
 /** @typedef {{action: "list", docId: string, state: "open" | "resolved" | "all", since?: string}
- *   | {action: "add", docId: string, body: {anchor: {exact: string, prefix?: string, suffix?: string, section?: string}, body: string, version?: number}}
- *   | {action: "reply", docId: string, threadId: string, body: string}
- *   | {action: "resolve", docId: string, threadId: string, version?: number}
- *   | {action: "reopen", docId: string, threadId: string}
+ *   | {action: "add", docId: string, agent?: string, body: {anchor: {exact: string, prefix?: string, suffix?: string, section?: string}, body: string, version?: number}}
+ *   | {action: "reply", docId: string, threadId: string, body: string, agent?: string}
+ *   | {action: "resolve", docId: string, threadId: string, version?: number, agent?: string}
+ *   | {action: "reopen", docId: string, threadId: string, agent?: string}
  *   | {action: "delete", docId: string, commentId: string}
  *   | {action: "name", name: string}} CommentsRequest */
 
@@ -441,6 +489,8 @@ export function prepareComments(action, extra) {
   const normalised = (/** @type {string} */ value) => value.normalize("NFC");
   /** A display name: NFC, then trimmed. */
   const named = (/** @type {string} */ value) => value.normalize("NFC").trim();
+  /** The `--agent` flag, when given. @param {Map<string, string>} flags */
+  const agentFlag = (flags) => (flags.has("--agent") ? { agent: agentName("--agent", flags.get("--agent") ?? "") } : {});
   /** @param {string | undefined} value */
   const version = (value) => {
     if (value === undefined) return undefined;
@@ -466,7 +516,7 @@ export function prepareComments(action, extra) {
     return { action, docId, state, ...(since === undefined ? {} : { since }) };
   }
   if (action === "add") {
-    const { positional: [docId = ""], flags } = parse(1, ["--quote", "--body", "--prefix", "--suffix", "--section", "--version"]);
+    const { positional: [docId = ""], flags } = parse(1, ["--quote", "--body", "--prefix", "--suffix", "--section", "--version", "--agent"]);
     const exact = text("--quote", flags.get("--quote"), COMMENT_LIMITS.quote, true, normalised) ?? "";
     const body = text("--body", flags.get("--body"), COMMENT_LIMITS.body, true, trimmed) ?? "";
     const prefix = text("--prefix", flags.get("--prefix"), COMMENT_LIMITS.context, false, normalised);
@@ -480,20 +530,21 @@ export function prepareComments(action, extra) {
         body,
         ...(atVersion === undefined ? {} : { version: atVersion }),
       },
+      ...agentFlag(flags),
     };
   }
   if (action === "reply") {
-    const { positional: [docId = "", threadId = ""], flags } = parse(2, ["--body"]);
-    return { action, docId, threadId: identifier(threadId, THREAD_ID), body: text("--body", flags.get("--body"), COMMENT_LIMITS.body, true, trimmed) ?? "" };
+    const { positional: [docId = "", threadId = ""], flags } = parse(2, ["--body", "--agent"]);
+    return { action, docId, threadId: identifier(threadId, THREAD_ID), body: text("--body", flags.get("--body"), COMMENT_LIMITS.body, true, trimmed) ?? "", ...agentFlag(flags) };
   }
   if (action === "resolve") {
-    const { positional: [docId = "", threadId = ""], flags } = parse(2, ["--version"]);
+    const { positional: [docId = "", threadId = ""], flags } = parse(2, ["--version", "--agent"]);
     const atVersion = version(flags.get("--version"));
-    return { action, docId, threadId: identifier(threadId, THREAD_ID), ...(atVersion === undefined ? {} : { version: atVersion }) };
+    return { action, docId, threadId: identifier(threadId, THREAD_ID), ...(atVersion === undefined ? {} : { version: atVersion }), ...agentFlag(flags) };
   }
   if (action === "reopen") {
-    const { positional: [docId = "", threadId = ""] } = parse(2, []);
-    return { action, docId, threadId: identifier(threadId, THREAD_ID) };
+    const { positional: [docId = "", threadId = ""], flags } = parse(2, ["--agent"]);
+    return { action, docId, threadId: identifier(threadId, THREAD_ID), ...agentFlag(flags) };
   }
   if (action === "delete") {
     const { positional: [docId = "", commentId = ""] } = parse(2, []);
@@ -529,6 +580,9 @@ export async function main(args) {
   const prepared = command === "publish" ? await preparePublish(value, extra) : undefined;
   const changes = command === "share" ? prepareShare(extra) : [];
   const comments = command === "comments" ? prepareComments(argument, extra) : undefined;
+  // Read before any credential, like the arguments: a bad OPENARTIFACTS_AGENT costs no login or request.
+  const writes = comments !== undefined && ["add", "reply", "resolve", "reopen"].includes(comments.action);
+  const agent = writes && comments ? commentAgent("agent" in comments ? comments.agent : undefined, process.env) : undefined;
 
   const host = (process.env.OPENARTIFACTS_API_HOST ?? DEFAULT_HOST).replace(/\/$/, "");
   const directory = configDir();
@@ -538,7 +592,7 @@ export async function main(args) {
   }
 
   const token = await credential(host, directory);
-  const client = createClient({ host, token });
+  const client = createClient({ host, token, agent });
   if (command === "account" && !token.startsWith("oat_")) {
     throw new Error("This command needs an OpenArtifacts account token. Run `openartifacts login`; unset OPENARTIFACTS_TOKEN if it contains a license key.");
   }

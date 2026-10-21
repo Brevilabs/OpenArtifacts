@@ -139,6 +139,30 @@ describe("the comments client against the local Worker", () => {
     expect((await client.listThreads(doc.docId)).threads).toEqual([]);
   });
 
+  it("sends the agent's name on comment writes only, and the server serves it as agent.name", async () => {
+    const seen: Array<[string, string | null]> = [];
+    const spy: typeof fetch = async (input, init) => {
+      const request = new Request(input, init);
+      seen.push([`${request.method} ${new URL(request.url).pathname.split("/").slice(5).join("/")}`, request.headers.get("openartifacts-agent")]);
+      return readerFetch(input, init);
+    };
+    const client = createClient({ host: COMMENTS_HOST, token: await paidToken(), agent: "Claude Code", fetcher: spy });
+    const doc = await client.createDoc({ title: "Review", html: "<!doctype html><body><p>The quick brown fox jumps.</p></body>" });
+    await client.setDisplayName("Cli Tester");
+    const added = await client.addThread(doc.docId, { anchor: { exact: "quick brown fox" }, body: "Which fox?" });
+    await client.replyToThread(doc.docId, added.threadId, "The red one.");
+    await client.resolveThread(doc.docId, added.threadId, 1);
+    await client.reopenThread(doc.docId, added.threadId);
+    const listed = await client.listThreads(doc.docId);
+    expect(listed.threads[0].comments.map((c: { author: unknown }) => c.author)).toEqual([
+      { name: "Cli Tester's agent", kind: "agent", person: { name: "Cli Tester" }, agent: { name: "Claude Code" } },
+      { name: "Cli Tester's agent", kind: "agent", person: { name: "Cli Tester" }, agent: { name: "Claude Code" } },
+    ]);
+    const sent = seen.filter(([, header]) => header !== null).map(([route]) => route);
+    expect(sent).toEqual([expect.stringMatching(/^POST threads$/), expect.stringMatching(/comments$/), expect.stringMatching(/resolve$/), expect.stringMatching(/reopen$/)]);
+    expect(seen.filter(([route]) => route.startsWith("GET") || route.includes("account")).every(([, header]) => header === null)).toBe(true);
+  });
+
   it("reports a quote the version does not contain as anchor_not_found", async () => {
     const client = createClient({ host: COMMENTS_HOST, token: await paidToken(), fetcher: readerFetch });
     const doc = await client.createDoc({ title: "Review", html: "<!doctype html><body><p>Hello world</p></body>" });

@@ -906,11 +906,11 @@ document, and a client must not use it as an ownership check.
     "createdAtVersion": 1,
     "createdAt": 1785000000000,
     "state": "resolved",
-    "resolution": {"by": {"name": "Alice's agent", "kind": "agent"}, "atVersion": 2, "at": 1785000900000},
+    "resolution": {"by": {"name": "Alice's agent", "kind": "agent", "person": {"name": "Alice"}, "agent": {"name": "Claude Code"}}, "atVersion": 2, "at": 1785000900000},
     "comments": [
-      {"commentId": "cm_c5r8n1t6w0", "author": {"name": "Bob", "kind": "human"},
+      {"commentId": "cm_c5r8n1t6w0", "author": {"name": "Bob", "kind": "human", "person": {"name": "Bob"}},
        "body": "Twelve percent of what?", "createdAt": 1785000000000, "atVersion": 1},
-      {"commentId": "cm_d2h7j4v9s3", "author": {"name": "Alice's agent", "kind": "agent"},
+      {"commentId": "cm_d2h7j4v9s3", "author": {"name": "Alice's agent", "kind": "agent", "person": {"name": "Alice"}, "agent": {"name": "Claude Code"}},
        "body": "Clarified in v2.", "createdAt": 1785000800000, "atVersion": 2}
     ]}
  ]}
@@ -927,13 +927,25 @@ document, and a client must not use it as an ownership check.
 | `state` | `open` or `resolved`. |
 | `resolution` | `null` while open; else who resolved it, in which version, and when. |
 | `comments[]` | In order. `atVersion` is the version the author was reading. |
-| `author`, `by` | `{name, kind}`: the only identity ever sent. `kind` is `human` or `agent`. |
+| `author`, `by` | `{name, kind, person, agent?}`: the only identity ever sent. `kind` is `human` or `agent`. `person` is `{name, isOwner?}`: the human, meaning the commenter or the account an agent acts for, with `name` their display name or `null` when none is on file. `isOwner` is present, as `true`, only for an agent whose person has no display name and is the document's owner. Everywhere else it is absent, humans included: the page's threads are public, and the owner is otherwise not named there. `agent` is present only when `kind` is `agent`, as `{name}`: the client the agent wrote through (see `OpenArtifacts-Agent` below), or `null` for a comment written before it was recorded. |
 
 Times are epoch milliseconds, as in `Access`. Threads are ordered by `createdAt`.
 **No account id and no email address ever appears.** A person is shown by their
 display name (`Someone` if they have none). An agent is named after the account it
 acts for, `"<display name>'s agent"`; with no name on file the document owner's
-agent is `"Owner's agent"` and any other is `"An agent"`.
+agent is `"Owner's agent"` and any other is `"An agent"`. That `name` is a composed
+display string kept for existing clients; new clients should compose their own from
+`person` and `agent`.
+
+A write through `/api/v1` may carry an `OpenArtifacts-Agent` header naming the client
+it comes from, such as `OpenArtifacts-Agent: Claude Code`. It describes the caller, as
+`User-Agent` does, and applies to `POST …/threads`, `POST …/comments`, `POST …/resolve`
+and `POST …/reopen`. It is stored with the comment or the resolution (a reopen leaves no
+author to store it on) and served as `agent.name`. It is 1 to 64 printable ASCII
+characters once trimmed, and anything else is `400 bad_request`. **Without the header
+the server stores a default for the credential**: `OpenArtifacts CLI` for an account
+token and `Copilot` for a license key. Only a comment written before the header existed
+has `agent.name` `null`. The page's own writes never take it.
 
 `GET …/threads` takes `state` (`open`, `resolved` or `all`, default `all`),
 `since` (an ISO 8601 date or timestamp: only threads with activity after it,
