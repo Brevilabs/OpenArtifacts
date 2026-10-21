@@ -723,9 +723,10 @@ writes. `origin` is the page's own origin, which the script fills in.
 - *The frame reveals nothing to non-readers.* Anyone can load it with any id.
   Until a token shows the viewer can read the document, the body is the same for
   a public, an invited-only, an unknown and a deleted id once the id is replaced:
-  the canonical address (built from the id, with no lookup) with **Copy link**,
-  "Only the owner can change who can open this." and "Is this your page? **Sign in
-  to manage**". No title, no mode, no list. The one thing that varies is
+  the word "Share" as its title and **Copy link** (the canonical address is built
+  from the id, with no lookup), "Only the owner can change who can open this." and
+  the one-line note "Published from Copilot? Link your account first" and "Is this
+  your page? **Sign in**" with **Copy link** in a footer. No document title, no mode, no list. The one thing that varies is
   `data-origin`, which echoes the caller's own `origin` when it matches the
   document's serving origin. With a token, a non-reader gets what an unknown id
   gets, never `403`.
@@ -774,9 +775,9 @@ It cannot publish, list, delete or touch another document; the display name is t
 are the five access operations of [The access routes](#the-access-routes) under
 that token, with no CORS. They run the same operations as the access routes and
 the share page, so the plan check and its `402`, both invite caps, the invite email
-and the analytics event are unchanged. `GET` answers `{"viewer": "owner", …}` with
+and the analytics event are unchanged. `GET` answers `{"viewer": "owner", …}` (the frame's own copy of the `Access` object adds `name`, the owner's display name or the part of their address before the `@`; `/api/v1` does not) with
 the `Access` fields, the title and `changed` (whether the write changed the link
-access or the invite list; a decline, a `GET` and a repeat answer `false`) for the owner, `{"viewer": "reader", "account",
+access or the invite list; a decline, a `GET` and a repeat answer `false`) for the owner, `{"viewer": "reader", "account", "role",
 "docId", "url", "title"}` for a signed-in account that may read the document but
 does not manage it, and `404` for everyone else. A missing, expired or foreign
 token is `401`.
@@ -1171,7 +1172,7 @@ either direction carries a credential.
 **Signing in.** The comments frame's sign-in line runs the Share popover's flow
 (`/embed/sign-in`, `POST /embed/token`) and keeps the token under the same storage
 key, so one sign-in serves both frames. The Share popover's owner view draws a
-select on each person whose options are `Access.roles` (`PUT …/access/people/{email}`
+menu on each person whose options are `Access.roles` (`PUT …/access/people/{email}`
 with `{role}`), and the share page the same as a form; neither is drawn where
 `COMMENTS` is unbound, which leaves `roles` out.
 

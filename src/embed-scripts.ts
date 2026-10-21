@@ -47,10 +47,12 @@ import { PAGE_COMMENTS_SCRIPT } from "./comments-scripts.js";
  *   and carry no credential in either direction.
  * - **Height.** On the shared serving origin (`openartifacts.site`, a public
  *   document's page) the popover is **one fixed height** for every viewer
- *   (320 px, less on a short viewport) and the frame scrolls inside it. 320 is
+ *   (360 px, less on a short viewport) and the frame scrolls inside it. 360 is
  *   the tallest form of the owner view with nobody added, plus a margin:
- *   measured in Chrome at the popover's 360 px width, the paid owner view is
- *   285 px and a free owner's upgrade card 256 px. So
+ *   measured in Chrome at the popover's 400 px width (the 56 px header and the
+ *   61 px footer around the content), the public, the private and the free
+ *   owner's view are all 345 px, because the upgrade row is the invite field's
+ *   height. So
  *   an owner who has added nobody sees everything without a scrollbar, and a
  *   list of people scrolls. There the frame
  *   never reports its size: any page on that origin can embed the same frame
@@ -107,14 +109,14 @@ export const PAGE_SCRIPT = String.raw`(() => {
     // otherwise sit 2 px above the popover's ring), of Share itself otherwise.
     const bar = link.closest(".openartifacts-bar");
     const top = Math.round((bar ? bar.getBoundingClientRect() : box).bottom + 8);
-    const width = Math.min(360, view.clientWidth - 16);
+    const width = Math.min(400, view.clientWidth - 16);
     // Anchored by the left edge to Share's right edge, then kept on screen, so it
     // opens in view wherever Share sits.
     host.style.width = width + "px";
     host.style.top = top + "px";
     host.style.left = Math.round(Math.max(8, Math.min(box.right - width, view.clientWidth - width - 8))) + "px";
     const room = Math.max(120, view.clientHeight - top - 8);
-    host.style.height = (size > 0 ? Math.min(size, 720, room) : Math.min(320, room)) + "px";
+    host.style.height = (size > 0 ? Math.min(size, 720, room) : Math.min(360, room)) + "px";
   };
   const build = () => {
     host = document.createElement("div");
@@ -217,48 +219,57 @@ export const POPUP_DONE_SCRIPT = String.raw`(function () {
  * reports its size (`body.fit`, see `FRAME_SCRIPT`) lets `main` take its
  * content's height instead of the room left, so what it measures is the content.
  *
- * **Layout.** Two parts, the same in every view. The `header` is the row every
- * view starts with: the link field, **Copy link** and the × close button. It is
- * the primary action, so it never scrolls away, and it is part of the shell, not
- * of any view, so nothing a view draws can move it. `main` under it is the one
- * scroll region; nothing inside it scrolls on its own. The row gets its hairline
+ * **Layout.** Three parts, the same in every view, on the layout of Google Docs'
+ * and Claude's share popovers. The `header` is the document's title (one line,
+ * cut with an ellipsis) and the × close button. The `footer` is pinned under
+ * `main`: a sentence about who can open the link, and **Copy link**, the primary
+ * action, so neither scrolls away. Both are part of the shell, not of any view,
+ * so nothing a view draws can move them. `main` between them is the one scroll
+ * region; nothing inside it scrolls on its own. The header gets its hairline
  * divider only while content is scrolled under it (`body.scrolled`), and the
- * `.fade` over the foot of the frame shows only while there is more below
- * (`body.more`), both set by the frame script. There is no title row.
+ * `.fade` over the foot of `main` shows only while there is more below
+ * (`body.more`), both set by the frame script. The footer has its hairline
+ * always.
  *
- * **The link field** always shows the end of the link, `/d/{id}`, and as much
- * of the host before it as fits: its text runs right to left inside an LTR
- * isolate (`<bdi>`), so the ellipsis takes the start of the host, and a click
- * still selects the whole link. Copy link is an icon, with its label kept for
- * assistive technology, because with a worded button the id alone would not fit
- * at the popover's 360 px width, let alone 304.
+ * **Rows.** People (the owner, each invitee, each request) are one row: a 32 px
+ * initials avatar (`.av`), a name line and a muted line under it (`.who`), and a
+ * control at the right. The control is a borderless menu button with a chevron
+ * that opens a small listbox drawn in the frame (`.pop`), not a native `select`:
+ * a closed select commits on a single keystroke, and a choice here is a write.
+ * Only a click, Enter or Space on an option commits. General access is the same shape
+ * with a 36 px icon circle (`.circle`). The invite field is one input with the
+ * **Invite** button laid over its right edge (`.invite`, absolutely positioned and
+ * `hidden` until the field has text), so the field never reflows when the button
+ * appears.
  *
  * **Height.** On the shared serving origin, one for every viewer (see
  * `PAGE_SCRIPT`), set so that the owner view with nobody added, in each of its
  * forms (public, private, a free owner's upgrade card), shows whole without a scrollbar; a list of people scrolls. The short
- * views (signed out, a reader, not found) pin `.bottom` (the account line and
- * the hint) to the floor above a divider, so the room between reads as layout.
+ * views (signed out, a reader, not found) pin the Copilot line (`.hint`) to the
+ * floor of `main`, with the account action in the footer, so the room between
+ * reads as layout.
  * On a private document's own origin the owner view's popover is its content's
  * height, up to a maximum, and `main` scrolls past it; every other view keeps
- * the fixed height and its pinned `.bottom`.
+ * the fixed height and its pinned Copilot line.
  *
  * **Loading.** `main` is `hidden` in the shell until the script has chosen the
  * first view, so a token holder's frame never paints the signed-out markup.
- * The skeleton (`.sk`) holds the owner view's places with muted blocks and pulses,
- * except under reduced motion. The helper line (`.help`) is one line in both,
- * worded to fit the popover's narrowest width (304 px), so nothing under it
- * moves when the owner view lands (a free owner's upgrade card, which takes its
- * place, still does).
+ * The skeleton (`.sk`) holds the owner view's places with muted blocks, in the
+ * same sizes as the rows they stand for, and pulses, except under reduced
+ * motion; the title is a muted bar in it. The invite field and the owner's row
+ * are in the same place in both, and a free owner's upgrade row, which takes the
+ * field's place, is the same height, so nothing under it moves.
  *
  * **Upgrade card** (`.up`). A plan that grants no role has neither private
- * sharing nor comments, so one card says both, under the Link access choice,
- * with an accent **Upgrade** link where the API gives one. On that plan **Only
- * those invited** is `aria-disabled` with a lock: a press sends nothing, pulses
- * the card's border (`.nudge`, a steady accent border under reduced motion) and
- * focuses Upgrade.
+ * sharing nor comments, so one row (the invite field's height, 36 px) says both
+ * with a lock, and an accent **Upgrade** link where the API gives one, in the
+ * invite field's place. On that plan **Only people
+ * invited** in General access is refused: nothing is sent, the row's border
+ * pulses (`.nudge`, a steady accent border under reduced motion) and Upgrade is
+ * focused.
  *
  * **Busy.** While a write is out, the control it came from shows a spinner
- * (`.busy`, or a `.spin` beside a select) in place of its label, and every
+ * (`.busy`) in place of its label, and every
  * control in `main` is disabled or read-only (`FRAME_SCRIPT`'s `hold`).
  *
  * Flex items do not collapse margins, so spacing is set in the margins, not the
@@ -274,72 +285,77 @@ export const POPUP_DONE_SCRIPT = String.raw`(function () {
 export const FRAME_CSS = `:root{color-scheme:dark;font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:#e9ebee;background:#0d0f14;-webkit-font-smoothing:antialiased}
 *{box-sizing:border-box}html,body{height:100%}body{margin:0;display:flex;flex-direction:column}
 body::before{content:"";position:fixed;top:0;left:0;right:0;height:1px;background:rgba(255,255,255,.06);z-index:3;pointer-events:none}
-header{flex:none;position:relative;z-index:2;display:flex;align-items:center;gap:8px;padding:16px 12px 12px 16px;background:#0d0f14}
+header{flex:none;position:relative;z-index:2;display:flex;align-items:center;gap:8px;min-height:56px;padding:16px 12px 8px 20px;background:#0d0f14}
 body.scrolled header{box-shadow:0 1px 0 #20242c,0 8px 10px -6px rgba(0,0,0,.6)}
-main{flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column;padding:4px 16px 16px;scrollbar-color:#2c313b transparent;scrollbar-width:thin}
-main[hidden]{display:none}body.fit main{flex:0 1 auto}
+.title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:15px;line-height:24px;font-weight:600;color:#f4f5f7}
+main{flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column;padding:0 20px 16px;scrollbar-color:#2c313b transparent;scrollbar-width:thin}
+main[hidden],button[hidden]{display:none}body.fit main{flex:0 1 auto}
 main>*{flex-shrink:0}main>:first-child{margin-top:0}
-.fade{position:fixed;left:0;right:0;bottom:0;z-index:1;height:28px;background:linear-gradient(to bottom,rgba(13,15,20,0),#0d0f14 85%);pointer-events:none;opacity:0}
-body.more .fade{opacity:1}
+footer{flex:none;position:relative;z-index:2;display:flex;align-items:center;gap:12px;min-height:61px;padding:12px 16px 12px 20px;border-top:1px solid #20242c;background:#0d0f14}
+.status{flex:1;min-width:0;margin:0;font-size:13px;line-height:1.35;color:#8d94a0}.status button.link{font-size:13px}
+footer button{flex:none;margin-left:auto;height:36px;padding:0 14px;border-radius:10px;font-size:14px}
+.fade{flex:none;position:relative;z-index:1;height:0;pointer-events:none}
+.fade::before{content:"";position:absolute;left:0;right:0;bottom:0;height:28px;background:linear-gradient(to bottom,rgba(13,15,20,0),#0d0f14 85%);opacity:0}
+body.more .fade::before{opacity:1}
 :focus-visible{outline:2px solid #f6ae52;outline-offset:2px}
-h2{margin:16px 0 2px;font-size:11px;line-height:16px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:#8d94a0}
+h2{margin:16px 0 4px;font-size:13px;line-height:20px;font-weight:600;color:#f4f5f7}
 p{margin:8px 0 0}
-.muted{color:#8d94a0}.help{font-size:13px}.err{margin-top:8px;color:#ff8a80}.err.warn{color:#f6ae52}.err:empty{display:none}
+.muted{color:#8d94a0}.err{margin-top:8px;color:#ff8a80}.err.warn{color:#f6ae52}.err:empty{display:none}
 a{color:#f6ae52;text-decoration:none}a:hover{text-decoration:underline;text-underline-offset:3px}
 button{font:inherit;font-size:13px;font-weight:500;line-height:1;cursor:pointer;height:28px;padding:0 12px;border:1px solid #2c313b;border-radius:8px;background:transparent;color:#e9ebee;display:inline-flex;align-items:center;justify-content:center;gap:6px;white-space:nowrap}
 button:hover{border-color:#3a404b;background:rgba(255,255,255,.04)}
 button:disabled{cursor:default;opacity:.5}button:disabled:not(.busy):hover{border-color:#2c313b;background:transparent}
 button.busy{position:relative;color:transparent!important}button.busy:disabled{opacity:1}
-button.busy::after,.spin{content:"";position:absolute;inset:0;margin:auto;width:14px;height:14px;border:2px solid #e9ebee;border-right-color:transparent;border-radius:50%;animation:spin .7s linear infinite}
+button.busy::after{content:"";position:absolute;inset:0;margin:auto;width:14px;height:14px;border:2px solid #e9ebee;border-right-color:transparent;border-radius:50%;animation:spin .7s linear infinite}
 button.primary.busy::after{border-color:#0b0c10;border-right-color:transparent}
-.spin{position:static;display:inline-block;flex:none}
 @keyframes spin{to{transform:rotate(1turn)}}
 button.primary{background:#f4f5f7;border-color:#f4f5f7;color:#0b0c10;font-weight:600}
 button.primary:hover{background:#fff;border-color:#fff}
-.row input:placeholder-shown+button.primary{background:transparent;border-color:#2c313b;color:#e9ebee}
-.row input:placeholder-shown+button.primary:hover{background:rgba(255,255,255,.04);border-color:#3a404b}
-button.tall{height:36px;padding:0 14px;border-radius:10px;font-size:14px}
 button.link{display:inline;height:auto;padding:0;border:0;background:none;color:#f6ae52;font-size:inherit;font-weight:inherit;line-height:inherit;white-space:normal}
-button.link.block{display:block;margin-top:2px}
 button.link:hover{background:none;text-decoration:underline;text-underline-offset:3px}
-header button.primary{width:36px;padding:0}header button.primary span{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 header .x{flex:none;width:28px;padding:0;border:0;font-size:20px;font-weight:400;color:#8d94a0}
 header .x:hover{background:rgba(255,255,255,.06);color:#f4f5f7}
 svg{width:16px;height:16px;flex:none;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
-.field{flex:1;min-width:0;display:flex;align-items:center;height:36px;padding:0 12px;border:1px solid #20242c;border-radius:10px;background:#07080b;color:#c9ced6;font:12.5px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-.field>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;user-select:all;direction:rtl;text-align:left}
-select{font:inherit;font-size:13px;height:28px;padding:0 6px;border:1px solid #2c313b;border-radius:8px;background:#07080b;color:#e9ebee;cursor:pointer}
-select:hover{border-color:#3a404b}
-input{font:inherit;flex:1;min-width:0;height:36px;padding:0 12px;border:1px solid #20242c;border-radius:10px;background:#07080b;color:#e9ebee}
+button.menu{height:32px;max-width:100%;padding:0 6px 0 8px;border:0;border-radius:8px;gap:4px;font-weight:400;color:#e9ebee}
+button.menu:hover{border:0;background:rgba(255,255,255,.06)}
+button.menu span{overflow:hidden;text-overflow:ellipsis}
+button.menu svg{width:14px;height:14px;color:#8d94a0}button.menu.busy svg{visibility:hidden}
+.pop{position:fixed;z-index:5;overflow:auto;padding:4px;border:1px solid #2c313b;border-radius:10px;background:#171a21;box-shadow:0 8px 24px rgba(0,0,0,.45)}
+.pop button{display:flex;width:100%;height:32px;justify-content:flex-start;gap:8px;padding:0 12px 0 6px;border:0;border-radius:6px;font-weight:400}
+.pop button:hover,.pop button:focus-visible{border:0;background:rgba(255,255,255,.08);outline:0}
+.pop .tick{flex:none;width:16px;height:16px}.pop .tick svg{width:14px;height:14px}.pop .danger{color:#ff8a80}
+.pop hr{margin:4px 0;border:0;border-top:1px solid #2c313b}
+.ico{flex:none;width:16px;height:16px}
+input{font:inherit;width:100%;min-width:0;height:36px;padding:0 12px;border:1px solid #20242c;border-radius:10px;background:#07080b;color:#e9ebee}
 input::placeholder{color:#5b626e}
 input:focus-visible{outline:0;border-color:#f6ae52;box-shadow:0 0 0 3px rgba(246,174,82,.18)}
-.row{display:flex;gap:8px;align-items:center}main>.row{margin-top:12px}
-.seg{display:flex;gap:2px;height:36px;padding:3px;border:1px solid #20242c;border-radius:10px;background:#07080b}
-.seg button{flex:1;height:28px;border:0;border-radius:7px;color:#8d94a0;background:transparent}
-.seg button:hover{color:#e9ebee;background:transparent}
-.seg button[aria-checked="true"]{background:#20242c;color:#f4f5f7}
-.seg button:focus-visible{outline-offset:0}
-.seg button[aria-disabled="true"]{color:#5b626e}.seg button[aria-disabled="true"]:hover{color:#8d94a0}
-.seg svg,.up svg{width:13px;height:13px}
-.up{margin-top:12px;padding:12px;border:1px solid #20242c;border-radius:10px;background:#07080b}
-.up strong{display:flex;align-items:center;gap:6px;font-size:13px;font-weight:600;color:#f4f5f7}.up strong svg{color:#f6ae52}
-.up p{margin:4px 0 0;font-size:12.5px;line-height:1.45}
-a.btn{display:inline-flex;align-items:center;height:28px;margin-top:10px;padding:0 12px;border-radius:8px;font-size:13px;font-weight:600;background:#f6ae52;color:#0b0c10}
+.invite{position:relative;margin-top:4px}.invite input{padding-right:84px}
+.invite button{position:absolute;top:4px;right:4px;height:28px;border-radius:7px}
+.invite button.busy{position:absolute}
+.row{display:flex;gap:8px;align-items:center}
+.up{display:flex;align-items:center;gap:8px;min-height:36px;margin-top:4px;padding:3px 4px 3px 12px;border:1px solid #20242c;border-radius:10px;background:#07080b;font-size:12.5px;line-height:1.3;color:#8d94a0}
+.up svg{width:13px;height:13px;color:#f6ae52}.up span{flex:1;min-width:0}
+a.btn{flex:none;display:inline-flex;align-items:center;height:28px;margin-left:auto;padding:0 12px;border-radius:8px;font-size:13px;font-weight:600;background:#f6ae52;color:#0b0c10}
 a.btn:hover{text-decoration:none;background:#f8bd6e}
 .up.nudge{animation:nudge 1s ease-out}
 @keyframes nudge{0%,30%{border-color:#f6ae52;box-shadow:0 0 0 3px rgba(246,174,82,.18)}}
 ul{list-style:none;margin:0;padding:0}
-li{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 0;border-top:1px solid #1a1d24}
-h2+ul>li:first-child{border-top:0}
-li span{flex:1;min-width:0;overflow-wrap:anywhere}li .row{margin-left:auto;flex:none}li small{display:block;font-size:12px;color:#8d94a0}
-li button.link{font-size:12px;color:#8d94a0}li button.link:hover{color:#e9ebee}
+li{display:flex;align-items:center;gap:12px;padding:6px 0}
+.av{flex:none;display:flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:50%;font-size:12px;font-weight:600;color:#e9ebee;user-select:none}
+.circle{flex:none;display:flex;align-items:center;justify-content:center;width:36px;height:36px;border-radius:50%;background:#171a21;color:#c9ced6}.circle svg{width:18px;height:18px}
+.who{flex:1;min-width:0}
+.who b,.who small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.who b{font-weight:500;line-height:20px}.who b i{font-style:normal;font-weight:400;color:#8d94a0}
+.who small{font-size:12px;line-height:16px;color:#8d94a0}
+li .row,.role{flex:none;margin-left:auto}.role{font-size:13px;color:#8d94a0}
+.access{display:flex;align-items:center;gap:12px;padding:6px 0}.access .menu{height:36px;font-size:14px;font-weight:500}
 .sk{border-color:transparent;background:#171a21;animation:pulse 1.6s ease-in-out infinite}
 i.sk{display:inline-block;height:10px;border-radius:5px;vertical-align:middle}
-.sk-in{flex:1;height:36px;border-radius:10px}.sk-add{width:58px;height:36px;border-radius:10px}
+.sk-in{height:36px;border-radius:10px}
 @keyframes pulse{50%{opacity:.45}}
 @media (prefers-reduced-motion:reduce){.sk,.up.nudge{animation:none}.up.nudge{border-color:#f6ae52}}
-.bottom{margin-top:auto;padding-top:12px;border-top:1px solid #20242c;font-size:13px;overflow-wrap:anywhere}
-.bottom p{margin:0}.bottom .err{margin:0 0 8px}.bottom .hint{margin-top:8px;font-size:12.5px}
+@media (max-width:340px){li.req{flex-wrap:wrap}li.req .row{flex-basis:100%;margin-left:0;padding-left:44px}}
+.hint{margin-top:auto;padding-top:12px;font-size:12.5px;overflow-wrap:anywhere}
 `;
 
 /**
@@ -387,7 +403,7 @@ i.sk{display:inline-block;height:10px;border-radius:5px;vertical-align:middle}
  * invitee is looking, and any report from a view but the signed-out one would
  * tell that the visitor has signed in to Share. While the owner view is drawn,
  * `main` takes its content's height (`body.fit`) and the frame posts `size`, the
- * row above `main` plus all of `main`, whenever that changes (a line added, a
+ * header above `main`, all of `main` and the footer under it, whenever that changes (a line added, a
  * resize); leaving it posts `size` 0, the fixed height, which follows only from
  * the owner's own view. Nothing is posted while the frame has no width
  * (`innerWidth` 0): Chrome may run it before the page has laid it out, and its
@@ -437,7 +453,6 @@ export const FRAME_SCRIPT = String.raw`(() => {
   // Embedded by a private document's own origin: only its publisher's pages are around it, so its owner
   // view may report its size (see the header comment). Decided once, as the frame loads.
   const fits = parentOrigin !== "" && parentOrigin !== publicOrigin && window.parent !== window;
-  const hint = main.dataset.hint;
   const KEY = "openartifacts:share-token:" + doc;
   const SIGNIN_WINDOW_MS = 10 * 60 * 1000;
   const SENTENCE = "Only the owner can change who can open this.";
@@ -447,11 +462,12 @@ export const FRAME_SCRIPT = String.raw`(() => {
   };
   post("ready");
 
-  // The row above main gets its divider only while content is under it, and the
-  // fade at the foot shows only while there is more below. Every view is drawn
+  // The header gets its divider only while content is under it, and the
+  // fade at the foot of main shows only while there is more below. Every view is drawn
   // into main, so its content changing, a scroll and a resize (the popover shown)
   // are all that move either edge, or the height the owner view reports.
   const header = document.querySelector("header");
+  const footer = document.querySelector("footer");
   // Whether the owner view is drawn: only it reports a size, and only where the frame fits.
   let ownerDrawn = false;
   // The last height posted; 0 is the fixed height, which every other view has and posts nothing for.
@@ -462,18 +478,28 @@ export const FRAME_SCRIPT = String.raw`(() => {
     // A frame the page has not laid out yet has no width, and its content measured at none is far
     // taller than it will be. The resize that gives it its width reports.
     if (window.innerWidth === 0) return;
-    const height = fits && ownerDrawn ? Math.ceil(header.getBoundingClientRect().height + main.scrollHeight) : 0;
+    const height = fits && ownerDrawn ? Math.ceil(header.getBoundingClientRect().height + main.scrollHeight + footer.getBoundingClientRect().height) : 0;
     // Leaving the owner view posts 0, so the popover goes back to the fixed height.
     if (height !== reported) { reported = height; post("size", { height: height }); }
   };
   main.addEventListener("scroll", edges);
   window.addEventListener("resize", edges);
   new MutationObserver(edges).observe(main, { childList: true, subtree: true, characterData: true });
-  // Every view is drawn through here, so the one flag that lets a view report is set with it.
+  // The header's title is the word the shell carries ("Share", the same bytes for every document) until
+  // the owner or reader view lands; the footer's sentence is empty until the owner view says who can open the link.
+  const titleBar = header.querySelector(".title");
+  const SHARE = titleBar.textContent;
+  const status = footer.querySelector(".status");
+  const setTitle = (text) => { titleBar.textContent = text || SHARE; };
+  // Every view is drawn through here, so the one flag that lets a view report is set with it. A view that
+  // knows the title or the footer's sentence sets them after.
   const draw = (kids, owner) => {
     ownerDrawn = owner === true;
     document.body.classList.toggle("fit", fits && ownerDrawn);
     main.replaceChildren(...kids);
+    setTitle("");
+    setFooter([], LINK_ICON);
+    closeMenu(false);
   };
 
   const node = (tag, attrs, kids) => {
@@ -516,6 +542,8 @@ export const FRAME_SCRIPT = String.raw`(() => {
   const SVG_NS = "http://www.w3.org/2000/svg";
   const LINK_ICON = ["M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71", "M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"];
   const CHECK_ICON = ["M20 6 9 17l-5-5"];
+  const CHEVRON_ICON = ["m6 9 6 6 6-6"];
+  const GLOBE_ICON = ["M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20z", "M2 12h20", "M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"];
   const LOCK_ICON = ["M6 11h12a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2z", "M8 11V7a4 4 0 0 1 8 0v4"];
   const icon = (paths) => {
     const svg = document.createElementNS(SVG_NS, "svg");
@@ -528,11 +556,25 @@ export const FRAME_SCRIPT = String.raw`(() => {
     }
     return svg;
   };
-  const copyLabel = (target, paths, text) => target.replaceChildren(icon(paths), node("span", {}, [text]));
-  const copyLink = (target) => {
+  // A null icon leaves its place empty, so the label does not move when the icon arrives.
+  const copyLabel = (target, paths, text) => target.replaceChildren(paths === null ? node("span", { class: "ico" }) : icon(paths), node("span", {}, [text]));
+  // Copy link is the footer's, in every view. Its icon is a lock while the page is invited-only, empty
+  // while the owner view loads, and "Copied" holds for two seconds whatever the view does meanwhile.
+  const copyButton = footer.querySelector("button.primary");
+  let linkIcon = LINK_ICON;
+  let copied = 0;
+  const idleCopy = () => copyLabel(copyButton, linkIcon, "Copy link");
+  // The footer's left side (a sentence, or an account action) and Copy link's icon follow the view.
+  const setFooter = (kids, paths) => {
+    status.replaceChildren(...kids);
+    linkIcon = paths;
+    if (copied === 0) idleCopy();
+  };
+  const copyLink = () => {
     const done = () => {
-      copyLabel(target, CHECK_ICON, "Copied");
-      window.setTimeout(() => copyLabel(target, LINK_ICON, "Copy link"), 2000);
+      copyLabel(copyButton, CHECK_ICON, "Copied");
+      window.clearTimeout(copied);
+      copied = window.setTimeout(() => { copied = 0; idleCopy(); }, 2000);
     };
     const fallback = () => {
       const area = node("textarea", { readonly: "", style: "position:fixed;opacity:0" });
@@ -545,32 +587,32 @@ export const FRAME_SCRIPT = String.raw`(() => {
     if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(link).then(done, fallback);
     else fallback();
   };
-  // The owner view is the only one with the Link access control. Leaving it is a click or a key inside
+  copyButton.addEventListener("click", copyLink);
+  // The owner view is the only one with the General access control. Leaving it is a click or a key inside
   // the frame, so it may say that this visitor is the owner (see the header comment), but only an
   // owner whose plan grants Can comment: a free owner's page has no comments to bring up. Leaving
   // any other view says nothing more than close.
   let grantsComment = false;
   // The owner view is showing the upgrade card: coming back to the tab reads it again.
   let upgradeShown = false;
-  const leave = () => { post("close"); if (grantsComment && main.querySelector("[role=radiogroup]")) post("people"); };
+  const leave = () => { post("close"); if (grantsComment && ownerDrawn) post("people"); };
   const closeButton = (target) => target.addEventListener("click", leave);
-  const copyButton = (target) => target.addEventListener("click", () => copyLink(target));
-  document.addEventListener("keydown", (event) => { if (event.key === "Escape") leave(); });
+  // Escape in an open menu closes the menu and nothing else (its handler prevents the default).
+  document.addEventListener("keydown", (event) => { if (event.key === "Escape" && !event.defaultPrevented) leave(); });
 
   const guest = Array.from(main.children);
-  const account = document.getElementById("oa-account");
   // Found by position, not by id. An id a view has and another lacks is a fragment
   // an embedding page can navigate the frame to (a URL fragment), and whether the
   // browser then focuses something shows as a blur on that page: a read of
   // storage it has no right to. A focusable element carries no id at all, even one
   // every view has: where it sits can differ by view, and a focus move scrolls
   // the embedding page by that difference.
-  const signInButton = account.querySelector("button");
+  const signInButton = status.querySelector("button");
+  const hintNode = main.querySelector(".hint");
   const guestMessage = document.getElementById("oa-msg");
-  // The row above main (the link, Copy link and ×) is the shell's, the same in
-  // every view, so it is wired once and never redrawn.
+  // The header (title and ×) and the footer (sentence and Copy link) are the shell's,
+  // the same in every view, so they are wired once and never redrawn.
   closeButton(header.querySelector(".x"));
-  copyButton(header.querySelector(".primary"));
 
   let prepared = null;
   let opened = null;
@@ -603,7 +645,7 @@ export const FRAME_SCRIPT = String.raw`(() => {
     // reached after the handoff row expired, or an overlapping sign-in may have
     // failed at the login binding, and pressing it again is the way out of each.
     // It starts a new poll, which replaces this one.
-    account.replaceChildren(...(waiting ? ["Complete sign-in in the window that opened. ", signInButton] : ["Is this your page? ", signInButton]));
+    setFooter(waiting ? ["Complete sign-in in the window that opened. ", signInButton] : ["Is this your page? ", signInButton], LINK_ICON);
     signInButton.disabled = prepared === null;
     guestMessage.replaceChildren(...(text ? [text] : []));
   };
@@ -701,28 +743,38 @@ export const FRAME_SCRIPT = String.raw`(() => {
   };
 
   const muted = (kids) => node("p", { class: "muted" }, kids);
-  const bottom = (kids) => node("div", { class: "bottom" }, kids);
-  const anotherAccount = (lead, stacked) => muted([lead, button("Use another account", () => signIn(true), stacked ? "link block" : "link")]);
-  const hintLine = () => node("p", { class: "muted hint" }, [hint]);
+  const roleLabel = (role) => "Can " + role;
+  // The same Copilot line as the shell's, for the views that replace it.
+  const hintLine = () => hintNode.cloneNode(true);
+  const anotherAccount = (lead) => [lead, button("Use another account", () => signIn(true), "link")];
 
+  // A reader's one row, in the owner view's row style: who they are, and what they may do. The footer
+  // offers another account.
   const showReader = (body) => {
-    draw([muted([SENTENCE]), bottom([anotherAccount("Signed in as " + body.account + ".", true), hintLine()])]);
+    draw([node("ul", {}, [person(body.account, null, null, node("span", { class: "role" }, [roleLabel(body.role)]), "", true)]), muted([SENTENCE]), hintLine()]);
+    setTitle(body.title);
+    setFooter(anotherAccount(""), LINK_ICON);
   };
   const showNone = () => {
-    draw([muted([SENTENCE]), bottom([anotherAccount("Is this your page? "), hintLine()])]);
+    draw([muted([SENTENCE]), hintLine()]);
+    setFooter(anotherAccount("Is this your page? "), LINK_ICON);
   };
   // While a stored token's read is out: the owner view's places, held by muted
-  // blocks, under the real row. Only the answer replaces it (owner, reader, not
-  // found, or the signed-out view after a 401), never the signed-out view first.
+  // blocks of the sizes they stand for, with a muted bar where the title goes and
+  // nothing yet in the footer, whose lock is not known. Only the answer replaces it
+  // (owner, reader, not found, or the signed-out view after a 401), never the
+  // signed-out view first.
   const showSkeleton = () => {
     const bar = (width) => node("i", { class: "sk", style: "width:" + width });
     draw([
-      node("div", { class: "seg sk" }),
-      node("div", { class: "row" }, [node("div", { class: "sk sk-in" }), node("div", { class: "sk sk-add" })]),
-      node("p", { class: "help" }, [bar("85%")]),
+      node("div", { class: "invite" }, [node("div", { class: "sk sk-in" })]),
+      node("h2", {}, [bar("110px")]),
+      node("ul", {}, [node("li", {}, [node("span", { class: "av sk" }), node("div", { class: "who" }, [node("b", {}, [bar("96px")]), node("small", {}, [bar("150px")])])])]),
       node("h2", {}, [bar("96px")]),
-      node("ul", {}, [node("li", {}, [node("span", {}, [bar("32px"), node("small", {}, [bar("48px")])])])]),
+      node("div", { class: "access" }, [node("span", { class: "circle sk" }), bar("150px")]),
     ]);
+    titleBar.replaceChildren(bar("160px"));
+    setFooter([], null);
   };
 
   const fail = (target, response, body, what) => {
@@ -793,21 +845,17 @@ export const FRAME_SCRIPT = String.raw`(() => {
     else showOwner(body);
   };
 
-  // While a write is out, the control it came from (a button, or the role select) shows a
-  // spinner, and every control in main is held, so nothing looks stuck and nothing is sent
-  // twice. The answer usually draws a new view, which replaces them all; the returned
-  // function gives back the ones a view that stays (a refusal, a failure) still shows.
+  // While a write is out, the control it came from shows a spinner, and every control in main
+  // is held, so nothing looks stuck and nothing is sent twice. The answer usually draws a new
+  // view, which replaces them all; the returned function gives back the ones a view that stays
+  // (a refusal, a failure) still shows.
   const hold = (control) => {
-    const held = Array.from(main.querySelectorAll("button, input, select")).filter((element) => !element.disabled && !element.readOnly);
+    const held = Array.from(main.querySelectorAll("button, input")).filter((element) => !element.disabled && !element.readOnly);
     const set = (on) => { for (const element of held) { if (element.tagName === "INPUT") element.readOnly = on; else element.disabled = on; } };
     set(true);
-    const spinner = control && control.tagName === "SELECT" ? node("span", { class: "spin", "aria-hidden": "true" }) : null;
-    if (spinner) control.before(spinner);
-    else if (control) control.classList.add("busy");
-    if (control) control.setAttribute("aria-busy", "true");
+    if (control) { control.classList.add("busy"); control.setAttribute("aria-busy", "true"); }
     return () => {
       set(false);
-      if (spinner) spinner.remove();
       if (control) { control.classList.remove("busy"); control.removeAttribute("aria-busy"); }
     };
   };
@@ -930,6 +978,94 @@ export const FRAME_SCRIPT = String.raw`(() => {
     }, control);
   };
 
+  // A menu button and its listbox, in place of a native select: a closed select commits a choice on
+  // a single keystroke (a letter picks the option it starts, and on some platforms an arrow key
+  // does), and a choice here is a write. The popup is drawn in the frame's body so no scroll
+  // region clips it, and flips upward where there is no room below. Arrow keys, Home, End and a
+  // typed letter only move the highlight (the focus, which is a real button each); Enter, Space or a
+  // click on an option commits, and Escape, Tab or a click elsewhere closes it without a write.
+  // Moving focus in and out happens inside the handlers of a user action, so it is not observable.
+  let openMenu = null;
+  const closeMenu = (refocus) => {
+    if (openMenu === null) return;
+    const shown = openMenu;
+    openMenu = null;
+    shown.pop.remove();
+    shown.trigger.setAttribute("aria-expanded", "false");
+    if (refocus) shown.trigger.focus();
+  };
+  document.addEventListener("pointerdown", (event) => {
+    if (openMenu !== null && !openMenu.pop.contains(event.target) && !openMenu.trigger.contains(event.target)) closeMenu(false);
+  }, true);
+  window.addEventListener("blur", () => closeMenu(false));
+  // The popup is fixed in the frame, so it would stay put while its button moves.
+  window.addEventListener("resize", () => closeMenu(false));
+  main.addEventListener("scroll", () => closeMenu(false));
+  // The options are a list of {value, label, danger}, with null for a separator; pick gets the value chosen.
+  const menu = (ariaLabel, options, current, pick) => {
+    const shown = options.find((option) => option !== null && option.value === current);
+    const trigger = node("button", { type: "button", class: "menu", "aria-haspopup": "listbox", "aria-expanded": "false", "aria-label": ariaLabel }, [node("span", {}, [shown ? shown.label : ""]), icon(CHEVRON_ICON)]);
+    const open = () => {
+      closeMenu(false);
+      const pop = node("div", { class: "pop", role: "listbox", "aria-label": ariaLabel });
+      const items = [];
+      for (const option of options) {
+        if (option === null) { pop.append(node("hr")); continue; }
+        const chosen = option.value === current;
+        const item = node("button", { type: "button", role: "option", class: option.danger ? "danger" : "", "aria-selected": String(chosen) }, [node("span", { class: "tick" }, chosen ? [icon(CHECK_ICON)] : []), option.label]);
+        item.addEventListener("click", () => { closeMenu(true); pick(option.value); });
+        items.push(item);
+        pop.append(item);
+      }
+      pop.addEventListener("keydown", (event) => {
+        const at = items.indexOf(document.activeElement);
+        if (event.key === "Escape") { event.preventDefault(); closeMenu(true); }
+        else if (event.key === "Tab") closeMenu(true);
+        else if (event.key === "ArrowDown") { event.preventDefault(); items[Math.min(items.length - 1, at + 1)].focus(); }
+        else if (event.key === "ArrowUp") { event.preventDefault(); items[Math.max(0, at - 1)].focus(); }
+        else if (event.key === "Home") { event.preventDefault(); items[0].focus(); }
+        else if (event.key === "End") { event.preventDefault(); items[items.length - 1].focus(); }
+        else if (event.key.length === 1 && event.key !== " " && !event.ctrlKey && !event.metaKey && !event.altKey) {
+          const typed = event.key.toLowerCase();
+          const next = items.slice(at + 1).concat(items.slice(0, at + 1)).find((item) => item.textContent.toLowerCase().startsWith(typed));
+          if (next) next.focus();
+        }
+      });
+      document.body.append(pop);
+      const box = trigger.getBoundingClientRect();
+      const below = window.innerHeight - box.bottom - 12;
+      const above = box.top - 12;
+      const flip = pop.offsetHeight > below && above > below;
+      pop.style.minWidth = Math.round(box.width) + "px";
+      pop.style.maxHeight = Math.max(96, flip ? above : below) + "px";
+      pop.style.top = Math.round(flip ? box.top - 4 - pop.offsetHeight : box.bottom + 4) + "px";
+      pop.style.left = Math.round(Math.max(8, Math.min(box.right - pop.offsetWidth, window.innerWidth - pop.offsetWidth - 8))) + "px";
+      trigger.setAttribute("aria-expanded", "true");
+      openMenu = { trigger: trigger, pop: pop };
+      (items.find((item) => item.getAttribute("aria-selected") === "true") || items[0]).focus();
+    };
+    trigger.addEventListener("click", () => { if (openMenu !== null && openMenu.trigger === trigger) closeMenu(true); else open(); });
+    trigger.addEventListener("keydown", (event) => { if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); open(); } });
+    return trigger;
+  };
+
+  // Initials in a muted circle: the first letters of the first two words of the name, else the first
+  // letter of the address. The colour is a fixed palette picked by a hash of the address.
+  const AVATARS = ["#3d4f6b", "#4b3f6b", "#2f5f55", "#6b4f3a", "#6b3f4f", "#4f5f2f"];
+  const first = (text) => Array.from(text)[0] || "";
+  const avatar = (address, name) => {
+    const words = (name || "").split(" ").filter((word) => word !== "");
+    const letters = words.length > 0 ? words.slice(0, 2).map(first).join("") : first(address);
+    let hash = 0;
+    for (const char of address) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
+    return node("span", { class: "av", style: "background:" + AVATARS[hash % AVATARS.length], "aria-hidden": "true" }, [letters.toUpperCase()]);
+  };
+  // A person's row: avatar, a name line (the address when there is no name) and a muted line under it, and a control.
+  const person = (address, name, detail, control, cls, you) => node("li", { class: cls || "" }, [
+    avatar(address, name),
+    node("div", { class: "who" }, [node("b", {}, [name || address].concat(you ? [node("i", {}, [" (you)"])] : []))].concat(detail ? [node("small", {}, [detail])] : [])),
+  ].concat(control ? [control] : []));
+
   const showOwner = (body) => {
     latest = body;
     if (body.linkAccess !== "invited") switched = false;
@@ -940,9 +1076,13 @@ export const FRAME_SCRIPT = String.raw`(() => {
     const mayAdd = roles === null || roles.length > 0;
     grantsComment = roles !== null && roles.includes("comment");
     upgradeShown = roles !== null && roles.length === 0;
-    const input = node("input", { type: "text", inputmode: "email", placeholder: "Emails, separated by commas", "aria-label": "Add people by email, separated by commas", autocomplete: "off" });
-    // Enter in the field is a press of Add, and shows on Add.
-    const addButton = button("Add", () => addMany(input.value, addButton), "primary tall");
+    const input = node("input", { type: "text", inputmode: "email", placeholder: "Invite people by email", "aria-label": "Invite people by email", autocomplete: "off" });
+    // Enter in the field is a press of Invite, and shows on Invite. The button sits inside the field's right
+    // edge and is there only while the field has text.
+    const addButton = button("Invite", () => addMany(input.value, addButton), "primary");
+    addButton.hidden = true;
+    const typed = () => { addButton.hidden = input.value.trim() === ""; };
+    input.addEventListener("input", typed);
     input.addEventListener("keydown", (event) => { if (event.key === "Enter") addMany(input.value, addButton); });
     // A text field drops line breaks from what it is given, which would glue a
     // pasted column into one address. Turn them into separators first.
@@ -952,15 +1092,13 @@ export const FRAME_SCRIPT = String.raw`(() => {
       if (lines.length < 2) return;
       event.preventDefault();
       input.setRangeText(lines.join(", "), input.selectionStart, input.selectionEnd, "end");
+      typed();
     });
-    // A plan that grants no role has neither private sharing nor comments: one card says so, with Upgrade.
+    // A plan that grants no role has neither private sharing nor comments: one row says so, with Upgrade.
     const upsell = roles !== null && roles.length === 0;
     const upgrade = upsell && typeof body.upgradeUrl === "string" && body.upgradeUrl.startsWith("https://") ? node("a", { class: "btn", href: body.upgradeUrl, target: "_blank", rel: "noopener noreferrer" }, ["Upgrade"]) : null;
-    const card = upsell ? node("div", { class: "up" }, [
-      node("strong", {}, [icon(LOCK_ICON), "Private sharing and comments"]),
-      node("p", { class: "muted" }, ["Choose who can open this page, and let them comment on it. Included in paid plans."]),
-    ].concat(upgrade === null ? [] : [upgrade])) : null;
-    // Going private is the paid half, so on that plan it is locked: a press sends nothing and points at the card.
+    const card = upsell ? node("div", { class: "up" }, [icon(LOCK_ICON), node("span", {}, ["Private sharing and comments"])].concat(upgrade === null ? [] : [upgrade])) : null;
+    // Going private is the paid half, so on that plan it is refused: nothing is sent, and the row is pointed at.
     const locked = (value) => upsell && value === "invited" && body.linkAccess !== value;
     const nudge = () => {
       card.classList.remove("nudge");
@@ -968,55 +1106,54 @@ export const FRAME_SCRIPT = String.raw`(() => {
       card.classList.add("nudge");
       if (upgrade !== null) upgrade.focus();
     };
-    const choice = (value, label) => node("button", { type: "button", role: "radio", "aria-checked": String(body.linkAccess === value), "aria-disabled": locked(value) ? "true" : null, onclick: (event) => { if (locked(value)) nudge(); else if (body.linkAccess !== value) write("PUT", "/access", { linkAccess: value }, true, event.currentTarget); } }, locked(value) ? [icon(LOCK_ICON), label] : [label]);
     const narrow = limited(body);
-    const roleLabel = (role) => "Can " + role;
-    const roleControl = (entry) => {
-      if (roles === null) return null;
-      // The stored role is selected exactly. One this script does not offer stays as its own option, so it is never
-      // rewritten, and one the plan no longer grants can still be lowered to one it does.
-      const offered = roles.includes(entry.role) ? roles : roles.concat([entry.role]);
-      if (offered.length < 2) return node("span", { class: "muted" }, [roleLabel(entry.role)]);
-      const select = node("select", { "aria-label": "Access for " + entry.email }, offered.map((role) => node("option", { value: role }, [roleLabel(role)])));
-      select.value = entry.role;
-      // A select shows its new value before the write lands. A write that lands redraws the view with a new select; one that fails, or that another write turned away, leaves this one showing a role nobody has, so it goes back.
-      select.addEventListener("change", () => {
-        if (select.value === entry.role) return;
-        write("PUT", "/access/people/" + encodeURIComponent(entry.email), { role: select.value }, false, select).then(() => { select.value = entry.role; });
+    // The control at the right of an invitee's row: the roles the plan grants, then Remove access. The stored
+    // role is selected exactly. One this script does not offer stays as its own option, so it is never
+    // rewritten, and one the plan no longer grants can still be lowered to one it does. Where the server has no
+    // comments there is no role to choose, and the current one is the only label.
+    // With no comments on this server a stored role is not something anyone can do, so a person is just invited.
+    const listedLabel = (role) => (roles === null ? "Invited" : roleLabel(role));
+    const accessMenu = (entry) => {
+      const offered = roles === null ? [entry.role] : roles.includes(entry.role) ? roles : roles.concat([entry.role]);
+      const address = "/access/people/" + encodeURIComponent(entry.email);
+      const options = offered.map((role) => ({ value: role, label: listedLabel(role) })).concat([null, { value: "remove", label: "Remove access", danger: true }]);
+      const trigger = menu("Access for " + entry.email, options, entry.role, (chosen) => {
+        if (chosen === entry.role) return;
+        if (chosen === "remove") write("DELETE", address, undefined, false, trigger);
+        else write("PUT", address, { role: chosen }, false, trigger);
       });
-      return select;
+      return trigger;
     };
-    const person = (address, detail, buttons) => node("li", {}, [node("span", {}, [address, node("small", {}, [detail])]), node("div", { class: "row" }, buttons)]);
-    // No section labels where the control says what it is: the two choices, and an
-    // address field beside Add.
-    const kids = [node("div", { class: "seg", role: "radiogroup", "aria-label": "Link access" }, [choice("anyone", "Anyone with the link"), choice("invited", "Only those invited")])];
-    if (card !== null) kids.push(card);
-    if (mayAdd) {
-      kids.push(node("div", { class: "row" }, [input, addButton]));
-      if (roles !== null && roles.includes("comment")) {
-        kids.push(node("p", { class: "muted help" }, [body.linkAccess === "anyone" ? "Anyone can view. Invitees can comment." : "Only people you add can open this page."]));
-      }
-    }
+    const modeMenu = menu("General access", [{ value: "invited", label: "Only people invited" }, { value: "anyone", label: "Anyone with the link" }], body.linkAccess, (chosen) => {
+      if (chosen === body.linkAccess) return;
+      if (locked(chosen)) nudge();
+      else write("PUT", "/access", { linkAccess: chosen }, true, modeMenu);
+    });
+
+    const kids = [];
+    if (mayAdd) kids.push(node("div", { class: "invite" }, [input, addButton]));
+    else kids.push(card);
     kids.push(message);
     if (body.requests.length > 0) {
-      kids.push(node("h2", {}, ["Requests"]), node("ul", {}, body.requests.map((request) => person(request.email, "Asked to open it", narrow ? [] : [
+      kids.push(node("h2", {}, ["Requests"]), node("ul", {}, body.requests.map((request) => person(request.email, null, "Asked to open", narrow ? null : node("div", { class: "row" }, [
         mayAdd ? button("Approve", (event) => write("PUT", "/access/people/" + encodeURIComponent(request.email), undefined, false, event.currentTarget), "primary") : null,
         button("Decline", (event) => write("DELETE", "/access/requests/" + encodeURIComponent(request.email), undefined, false, event.currentTarget)),
-      ].filter((kid) => kid !== null)))));
+      ].filter((kid) => kid !== null)), "req"))));
     }
-    const invitationLabel = body.email ? "Invited" : "Invited · send them the link";
-    // On a plan that adds nobody, a list of just You says nothing the link access does not.
-    if (mayAdd || body.people.length > 0) kids.push(node("h2", {}, ["Who has access"]), node("ul", {}, [person("You", "Owner", [])].concat(body.people.map((entry) => person(entry.email, invitationLabel, narrow ? [] : [
-      roleControl(entry),
-      button("Remove", (event) => write("DELETE", "/access/people/" + encodeURIComponent(entry.email), undefined, false, event.currentTarget), "link"),
-    ].filter((kid) => kid !== null))))));
+    const ownerName = typeof body.name === "string" && body.name !== "" ? body.name : body.account;
+    const invitees = body.people.map((entry) => person(entry.email, null, body.email ? null : "Send them the link", narrow ? node("span", { class: "role" }, [listedLabel(entry.role)]) : accessMenu(entry)));
+    kids.push(node("h2", {}, ["People with access"]), node("ul", {}, [person(body.account, ownerName, body.account, node("span", { class: "role" }, ["Owner"]), "", true)].concat(invitees)));
     // Both lines are about people on the list, so they wait for someone to be on it.
     const listed = body.people.length > 0 || body.requests.length > 0;
     if (body.email && mayAdd && body.people.length > 0) kids.push(muted(["OpenArtifacts emails each invitation. If someone doesn’t get it, send them the link."]));
-    // Approve, Decline and Remove are one click on a private document, and this
+    // Approve, Decline and Remove access are one click on a private document, and this
     // frame is on the public origin. See exposed().
     if (narrow && listed) kids.push(muted(["To remove people or answer requests, ", node("a", { href: location.origin + "/share/" + doc, target: "_blank", rel: "noopener noreferrer" }, ["open the share page"]), "."]));
+    kids.push(node("h2", {}, ["General access"]), node("div", { class: "access" }, [node("span", { class: "circle" }, [icon(body.linkAccess === "invited" ? LOCK_ICON : GLOBE_ICON)]), modeMenu]));
     draw(kids, true);
+    setTitle(body.title);
+    const invitedOnly = body.linkAccess === "invited";
+    setFooter([invitedOnly ? (body.people.length === 0 ? "Only you can open this link" : "Only people invited can open this link") : "Anyone with the link can view"], invitedOnly ? LOCK_ICON : LINK_ICON);
   };
 
   const refresh = async () => {
@@ -1026,7 +1163,7 @@ export const FRAME_SCRIPT = String.raw`(() => {
     if (stored === null) { showGuest("", false); return; }
     // Nothing drawn yet came from a token (the shell, or a sign-in just
     // completed): hold the places instead of leaving the signed-out view up.
-    if (account.isConnected) showSkeleton();
+    if (signInButton.isConnected) showSkeleton();
     let response;
     try { response = await call("GET", "/access"); } catch (error) { if (mine === seq) showGuest("Couldn’t load the sharing settings. Try again.", false); return; }
     if (response === null) { if (mine === seq) showGuest("", false); return; }

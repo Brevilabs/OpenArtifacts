@@ -50,7 +50,6 @@ import type { AnalyticsSink } from "./analytics.js";
 import {
   accessBody,
   addPerson,
-  copilotHint,
   declineRequest,
   decodeAddress,
   getAccess,
@@ -64,14 +63,16 @@ import {
   type AccessState,
 } from "./api/access.js";
 import type { Publisher } from "./auth.js";
-import { stringField } from "./account.js";
+import { actionUrl, stringField } from "./account.js";
 import type { Env } from "./config.js";
-import { accountEmail, findReadableDoc, putEmbedHandoff, takeEmbedHandoff } from "./db.js";
+import { accountEmail, displayNames, findReadableDoc, inviteRole, putEmbedHandoff, takeEmbedHandoff } from "./db.js";
 import { FRAME_CSS, FRAME_SCRIPT, PAGE_SCRIPT } from "./embed-scripts.js";
 import { accountPlan } from "./entitlement.js";
+import { ownerHasComments } from "./comments/access.js";
 import { handleCommentsEmbed } from "./comments/embed-api.js";
 import { commentsFrame } from "./comments/frame.js";
 import { docNotFound, errorResponse } from "./errors.js";
+import { nameFromEmail } from "./display-name.js";
 import { frameContext, frameHeaders } from "./frame-shell.js";
 import { verifyFrameToken } from "./frame-token.js";
 import { scriptHashSource, sha256Hex } from "./hash.js";
@@ -87,6 +88,7 @@ import {
   PAGE_SCRIPT_PATH,
 } from "./paths.js";
 import { readBodyWithin } from "./quota.js";
+import { roleAtLeast } from "./roles.js";
 import { readerSecret } from "./reader-config.js";
 import { popupDonePage, popupRefusedPage, READER_NOT_FOUND, TOO_MANY } from "./reader-pages.js";
 import { signIn } from "./reader.js";
@@ -174,8 +176,8 @@ function frameScriptHash(): Promise<string> {
 }
 
 /**
- * The link glyph in the shell's Copy link, as the frame script draws it after
- * "Copied". Its size and stroke come from the stylesheet (`FRAME_CSS`).
+ * The link glyph in the footer's Copy link, as the frame script draws it after
+ * "Copied" (or swaps for a lock on an invited-only page). Its size and stroke come from the stylesheet (`FRAME_CSS`).
  */
 const LINK_ICON_SVG =
   '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>' +
@@ -186,10 +188,13 @@ const LINK_ICON_SVG =
  * frame, as the same shell for every document id.
  *
  * Until a token proves the viewer can read the document the body is the same
- * bytes for a public, an invited-only, an unknown and a deleted document: the
- * row every view starts with (the canonical address, built from the id with no
- * lookup, **Copy link** and ×), then "Only the owner can change who can open
- * this." and **Sign in to manage**. No title, no mode, no list. `main` is
+ * bytes for a public, an invited-only, an unknown and a deleted document: a
+ * header (the fixed word "Share", and ×), then "Only the owner can change who
+ * can open this." and the one Copilot line, then a footer with "Is this your
+ * page? **Sign in**" and **Copy link** (the canonical address is built from the
+ * id with no lookup). The word in the header is the same bytes for every id: the script
+ * swaps in the document's title only once the owner or reader view lands. No
+ * mode, no list. `main` is
  * `hidden` until the script has chosen the first view, so a frame holding a
  * token paints its skeleton, never this signed-out view (`FRAME_CSS`). Which
  * origin may embed it is `frameContext`'s (`src/frame-shell.ts`).
@@ -199,10 +204,15 @@ async function shareFrame(request: Request, url: URL, env: Env): Promise<Respons
   if (context === null) return READER_NOT_FOUND();
   const { doc, origin } = context;
 
-  // Built from the id alone, like the link beside it, so showing it leaks nothing.
+  // Built from the id alone, so putting it in the page leaks nothing.
   const link = publicDocUrl(env, url, doc);
-  const bareLink = link.replace(/^https?:\/\//, "");
-  const hint = escapeHtml(copilotHint(env));
+  // The one line every signed-out visitor and reader sees for a Copilot publisher: the same for every
+  // document, built from the server's own account address.
+  let account: string | undefined;
+  try { account = actionUrl(env)?.href; } catch { account = undefined; }
+  const hint = account === undefined
+    ? "Published from Copilot? Ask your server operator to link your license first"
+    : `Published from Copilot? <a href="${escapeHtml(account)}" target="_blank" rel="noopener noreferrer">Link your account</a> first`;
   const body = `<!doctype html>
 <html lang="en">
 <head>
@@ -213,12 +223,14 @@ async function shareFrame(request: Request, url: URL, env: Env): Promise<Respons
 <style>${FRAME_CSS}</style>
 </head>
 <body>
-<header><div class="field"><span><bdi>${escapeHtml(bareLink)}</bdi></span></div><button type="button" class="primary tall">${LINK_ICON_SVG}<span>Copy link</span></button><button type="button" class="x" aria-label="Close">×</button></header>
-<main data-doc="${escapeHtml(doc)}" data-link="${escapeHtml(link)}" data-origin="${origin === null ? "" : escapeHtml(origin)}" data-hint="${hint}" hidden>
+<header><span class="title">Share</span><button type="button" class="x" aria-label="Close">×</button></header>
+<main data-doc="${escapeHtml(doc)}" data-link="${escapeHtml(link)}" data-origin="${origin === null ? "" : escapeHtml(origin)}" hidden>
 <p class="muted">Only the owner can change who can open this.</p>
-<div class="bottom"><p id="oa-msg" class="err" role="alert"></p><p class="muted" id="oa-account">Is this your page? <button type="button" class="link" disabled>Sign in to manage</button></p><p class="muted hint">${hint}</p></div>
+<p id="oa-msg" class="err" role="alert"></p>
+<p class="muted hint">${hint}</p>
 </main>
 <div class="fade" aria-hidden="true"></div>
+<footer><p class="status">Is this your page? <button type="button" class="link" disabled>Sign in</button></p><button type="button" class="primary">${LINK_ICON_SVG}<span>Copy link</span></button></footer>
 <script>${FRAME_SCRIPT}</script>
 </body>
 </html>`;
@@ -374,6 +386,10 @@ const noStore = (response: Response): Response => {
  * credential is a header a cross-site page cannot attach without a preflight
  * that fails, never a cookie.
  */
+async function readerCanComment(env: Env, owner: string, docId: string, email: string, now: number): Promise<boolean> {
+  return env.COMMENTS !== undefined && roleAtLeast(await inviteRole(env.DB, docId, email), "comment") && (await ownerHasComments(env, owner, now));
+}
+
 async function frameApi(
   request: Request,
   url: URL,
@@ -410,19 +426,34 @@ async function frameApi(
   };
   const principal = method === "GET" ? cached : await withCurrentPlan(env, cached);
   // `changed` says whether a write changed anything. The frame needs it to tell
-  // its own switch to private from a repeat on a stale view.
-  const owner = (state: AccessState, changed = false, who = principal) =>
-    Response.json({ viewer: "owner", account: email, title: state.title, changed, ...accessBody(env, url, docId, state, who) }, { headers: NO_STORE });
-  const answer = (result: AccessResult) =>
-    result.ok ? owner(result.state, result.changed) : noStore(refusalResponse(env, principal, docId, result.refusal));
+  // its own switch to private from a repeat on a stale view. `name` is the
+  // owner's display name: the frame's own field, which `/api/v1` does not carry.
+  const owner = async (state: AccessState, changed = false, who = principal) => {
+    const name = (await displayNames(env.DB, [accountId])).get(accountId) ?? nameFromEmail(email);
+    return Response.json(
+      { viewer: "owner", account: email, name, title: state.title, changed, ...accessBody(env, url, docId, state, who) },
+      { headers: NO_STORE },
+    );
+  };
+  const answer = async (result: AccessResult) =>
+    result.ok ? await owner(result.state, result.changed) : noStore(refusalResponse(env, principal, docId, result.refusal));
 
   if (method === "GET") {
     const managed = await getAccess(env, principal, docId);
-    if (managed.ok) return owner(managed.state, false, await withCurrentPlan(env, principal));
+    if (managed.ok) return await owner(managed.state, false, await withCurrentPlan(env, principal));
     const readable = await findReadableDoc(env.DB, docId, null, accountId);
     if (readable === null || readable.deleted_at !== null || !readable.allowed) return noStore(docNotFound(docId));
     return Response.json(
-      { viewer: "reader", account: email, docId, url: publicDocUrl(env, url, docId), title: readable.title },
+      {
+        viewer: "reader",
+        account: email,
+        // What this account may do here: comment only where the threads resource would let it (a listed
+        // role of comment or better, comments bound, and the owner's plan including them), else view.
+        role: (await readerCanComment(env, readable.owner, docId, email, now)) ? "comment" : "view",
+        docId,
+        url: publicDocUrl(env, url, docId),
+        title: readable.title,
+      },
       { headers: NO_STORE },
     );
   }

@@ -1774,6 +1774,15 @@ export async function displayNames(db: D1Database, ids: string[]): Promise<Map<s
   return names;
 }
 
+/** `email`'s role on `docId`'s invite list, or null when the address is not listed. */
+export async function inviteRole(db: D1Database, docId: string, email: string): Promise<InviteRole | null> {
+  const row = await db
+    .prepare("SELECT role FROM doc_invites WHERE doc_id = ? AND email = ?")
+    .bind(docId, email)
+    .first<{ role: InviteRole }>();
+  return row?.role ?? null;
+}
+
 /**
  * Which of these accounts can read `docId` right now: `CAN_READ_SQL`'s rule for
  * each (a public document, the account owns it or a key linked to it does, or its
