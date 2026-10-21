@@ -23,6 +23,7 @@
  * `ownerId` is the publisher's app-sites user id, resolved by the ownership
  * check, so a linked license key and account token count as one publisher.
  */
+import { linkGuidance } from "../account.js";
 import type { AnalyticsSink } from "../analytics.js";
 import { maySharePrivately, type Publisher } from "../auth.js";
 import { MAX_DOCS_PER_PUBLISHER, MAX_DOC_BYTES, MAX_PUSHES_PER_DAY, MAX_STORED_BYTES_PER_PUBLISHER } from "../config.js";
@@ -232,6 +233,7 @@ function pushed(
   version: number,
   status: number,
   linkAccess?: LinkAccess,
+  guidance?: { message: string; url: string },
 ) {
   return Response.json(
     {
@@ -242,6 +244,7 @@ function pushed(
       // `POST /private-docs`. An update never changes who can read a document,
       // so its receipt is the one it always was.
       ...(linkAccess === undefined ? {} : { linkAccess }),
+      ...(guidance && { guidance }),
     },
     { status },
   );
@@ -344,7 +347,7 @@ export async function createDoc(
     });
   }
   await writeManifestBestEffort(env, docId);
-  return pushed(env, requestUrl, docId, FIRST_VERSION, 201, linkAccess);
+  return pushed(env, requestUrl, docId, FIRST_VERSION, 201, linkAccess, await linkGuidance(request, env, publisher));
 }
 
 export async function updateDoc(

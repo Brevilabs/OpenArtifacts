@@ -1,10 +1,12 @@
 import { parseBearerToken, type Publisher } from "./auth.js";
 import { setName } from "./comments/service.js";
 import type { Env } from "./config.js";
+import { emailConfigured } from "./email.js";
 import { errorResponse } from "./errors.js";
 import { sha256Hex } from "./hash.js";
 import { OWNER_SCOPE_SQL } from "./owners.js";
 import { effectivePlan, planLimits } from "./plans.js";
+import { readerSignInConfigured } from "./reader-config.js";
 import { storedBytes } from "./storage-quota.js";
 import { readBodyWithin, utcDay } from "./quota.js";
 
@@ -33,6 +35,31 @@ export function actionUrl(env: Env): URL | null {
     throw new Error("ACCOUNT_ACTION_URL must be HTTPS without credentials or fragment (local HTTP is allowed).");
   }
   return url;
+}
+
+const COPILOT_CLIENT = "obsidian-copilot";
+// Emails are named only where this server can send them, and only for the
+// routes it serves: access requests need reader sign-in, comments also need
+// `COMMENTS` (the same gates as their routes, #94).
+const emailsFor = (env: Env) =>
+  !emailConfigured(env) || !readerSignInConfigured(env) ? ""
+    : ` to get an email when people you share with ${env.COMMENTS === undefined ? "" : "comment or "}ask for access`;
+const linkMessage = (env: Env) =>
+  `Publish from other agents too? Link your Copilot for Obsidian account to OpenArtifacts${emailsFor(env)}.`;
+
+/** A display hint, never account proof. It must not fail or change a publish. */
+export async function linkGuidance(request: Request, env: Env, publisher: Publisher): Promise<{ message: string; url: string } | undefined> {
+  if (request.headers.get("x-openartifacts-client") !== COPILOT_CLIENT ||
+    publisher.authKind === "account") return undefined;
+  try {
+    const url = actionUrl(env);
+    if (!url) return undefined;
+    const linked = await env.DB.prepare("SELECT 1 FROM owner_links WHERE external_owner = ?")
+      .bind(publisher.owner).first();
+    return linked ? undefined : { message: linkMessage(env), url: url.toString() };
+  } catch {
+    return undefined;
+  }
 }
 
 export async function handleAccount(request: Request, env: Env, publisher: Publisher): Promise<Response> {
