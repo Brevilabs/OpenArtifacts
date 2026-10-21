@@ -1913,7 +1913,12 @@ describe("an invited-only document", () => {
         expect(html).not.toContain("Secret");
         expect(html).not.toContain("data-title");
         expect(html).not.toContain("title=");
-        expect(html).toContain("Sign in to manage");
+        // The signed-out view is in the shell: the sentence and the Copilot line in main, the sign-in
+        // button in the footer next to Copy link, and only the word "Share" where a title goes.
+        expect(html).toContain("Only the owner can change who can open this.");
+        expect(html).toMatch(/<footer><p class="status">Is this your page\? <button type="button" class="link" disabled>Sign in<\/button><\/p>/);
+        expect(html).toContain('<header><span class="title">Share</span>');
+        expect(html).toContain("Published from Copilot?");
         // No title row; the views live in a main the script shows once it has chosen the first.
         expect(html).not.toContain("<h1");
         expect(html).toMatch(/<main [^>]*\shidden>/);
@@ -2220,7 +2225,6 @@ describe("an invited-only document", () => {
       const invitee = await reader("alice@acme.com", doc.docId);
       const stranger = await reader("mallory@evil.example");
       await env.DB.prepare("INSERT INTO doc_access_requests (doc_id, email, created_at) VALUES (?, 'bob@other.com', ?)").bind(doc.docId, Date.now()).run();
-      await env.DB.prepare("UPDATE accounts SET display_name = 'Alice Ames' WHERE email = 'alice@acme.com'").run();
 
       const mine = await embedApi(`${doc.docId}/access`, await tokenFor(owner, doc.docId), {}, config);
       expect(mine.status).toBe(200);
@@ -2228,14 +2232,14 @@ describe("an invited-only document", () => {
       expect(await mine.json()).toMatchObject({
         viewer: "owner",
         account: "owner@acme.com",
-        // The owner has no display name, so the one derived from the address; the invitee's is the account's.
+        // The owner has no display name, so the one derived from the address.
         name: "owner",
         title: "Secret",
         docId: doc.docId,
         url: `https://openartifacts.site/d/${doc.docId}`,
         linkAccess: "invited",
         email: true,
-        people: [{ email: "alice@acme.com", role: "comment", name: "Alice Ames" }],
+        people: [{ email: "alice@acme.com", role: "comment" }],
         requests: [{ email: "bob@other.com" }],
       });
 
@@ -2244,6 +2248,7 @@ describe("an invited-only document", () => {
       expect(await seen.json()).toEqual({
         viewer: "reader",
         account: "alice@acme.com",
+        role: "comment",
         docId: doc.docId,
         url: `https://openartifacts.site/d/${doc.docId}`,
         title: "Secret",
@@ -2260,6 +2265,11 @@ describe("an invited-only document", () => {
 
       // A deleted or unknown document is a 404 to the owner too.
       expect((await embedApi(`${UNKNOWN_DOC_ID}/access`, await tokenFor(owner, UNKNOWN_DOC_ID), {}, config)).status).toBe(404);
+
+      // A signed-in reader of a public page who is not on its list can view.
+      const open = await privateDoc("an open page", KEY, "anyone");
+      const passerby = await embedApi(`${open.docId}/access`, await tokenFor(stranger, open.docId), {}, config);
+      expect(await passerby.json()).toMatchObject({ viewer: "reader", account: "mallory@evil.example", role: "view" });
 
       // An owner on a public document: switch it private, and the API sees it.
       const publicDoc = await privateDoc("a public page", KEY, "anyone");

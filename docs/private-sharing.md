@@ -495,8 +495,8 @@ that must never be on a page whose scripts the author writes.
 - **The frame reveals nothing to non-readers.** Anyone can load it with any id.
   Until a token shows the viewer can read the document, every id looks the same,
   private, public, unknown or deleted: the word "Share" as the title, **Copy link**
-  for the canonical url, built from the id with no lookup, and **Sign in to manage**.
-  No document title, no link-access mode, no list. The bodies are equal after replacing the id, except `data-origin`,
+  for the canonical url, built from the id with no lookup, and the one-line Copilot note and "Is this your page? **Sign in**"
+  in the footer. No document title, no link-access mode, no list. The bodies are equal after replacing the id, except `data-origin`,
   which echoes the caller's own `origin` only when it equals the serving origin
   (what the frame's `postMessage` and `frame-ancestors` need; it tells the caller
   only what it already named). With a token, a non-reader sees what an unknown id
@@ -523,8 +523,8 @@ that must never be on a page whose scripts the author writes.
   view: every other view (signed out, a reader, not found, the skeleton) keeps the
   one fixed height there too and posts nothing. The page around the frame is the
   publisher's, so the owner view's height tells its scripts only what their author
-  knows, but an invitee's would not: the reader view's "Signed in as {email}."
-  wraps by address, so its height would say which invitee is looking, and any
+  knows, but an invitee's would not: the reader view's row
+  names the account by address, so its height would say which invitee is looking, and any
   report from a view other than the signed-out one would say the visitor has
   signed in to Share. Leaving the owner view posts `0`, the fixed height again,
   which follows only from the owner's own view. The frame decides once, as it
@@ -565,20 +565,27 @@ that must never be on a page whose scripts the author writes.
   once it has text; Enter and a pasted list work); **Requests**, when some are
   pending, each as a row with **Approve** and **Decline**; **People with access**,
   the owner first ("{name} (you)", the address under it, **Owner** at the right)
-  and then each invitee as a row with an initials avatar, the name where that
-  address has an account with one (otherwise the address alone), and a borderless
-  select of the roles the plan grants (**Can view / Can comment**, see
-  [comments.md](comments.md)) then **Remove access**; and **General access**, an
-  icon (a lock, or a globe) and a select of **Only people invited** and **Anyone
-  with the link**. The footer's sentence is "Only you can open this link" on a
+  and then each invitee as a row with an initials avatar, the address (an
+  invitee is shown by address only, so the view says nothing about whether it has
+  an account), and a borderless menu button of the roles the plan grants (**Can
+  view / Can comment**, see [comments.md](comments.md)) then **Remove access**;
+  and **General access**, an icon (a lock, or a globe) and a menu button of **Only
+  people invited** and **Anyone with the link**. These are menus the frame draws,
+  not native selects, because a closed select commits on a single keystroke and a
+  choice here is a write: arrow keys and a typed letter only move the highlight,
+  and a click, Enter or Space on an option commits; Escape, Tab or a click outside
+  closes the menu without a write. The footer's sentence is "Only you can open this link" on a
   private page with nobody added, "Only people invited can open this link" with
   people, and "Anyone with the link can view" on a public one: always one line. A plan that
   grants no role (a free one) gets, in place of the invite field, one row of its
   height: a lock, "Private sharing and comments" and **Upgrade**; choosing **Only people invited** there
-  sends nothing, puts the select back and points at the row. Any other reader gets
-  "Only the owner can change who can open this."; someone not yet signed in gets
-  that sentence and **Sign in to manage**; those views and the footer's sentence
-  are empty of mode. Writes call the same
+  sends nothing and points at the row. A reader gets their own row (their address
+  with "(you)" and their role, **Can view** where they are not listed, as on a
+  public page), "Only the owner can change who can open this.", the one-line note
+  "Published from Copilot? Link your account first" (linking to the server's
+  account address), and **Use another account** in the footer. Someone not yet
+  signed in gets the sentence, the note, and "Is this your page? **Sign in**" in
+  the footer, the same bytes for every id. Writes call the same
   operations as `/api/v1` and the share page, so the plan check and the `402`
   message, both invite caps, the invite email and `document_access_changed` are
   identical on all three. While a write is out, the control it came from shows a

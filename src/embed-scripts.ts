@@ -232,9 +232,11 @@ export const POPUP_DONE_SCRIPT = String.raw`(function () {
  * always.
  *
  * **Rows.** People (the owner, each invitee, each request) are one row: a 32 px
- * initials avatar (`.av`), a name line and a muted email line (`.who`), and a
- * control at the right. The control is a native `select` with no border and a
- * chevron, so the platform's own menu opens. General access is the same shape
+ * initials avatar (`.av`), a name line and a muted line under it (`.who`), and a
+ * control at the right. The control is a borderless menu button with a chevron
+ * that opens a small listbox drawn in the frame (`.pop`), not a native `select`:
+ * a closed select commits on a single keystroke, and a choice here is a write.
+ * Only a click, Enter or Space on an option commits. General access is the same shape
  * with a 36 px icon circle (`.circle`). The invite field is one input with the
  * **Invite** button laid over its right edge (`.invite`, absolutely positioned and
  * `hidden` until the field has text), so the field never reflows when the button
@@ -243,11 +245,12 @@ export const POPUP_DONE_SCRIPT = String.raw`(function () {
  * **Height.** On the shared serving origin, one for every viewer (see
  * `PAGE_SCRIPT`), set so that the owner view with nobody added, in each of its
  * forms (public, private, a free owner's upgrade card), shows whole without a scrollbar; a list of people scrolls. The short
- * views (signed out, a reader, not found) pin `.bottom` (the account line and
- * the hint) to the floor of `main`, so the room between reads as layout.
+ * views (signed out, a reader, not found) pin the Copilot line (`.hint`) to the
+ * floor of `main`, with the account action in the footer, so the room between
+ * reads as layout.
  * On a private document's own origin the owner view's popover is its content's
  * height, up to a maximum, and `main` scrolls past it; every other view keeps
- * the fixed height and its pinned `.bottom`.
+ * the fixed height and its pinned Copilot line.
  *
  * **Loading.** `main` is `hidden` in the shell until the script has chosen the
  * first view, so a token holder's frame never paints the signed-out markup.
@@ -261,12 +264,12 @@ export const POPUP_DONE_SCRIPT = String.raw`(function () {
  * sharing nor comments, so one row (the invite field's height, 36 px) says both
  * with a lock, and an accent **Upgrade** link where the API gives one, in the
  * invite field's place. On that plan **Only people
- * invited** in General access is refused: the select goes back, the row's border
+ * invited** in General access is refused: nothing is sent, the row's border
  * pulses (`.nudge`, a steady accent border under reduced motion) and Upgrade is
  * focused.
  *
  * **Busy.** While a write is out, the control it came from shows a spinner
- * (`.busy`, or a `.spin` beside a select) in place of its label, and every
+ * (`.busy`) in place of its label, and every
  * control in `main` is disabled or read-only (`FRAME_SCRIPT`'s `hold`).
  *
  * Flex items do not collapse margins, so spacing is set in the margins, not the
@@ -277,8 +280,7 @@ export const POPUP_DONE_SCRIPT = String.raw`(function () {
  * Dark only, in the reader pages' palette (`src/page.ts`): surface `#0d0f14`,
  * wells `#07080b`, borders `#20242c` and `#2c313b`, text `#e9ebee`, muted
  * `#8d94a0` (6.2:1 on the surface), accent `#f6ae52`. System fonts: the frame
- * fetches nothing, and its policy would not let it. The select's chevron is a
- * `data:` image, which its policy allows.
+ * fetches nothing, and its policy would not let it.
  */
 export const FRAME_CSS = `:root{color-scheme:dark;font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:#e9ebee;background:#0d0f14;-webkit-font-smoothing:antialiased}
 *{box-sizing:border-box}html,body{height:100%}body{margin:0;display:flex;flex-direction:column}
@@ -290,7 +292,7 @@ main{flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column;paddin
 main[hidden],button[hidden]{display:none}body.fit main{flex:0 1 auto}
 main>*{flex-shrink:0}main>:first-child{margin-top:0}
 footer{flex:none;position:relative;z-index:2;display:flex;align-items:center;gap:12px;min-height:61px;padding:12px 16px 12px 20px;border-top:1px solid #20242c;background:#0d0f14}
-.status{flex:1;min-width:0;margin:0;font-size:13px;line-height:1.35;color:#8d94a0}
+.status{flex:1;min-width:0;margin:0;font-size:13px;line-height:1.35;color:#8d94a0}.status button.link{font-size:13px}
 footer button{flex:none;margin-left:auto;height:36px;padding:0 14px;border-radius:10px;font-size:14px}
 .fade{flex:none;position:relative;z-index:1;height:0;pointer-events:none}
 .fade::before{content:"";position:absolute;left:0;right:0;bottom:0;height:28px;background:linear-gradient(to bottom,rgba(13,15,20,0),#0d0f14 85%);opacity:0}
@@ -304,22 +306,26 @@ button{font:inherit;font-size:13px;font-weight:500;line-height:1;cursor:pointer;
 button:hover{border-color:#3a404b;background:rgba(255,255,255,.04)}
 button:disabled{cursor:default;opacity:.5}button:disabled:not(.busy):hover{border-color:#2c313b;background:transparent}
 button.busy{position:relative;color:transparent!important}button.busy:disabled{opacity:1}
-button.busy::after,.spin{content:"";position:absolute;inset:0;margin:auto;width:14px;height:14px;border:2px solid #e9ebee;border-right-color:transparent;border-radius:50%;animation:spin .7s linear infinite}
+button.busy::after{content:"";position:absolute;inset:0;margin:auto;width:14px;height:14px;border:2px solid #e9ebee;border-right-color:transparent;border-radius:50%;animation:spin .7s linear infinite}
 button.primary.busy::after{border-color:#0b0c10;border-right-color:transparent}
-.spin{position:static;display:inline-block;flex:none}
 @keyframes spin{to{transform:rotate(1turn)}}
 button.primary{background:#f4f5f7;border-color:#f4f5f7;color:#0b0c10;font-weight:600}
 button.primary:hover{background:#fff;border-color:#fff}
 button.link{display:inline;height:auto;padding:0;border:0;background:none;color:#f6ae52;font-size:inherit;font-weight:inherit;line-height:inherit;white-space:normal}
-button.link.block{display:block;margin-top:2px}
 button.link:hover{background:none;text-decoration:underline;text-underline-offset:3px}
 header .x{flex:none;width:28px;padding:0;border:0;font-size:20px;font-weight:400;color:#8d94a0}
 header .x:hover{background:rgba(255,255,255,.06);color:#f4f5f7}
 svg{width:16px;height:16px;flex:none;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
-select{appearance:none;-webkit-appearance:none;font:inherit;font-size:13px;height:32px;max-width:100%;padding:0 26px 0 8px;border:0;border-radius:8px;background:transparent url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238d94a0' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") no-repeat right 6px center/14px;color:#e9ebee;cursor:pointer}
-select:hover{background-color:rgba(255,255,255,.06)}
-select:disabled{cursor:default;opacity:.5}select:disabled:hover{background-color:transparent}
-select option{background:#171a21;color:#e9ebee}
+button.menu{height:32px;max-width:100%;padding:0 6px 0 8px;border:0;border-radius:8px;gap:4px;font-weight:400;color:#e9ebee}
+button.menu:hover{border:0;background:rgba(255,255,255,.06)}
+button.menu span{overflow:hidden;text-overflow:ellipsis}
+button.menu svg{width:14px;height:14px;color:#8d94a0}button.menu.busy svg{visibility:hidden}
+.pop{position:fixed;z-index:5;overflow:auto;padding:4px;border:1px solid #2c313b;border-radius:10px;background:#171a21;box-shadow:0 8px 24px rgba(0,0,0,.45)}
+.pop button{display:flex;width:100%;height:32px;justify-content:flex-start;gap:8px;padding:0 12px 0 6px;border:0;border-radius:6px;font-weight:400}
+.pop button:hover,.pop button:focus-visible{border:0;background:rgba(255,255,255,.08);outline:0}
+.pop .tick{flex:none;width:16px;height:16px}.pop .tick svg{width:14px;height:14px}.pop .danger{color:#ff8a80}
+.pop hr{margin:4px 0;border:0;border-top:1px solid #2c313b}
+.ico{flex:none;width:16px;height:16px}
 input{font:inherit;width:100%;min-width:0;height:36px;padding:0 12px;border:1px solid #20242c;border-radius:10px;background:#07080b;color:#e9ebee}
 input::placeholder{color:#5b626e}
 input:focus-visible{outline:0;border-color:#f6ae52;box-shadow:0 0 0 3px rgba(246,174,82,.18)}
@@ -342,16 +348,14 @@ li{display:flex;align-items:center;gap:12px;padding:6px 0}
 .who b{font-weight:500;line-height:20px}.who b i{font-style:normal;font-weight:400;color:#8d94a0}
 .who small{font-size:12px;line-height:16px;color:#8d94a0}
 li .row,.role{flex:none;margin-left:auto}.role{font-size:13px;color:#8d94a0}
-li select{flex:none}
-.access{display:flex;align-items:center;gap:12px;padding:6px 0}.access select{font-size:14px;font-weight:500;height:36px}
+.access{display:flex;align-items:center;gap:12px;padding:6px 0}.access .menu{height:36px;font-size:14px;font-weight:500}
 .sk{border-color:transparent;background:#171a21;animation:pulse 1.6s ease-in-out infinite}
 i.sk{display:inline-block;height:10px;border-radius:5px;vertical-align:middle}
 .sk-in{height:36px;border-radius:10px}
 @keyframes pulse{50%{opacity:.45}}
 @media (prefers-reduced-motion:reduce){.sk,.up.nudge{animation:none}.up.nudge{border-color:#f6ae52}}
 @media (max-width:340px){li.req{flex-wrap:wrap}li.req .row{flex-basis:100%;margin-left:0;padding-left:44px}}
-.bottom{margin-top:auto;padding-top:12px;font-size:13px;overflow-wrap:anywhere}
-.bottom p{margin:0}.bottom .err{margin:0 0 8px}.bottom .hint{margin-top:8px;font-size:12.5px}
+.hint{margin-top:auto;padding-top:12px;font-size:12.5px;overflow-wrap:anywhere}
 `;
 
 /**
@@ -449,7 +453,6 @@ export const FRAME_SCRIPT = String.raw`(() => {
   // Embedded by a private document's own origin: only its publisher's pages are around it, so its owner
   // view may report its size (see the header comment). Decided once, as the frame loads.
   const fits = parentOrigin !== "" && parentOrigin !== publicOrigin && window.parent !== window;
-  const hint = main.dataset.hint;
   const KEY = "openartifacts:share-token:" + doc;
   const SIGNIN_WINDOW_MS = 10 * 60 * 1000;
   const SENTENCE = "Only the owner can change who can open this.";
@@ -495,7 +498,8 @@ export const FRAME_SCRIPT = String.raw`(() => {
     document.body.classList.toggle("fit", fits && ownerDrawn);
     main.replaceChildren(...kids);
     setTitle("");
-    setFooter("", false);
+    setFooter([], LINK_ICON);
+    closeMenu(false);
   };
 
   const node = (tag, attrs, kids) => {
@@ -538,6 +542,7 @@ export const FRAME_SCRIPT = String.raw`(() => {
   const SVG_NS = "http://www.w3.org/2000/svg";
   const LINK_ICON = ["M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71", "M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"];
   const CHECK_ICON = ["M20 6 9 17l-5-5"];
+  const CHEVRON_ICON = ["m6 9 6 6 6-6"];
   const GLOBE_ICON = ["M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20z", "M2 12h20", "M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"];
   const LOCK_ICON = ["M6 11h12a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2z", "M8 11V7a4 4 0 0 1 8 0v4"];
   const icon = (paths) => {
@@ -551,16 +556,18 @@ export const FRAME_SCRIPT = String.raw`(() => {
     }
     return svg;
   };
-  const copyLabel = (target, paths, text) => target.replaceChildren(icon(paths), node("span", {}, [text]));
-  // Copy link is the footer's, in every view. Its icon is a lock while the page is invited-only,
-  // and "Copied" holds for two seconds whatever the view does meanwhile.
-  const copyButton = footer.querySelector("button");
-  let linkLocked = false;
+  // A null icon leaves its place empty, so the label does not move when the icon arrives.
+  const copyLabel = (target, paths, text) => target.replaceChildren(paths === null ? node("span", { class: "ico" }) : icon(paths), node("span", {}, [text]));
+  // Copy link is the footer's, in every view. Its icon is a lock while the page is invited-only, empty
+  // while the owner view loads, and "Copied" holds for two seconds whatever the view does meanwhile.
+  const copyButton = footer.querySelector("button.primary");
+  let linkIcon = LINK_ICON;
   let copied = 0;
-  const idleCopy = () => copyLabel(copyButton, linkLocked ? LOCK_ICON : LINK_ICON, "Copy link");
-  const setFooter = (text, locked) => {
-    status.textContent = text;
-    linkLocked = locked;
+  const idleCopy = () => copyLabel(copyButton, linkIcon, "Copy link");
+  // The footer's left side (a sentence, or an account action) and Copy link's icon follow the view.
+  const setFooter = (kids, paths) => {
+    status.replaceChildren(...kids);
+    linkIcon = paths;
     if (copied === 0) idleCopy();
   };
   const copyLink = () => {
@@ -588,19 +595,20 @@ export const FRAME_SCRIPT = String.raw`(() => {
   let grantsComment = false;
   // The owner view is showing the upgrade card: coming back to the tab reads it again.
   let upgradeShown = false;
-  const leave = () => { post("close"); if (grantsComment && main.querySelector(".access")) post("people"); };
+  const leave = () => { post("close"); if (grantsComment && ownerDrawn) post("people"); };
   const closeButton = (target) => target.addEventListener("click", leave);
-  document.addEventListener("keydown", (event) => { if (event.key === "Escape") leave(); });
+  // Escape in an open menu closes the menu and nothing else (its handler prevents the default).
+  document.addEventListener("keydown", (event) => { if (event.key === "Escape" && !event.defaultPrevented) leave(); });
 
   const guest = Array.from(main.children);
-  const account = document.getElementById("oa-account");
   // Found by position, not by id. An id a view has and another lacks is a fragment
   // an embedding page can navigate the frame to (a URL fragment), and whether the
   // browser then focuses something shows as a blur on that page: a read of
   // storage it has no right to. A focusable element carries no id at all, even one
   // every view has: where it sits can differ by view, and a focus move scrolls
   // the embedding page by that difference.
-  const signInButton = account.querySelector("button");
+  const signInButton = status.querySelector("button");
+  const hintNode = main.querySelector(".hint");
   const guestMessage = document.getElementById("oa-msg");
   // The header (title and ×) and the footer (sentence and Copy link) are the shell's,
   // the same in every view, so they are wired once and never redrawn.
@@ -637,7 +645,7 @@ export const FRAME_SCRIPT = String.raw`(() => {
     // reached after the handoff row expired, or an overlapping sign-in may have
     // failed at the login binding, and pressing it again is the way out of each.
     // It starts a new poll, which replaces this one.
-    account.replaceChildren(...(waiting ? ["Complete sign-in in the window that opened. ", signInButton] : ["Is this your page? ", signInButton]));
+    setFooter(waiting ? ["Complete sign-in in the window that opened. ", signInButton] : ["Is this your page? ", signInButton], LINK_ICON);
     signInButton.disabled = prepared === null;
     guestMessage.replaceChildren(...(text ? [text] : []));
   };
@@ -735,21 +743,27 @@ export const FRAME_SCRIPT = String.raw`(() => {
   };
 
   const muted = (kids) => node("p", { class: "muted" }, kids);
-  const bottom = (kids) => node("div", { class: "bottom" }, kids);
-  const anotherAccount = (lead, stacked) => muted([lead, button("Use another account", () => signIn(true), stacked ? "link block" : "link")]);
-  const hintLine = () => node("p", { class: "muted hint" }, [hint]);
+  const roleLabel = (role) => "Can " + role;
+  // The same Copilot line as the shell's, for the views that replace it.
+  const hintLine = () => hintNode.cloneNode(true);
+  const anotherAccount = (lead) => [lead, button("Use another account", () => signIn(true), "link")];
 
+  // A reader's one row, in the owner view's row style: who they are, and what they may do. The footer
+  // offers another account.
   const showReader = (body) => {
-    draw([muted([SENTENCE]), bottom([anotherAccount("Signed in as " + body.account + ".", true), hintLine()])]);
+    draw([node("ul", {}, [person(body.account, null, null, node("span", { class: "role" }, [roleLabel(body.role)]), "", true)]), muted([SENTENCE]), hintLine()]);
     setTitle(body.title);
+    setFooter(anotherAccount(""), LINK_ICON);
   };
   const showNone = () => {
-    draw([muted([SENTENCE]), bottom([anotherAccount("Is this your page? "), hintLine()])]);
+    draw([muted([SENTENCE]), hintLine()]);
+    setFooter(anotherAccount("Is this your page? "), LINK_ICON);
   };
   // While a stored token's read is out: the owner view's places, held by muted
-  // blocks of the sizes they stand for, with a muted bar where the title goes.
-  // Only the answer replaces it (owner, reader, not found, or the signed-out view
-  // after a 401), never the signed-out view first.
+  // blocks of the sizes they stand for, with a muted bar where the title goes and
+  // nothing yet in the footer, whose lock is not known. Only the answer replaces it
+  // (owner, reader, not found, or the signed-out view after a 401), never the
+  // signed-out view first.
   const showSkeleton = () => {
     const bar = (width) => node("i", { class: "sk", style: "width:" + width });
     draw([
@@ -760,6 +774,7 @@ export const FRAME_SCRIPT = String.raw`(() => {
       node("div", { class: "access" }, [node("span", { class: "circle sk" }), bar("150px")]),
     ]);
     titleBar.replaceChildren(bar("160px"));
+    setFooter([], null);
   };
 
   const fail = (target, response, body, what) => {
@@ -830,21 +845,17 @@ export const FRAME_SCRIPT = String.raw`(() => {
     else showOwner(body);
   };
 
-  // While a write is out, the control it came from (a button, or the role select) shows a
-  // spinner, and every control in main is held, so nothing looks stuck and nothing is sent
-  // twice. The answer usually draws a new view, which replaces them all; the returned
-  // function gives back the ones a view that stays (a refusal, a failure) still shows.
+  // While a write is out, the control it came from shows a spinner, and every control in main
+  // is held, so nothing looks stuck and nothing is sent twice. The answer usually draws a new
+  // view, which replaces them all; the returned function gives back the ones a view that stays
+  // (a refusal, a failure) still shows.
   const hold = (control) => {
-    const held = Array.from(main.querySelectorAll("button, input, select")).filter((element) => !element.disabled && !element.readOnly);
+    const held = Array.from(main.querySelectorAll("button, input")).filter((element) => !element.disabled && !element.readOnly);
     const set = (on) => { for (const element of held) { if (element.tagName === "INPUT") element.readOnly = on; else element.disabled = on; } };
     set(true);
-    const spinner = control && control.tagName === "SELECT" ? node("span", { class: "spin", "aria-hidden": "true" }) : null;
-    if (spinner) control.before(spinner);
-    else if (control) control.classList.add("busy");
-    if (control) control.setAttribute("aria-busy", "true");
+    if (control) { control.classList.add("busy"); control.setAttribute("aria-busy", "true"); }
     return () => {
       set(false);
-      if (spinner) spinner.remove();
       if (control) { control.classList.remove("busy"); control.removeAttribute("aria-busy"); }
     };
   };
@@ -967,6 +978,74 @@ export const FRAME_SCRIPT = String.raw`(() => {
     }, control);
   };
 
+  // A menu button and its listbox, in place of a native select: a closed select commits a choice on
+  // a single keystroke (a letter picks the option it starts, and on some platforms an arrow key
+  // does), and a choice here is a write. The popup is drawn in the frame's body so no scroll
+  // region clips it, and flips upward where there is no room below. Arrow keys, Home, End and a
+  // typed letter only move the highlight (the focus, which is a real button each); Enter, Space or a
+  // click on an option commits, and Escape, Tab or a click elsewhere closes it without a write.
+  // Moving focus in and out happens inside the handlers of a user action, so it is not observable.
+  let openMenu = null;
+  const closeMenu = (refocus) => {
+    if (openMenu === null) return;
+    const shown = openMenu;
+    openMenu = null;
+    shown.pop.remove();
+    shown.trigger.setAttribute("aria-expanded", "false");
+    if (refocus) shown.trigger.focus();
+  };
+  document.addEventListener("pointerdown", (event) => {
+    if (openMenu !== null && !openMenu.pop.contains(event.target) && !openMenu.trigger.contains(event.target)) closeMenu(false);
+  }, true);
+  window.addEventListener("blur", () => closeMenu(false));
+  // The options are a list of {value, label, danger}, with null for a separator; pick gets the value chosen.
+  const menu = (ariaLabel, options, current, pick) => {
+    const shown = options.find((option) => option !== null && option.value === current);
+    const trigger = node("button", { type: "button", class: "menu", "aria-haspopup": "listbox", "aria-expanded": "false", "aria-label": ariaLabel }, [node("span", {}, [shown ? shown.label : ""]), icon(CHEVRON_ICON)]);
+    const open = () => {
+      closeMenu(false);
+      const pop = node("div", { class: "pop", role: "listbox", "aria-label": ariaLabel });
+      const items = [];
+      for (const option of options) {
+        if (option === null) { pop.append(node("hr")); continue; }
+        const chosen = option.value === current;
+        const item = node("button", { type: "button", role: "option", class: option.danger ? "danger" : "", "aria-selected": String(chosen) }, [node("span", { class: "tick" }, chosen ? [icon(CHECK_ICON)] : []), option.label]);
+        item.addEventListener("click", () => { closeMenu(true); pick(option.value); });
+        items.push(item);
+        pop.append(item);
+      }
+      pop.addEventListener("keydown", (event) => {
+        const at = items.indexOf(document.activeElement);
+        if (event.key === "Escape") { event.preventDefault(); closeMenu(true); }
+        else if (event.key === "Tab") closeMenu(false);
+        else if (event.key === "ArrowDown") { event.preventDefault(); items[Math.min(items.length - 1, at + 1)].focus(); }
+        else if (event.key === "ArrowUp") { event.preventDefault(); items[Math.max(0, at - 1)].focus(); }
+        else if (event.key === "Home") { event.preventDefault(); items[0].focus(); }
+        else if (event.key === "End") { event.preventDefault(); items[items.length - 1].focus(); }
+        else if (event.key.length === 1 && event.key !== " " && !event.ctrlKey && !event.metaKey && !event.altKey) {
+          const typed = event.key.toLowerCase();
+          const next = items.slice(at + 1).concat(items.slice(0, at + 1)).find((item) => item.textContent.toLowerCase().startsWith(typed));
+          if (next) next.focus();
+        }
+      });
+      document.body.append(pop);
+      const box = trigger.getBoundingClientRect();
+      const below = window.innerHeight - box.bottom - 12;
+      const above = box.top - 12;
+      const flip = pop.offsetHeight > below && above > below;
+      pop.style.minWidth = Math.round(box.width) + "px";
+      pop.style.maxHeight = Math.max(96, flip ? above : below) + "px";
+      pop.style.top = Math.round(flip ? box.top - 4 - pop.offsetHeight : box.bottom + 4) + "px";
+      pop.style.left = Math.round(Math.max(8, Math.min(box.right - pop.offsetWidth, window.innerWidth - pop.offsetWidth - 8))) + "px";
+      trigger.setAttribute("aria-expanded", "true");
+      openMenu = { trigger: trigger, pop: pop };
+      (items.find((item) => item.getAttribute("aria-selected") === "true") || items[0]).focus();
+    };
+    trigger.addEventListener("click", () => { if (openMenu !== null && openMenu.trigger === trigger) closeMenu(true); else open(); });
+    trigger.addEventListener("keydown", (event) => { if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); open(); } });
+    return trigger;
+  };
+
   // Initials in a muted circle: the first letters of the first two words of the name, else the first
   // letter of the address. The colour is a fixed palette picked by a hash of the address.
   const AVATARS = ["#3d4f6b", "#4b3f6b", "#2f5f55", "#6b4f3a", "#6b3f4f", "#4f5f2f"];
@@ -979,9 +1058,9 @@ export const FRAME_SCRIPT = String.raw`(() => {
     return node("span", { class: "av", style: "background:" + AVATARS[hash % AVATARS.length], "aria-hidden": "true" }, [letters.toUpperCase()]);
   };
   // A person's row: avatar, a name line (the address when there is no name) and a muted line under it, and a control.
-  const person = (address, name, detail, control, cls) => node("li", { class: cls || "" }, [
+  const person = (address, name, detail, control, cls, you) => node("li", { class: cls || "" }, [
     avatar(address, name),
-    node("div", { class: "who" }, [node("b", {}, [name || address])].concat(detail ? [node("small", {}, [detail])] : [])),
+    node("div", { class: "who" }, [node("b", {}, [name || address].concat(you ? [node("i", {}, [" (you)"])] : []))].concat(detail ? [node("small", {}, [detail])] : [])),
   ].concat(control ? [control] : []));
 
   const showOwner = (body) => {
@@ -1012,11 +1091,11 @@ export const FRAME_SCRIPT = String.raw`(() => {
       input.setRangeText(lines.join(", "), input.selectionStart, input.selectionEnd, "end");
       typed();
     });
-    // A plan that grants no role has neither private sharing nor comments: one card says so, with Upgrade.
+    // A plan that grants no role has neither private sharing nor comments: one row says so, with Upgrade.
     const upsell = roles !== null && roles.length === 0;
     const upgrade = upsell && typeof body.upgradeUrl === "string" && body.upgradeUrl.startsWith("https://") ? node("a", { class: "btn", href: body.upgradeUrl, target: "_blank", rel: "noopener noreferrer" }, ["Upgrade"]) : null;
     const card = upsell ? node("div", { class: "up" }, [icon(LOCK_ICON), node("span", {}, ["Private sharing and comments"])].concat(upgrade === null ? [] : [upgrade])) : null;
-    // Going private is the paid half, so on that plan it is refused: nothing is sent, and the card is pointed at.
+    // Going private is the paid half, so on that plan it is refused: nothing is sent, and the row is pointed at.
     const locked = (value) => upsell && value === "invited" && body.linkAccess !== value;
     const nudge = () => {
       card.classList.remove("nudge");
@@ -1025,32 +1104,25 @@ export const FRAME_SCRIPT = String.raw`(() => {
       if (upgrade !== null) upgrade.focus();
     };
     const narrow = limited(body);
-    const roleLabel = (role) => "Can " + role;
     // The control at the right of an invitee's row: the roles the plan grants, then Remove access. The stored
     // role is selected exactly. One this script does not offer stays as its own option, so it is never
     // rewritten, and one the plan no longer grants can still be lowered to one it does. Where the server has no
     // comments there is no role to choose, and the current one is the only label.
-    const accessSelect = (entry) => {
+    const accessMenu = (entry) => {
       const offered = roles === null ? [entry.role] : roles.includes(entry.role) ? roles : roles.concat([entry.role]);
-      const select = node("select", { "aria-label": "Access for " + entry.email }, offered.map((role) => node("option", { value: role }, [roleLabel(role)])).concat([node("hr"), node("option", { value: "remove" }, ["Remove access"])]));
-      select.value = entry.role;
-      // A select shows its new value before the write lands. A write that lands redraws the view with a new select; one that fails, or that another write turned away, leaves this one showing a choice nobody made, so it goes back.
-      select.addEventListener("change", () => {
-        const chosen = select.value;
+      const address = "/access/people/" + encodeURIComponent(entry.email);
+      const options = offered.map((role) => ({ value: role, label: roleLabel(role) })).concat([null, { value: "remove", label: "Remove access", danger: true }]);
+      const trigger = menu("Access for " + entry.email, options, entry.role, (chosen) => {
         if (chosen === entry.role) return;
-        const address = "/access/people/" + encodeURIComponent(entry.email);
-        const sent = chosen === "remove" ? write("DELETE", address, undefined, false, select) : write("PUT", address, { role: chosen }, false, select);
-        sent.then(() => { select.value = entry.role; });
+        if (chosen === "remove") write("DELETE", address, undefined, false, trigger);
+        else write("PUT", address, { role: chosen }, false, trigger);
       });
-      return select;
+      return trigger;
     };
-    const modeSelect = node("select", { "aria-label": "General access" }, [node("option", { value: "invited" }, ["Only people invited"]), node("option", { value: "anyone" }, ["Anyone with the link"])]);
-    modeSelect.value = body.linkAccess;
-    modeSelect.addEventListener("change", () => {
-      const chosen = modeSelect.value;
+    const modeMenu = menu("General access", [{ value: "invited", label: "Only people invited" }, { value: "anyone", label: "Anyone with the link" }], body.linkAccess, (chosen) => {
       if (chosen === body.linkAccess) return;
-      if (locked(chosen)) { modeSelect.value = body.linkAccess; nudge(); return; }
-      write("PUT", "/access", { linkAccess: chosen }, true, modeSelect).then(() => { modeSelect.value = body.linkAccess; });
+      if (locked(chosen)) nudge();
+      else write("PUT", "/access", { linkAccess: chosen }, true, modeMenu);
     });
 
     const kids = [];
@@ -1064,28 +1136,19 @@ export const FRAME_SCRIPT = String.raw`(() => {
       ].filter((kid) => kid !== null)), "req"))));
     }
     const ownerName = typeof body.name === "string" && body.name !== "" ? body.name : body.account;
-    const ownerRow = node("li", {}, [
-      avatar(body.account, ownerName),
-      node("div", { class: "who" }, [node("b", {}, [ownerName, node("i", {}, [" (you)"])]), node("small", {}, [body.account])]),
-      node("span", { class: "role" }, ["Owner"]),
-    ]);
-    const invitees = body.people.map((entry) => {
-      const name = typeof entry.name === "string" && entry.name !== "" ? entry.name : null;
-      const detail = (name ? [entry.email] : []).concat(body.email ? [] : ["Send them the link"]).join(" · ");
-      return person(entry.email, name, detail, narrow ? node("span", { class: "role" }, [roleLabel(entry.role)]) : accessSelect(entry));
-    });
-    kids.push(node("h2", {}, ["People with access"]), node("ul", {}, [ownerRow].concat(invitees)));
+    const invitees = body.people.map((entry) => person(entry.email, null, body.email ? null : "Send them the link", narrow ? node("span", { class: "role" }, [roleLabel(entry.role)]) : accessMenu(entry)));
+    kids.push(node("h2", {}, ["People with access"]), node("ul", {}, [person(body.account, ownerName, body.account, node("span", { class: "role" }, ["Owner"]), "", true)].concat(invitees)));
     // Both lines are about people on the list, so they wait for someone to be on it.
     const listed = body.people.length > 0 || body.requests.length > 0;
     if (body.email && mayAdd && body.people.length > 0) kids.push(muted(["OpenArtifacts emails each invitation. If someone doesn’t get it, send them the link."]));
     // Approve, Decline and Remove access are one click on a private document, and this
     // frame is on the public origin. See exposed().
     if (narrow && listed) kids.push(muted(["To remove people or answer requests, ", node("a", { href: location.origin + "/share/" + doc, target: "_blank", rel: "noopener noreferrer" }, ["open the share page"]), "."]));
-    kids.push(node("h2", {}, ["General access"]), node("div", { class: "access" }, [node("span", { class: "circle" }, [icon(body.linkAccess === "invited" ? LOCK_ICON : GLOBE_ICON)]), modeSelect]));
+    kids.push(node("h2", {}, ["General access"]), node("div", { class: "access" }, [node("span", { class: "circle" }, [icon(body.linkAccess === "invited" ? LOCK_ICON : GLOBE_ICON)]), modeMenu]));
     draw(kids, true);
     setTitle(body.title);
     const invitedOnly = body.linkAccess === "invited";
-    setFooter(invitedOnly ? (body.people.length === 0 ? "Only you can open this link" : "Only people invited can open this link") : "Anyone with the link can view", invitedOnly);
+    setFooter([invitedOnly ? (body.people.length === 0 ? "Only you can open this link" : "Only people invited can open this link") : "Anyone with the link can view"], invitedOnly ? LOCK_ICON : LINK_ICON);
   };
 
   const refresh = async () => {
@@ -1095,7 +1158,7 @@ export const FRAME_SCRIPT = String.raw`(() => {
     if (stored === null) { showGuest("", false); return; }
     // Nothing drawn yet came from a token (the shell, or a sign-in just
     // completed): hold the places instead of leaving the signed-out view up.
-    if (account.isConnected) showSkeleton();
+    if (signInButton.isConnected) showSkeleton();
     let response;
     try { response = await call("GET", "/access"); } catch (error) { if (mine === seq) showGuest("Couldn’t load the sharing settings. Try again.", false); return; }
     if (response === null) { if (mine === seq) showGuest("", false); return; }

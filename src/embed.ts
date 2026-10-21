@@ -50,7 +50,6 @@ import type { AnalyticsSink } from "./analytics.js";
 import {
   accessBody,
   addPerson,
-  copilotHint,
   declineRequest,
   decodeAddress,
   getAccess,
@@ -64,9 +63,9 @@ import {
   type AccessState,
 } from "./api/access.js";
 import type { Publisher } from "./auth.js";
-import { stringField } from "./account.js";
+import { actionUrl, stringField } from "./account.js";
 import type { Env } from "./config.js";
-import { accountEmail, displayNamesByEmail, findReadableDoc, putEmbedHandoff, takeEmbedHandoff } from "./db.js";
+import { accountEmail, displayNames, findReadableDoc, inviteRole, putEmbedHandoff, takeEmbedHandoff } from "./db.js";
 import { FRAME_CSS, FRAME_SCRIPT, PAGE_SCRIPT } from "./embed-scripts.js";
 import { accountPlan } from "./entitlement.js";
 import { handleCommentsEmbed } from "./comments/embed-api.js";
@@ -189,9 +188,9 @@ const LINK_ICON_SVG =
  * Until a token proves the viewer can read the document the body is the same
  * bytes for a public, an invited-only, an unknown and a deleted document: a
  * header (the fixed word "Share", and ×), then "Only the owner can change who
- * can open this." and **Sign in to manage**, then a footer with an empty
- * sentence and **Copy link** (the canonical address is built from the id with
- * no lookup). The word in the header is the same bytes for every id: the script
+ * can open this." and the one Copilot line, then a footer with "Is this your
+ * page? **Sign in**" and **Copy link** (the canonical address is built from the
+ * id with no lookup). The word in the header is the same bytes for every id: the script
  * swaps in the document's title only once the owner or reader view lands. No
  * mode, no list. `main` is
  * `hidden` until the script has chosen the first view, so a frame holding a
@@ -205,7 +204,13 @@ async function shareFrame(request: Request, url: URL, env: Env): Promise<Respons
 
   // Built from the id alone, so putting it in the page leaks nothing.
   const link = publicDocUrl(env, url, doc);
-  const hint = escapeHtml(copilotHint(env));
+  // The one line every signed-out visitor and reader sees for a Copilot publisher: the same for every
+  // document, built from the server's own account address.
+  let account: string | undefined;
+  try { account = actionUrl(env)?.href; } catch { account = undefined; }
+  const hint = account === undefined
+    ? "Published from Copilot? Ask your server operator to link your license first"
+    : `Published from Copilot? <a href="${escapeHtml(account)}" target="_blank" rel="noopener noreferrer">Link your account</a> first`;
   const body = `<!doctype html>
 <html lang="en">
 <head>
@@ -217,12 +222,13 @@ async function shareFrame(request: Request, url: URL, env: Env): Promise<Respons
 </head>
 <body>
 <header><span class="title">Share</span><button type="button" class="x" aria-label="Close">×</button></header>
-<main data-doc="${escapeHtml(doc)}" data-link="${escapeHtml(link)}" data-origin="${origin === null ? "" : escapeHtml(origin)}" data-hint="${hint}" hidden>
+<main data-doc="${escapeHtml(doc)}" data-link="${escapeHtml(link)}" data-origin="${origin === null ? "" : escapeHtml(origin)}" hidden>
 <p class="muted">Only the owner can change who can open this.</p>
-<div class="bottom"><p id="oa-msg" class="err" role="alert"></p><p class="muted" id="oa-account">Is this your page? <button type="button" class="link" disabled>Sign in to manage</button></p><p class="muted hint">${hint}</p></div>
+<p id="oa-msg" class="err" role="alert"></p>
+<p class="muted hint">${hint}</p>
 </main>
 <div class="fade" aria-hidden="true"></div>
-<footer><p class="status"></p><button type="button" class="primary">${LINK_ICON_SVG}<span>Copy link</span></button></footer>
+<footer><p class="status">Is this your page? <button type="button" class="link" disabled>Sign in</button></p><button type="button" class="primary">${LINK_ICON_SVG}<span>Copy link</span></button></footer>
 <script>${FRAME_SCRIPT}</script>
 </body>
 </html>`;
@@ -415,21 +421,11 @@ async function frameApi(
   const principal = method === "GET" ? cached : await withCurrentPlan(env, cached);
   // `changed` says whether a write changed anything. The frame needs it to tell
   // its own switch to private from a repeat on a stale view. `name` is the
-  // owner's display name, and each person's is null where that address has no
-  // account with one: the frame's own fields, which `/api/v1` does not carry.
+  // owner's display name: the frame's own field, which `/api/v1` does not carry.
   const owner = async (state: AccessState, changed = false, who = principal) => {
-    const body = accessBody(env, url, docId, state, who);
-    const names = await displayNamesByEmail(env.DB, [email, ...body.people.map((person) => person.email)]);
+    const name = (await displayNames(env.DB, [accountId])).get(accountId) ?? nameFromEmail(email);
     return Response.json(
-      {
-        viewer: "owner",
-        account: email,
-        name: names.get(email) ?? nameFromEmail(email),
-        title: state.title,
-        changed,
-        ...body,
-        people: body.people.map((person) => ({ ...person, name: names.get(person.email) ?? null })),
-      },
+      { viewer: "owner", account: email, name, title: state.title, changed, ...accessBody(env, url, docId, state, who) },
       { headers: NO_STORE },
     );
   };
@@ -442,7 +438,15 @@ async function frameApi(
     const readable = await findReadableDoc(env.DB, docId, null, accountId);
     if (readable === null || readable.deleted_at !== null || !readable.allowed) return noStore(docNotFound(docId));
     return Response.json(
-      { viewer: "reader", account: email, docId, url: publicDocUrl(env, url, docId), title: readable.title },
+      {
+        viewer: "reader",
+        account: email,
+        // This account's role on the invite list; a reader who is not listed (a public page) can view.
+        role: (await inviteRole(env.DB, docId, email)) ?? "view",
+        docId,
+        url: publicDocUrl(env, url, docId),
+        title: readable.title,
+      },
       { headers: NO_STORE },
     );
   }
