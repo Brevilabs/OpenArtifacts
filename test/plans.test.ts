@@ -54,8 +54,8 @@ describe("configured account plans", () => {
   });
 
   it("loads the agreed hosted values from wrangler, not a separate test copy", () => {
-    expect(planLimits(local(), "free")).toEqual({ documents: 3, pushesPerDay: 6, htmlBytes: 1048576 });
-    expect(planLimits(local(), "pro")).toEqual({ documents: 500, pushesPerDay: 100, htmlBytes: 10485760, privateSharing: true, comments: true });
+    expect(planLimits(local(), "free")).toEqual({ documents: 3, pushesPerDay: 30, htmlBytes: 1048576, storageBytes: 262144000 });
+    expect(planLimits(local(), "pro")).toEqual({ documents: 500, pushesPerDay: 500, htmlBytes: 10485760, storageBytes: 5368709120, privateSharing: true, comments: true });
     for (const PLAN_LIMITS of [undefined, ""]) {
       expect(planLimits(local({ PLAN_LIMITS }), "free")).toEqual(planLimits(local(), "free"));
     }
@@ -205,7 +205,7 @@ describe("configured account plans", () => {
     expect((await send("GET", `/d/${first.docId}`)).status).toBe(410);
     const account = await send("GET", "/api/v1/account");
     expect(await account.json()).toMatchObject({
-      limits: { documents: 3, pushesPerDay: 6, htmlBytes: 1048576 },
+      limits: { documents: 3, pushesPerDay: 30, htmlBytes: 1048576, storageBytes: 262144000 },
       usage: { documents: 3, pushesToday: 5 },
     });
   });
@@ -230,17 +230,17 @@ describe("configured account plans", () => {
     expect(await env.DB.prepare("SELECT plan FROM accounts WHERE id = ?").bind(OWNER).first()).toEqual({ plan: "free" });
   });
 
-  it("shares six successful creates and updates across tokens, rolling over in UTC", async () => {
+  it("shares thirty successful creates and updates across tokens, rolling over in UTC", async () => {
     const other = await issue();
     const doc = await (await create()).json<{ docId: string }>();
-    for (let i = 0; i < 5; i++) expect((await send("PUT", `/api/v1/docs/${doc.docId}`, { html: "updated" }, {}, other)).status).toBe(200);
+    for (let i = 0; i < 29; i++) expect((await send("PUT", `/api/v1/docs/${doc.docId}`, { html: "updated" }, {}, other)).status).toBe(200);
     const rejected = await send("PUT", `/api/v1/docs/${doc.docId}`, { html: "one too many" });
     expect(rejected.status).toBe(402);
     expect(await error(rejected)).toMatchObject({ error: { limit: "pushesPerDay", plan: "free" } });
-    expect(await usage()).toBe(6);
+    expect(await usage()).toBe(30);
     expect((await send("DELETE", `/api/v1/docs/${doc.docId}`)).status).toBe(204);
     expect((await create()).status).toBe(402);
-    expect(await usage()).toBe(6);
+    expect(await usage()).toBe(30);
     const tomorrow = Date.now() + 86400000;
     const clock = vi.spyOn(Date, "now").mockReturnValue(tomorrow);
     try { expect((await create()).status).toBe(201); } finally { clock.mockRestore(); }
@@ -248,11 +248,11 @@ describe("configured account plans", () => {
 
   it("atomically awards the last daily push across two token updates", async () => {
     const doc = await (await create()).json<{ docId: string }>();
-    await env.DB.prepare("UPDATE push_quota SET pushes = 5 WHERE owner = ?").bind(OWNER).run();
+    await env.DB.prepare("UPDATE push_quota SET pushes = 29 WHERE owner = ?").bind(OWNER).run();
     const other = await issue();
     const responses = await Promise.all([token, other].map((key) => send("PUT", `/api/v1/docs/${doc.docId}`, { html: "updated" }, {}, key)));
     expect(responses.map((response) => response.status).sort()).toEqual([200, 402]);
-    expect(await usage()).toBe(6);
+    expect(await usage()).toBe(30);
   });
 
   it("checks UTF-8 HTML bytes on create and update without spending rejected attempts", async () => {

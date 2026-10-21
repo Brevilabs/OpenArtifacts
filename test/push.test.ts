@@ -1,7 +1,7 @@
 import { createExecutionContext, env, waitOnExecutionContext } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Env } from "../src/config.js";
-import { MAX_DOCS_PER_PUBLISHER, MAX_DOC_BYTES, MAX_PUSHES_PER_DAY } from "../src/config.js";
+import { MAX_DOCS_PER_PUBLISHER, MAX_DOC_BYTES, MAX_PUSHES_PER_DAY, MAX_STORED_BYTES_PER_PUBLISHER } from "../src/config.js";
 import { commitVersionMetadata } from "../src/db.js";
 import type { DocRow, PushQuotaRow, VersionRow } from "../src/db.js";
 import { DOC_ID_LENGTH, isDocId } from "../src/ids.js";
@@ -501,6 +501,19 @@ describe("the daily push quota", () => {
 
     expect((await post(KEY_A, { title: "t", html: page("<p>x</p>") })).status).toBe(429);
     expect((await post(KEY_B, { title: "t", html: page("<p>x</p>") })).status).toBe(201);
+  });
+
+  it("429s a license key whose stored history has reached the paid-plan cap", async () => {
+    const created = await pushedOk(await post(KEY_A, { title: "t", html: page("<p>x</p>") }), 201);
+    await env.DB.prepare("UPDATE storage_usage SET size = ? WHERE doc_id = ?")
+      .bind(MAX_STORED_BYTES_PER_PUBLISHER, created.docId)
+      .run();
+
+    const response = await put(KEY_A, created.docId, { html: page("<p>y</p>") });
+
+    expect(response.status).toBe(429);
+    await expect(response.json()).resolves.toMatchObject({ error: { code: "quota_exceeded" } });
+    expect(await env.DOCS.head(versionObjectKey(created.docId, 2))).toBeNull();
   });
 
   it("rolls over at the UTC day boundary", async () => {

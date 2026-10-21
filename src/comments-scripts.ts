@@ -348,14 +348,16 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
     };
     // Whether that background is dark. The frame draws its cards in the matching theme.
     let dark = null, fill = "";
-    // One translucent yellow for every thread and no underline, which reads as a link; stronger for the active thread (its focus layer sits on its open one) and the draft (on its own). On a dark page the same yellows are fainter: a strong one under the page's light text is a mustard block it cannot be read on (on a near-black page these keep light-grey text at 4.5:1; any visible tint lowers a page's own contrast, so a page that starts near 4.5:1 dips slightly below it).
+    // One translucent yellow for every thread and no underline, which reads as a link; stronger for the active thread (its focus layer sits on its open one) and the draft (on its own). On a dark page the highlight is a warmer amber and the active thread and the draft also get an amber underline, so they read beyond the tint: an open thread is .20 (1.5:1 against a #111 page, 1.6:1 against #1b1d24), the active one .36 once layered (2.3:1) and the draft .36 (2.3:1). Light-grey #e9ebee text on #111 keeps 10.5:1 on an open thread, 6.8:1 on the active one and the draft, and 4.8:1 where a draft covers an open thread, so none of them goes under 4.5:1 except while the pointer is over a draft that covers an open thread, where the three layers stack to about .59 and #e9ebee falls to 3.7:1 (white 4.4:1); any visible tint lowers a page's own contrast, so a page that starts near 4.5:1 dips slightly below it.
     let marks = null;
     const markColours = (onDark) => {
       if (!marks) return;
-      const [openA, focusA, draftA] = onDark ? [".09", ".06", ".145"] : [".28", ".5", ".5"];
-      marks.replaceSync("::highlight(openartifacts-open){background-color:rgba(255,200,0," + openA + ")}" +
-        "::highlight(openartifacts-focus){background-color:rgba(255,200,0," + focusA + ")}" +
-        "::highlight(openartifacts-draft){background-color:rgba(255,184,0," + draftA + ")}");
+      const [openA, focusA, draftA] = onDark ? [".2", ".2", ".36"] : [".28", ".5", ".5"];
+      const rgb = onDark ? "255,176,32" : "255,200,0";
+      const line = onDark ? ";text-decoration:underline;text-decoration-color:rgba(255,176,32,.9);text-decoration-thickness:2px" : "";
+      marks.replaceSync("::highlight(openartifacts-open){background-color:rgba(" + rgb + "," + openA + ")}" +
+        "::highlight(openartifacts-focus){background-color:rgba(" + rgb + "," + focusA + ")" + line + "}" +
+        "::highlight(openartifacts-draft){background-color:rgba(" + (onDark ? rgb : "255,184,0") + "," + draftA + ")" + line + "}");
     };
     const isDark = (c) => {
       const lin = (v) => (v / 255 <= 0.04045 ? v / 255 / 12.92 : Math.pow((v / 255 + 0.055) / 1.055, 2.4));
@@ -899,15 +901,19 @@ button.b.primary{background:var(--send);border-color:var(--send);color:var(--sen
  * **Where it gets cards.** From `/embed/api/docs/{doc}/threads` with its token,
  * which also tells it who is looking (`viewer`, `canResolve`, `mine`). With no
  * token it reads the same resource anonymously (a public document answers), and
- * that read is also its own. Only when it has neither (a private document, for a
- * reader who has not signed in to the API host) does it draw the `threads` JSON
+ * that read is also its own; on a private document it sends the read ticket the
+ * page relayed with that page's threads (`readTicket`), which reads exactly that
+ * answer, names included, so a signed-in reader sees who wrote what without a
+ * click. Only when it has neither (a ticket that failed, or a page that relays
+ * none) does it draw the `threads` JSON
  * the page relays from the serving origin, read-only, and then without any
  * author's name or agent badge and with a line saying to sign in for them: the
  * page is the author's, so what it relays could be invented, and must not appear
  * under real names beside our Sign in button. An own read always replaces it.
  * The plain line under the header (`lineCard`) follows the same split: "Invited to
- * comment? Sign in." only on its own anonymous read's `commentable`, "Continue to
- * see names and comment." over relayed cards, "Select text to comment." for a
+ * comment? Sign in." only on its own anonymous read's `commentable`, "Sign in to
+ * comment." over a private page's ticketed read, "Continue to see names and
+ * comment." over relayed cards, "Select text to comment." for a
  * viewer who may, after "No comments yet." (or "No open comments." when every
  * thread is resolved) when nothing is open. Beside cards (the sidebar's placed
  * cards, the sheet's one thread) only the way to sign in, so the line never pushes
@@ -992,6 +998,8 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
   let signState = "", prepared = null, opened = null, generation = 0, wake = null;
   let confirming = "";
   let showResolved = false, undoId = "", undoTimer = 0, menuId = "", posted = null, focusKey = "", hoverId = "";
+  // ticketSeen/ticketOwed: the first read ticket a page relays is read at once, not on the 5-second throttle; anonByTicket: the anonymous read was a private page's.
+  let ticketSeen = false, ticketOwed = false, anonByTicket = false;
   let modelKey = "", inFlight = false, lastLoad = 0, composing = false, owed = false, stacked = { head: [], flow: [] }, sentNeed = -1, revealOwed = false;
   const texts = {}, errors = {}, busy = {};
 
@@ -1112,15 +1120,17 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
   };
   // Draws only when the data changed: a poll that finds nothing new must not rebuild the box someone is typing in.
   const refreshView = () => {
-    const key = (own ? "own" : anon ? "anon" : "relay") + JSON.stringify(model());
+    const key = (own ? "own" : anon ? "anon" : "relay") + JSON.stringify(model(), (name, value) => (name === "readTicket" ? undefined : value));
     if (key === modelKey) return;
     modelKey = key;
     render();
   };
   const threadsQuery = pinned ? "?v=" + pinned : "";
-  const readAnonymous = async () => {
+  // The read ticket the page relays from a private page's origin: it reads that page's threads from here, names and all, and nothing else.
+  const ticketOf = () => (relayed && typeof relayed.readTicket === "string" ? relayed.readTicket : "");
+  const readAnonymous = async (ticket) => {
     try {
-      const response = await fetch(docPath("/threads" + threadsQuery), { credentials: "omit", cache: "no-store" });
+      const response = await fetch(docPath("/threads" + threadsQuery), { credentials: "omit", cache: "no-store", headers: ticket ? { "x-openartifacts-read-ticket": ticket } : {} });
       const body = response.status === 200 ? await response.json() : null;
       return body && Array.isArray(body.threads) ? body : null;
     } catch (error) {
@@ -1133,15 +1143,22 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     lastLoad = Date.now();
     const result = readToken() === null ? null : await call("GET", docPath("/threads" + threadsQuery));
     const nextOwn = result && result.status === 200 && result.body && Array.isArray(result.body.threads) ? result.body : null;
-    // No own read (no token, or one that was refused): the anonymous read a public document answers.
-    const nextAnon = nextOwn === null ? await readAnonymous() : null;
+    // No own read (no token, or one that was refused): the anonymous read a public document answers, or a private one with its read ticket.
+    const ticket = ticketOf();
+    const nextAnon = nextOwn === null ? await readAnonymous(ticket) : null;
     if (mine !== loadSeq) return;
     inFlight = false;
     own = nextOwn;
     anon = nextAnon;
+    anonByTicket = nextAnon !== null && ticket !== "";
     loaded = true;
     reportViewer();
     refreshView();
+    // The first ticket arrived while this read, made without it, was under way.
+    if (ticketOwed) {
+      ticketOwed = false;
+      if (own === null && anon === null) load();
+    }
   };
 
   // Runs one write, then reloads the cards and tells the page.
@@ -1208,6 +1225,8 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
   // The way to sign in, drawn only where it can lead somewhere: an invitation when its own anonymous read says someone can comment, and the way on when the cards are the page's relayed ones (a private page before the token).
   const signInLine = () => {
     if (!loaded || own !== null) return null;
+    // A private page's reader is its owner or someone it lists, so anyone here may be one sign-in from commenting.
+    if (anon !== null && anonByTicket) return signInBlock("Sign in to comment.");
     if (anon !== null) return anon.commentable === true ? signInBlock("Invited to comment? Sign in.") : null;
     return relayed ? signInBlock("Continue to see names and comment.") : null;
   };
@@ -1534,7 +1553,11 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     } else if (msg.event === "threads") {
       relayed = msg.data && typeof msg.data === "object" && Array.isArray(msg.data.threads) ? msg.data : null;
       // The page is not trusted to trigger reads: a flood of these is one read at most every few seconds, and none while one is under way.
-      if (!inFlight && Date.now() - lastLoad > 5000) load();
+      // The one exception is the first read ticket, read at once (or as soon as the read under way ends) so names show without a wait.
+      const firstTicket = !ticketSeen && ticketOf() !== "";
+      if (firstTicket) ticketSeen = true;
+      if (firstTicket && inFlight) ticketOwed = true;
+      else if (firstTicket || (!inFlight && Date.now() - lastLoad > 5000)) load();
       else if (loaded) refreshView();
     } else if (msg.event === "positions") {
       const next = msg.tops && typeof msg.tops === "object" ? msg.tops : {};

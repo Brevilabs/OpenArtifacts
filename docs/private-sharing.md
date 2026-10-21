@@ -347,7 +347,10 @@ A reader is an `accounts` row, the same principal a publisher is. There is no
 - The **origin grant cookie reads**: documents, and the threads JSON, on its
   own origin. It is refused by `/api/v1`, by every sign-in page and by the
   comments frame. A document's script can use it; that is why it can do nothing
-  but read what its own publisher already holds.
+  but read what its own publisher already holds. The threads JSON it reads carries
+  a five-minute **read ticket** naming the document and no reader; the comments
+  frame, given it by the page, reads that same JSON from the API host so it can
+  trust the names. The ticket reads nothing the page does not already hold.
 - The **API-host session signs in and mints**: the origin grant, the owner route
   and the Share popover's token; the comments frame reuses that token, with
   no second provider sign-in.

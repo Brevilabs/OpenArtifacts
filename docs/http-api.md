@@ -102,7 +102,8 @@ to the account that issued the token. Existing document URLs do not change.
 **Publishing follows the account's plan.** First approval uses the deployment's
 default plan. Every token shares its account's limits, and a plan change takes
 effect on the next request without signing in again. The hosted free plan has
-three live documents, six publishes/updates per UTC day, and 1 MiB HTML per doc.
+three live documents, 30 publishes/updates per UTC day, 1 MiB HTML per doc,
+and 250 MiB across retained versions.
 Listing and unsharing never require available publishing quota.
 
 **Revocation is immediate.** A revoked token fails on its very next request,
@@ -1070,7 +1071,11 @@ on the apex.
   sign-in. Without reader sign-in on the server, the apex answers `404` too.
 - On a publisher's origin the grant cookie is required, and the code, deleted,
   public and `canRead` chain is the page's own. `?grant=` is never swapped here. No
-  cookie or an unreadable document is `404` JSON.
+  cookie or an unreadable document is `404` JSON. The answer adds `readTicket`
+  (an added field): a five-minute pass that names the document and no reader, so
+  every reader still gets the same answer apart from its expiry. The page relays it
+  to the comments frame, which reads the same threads from the API host with it
+  (below), so the frame can show the names itself.
 - An unknown id, comments unavailable, a malformed `v` and a version
   that does not exist are `404`; a deleted document is `410`, decided before the
   version so `?v=` cannot tell a deleted document from one that never had it.
@@ -1176,10 +1181,16 @@ also checks the origin.
 
 The frame prefers its own read (its token's, else the anonymous one a public
 document answers) to the `threads` the page relays, and an own read always replaces
-relayed data. It draws relayed data only when it has neither (a private document
-for a reader who has not signed in), and then without author names or agent badges
-and with a line saying to sign in to see them, because the page is the author's and
-could invent a commenter. A hostile page on the document's own serving origin can embed the frame and so
+relayed data. On a private document the anonymous read carries the `readTicket`
+the page relayed, as the `x-openartifacts-read-ticket` header: `GET
+/embed/api/docs/{docId}/threads` with a ticket that verifies for that document
+answers the same unauthenticated JSON the publisher's origin gave the page, names
+and all, and reads nothing else; any other ticket is the plain `404`. The frame
+reads the first ticket a page relays at once, and over those cards offers "Sign in
+to comment.", since writing still needs the token. It draws relayed data only when
+it has no read of its own, and then without author names or agent badges and with a
+line saying to sign in to see them, because the page is the author's and could
+invent a commenter. A hostile page on the document's own serving origin can embed the frame and so
 learn, from `viewer`, whether this visitor holds a token for the document and may
 comment. The layout messages (`size`, `height`, `reveal`) carry only heights, but
 those depend on what the frame draws for this visitor, so the page can also infer
@@ -1402,7 +1413,7 @@ ceilings, plus the optional boolean `privateSharing` (the plan may make document
 invited-only and add people to them; absent means it may not). HTML is measured in UTF-8 bytes and cannot exceed the 10 MiB safety bound:
 
 ```json
-{"free":{"documents":3,"pushesPerDay":6,"htmlBytes":1048576},"pro":{"documents":500,"pushesPerDay":100,"htmlBytes":10485760}}
+{"free":{"documents":3,"pushesPerDay":30,"htmlBytes":1048576,"storageBytes":262144000},"pro":{"documents":500,"pushesPerDay":500,"htmlBytes":10485760,"storageBytes":5368709120}}
 ```
 
 `DEFAULT_PLAN` (default `free`) selects the plan for newly created accounts.
@@ -1411,7 +1422,8 @@ Apply `0005_account_plans.sql` before deploying this version, following the
 `free`; their tokens and documents remain valid. Unknown plans or malformed
 configuration fail closed for publishing, but do not block listing or unsharing.
 Absent or blank `PLAN_LIMITS` uses the built-in map with one `free` entry:
-3 documents, 6 pushes/day and 1 MiB HTML. `PLAN_LIMITS` replaces that map.
+3 documents, 30 pushes/day, 1 MiB HTML and 250 MiB (`storageBytes` 262144000)
+across retained versions. `PLAN_LIMITS` replaces that map.
 
 ### Change an account's plan
 
@@ -1439,11 +1451,13 @@ collection and usage; linking does not grant a second allowance.
 | Limit | Hosted free account | Hosted paid account / paid license |
 | --- | --- | --- |
 | HTML per doc | 1 MiB | 10 MiB |
-| Pushes per UTC day | 6 | 100 |
+| Pushes per UTC day | 30 | 500 |
 | Live docs held | 3 | 500 |
+| Stored across retained versions | 250 MiB | 5 GiB |
 
-Account plan refusals use `402 limit_reached`. License-key refusals are unchanged:
-`413 too_large` for HTML size, `429 quota_exceeded` for document/daily limits.
+Account plan refusals use `402 limit_reached`. License-key refusals use
+`413 too_large` for HTML size and `429 quota_exceeded` for document, daily and
+storage limits.
 The absolute 10 MiB HTML ceiling and the bounded request reader remain safety
 limits on every plan; exceeding those returns `413 too_large`.
 
@@ -1544,7 +1558,7 @@ These additive routes are served on the API host. They use no browser cookies.
 cannot access it. It returns `200` with `cache-control: no-store`:
 
 ```json
-{"accountId":"oa_…","plan":"free","limits":{"documents":3,"pushesPerDay":6,"htmlBytes":1048576},"usage":{"documents":1,"pushesToday":2},"externalLinked":false,"refresh":{"status":"refreshed","checkedAt":1800000000000,"expiresAt":null}}
+{"accountId":"oa_…","plan":"free","limits":{"documents":3,"pushesPerDay":30,"htmlBytes":1048576,"storageBytes":262144000},"usage":{"documents":1,"pushesToday":2,"storedBytes":48213},"externalLinked":false,"refresh":{"status":"refreshed","checkedAt":1800000000000,"expiresAt":null}}
 ```
 
 Limits reflect the deployment configuration. Usage counts live documents and
@@ -1640,12 +1654,12 @@ revision migration is replaced, not upgraded in place.
 
 The trusted entitlement response may additionally include
 `storageAllowance: "lifetime_5gib"` with `plan: "plus"`. Only this explicit
-signal maps to configured `pro_lifetime`; absent/null retains the previous
-mapping. A plain `pro` plan or null expiry never implies a storage allowance.
-The resolved plan follows the same cache, outage and newer-refresh rules above.
-`pro_lifetime` has 500 documents, 100 daily pushes, 10 MiB per upload and
-5,368,709,120 bytes across retained HTML versions and outstanding writes, and
-includes private sharing like `pro`.
+signal maps to configured `pro_lifetime`; absent/null maps to `pro`. The
+resolved plan follows the same cache, outage and newer-refresh rules above.
+On the hosted service both `pro` and `pro_lifetime` have 500 documents, 500
+daily pushes, 10 MiB per upload and 5,368,709,120 bytes across retained HTML
+versions and outstanding writes, and include private sharing. The hosted `free`
+plan allows 262,144,000 bytes.
 
 Account responses add `usage.storedBytes`; capped plans add `limits.storageBytes`.
 The CLI's `account` command prints these when supplied and remains compatible

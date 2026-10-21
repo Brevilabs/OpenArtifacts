@@ -3172,6 +3172,7 @@ describe("GET /d/{docId}/threads", () => {
     version: number;
     latestVersion: number;
     viewer?: unknown;
+    readTicket?: string;
     threads: Array<{
       anchorStatus: string;
       matchedText: string | null;
@@ -3208,6 +3209,8 @@ describe("GET /d/{docId}/threads", () => {
         { name: "Alice's agent", kind: "agent" },
       ]);
       // The reader is anonymous: no viewer, no per-comment ownership, no ids or addresses.
+      // And no read ticket: the frame reads a public document's threads without one.
+      expect(body.readTicket).toBeUndefined();
       expect(body.viewer).toBeUndefined();
       expect(body.threads[0]!.canResolve).toBeUndefined();
       expect(body.threads[0]!.comments[0]!.mine).toBeUndefined();
@@ -3352,6 +3355,33 @@ describe("GET /d/{docId}/threads", () => {
         const pinned = (await (await getFrom(`${doc.host}/d/${doc.docId}/threads?v=1`, { headers: { cookie } }, HOSTS)).json()) as Served;
         expect(pinned.threads[0]!.anchorStatus).toBe("anchored");
       }
+    });
+
+    it("hands the page a read ticket naming no one, with which the comments frame reads the same names from the API host", async () => {
+      const doc = await commented("invited");
+      const invited = await reader("bob@acme.com", doc.docId);
+      const tickets: string[] = [];
+      for (const principal of [doc.owner, invited]) {
+        const body = (await (await getFrom(`${doc.host}/d/${doc.docId}/threads`, { headers: { cookie: await cookieFor(doc, principal) } }, HOSTS)).json()) as Served;
+        expect(typeof body.readTicket).toBe("string");
+        // It names the document and an expiry, never who asked.
+        const claims = await verifyPayload("k".repeat(32), "threads-read", body.readTicket!, Date.now());
+        const { d, ...rest } = claims!;
+        expect(d).toBe(doc.docId);
+        expect(Object.keys(rest)).toEqual(["exp"]);
+        tickets.push(body.readTicket!);
+      }
+
+      const viaFrame = await getFrom(
+        `https://api.openartifacts.ai/embed/api/docs/${doc.docId}/threads`,
+        { headers: { "x-openartifacts-read-ticket": tickets[1]! } },
+        HOSTS,
+      );
+      expect(viaFrame.status).toBe(200);
+      const read = (await viaFrame.json()) as Served;
+      expect(read.threads.map((t) => t.comments[0]!.author.name)).toEqual(["Alice", "Alice's agent"]);
+      expect(read.viewer).toBeUndefined();
+      expect(read.threads[0]!.comments[0]!.mine).toBeUndefined();
     });
 
     it("answers 404 JSON with no redirect to no cookie, to a reader not on the list and to another publisher's cookie", async () => {

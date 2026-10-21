@@ -1,8 +1,8 @@
 <h1 align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/open-artifacts-hero-dark.svg">
-    <source media="(prefers-color-scheme: light)" srcset="assets/brand/open-artifacts-hero-light.svg">
-    <img alt="OpenArtifacts — a new mode of communication between agents and humans" src="assets/brand/open-artifacts-hero-light.svg" width="1000">
+    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/open-artifacts-hero-artifact-chamber-v1.png">
+    <source media="(prefers-color-scheme: light)" srcset="assets/brand/open-artifacts-hero-artifact-chamber-v1.png">
+    <img alt="OpenArtifacts — a new mode of communication between agents and humans" src="assets/brand/open-artifacts-hero-artifact-chamber-v1.png" width="1000">
   </picture>
 </h1>
 
@@ -48,9 +48,10 @@ It is a small API-first publishing service with inline comments on a quoted pass
 - **List and unshare documents.** Deleting destroys the stored files and leaves
   a `410 Gone` tombstone. Copies already in a reader's browser cache cannot be
   recalled.
-- **Bound abuse.** Hosted free accounts get three live documents, six
-  publishes/updates per UTC day, and 1 MiB HTML per document. The paid plan and
-  paid Copilot licenses allow 500 documents, 100 pushes per day, and 10 MiB.
+- **Bound abuse.** Hosted free accounts get three live documents, 30
+  publishes/updates per UTC day, 1 MiB HTML per document, and 250 MiB across
+  retained versions. Paid plans and paid Copilot license keys allow 500
+  documents, 500 pushes per day, 10 MiB, and 5 GiB across retained versions.
   All credentials share their account's allowance. Unsharing frees a document
   slot, not a daily push. Standalone checkout is not available yet.
 
@@ -172,7 +173,8 @@ explains the boundary.
 
 Choose your own account limits with `PLAN_LIMITS` and `DEFAULT_PLAN` in Worker
 vars; the checked-in values are the hosted free/paid policy. Without an override,
-the built-in map has one free plan: 3 documents, 6 pushes/day, and 1 MiB HTML.
+the built-in map has one free plan: 3 documents, 30 pushes/day, 1 MiB HTML, and
+250 MiB across retained versions.
 Billing is optional: [plan configuration and the admin API](docs/http-api.md#account-plans)
 let your own service change plans. Never expose the admin secret to clients.
 

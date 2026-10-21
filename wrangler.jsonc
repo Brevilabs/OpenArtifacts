@@ -218,7 +218,7 @@
     // `pro` and `pro_lifetime` and absent from `free`. The license-key side has
     // no flag: any plan that may publish with a key (PUBLISHING_PLANS in
     // src/auth.ts) may share privately.
-    "PLAN_LIMITS": "{\"free\":{\"documents\":3,\"pushesPerDay\":6,\"htmlBytes\":1048576},\"pro\":{\"documents\":500,\"pushesPerDay\":100,\"htmlBytes\":10485760,\"privateSharing\":true,\"comments\":true},\"pro_lifetime\":{\"documents\":500,\"pushesPerDay\":100,\"htmlBytes\":10485760,\"storageBytes\":5368709120,\"privateSharing\":true,\"comments\":true}}",
+    "PLAN_LIMITS": "{\"free\":{\"documents\":3,\"pushesPerDay\":30,\"htmlBytes\":1048576,\"storageBytes\":262144000},\"pro\":{\"documents\":500,\"pushesPerDay\":500,\"htmlBytes\":10485760,\"storageBytes\":5368709120,\"privateSharing\":true,\"comments\":true},\"pro_lifetime\":{\"documents\":500,\"pushesPerDay\":500,\"htmlBytes\":10485760,\"storageBytes\":5368709120,\"privateSharing\":true,\"comments\":true}}",
 
     // Product analytics labels every event with this; business queries filter
     // on it. A local run that turns delivery on must override it with
