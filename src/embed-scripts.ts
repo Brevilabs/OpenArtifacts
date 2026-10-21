@@ -47,11 +47,12 @@ import { PAGE_COMMENTS_SCRIPT } from "./comments-scripts.js";
  *   and carry no credential in either direction.
  * - **Height.** On the shared serving origin (`openartifacts.site`, a public
  *   document's page) the popover is **one fixed height** for every viewer
- *   (416 px, less on a short viewport) and the frame scrolls inside it. 416 is
+ *   (360 px, less on a short viewport) and the frame scrolls inside it. 360 is
  *   the tallest form of the owner view with nobody added, plus a margin:
  *   measured in Chrome at the popover's 400 px width (the 56 px header and the
- *   61 px footer around the content), the public and the private owner view are
- *   345 px and a free owner's upgrade card 404 px. So
+ *   61 px footer around the content), the public, the private and the free
+ *   owner's view are all 345 px, because the upgrade row is the invite field's
+ *   height. So
  *   an owner who has added nobody sees everything without a scrollbar, and a
  *   list of people scrolls. There the frame
  *   never reports its size: any page on that origin can embed the same frame
@@ -115,7 +116,7 @@ export const PAGE_SCRIPT = String.raw`(() => {
     host.style.top = top + "px";
     host.style.left = Math.round(Math.max(8, Math.min(box.right - width, view.clientWidth - width - 8))) + "px";
     const room = Math.max(120, view.clientHeight - top - 8);
-    host.style.height = (size > 0 ? Math.min(size, 720, room) : Math.min(416, room)) + "px";
+    host.style.height = (size > 0 ? Math.min(size, 720, room) : Math.min(360, room)) + "px";
   };
   const build = () => {
     host = document.createElement("div");
@@ -253,13 +254,14 @@ export const POPUP_DONE_SCRIPT = String.raw`(function () {
  * The skeleton (`.sk`) holds the owner view's places with muted blocks, in the
  * same sizes as the rows they stand for, and pulses, except under reduced
  * motion; the title is a muted bar in it. The invite field and the owner's row
- * are in the same place in both, so only a free owner's upgrade card, which takes
- * the field's place, moves what is under it.
+ * are in the same place in both, and a free owner's upgrade row, which takes the
+ * field's place, is the same height, so nothing under it moves.
  *
  * **Upgrade card** (`.up`). A plan that grants no role has neither private
- * sharing nor comments, so one card says both, in the invite field's place, with
- * an accent **Upgrade** link where the API gives one. On that plan **Only people
- * invited** in General access is refused: the select goes back, the card's border
+ * sharing nor comments, so one row (the invite field's height, 36 px) says both
+ * with a lock, and an accent **Upgrade** link where the API gives one, in the
+ * invite field's place. On that plan **Only people
+ * invited** in General access is refused: the select goes back, the row's border
  * pulses (`.nudge`, a steady accent border under reduced motion) and Upgrade is
  * focused.
  *
@@ -325,10 +327,9 @@ input:focus-visible{outline:0;border-color:#f6ae52;box-shadow:0 0 0 3px rgba(246
 .invite button{position:absolute;top:4px;right:4px;height:28px;border-radius:7px}
 .invite button.busy{position:absolute}
 .row{display:flex;gap:8px;align-items:center}
-.up{margin-top:4px;padding:12px;border:1px solid #20242c;border-radius:10px;background:#07080b}
-.up strong{display:flex;flex-wrap:wrap;align-items:center;gap:6px;font-size:13px;font-weight:600;color:#f4f5f7}.up strong svg{color:#f6ae52;width:13px;height:13px}
-.up p{margin:4px 0 0;font-size:12.5px;line-height:1.45}
-a.btn{display:inline-flex;align-items:center;height:28px;margin-left:auto;padding:0 12px;border-radius:8px;font-size:13px;font-weight:600;background:#f6ae52;color:#0b0c10}
+.up{display:flex;align-items:center;gap:8px;min-height:36px;margin-top:4px;padding:3px 4px 3px 12px;border:1px solid #20242c;border-radius:10px;background:#07080b;font-size:12.5px;line-height:1.3;color:#8d94a0}
+.up svg{width:13px;height:13px;color:#f6ae52}.up span{flex:1;min-width:0}
+a.btn{flex:none;display:inline-flex;align-items:center;height:28px;margin-left:auto;padding:0 12px;border-radius:8px;font-size:13px;font-weight:600;background:#f6ae52;color:#0b0c10}
 a.btn:hover{text-decoration:none;background:#f8bd6e}
 .up.nudge{animation:nudge 1s ease-out}
 @keyframes nudge{0%,30%{border-color:#f6ae52;box-shadow:0 0 0 3px rgba(246,174,82,.18)}}
@@ -1014,10 +1015,7 @@ export const FRAME_SCRIPT = String.raw`(() => {
     // A plan that grants no role has neither private sharing nor comments: one card says so, with Upgrade.
     const upsell = roles !== null && roles.length === 0;
     const upgrade = upsell && typeof body.upgradeUrl === "string" && body.upgradeUrl.startsWith("https://") ? node("a", { class: "btn", href: body.upgradeUrl, target: "_blank", rel: "noopener noreferrer" }, ["Upgrade"]) : null;
-    const card = upsell ? node("div", { class: "up" }, [
-      node("strong", {}, [icon(LOCK_ICON), "Private sharing and comments"].concat(upgrade === null ? [] : [upgrade])),
-      node("p", { class: "muted" }, ["Choose who can open this page, and let them comment on it. Included in paid plans."]),
-    ]) : null;
+    const card = upsell ? node("div", { class: "up" }, [icon(LOCK_ICON), node("span", {}, ["Private sharing and comments"])].concat(upgrade === null ? [] : [upgrade])) : null;
     // Going private is the paid half, so on that plan it is refused: nothing is sent, and the card is pointed at.
     const locked = (value) => upsell && value === "invited" && body.linkAccess !== value;
     const nudge = () => {
@@ -1087,7 +1085,7 @@ export const FRAME_SCRIPT = String.raw`(() => {
     draw(kids, true);
     setTitle(body.title);
     const invitedOnly = body.linkAccess === "invited";
-    setFooter(invitedOnly ? (body.people.length === 0 ? "Only you can open this link" : "Only people invited can open this link") : "Anyone with the link can view" + (grantsComment ? ". Invitees can comment." : ""), invitedOnly);
+    setFooter(invitedOnly ? (body.people.length === 0 ? "Only you can open this link" : "Only people invited can open this link") : "Anyone with the link can view", invitedOnly);
   };
 
   const refresh = async () => {

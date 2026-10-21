@@ -498,6 +498,7 @@ const measure = (frame) =>
       room: main.clientHeight,
       footer: Math.round(box("footer").height),
       footerBottom: Math.round(box("footer").bottom),
+      sentence: Math.round(box("footer .status").height),
       overflowX: Math.max(document.documentElement.scrollWidth, main.scrollWidth) - window.innerWidth,
     };
   });
@@ -533,13 +534,15 @@ test("the owner view is invite, people, general access, above a pinned footer", 
   assert.equal(await ownerRow.locator(".role").innerText(), "Owner");
   assert.equal(await ownerRow.locator("select").count(), 0, "the owner has no control");
   assert.equal(await mode.inputValue(), "anyone");
-  assert.equal(await footer.innerText(), "Anyone with the link can view. Invitees can comment.");
+  assert.equal(await footer.innerText(), "Anyone with the link can view");
   assert.equal(await frame.getByPlaceholder("Invite people by email").count(), 1);
   assert.equal(await frame.getByRole("button", { name: "Invite" }).isHidden(), true, "no Invite button until the field has text");
   const publicFit = await measure(frame);
   console.log("public", publicFit);
   assert.ok(publicFit.main <= publicFit.room, "public, nobody added: no scrollbar");
   assert.equal(publicFit.footerBottom, publicFit.height, "the footer is pinned to the floor");
+  // One line of 13 px text, never two, at 400 px.
+  assert.ok(publicFit.sentence < 24, "the public sentence is one line");
   await shoot(page, "owner-public");
 
   // The Invite button appears inside the field without moving it, and goes when the field is empty.
@@ -567,6 +570,7 @@ test("the owner view is invite, people, general access, above a pinned footer", 
   const privateFit = await measure(frame);
   console.log("private", privateFit);
   assert.ok(privateFit.main <= privateFit.room, "private, nobody added: no scrollbar");
+  assert.ok(privateFit.sentence < 24, "the private sentence is one line");
   await shoot(page, "owner-private");
 
   // 3. Two invitees (one with an account that has a name), and two requests. The page goes public first:
@@ -607,7 +611,7 @@ test("the owner view is invite, people, general access, above a pinned footer", 
   const listFit = await measure(again);
   console.log("people", listFit);
   assert.equal(listFit.overflowX <= 0, true, "no horizontal overflow");
-  assert.equal(await again.locator("footer .status").innerText(), "Anyone with the link can view. Invitees can comment.");
+  assert.equal(await again.locator("footer .status").innerText(), "Anyone with the link can view");
   await shoot(page, "owner-people");
 
   // A role change and Remove access go through the select; Approve and Decline stay buttons.
@@ -625,6 +629,7 @@ test("the owner view is invite, people, general access, above a pinned footer", 
   await again.getByText("Only people invited can open this link").waitFor();
   assert.equal(await again.getByLabel("General access").inputValue(), "invited");
   assert.equal((await again.locator("footer button").innerHTML()).includes("M6 11h12"), true, "Copy link carries a lock on a private page");
+  assert.ok((await measure(again)).sentence < 24, "the longest sentence, people on a private page, is one line");
 
   // 5. Nothing jumps: the skeleton stood in the places the owner view fills, on a slow network, and no
   //    wrong state is painted on the way.
@@ -655,10 +660,12 @@ test("the owner view is invite, people, general access, above a pinned footer", 
     await free.locator(".up").waitFor();
     assert.equal(await free.getByPlaceholder("Invite people by email").count(), 0);
     const freeFit = await measure(free);
+    await shoot(freePage, "owner-free");
     console.log("free", freeFit);
     assert.ok(freeFit.main <= freeFit.room, "free plan: no scrollbar");
+    assert.equal(freeFit.content, publicFit.content, "the upgrade row stands in the invite field's place at the same height");
+    assert.equal((await free.locator(".up").boundingBox()).height, 36);
     assert.equal(await free.locator("footer .status").innerText(), "Anyone with the link can view");
-    await shoot(freePage, "owner-free");
     await free.getByLabel("General access").selectOption("invited");
     assert.equal(await free.getByLabel("General access").inputValue(), "anyone", "the select goes back");
     await free.locator(".up.nudge").waitFor();

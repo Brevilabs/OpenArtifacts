@@ -502,7 +502,7 @@ that must never be on a page whose scripts the author writes.
   only what it already named). With a token, a non-reader sees what an unknown id
   shows, never `403`.
 - **It tells a page on the shared origin nothing about its viewer.** There it
-  has one fixed height for everyone (416 px, less on a short viewport) and
+  has one fixed height for everyone (360 px, less on a short viewport) and
   scrolls inside it. It posts the page `ready`, once, before it reads its
   storage; `close`, only after a click or key press inside it; and `people`,
   only after the owner's own click
@@ -553,9 +553,8 @@ that must never be on a page whose scripts the author writes.
 - **Its height** on the shared origin is one for every viewer, so it says nothing
   about who is looking, and is chosen so that the owner view with nobody added
   shows whole, with no scrollbar, in each of its forms: public, private, and a
-  free owner's upgrade card. Measured in Chrome at 400 px, the public and the
-  private form are 345 px and the free owner's card 404 px; the popover is
-  416 px, capped by the viewport. A list of people scrolls. On a private
+  free owner's upgrade row. Measured in Chrome at 400 px, all three are 345 px;
+  the popover is 360 px, capped by the viewport. A list of people scrolls. On a private
   document's own origin the owner view's popover is as tall as what the frame
   shows (header, content and footer), up to 720 px and the viewport below the bar
   less 8 px, and scrolls past that; it follows the content as people are added or
@@ -573,12 +572,10 @@ that must never be on a page whose scripts the author writes.
   icon (a lock, or a globe) and a select of **Only people invited** and **Anyone
   with the link**. The footer's sentence is "Only you can open this link" on a
   private page with nobody added, "Only people invited can open this link" with
-  people, and "Anyone with the link can view" on a public one, with "Invitees can
-  comment." added where the plan grants the comment role. A plan that grants no
-  role (a free one) gets, in place of the invite field, one card: "Private sharing
-  and comments", "Choose who can open this page, and let them comment on it.
-  Included in paid plans." and **Upgrade**; choosing **Only people invited** there
-  sends nothing, puts the select back and points at the card. Any other reader gets
+  people, and "Anyone with the link can view" on a public one: always one line. A plan that
+  grants no role (a free one) gets, in place of the invite field, one row of its
+  height: a lock, "Private sharing and comments" and **Upgrade**; choosing **Only people invited** there
+  sends nothing, puts the select back and points at the row. Any other reader gets
   "Only the owner can change who can open this."; someone not yet signed in gets
   that sentence and **Sign in to manage**; those views and the footer's sentence
   are empty of mode. Writes call the same
@@ -888,7 +885,7 @@ subdomain needs a paid certificate for `*.docs.example.net`.
   the new session. Two that do not overlap are independent, because the popup's
   binding cookie is per handshake.
 - **The popover is one fixed height on a public page**, so its short views have
-  room to spare and a long list scrolls in 416 px; the alternative is a frame that
+  room to spare and a long list scrolls in 360 px; the alternative is a frame that
   reports its size there, which would tell any page that can embed it whether its
   visitor manages the document. Only the owner view on a private page fits its
   content; an invitee's view there stays fixed, since its height would say which
