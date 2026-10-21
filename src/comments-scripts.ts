@@ -348,7 +348,7 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
     };
     // Whether that background is dark. The frame draws its cards in the matching theme.
     let dark = null, fill = "";
-    // One translucent yellow for every thread and no underline, which reads as a link; stronger for the active thread (its focus layer sits on its open one) and the draft (on its own). On a dark page the highlight is a warmer amber and the active thread and the draft also get an amber underline, so they read beyond the tint: an open thread is .20 (1.5:1 against a #111 page, 1.6:1 against #1b1d24), the active one .36 once layered (2.3:1) and the draft .36 (2.3:1). Light-grey #e9ebee text on #111 keeps 10.5:1 on an open thread, 6.8:1 on the active one and the draft, and 4.8:1 where a draft covers an open thread, so none of them goes under 4.5:1; any visible tint lowers a page's own contrast, so a page that starts near 4.5:1 dips slightly below it.
+    // One translucent yellow for every thread and no underline, which reads as a link; stronger for the active thread (its focus layer sits on its open one) and the draft (on its own). On a dark page the highlight is a warmer amber and the active thread and the draft also get an amber underline, so they read beyond the tint: an open thread is .20 (1.5:1 against a #111 page, 1.6:1 against #1b1d24), the active one .36 once layered (2.3:1) and the draft .36 (2.3:1). Light-grey #e9ebee text on #111 keeps 10.5:1 on an open thread, 6.8:1 on the active one and the draft, and 4.8:1 where a draft covers an open thread, so none of them goes under 4.5:1, because the focus layer is not painted while a draft is open and the layers never stack deeper than that; any visible tint lowers a page's own contrast, so a page that starts near 4.5:1 dips slightly below it.
     let marks = null;
     const markColours = (onDark) => {
       if (!marks) return;
@@ -419,11 +419,14 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       const groups = { "openartifacts-open": [], "openartifacts-focus": [], "openartifacts-draft": [] };
       if (active) {
         ranges.forEach((range) => groups["openartifacts-open"].push(range));
-        if (focusId && ranges.has(focusId)) groups["openartifacts-focus"].push(ranges.get(focusId));
-        // The passage under the pointer, or of the card under it, takes the active yellow while it is there.
-        const hovered = hoverFrame || hoverPage;
-        if (hovered && hovered !== focusId && ranges.has(hovered)) groups["openartifacts-focus"].push(ranges.get(hovered));
+        // While a draft is open it is the only active passage: no focus layer, so a draft over a thread's passage is never three layers deep.
         if (draftRange) groups["openartifacts-draft"].push(draftRange);
+        else {
+          if (focusId && ranges.has(focusId)) groups["openartifacts-focus"].push(ranges.get(focusId));
+          // The passage under the pointer, or of the card under it, takes the active yellow while it is there.
+          const hovered = hoverFrame || hoverPage;
+          if (hovered && hovered !== focusId && ranges.has(hovered)) groups["openartifacts-focus"].push(ranges.get(hovered));
+        }
       }
       Object.keys(groups).forEach((name, i) => {
         if (!groups[name].length) { CSS.highlights.delete(name); return; }
@@ -548,7 +551,6 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       tipHost.style.left = Math.round(Math.max(8, Math.min(x, viewport().clientWidth * z - wide - 8)) / z) + "px";
       tipHost.style.top = Math.round((first.top - 44 >= 48 ? first.top - 44 : last.bottom + 8) / z) + "px";
     };
-    const overlaps = (a, b) => a.compareBoundaryPoints(Range.START_TO_END, b) > 0 && a.compareBoundaryPoints(Range.END_TO_START, b) < 0;
     const startDraft = (held) => {
       const cap = capture() || (held ? capture(held) : null);
       if (!cap) return;
@@ -557,15 +559,12 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
       hideTip();
       window.getSelection().removeAllRanges();
       if (focusId) { focusId = ""; send({ event: "focus", threadId: "" }); }
-      // The pointer may still rest on a thread's passage that the draft covers (a keyboard draft), or its card does: that hover layer would stack on the open and draft ones. It comes back on the next pointer move.
-      const hovered = hoverFrame || hoverPage;
-      if (hovered && ranges.has(hovered) && overlaps(ranges.get(hovered), draftRange)) { hoverFrame = ""; hoverPage = ""; }
       // Opened before the draft is measured: the sidebar narrows the page and its text reflows. And the frame is told it is shown before the draft arrives: a frame that is not shown draws nothing, so a draft that came first found no field to focus.
       openPanel();
       reveal(draftRange);
       const top = draftRange.getClientRects()[0] || draftRange.getBoundingClientRect();
       send({ event: "draft", focus: true, anchor: draft, top: top.top - mhost.getBoundingClientRect().top });
-      hover();
+      paint();
     };
     const endDraft = () => { draft = null; draftRange = null; send({ event: "draft", anchor: null, top: 0 }); paint(); };
 
