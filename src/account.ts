@@ -6,6 +6,7 @@ import { errorResponse } from "./errors.js";
 import { sha256Hex } from "./hash.js";
 import { OWNER_SCOPE_SQL } from "./owners.js";
 import { effectivePlan, planLimits } from "./plans.js";
+import { readerSignInConfigured } from "./reader-config.js";
 import { storedBytes } from "./storage-quota.js";
 import { readBodyWithin, utcDay } from "./quota.js";
 
@@ -37,9 +38,14 @@ export function actionUrl(env: Env): URL | null {
 }
 
 const COPILOT_CLIENT = "obsidian-copilot";
-// Emails are named only where this server can send them.
+// Emails are named only where this server can send them, and only for the
+// routes it serves: access requests need reader sign-in, comments also need
+// `COMMENTS` (the same gates as their routes, #94).
+const emailsFor = (env: Env) =>
+  !emailConfigured(env) || !readerSignInConfigured(env) ? ""
+    : ` to get an email when people you share with ${env.COMMENTS === undefined ? "" : "comment or "}ask for access`;
 const linkMessage = (env: Env) =>
-  `Publish from other agents too? Link your Copilot for Obsidian account to OpenArtifacts${emailConfigured(env) ? " to get an email when people you share with comment or ask for access" : ""}.`;
+  `Publish from other agents too? Link your Copilot for Obsidian account to OpenArtifacts${emailsFor(env)}.`;
 
 /** A display hint, never account proof. It must not fail or change a publish. */
 export async function linkGuidance(request: Request, env: Env, publisher: Publisher): Promise<{ message: string; url: string } | undefined> {

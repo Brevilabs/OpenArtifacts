@@ -267,6 +267,14 @@ describe("POST /api/v1/docs", () => {
     const quiet = (await pushedOk(await send("POST", "/api/v1/docs", KEY_A, { html: page("<p>x</p>") }, { ACCOUNT_ACTION_URL, EMAIL: undefined },
       API_ORIGIN, copilot), 201)) as Offered;
     expect(quiet.guidance?.message).not.toContain("email");
+    // Nor one for a route it does not serve: without reader sign-in neither
+    // access requests nor comments exist, and without `COMMENTS` no comments do.
+    const noReader = (await pushedOk(await send("POST", "/api/v1/docs", KEY_A, { html: page("<p>x</p>") },
+      { ...withPrivateSharing, READER_SESSION_SECRET: undefined }, "https://api.openartifacts.ai", copilot), 201)) as Offered;
+    expect(noReader.guidance?.message).not.toContain("email");
+    const noComments = (await pushedOk(await send("POST", "/api/v1/docs", KEY_A, { html: page("<p>x</p>") },
+      { ...withPrivateSharing, COMMENTS: undefined }, "https://api.openartifacts.ai", copilot), 201)) as Offered;
+    expect(noComments.guidance?.message).toContain("get an email when people you share with ask for access");
     expect(((await pushedOk(await publish("private-docs", copilot), 201)) as Offered).guidance?.url).toBe(ACCOUNT_ACTION_URL);
     expect(Object.keys(await pushedOk(await publish("docs"), 201)).sort()).toEqual(["docId", "linkAccess", "url", "version"]);
 
