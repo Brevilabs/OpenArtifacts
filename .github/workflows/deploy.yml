@@ -93,7 +93,7 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --no-audit --no-fund
 
       # CI runs these too, on the same push. Repeated here on purpose: the two
       # workflows run in parallel, so a deploy that trusted CI could finish

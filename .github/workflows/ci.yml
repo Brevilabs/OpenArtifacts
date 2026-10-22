@@ -28,8 +28,10 @@ jobs:
         if: github.event_name == 'pull_request'
         run: node scripts/check-release-pr.cjs
 
+      # No audit: npm's audit endpoint is being retired and can hold `npm ci`
+      # for five minutes before giving up. Its report never fails the job anyway.
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --no-audit --no-fund
 
       - name: Check hosted account routing
         run: node scripts/check-account-actions.cjs
