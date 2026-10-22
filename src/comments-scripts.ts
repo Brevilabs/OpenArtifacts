@@ -804,7 +804,7 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
  * background is dark (`theme`), and `main.dark` swaps every colour the cards
  * use: light is white cards with dark text, a hairline border and a soft
  * shadow; dark is a dark-grey card that stands off the page, with light text.
- * Green marks the focused card, a badge marks an agent, a sunken grey a resolved
+ * Green marks the focused card, a small sparkle marks an agent, a sunken grey a resolved
  * or orphaned card. The frame's `color-scheme` stays light in both, as the
  * iframe's does: a frame whose scheme differs from its element's is painted
  * opaque, and the page's background would no longer show between cards.
@@ -812,8 +812,8 @@ export const PAGE_COMMENTS_SCRIPT = String.raw`
 export const COMMENTS_FRAME_CSS = `:root{color-scheme:light;font:13px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;background:transparent}
 *{box-sizing:border-box}html,body{height:100%;margin:0;background:transparent}
 [hidden]{display:none!important}
-main{--card:#fff;--ink:#18191d;--muted:#5f6368;--line:rgba(0,0,0,.12);--edge:rgba(0,0,0,.22);--shadow:0 1px 2px rgba(0,0,0,.08),0 4px 14px -4px rgba(0,0,0,.14);--lift:0 2px 4px rgba(0,0,0,.1),0 10px 28px -6px rgba(0,0,0,.28);--sunk:#f5f5f6;--hover:rgba(0,0,0,.06);--field:#fff;--accent:#16786a;--ring:rgba(22,120,106,.2);--send:#18191d;--send-ink:#fff;--send-off:#d4d5d8;--danger:#b4342b;--badge:#fbe3d8;--badge-ink:#b03d1b;--sheet:#f7f7f8;color:var(--ink)}
-main.dark{--card:#2a2b2f;--ink:#e8e9ec;--muted:#a3a7ae;--line:rgba(255,255,255,.12);--edge:rgba(255,255,255,.24);--shadow:0 1px 2px rgba(0,0,0,.5),0 6px 18px -6px rgba(0,0,0,.6);--lift:0 2px 6px rgba(0,0,0,.55),0 12px 32px -6px rgba(0,0,0,.75);--sunk:#232427;--hover:rgba(255,255,255,.08);--field:#1f2023;--accent:#5fc4b0;--ring:rgba(95,196,176,.25);--send:#e8e9ec;--send-ink:#18191d;--send-off:#45474d;--danger:#ff8a80;--badge:rgba(255,138,101,.18);--badge-ink:#ffab91;--sheet:#1f2023}
+main{--card:#fff;--ink:#18191d;--muted:#5f6368;--line:rgba(0,0,0,.12);--edge:rgba(0,0,0,.22);--shadow:0 1px 2px rgba(0,0,0,.08),0 4px 14px -4px rgba(0,0,0,.14);--lift:0 2px 4px rgba(0,0,0,.1),0 10px 28px -6px rgba(0,0,0,.28);--sunk:#f5f5f6;--hover:rgba(0,0,0,.06);--field:#fff;--accent:#16786a;--ring:rgba(22,120,106,.2);--send:#18191d;--send-ink:#fff;--send-off:#d4d5d8;--danger:#b4342b;--sheet:#f7f7f8;color:var(--ink)}
+main.dark{--card:#2a2b2f;--ink:#e8e9ec;--muted:#a3a7ae;--line:rgba(255,255,255,.12);--edge:rgba(255,255,255,.24);--shadow:0 1px 2px rgba(0,0,0,.5),0 6px 18px -6px rgba(0,0,0,.6);--lift:0 2px 6px rgba(0,0,0,.55),0 12px 32px -6px rgba(0,0,0,.75);--sunk:#232427;--hover:rgba(255,255,255,.08);--field:#1f2023;--accent:#5fc4b0;--ring:rgba(95,196,176,.25);--send:#e8e9ec;--send-ink:#18191d;--send-off:#45474d;--danger:#ff8a80;--sheet:#1f2023}
 html:has(main.margin),html:has(main.margin) body{overflow:hidden}
 main.margin{min-height:100%}
 main.overlay{background:var(--sheet);padding:0 14px 18px}
@@ -838,7 +838,8 @@ main.overlay{background:var(--sheet);padding:0 14px 18px}
 .who small{font-weight:400;color:var(--muted);white-space:nowrap}
 .av{width:20px;height:20px;border-radius:50%;display:inline-grid;place-items:center;font-size:10px;font-weight:700;color:#fff;flex:none}
 .av.c0{background:#3b6fd4}.av.c1{background:#c2410c}.av.c2{background:#15803d}.av.c3{background:#7c3aed}.av.c4{background:#0e7490}.av.c5{background:#be185d}.av.c6{background:#a16207}.av.c7{background:#4f46e5}
-.badge{font:9.5px/1.4 ui-monospace,"SF Mono",Menlo,Consolas,monospace;letter-spacing:.05em;text-transform:uppercase;padding:1px 6px;border-radius:999px;font-weight:600;background:var(--badge);color:var(--badge-ink);white-space:nowrap}
+.agent-mark{flex:none;color:var(--muted);margin-left:-2px}
+.where .agent-mark{margin-left:4px;vertical-align:-2px}
 .txt{margin:3px 0 8px 26px;white-space:pre-wrap;overflow-wrap:anywhere}
 .acts{display:flex;flex-wrap:wrap;align-items:center;gap:4px 10px;margin:0 0 6px;font-size:11.5px;color:var(--muted)}
 .acts button,button.link{border:0;background:none;padding:0;font:inherit;color:inherit;cursor:pointer}
@@ -1205,11 +1206,34 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
   const announce = (words) => live.replaceChildren(node("span", {}, [words]));
   const errorLine = (key) => node("p", { class: "err", role: "alert" }, errors[key] ? [errors[key]] : []);
   // Relayed data is the page's word, so under it nobody has a name or a badge: a page can make up a comment, not a commenter.
-  const authorOf = (a) => (relayedOnly() ? { name: "A commenter", agent: false } : { name: text(a && a.name) || "Someone", agent: !!a && a.kind === "agent" });
+  // The person is person.name, else Owner or Someone; an older server's answer has no person, so its composed name and kind stand in.
+  const authorOf = (a) => {
+    if (relayedOnly()) return { name: "A commenter", agent: null };
+    const p = a && a.person;
+    const name = p ? text(p.name) || (p.isOwner === true ? "Owner" : "Someone") : text(a && a.name) || "Someone";
+    const agent = a && a.agent ? { name: text(a.agent.name) } : !p && a && a.kind === "agent" ? { name: "" } : null;
+    return { name: name, agent: agent };
+  };
+  // An agent shows as the person it acts for, with a small sparkle after the name.
+  const agentMark = (via) => {
+    const label = "via " + (via || "agent");
+    const ns = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(ns, "svg");
+    for (const [name, value] of [["class", "agent-mark"], ["viewBox", "0 0 24 24"], ["width", "14"], ["height", "14"], ["fill", "none"], ["stroke", "currentColor"], ["stroke-width", "2"], ["stroke-linecap", "round"], ["stroke-linejoin", "round"], ["role", "img"], ["aria-label", label]]) svg.setAttribute(name, value);
+    const title = document.createElementNS(ns, "title");
+    title.textContent = label;
+    svg.append(title);
+    for (const d of ["M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z", "M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"]) {
+      const path = document.createElementNS(ns, "path");
+      path.setAttribute("d", d);
+      svg.append(path);
+    }
+    return svg;
+  };
+  const named = (a) => (a.agent ? [a.name, agentMark(a.agent.name)] : [a.name]);
   const who = (author, at) => {
     const a = authorOf(author);
-    const kids = [node("span", { class: "av " + tint(a.name), "aria-hidden": "true" }, [(a.name.trim()[0] || "?").toUpperCase()]), a.name];
-    if (a.agent) kids.push(node("span", { class: "badge" }, ["agent"]));
+    const kids = [node("span", { class: "av " + tint(a.name), "aria-hidden": "true" }, [(a.name.trim()[0] || "?").toUpperCase()]), ...named(a)];
     if (typeof at === "number") kids.push(node("small", { title: new Date(at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) }, [ago(at)]));
     return node("div", { class: "who" }, kids);
   };
@@ -1344,10 +1368,10 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     const id = text(thread.threadId);
     const resolved = thread.state === "resolved";
     const res = resolved && thread.resolution ? thread.resolution : null;
-    const by = res ? authorOf(res.by).name : "";
+    const by = res ? authorOf(res.by) : null;
     // Typed, not concatenated: a relayed atVersion is the page's, and a string there could write its own "by" into the summary.
     const at = res && Number.isInteger(res.atVersion) && res.atVersion > 0 ? res.atVersion : 0;
-    const summary = res ? (at ? "Resolved in v" + at : "Resolved") + (relayedOnly() ? "" : " by " + by) : "Resolved";
+    const summary = res ? (at ? "Resolved in v" + at : "Resolved") + (relayedOnly() ? "" : " by ") : "Resolved";
     const card = node("div", { class: "card" + (resolved ? " resolved" : "") + (orphan ? " muted" : "") + (focusId === id ? " focus" : "") + (hoverId === id ? " hover" : ""), "data-thread": id, tabindex: "0" });
     // A click, not a press: the card moves to its passage when it becomes active, and a press that moved it would lose the click it began (on Resolve, say).
     card.addEventListener("click", () => focusThread(id));
@@ -1357,7 +1381,7 @@ export const COMMENTS_FRAME_SCRIPT = String.raw`(() => {
     card.addEventListener("pointerenter", (event) => { if (event.pointerType !== "touch") post({ event: "hover", threadId: id }); });
     card.addEventListener("pointerleave", (event) => { if (event.pointerType !== "touch") post({ event: "hover", threadId: "" }); });
     if (orphan || resolved || mode === "overlay") card.append(node("div", { class: "quote" }, [text(thread.anchor && thread.anchor.exact)]));
-    if (resolved) card.append(node("p", { class: "where" }, [summary]));
+    if (resolved) card.append(node("p", { class: "where" }, [summary, ...(res && !relayedOnly() ? named(by) : [])]));
     const comments = Array.isArray(thread.comments) ? thread.comments : [];
     const mayResolve = own !== null && !resolved && thread.canResolve === true;
     comments.forEach((comment, index) => card.append(...commentRow(thread, comment, index, mayResolve && index === 0)));

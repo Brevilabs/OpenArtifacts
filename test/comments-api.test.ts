@@ -172,7 +172,7 @@ interface ThreadJson {
   state: "open" | "resolved";
   resolution: null | { by: { name: string; kind: string }; atVersion: number };
   canResolve?: boolean;
-  comments: Array<{ commentId: string; author: { name: string; kind: string }; body: string; mine?: boolean }>;
+  comments: Array<{ commentId: string; author: { name: string; kind: string; person: { name: string | null; isOwner: boolean }; agent?: { name: string | null } }; body: string; mine?: boolean }>;
 }
 interface ThreadsJson {
   docId: string;
@@ -462,6 +462,12 @@ describe("who can comment", () => {
     // The key and the account are one author: the thread is the owner's own.
     expect(listed.threads[0]!.comments[0]).toMatchObject({ author: { name: "Logan's agent", kind: "agent" }, mine: true });
     expect(listed.threads[0]!.threadId).toBe(made.threadId);
+    // A license key is Obsidian Copilot's credential: with no header it is stored as that, and a header still wins.
+    expect(listed.threads[0]!.comments[0]!.author.agent).toEqual({ name: "Copilot" });
+    const named = await send("POST", `/api/v1/docs/${docId}/threads/${made.threadId}/comments`, KEY, { body: "named" }, {}, { "OpenArtifacts-Agent": "Obsidian Copilot" });
+    expect(named.status).toBe(201);
+    const after = await threadsOf(await listThreads(docId, owner.token));
+    expect(after.threads[0]!.comments.map((c) => c.author.agent)).toEqual([{ name: "Copilot" }, { name: "Obsidian Copilot" }]);
   });
 
   it("needs no switch: a document nobody can comment on still lists its threads, to whoever can read it", async () => {
@@ -639,8 +645,8 @@ describe("threads", () => {
       canResolve: true,
     });
     expect(t!.comments.map((c) => [c.author, c.body, c.mine])).toEqual([
-      [{ name: "Alice", kind: "human" }, "Why brown?", false],
-      [{ name: "Logan's agent", kind: "agent" }, "Fixed in v2.", true],
+      [{ name: "Alice", kind: "human", person: { name: "Alice" } }, "Why brown?", false],
+      [{ name: "Logan's agent", kind: "agent", person: { name: "Logan" }, agent: { name: "OpenArtifacts CLI" } }, "Fixed in v2.", true],
     ]);
     // Neither an account id nor an address anywhere in the answer.
     const raw = JSON.stringify(seen);
@@ -653,7 +659,7 @@ describe("threads", () => {
     expect(((await resolved.json()) as ThreadJson)).toMatchObject({
       threadId: made.threadId,
       state: "resolved",
-      resolution: { by: { name: "Logan's agent", kind: "agent" }, atVersion: 1 },
+      resolution: { by: { name: "Logan's agent", kind: "agent", person: { name: "Logan" }, agent: { name: "OpenArtifacts CLI" } }, atVersion: 1 },
     });
     // Idempotent: the same answer again, and still resolved by the first.
     const again = await send("POST", `/api/v1/docs/${priv}/threads/${made.threadId}/resolve`, owner.token);
@@ -914,9 +920,9 @@ describe("display names", () => {
 
     const names = (await threadsOf(await listThreads(priv, erin.token))).threads.flatMap((t) => t.comments.map((c) => c.author));
     expect(names).toEqual([
-      { name: "Erin E.", kind: "human" },
-      { name: "Erin E.'s agent", kind: "agent" },
-      { name: "Erin E.", kind: "human" },
+      { name: "Erin E.", kind: "human", person: { name: "Erin E." } },
+      { name: "Erin E.'s agent", kind: "agent", person: { name: "Erin E." }, agent: { name: "OpenArtifacts CLI" } },
+      { name: "Erin E.", kind: "human", person: { name: "Erin E." } },
     ]);
   });
 
@@ -954,7 +960,7 @@ describe("display names", () => {
     expect((await send("GET", "/embed/api/account", await frame(owner, "0123456789abcdef"))).status).toBe(404);
   });
 
-  it("labels an agent after the account it acts for, then the owner's agent, then any agent", async () => {
+  it("labels an agent after the account it acts for, then the owner's agent, then any agent, and carries the facts beside it", async () => {
     const owner = await person("logan@acme.com", null);
     const stranger = await person("zed@other.com", null);
     const docId = await publish(owner, "Open", TEXT, "anyone");
@@ -962,12 +968,93 @@ describe("display names", () => {
 
     await thread(docId, owner.token, fox, "from the owner's agent");
     await thread(docId, stranger.token, { exact: "twelve percent" }, "from someone else's agent");
-    let names = (await threadsOf(await listThreads(docId, owner.token))).threads.map((t) => t.comments[0]!.author.name);
-    expect(names).toEqual(["Owner's agent", "An agent"]);
+    const authors = async () => (await threadsOf(await listThreads(docId, owner.token))).threads.map((t) => t.comments[0]!.author);
+    expect(await authors()).toEqual([
+      { name: "Owner's agent", kind: "agent", person: { name: null, isOwner: true }, agent: { name: "OpenArtifacts CLI" } },
+      { name: "An agent", kind: "agent", person: { name: null }, agent: { name: "OpenArtifacts CLI" } },
+    ]);
 
     await env.DB.prepare("UPDATE accounts SET display_name = 'Logan' WHERE id = ?").bind(owner.id).run();
-    names = (await threadsOf(await listThreads(docId, owner.token))).threads.map((t) => t.comments[0]!.author.name);
-    expect(names).toEqual(["Logan's agent", "An agent"]);
+    expect(await authors()).toEqual([
+      { name: "Logan's agent", kind: "agent", person: { name: "Logan" }, agent: { name: "OpenArtifacts CLI" } },
+      { name: "An agent", kind: "agent", person: { name: null }, agent: { name: "OpenArtifacts CLI" } },
+    ]);
+  });
+
+  it("labels a person with the name on file, or none, and never gives a person an agent", async () => {
+    const owner = await person("logan@acme.com", "Logan");
+    const reader = await person("zed@other.com", "Zed");
+    const docId = await publish(owner, "Open", TEXT, "anyone");
+    await invite(docId, reader.email, "comment");
+    expect((await thread(docId, await frame(reader, docId))).status).toBe(201);
+    const author = async () => (await threadsOf(await listThreads(docId, owner.token))).threads[0]!.comments[0]!.author;
+    expect(await author()).toEqual({ name: "Zed", kind: "human", person: { name: "Zed" } });
+    await env.DB.prepare("UPDATE accounts SET display_name = NULL WHERE id = ?").bind(reader.id).run();
+    expect(await author()).toEqual({ name: "Someone", kind: "human", person: { name: null } });
+  });
+
+  it("sends isOwner only for an owner's agent with no display name", async () => {
+    const owner = await person("logan@acme.com", "Logan");
+    const docId = await publish(owner, "Open", TEXT, "anyone");
+    const authors = async () => (await threadsOf(await send("GET", `/embed/api/docs/${docId}/threads`, null))).threads.map((t) => t.comments[0]!.author);
+    await thread(docId, await frame(owner, docId), fox, "as a named owner");
+    await thread(docId, owner.token, { exact: "twelve percent" }, "as a named owner's agent");
+    expect((await authors()).map((a) => a.person)).toEqual([{ name: "Logan" }, { name: "Logan" }]);
+    await env.DB.prepare("UPDATE accounts SET display_name = NULL WHERE id = ?").bind(owner.id).run();
+    expect((await authors()).map((a) => [a.kind, a.person])).toEqual([
+      ["human", { name: null }],
+      ["agent", { name: null, isOwner: true }],
+    ]);
+  });
+
+  it("counts a comment a license key wrote before it was linked as the owner's agent", async () => {
+    const owner = await person("logan@acme.com", null);
+    await env.DB.prepare("UPDATE accounts SET display_name = NULL WHERE id = ?").bind(owner.id).run();
+    const KEY = "cplus_live_a1b2c3d4e5f60718";
+    await env.DB.prepare("INSERT INTO publishers (key_hash, plan, validated_at, owner) VALUES (?, 'believer', ?, 'lic-owner')")
+      .bind(await sha256Hex(KEY), Date.now())
+      .run();
+    const docId = ((await (await send("POST", "/api/v1/docs", KEY, { html: page(TEXT) })).json()) as { docId: string }).docId;
+    await created(await thread(docId, KEY));
+    // Written under the key's own owner id; the link then makes the account the document's owner.
+    expect(await linkExternalOwner(env.DB, "lic-owner", owner.id, Date.now())).toBe("linked");
+    const author = (await threadsOf(await listThreads(docId, owner.token))).threads[0]!.comments[0]!.author;
+    expect(author).toEqual({ name: "Owner's agent", kind: "agent", person: { name: null, isOwner: true }, agent: { name: "Copilot" } });
+  });
+
+  it("stores the OpenArtifacts-Agent header on an agent's writes and serves it as agent.name", async () => {
+    const owner = await person("logan@acme.com", "Logan");
+    const docId = await publish(owner, "Open", TEXT, "anyone");
+    const agent = { "OpenArtifacts-Agent": "  Claude Code " };
+    const path = `/api/v1/docs/${docId}/threads`;
+    const made = (await (await send("POST", path, owner.token, { anchor: fox, body: "a" }, {}, agent)).json()) as { threadId: string };
+    expect((await send("POST", `${path}/${made.threadId}/comments`, owner.token, { body: "b" }, {}, { "OpenArtifacts-Agent": "Codex" })).status).toBe(201);
+    expect((await send("POST", `${path}/${made.threadId}/comments`, owner.token, { body: "c" })).status).toBe(201);
+    const resolved = await send("POST", `${path}/${made.threadId}/resolve`, owner.token, {}, {}, agent);
+    expect(((await resolved.json()) as { resolution: { by: { agent: unknown } } }).resolution.by.agent).toEqual({ name: "Claude Code" });
+    const t = (await threadsOf(await listThreads(docId, owner.token))).threads[0]!;
+    expect(t.comments.map((c) => [c.author.name, c.author.agent])).toEqual([
+      ["Logan's agent", { name: "Claude Code" }],
+      ["Logan's agent", { name: "Codex" }],
+      ["Logan's agent", { name: "OpenArtifacts CLI" }],
+    ]);
+  });
+
+  it("refuses an invalid OpenArtifacts-Agent header with 400 and writes nothing, and ignores it from a person", async () => {
+    const owner = await person("logan@acme.com", "Logan");
+    const reader = await person("zed@other.com", "Zed");
+    const docId = await publish(owner, "Open", TEXT, "anyone");
+    await invite(docId, reader.email, "comment");
+    const path = `/api/v1/docs/${docId}/threads`;
+    for (const bad of ["", "   ", "x".repeat(65), "bad\u0007name", "caf\u00e9"]) {
+      const response = await send("POST", path, owner.token, { anchor: fox, body: "a" }, {}, { "OpenArtifacts-Agent": bad });
+      expect(response.status, JSON.stringify(bad)).toBe(400);
+      expect(((await response.json()) as { error: { code: string } }).error.code).toBe("bad_request");
+    }
+    expect((await threadsOf(await listThreads(docId, owner.token))).threads).toHaveLength(0);
+    const human = await send("POST", `/embed/api/docs/${docId}/threads`, await frame(reader, docId), { anchor: fox, body: "h" }, {}, { "OpenArtifacts-Agent": "Smuggled" });
+    expect(human.status).toBe(201);
+    expect((await threadsOf(await listThreads(docId, owner.token))).threads[0]!.comments[0]!.author.agent).toBeUndefined();
   });
 });
 

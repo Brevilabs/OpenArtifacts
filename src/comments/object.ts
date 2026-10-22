@@ -18,7 +18,10 @@
  * Identity is passed in, never read from the client: `principal` is the
  * account (or license-owner) id the Worker derived from the credential, `kind`
  * is `"human"` for a browser token and `"agent"` for an account token or license
- * key, `onBehalfOf` is the account an agent acts for (null for a human). The
+ * key, `onBehalfOf` is the account an agent acts for (null for a human), and
+ * `agentName` is the client the agent named itself with (optional; null for a
+ * human, for an agent that did not say, and for every record written before it
+ * existed). The
  * object stores them verbatim and returns them verbatim; the Worker turns
  * principals into display names with one batched D1 query. `at` is not an
  * argument: the object stamps every write itself, after its last await, from
@@ -94,7 +97,7 @@ export const MAX_BODY = 4000;
 export type AuthorKind = "human" | "agent";
 
 /** Who did something, as the Worker told us. */
-export type Actor = { principal: string; kind: AuthorKind; onBehalfOf: string | null };
+export type Actor = { principal: string; kind: AuthorKind; onBehalfOf: string | null; agentName: string | null };
 
 export type CommentRecord = {
   commentId: string;
@@ -137,7 +140,8 @@ export type ListResult =
   | VersionFailure
   | PurgedFailure;
 
-type Writer = { docId: string; principal: string; kind: AuthorKind; onBehalfOf: string | null };
+/** `agentName` is the client an agent writes through, as it named itself; absent reads as null. */
+type Writer = { docId: string; principal: string; kind: AuthorKind; onBehalfOf: string | null; agentName?: string | null };
 
 export type CreateThreadArgs = Writer & { anchor: unknown; body: unknown; version: number };
 export type CreateThreadResult =
@@ -186,6 +190,7 @@ type ThreadRow = {
   resolved_by: string | null;
   resolved_kind: AuthorKind | null;
   resolved_on_behalf_of: string | null;
+  resolved_agent_name: string | null;
   resolved_at: number | null;
   resolved_at_version: number | null;
 };
@@ -196,6 +201,7 @@ type CommentRow = {
   author: string;
   author_kind: AuthorKind;
   on_behalf_of: string | null;
+  agent_name: string | null;
   body: string;
   created_at: number;
   at_version: number;
@@ -208,6 +214,12 @@ const CANONICAL_CACHE = 2;
 
 /** The durable tombstone `purge()` leaves. */
 const PURGED_KEY = "purged";
+
+/** Columns added after the first deploy: a table made before them gets them on first use. */
+const ADDED_COLUMNS: Array<[table: string, column: string]> = [
+  ["threads", "resolved_agent_name"],
+  ["comments", "agent_name"],
+];
 
 const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS threads (
@@ -224,6 +236,7 @@ const SCHEMA = [
      resolved_by TEXT,
      resolved_kind TEXT,
      resolved_on_behalf_of TEXT,
+     resolved_agent_name TEXT,
      resolved_at INTEGER,
      resolved_at_version INTEGER
    )`,
@@ -233,6 +246,7 @@ const SCHEMA = [
      author TEXT NOT NULL,
      author_kind TEXT NOT NULL CHECK (author_kind IN ('human', 'agent')),
      on_behalf_of TEXT,
+     agent_name TEXT,
      body TEXT NOT NULL,
      created_at INTEGER NOT NULL,
      at_version INTEGER NOT NULL
@@ -289,6 +303,10 @@ export class DocComments extends DurableObject<Env> {
     if (this.gone) return false;
     if (!this.schema) {
       for (const statement of SCHEMA) this.sql.exec(statement);
+      for (const [table, column] of ADDED_COLUMNS) {
+        const has = this.sql.exec<{ name: string }>(`SELECT name FROM pragma_table_info('${table}')`).toArray().some((c) => c.name === column);
+        if (!has) this.sql.exec(`ALTER TABLE ${table} ADD COLUMN ${column} TEXT`);
+      }
       this.schema = true;
     }
     return true;
@@ -488,10 +506,11 @@ export class DocComments extends DurableObject<Env> {
       if (to === "resolved") {
         this.sql.exec(
           `UPDATE threads SET state = 'resolved', resolved_by = ?, resolved_kind = ?, resolved_on_behalf_of = ?,
-             resolved_at = ?, resolved_at_version = ?, updated_at = ? WHERE id = ?`,
+             resolved_agent_name = ?, resolved_at = ?, resolved_at_version = ?, updated_at = ? WHERE id = ?`,
           args.principal,
           args.kind,
           args.onBehalfOf,
+          args.kind === "agent" ? (args.agentName ?? null) : null,
           at,
           args.version,
           at,
@@ -500,7 +519,7 @@ export class DocComments extends DurableObject<Env> {
       } else {
         this.sql.exec(
           `UPDATE threads SET state = 'open', resolved_by = NULL, resolved_kind = NULL, resolved_on_behalf_of = NULL,
-             resolved_at = NULL, resolved_at_version = NULL, updated_at = ? WHERE id = ?`,
+             resolved_agent_name = NULL, resolved_at = NULL, resolved_at_version = NULL, updated_at = ? WHERE id = ?`,
           at,
           args.threadId,
         );
@@ -521,13 +540,14 @@ export class DocComments extends DurableObject<Env> {
 
   private insertComment(commentId: string, threadId: string, who: Writer & { version: number }, body: string, at: number): void {
     this.sql.exec(
-      `INSERT INTO comments (id, thread_id, author, author_kind, on_behalf_of, body, created_at, at_version)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO comments (id, thread_id, author, author_kind, on_behalf_of, agent_name, body, created_at, at_version)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       commentId,
       threadId,
       who.principal,
       who.kind,
       who.kind === "agent" ? who.onBehalfOf : null,
+      who.kind === "agent" ? (who.agentName ?? null) : null,
       body,
       at,
       who.version,
@@ -635,7 +655,7 @@ export class DocComments extends DurableObject<Env> {
       const list = comments.get(c.thread_id) ?? [];
       list.push({
         commentId: c.id,
-        author: { principal: c.author, kind: c.author_kind, onBehalfOf: c.on_behalf_of },
+        author: { principal: c.author, kind: c.author_kind, onBehalfOf: c.on_behalf_of, agentName: c.agent_name },
         body: c.body,
         createdAt: c.created_at,
         atVersion: c.at_version,
@@ -665,7 +685,12 @@ export class DocComments extends DurableObject<Env> {
         resolution:
           t.state === "resolved" && t.resolved_by !== null
             ? {
-                by: { principal: t.resolved_by, kind: t.resolved_kind ?? "human", onBehalfOf: t.resolved_on_behalf_of },
+                by: {
+                  principal: t.resolved_by,
+                  kind: t.resolved_kind ?? "human",
+                  onBehalfOf: t.resolved_on_behalf_of,
+                  agentName: t.resolved_agent_name,
+                },
                 atVersion: t.resolved_at_version as number,
                 at: t.resolved_at as number,
               }

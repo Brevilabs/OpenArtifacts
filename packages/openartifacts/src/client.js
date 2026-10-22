@@ -14,10 +14,12 @@ export class APIError extends Error {
 /**
  * The fetch-only OpenArtifacts client. Keeping it free of Node APIs lets the
  * same calls be tested directly against the local Worker.
- * @param {{host: string, token?: string, fetcher?: typeof fetch}} options
+ * `agent` names the client making comment writes (the `OpenArtifacts-Agent` header).
+ * @param {{host: string, token?: string, agent?: string, fetcher?: typeof fetch}} options
  */
-export function createClient({ host, token, fetcher = fetch }) {
+export function createClient({ host, token, agent, fetcher = fetch }) {
   const base = host.replace(/\/$/, "");
+  const asAgent = agent ? { "OpenArtifacts-Agent": agent } : undefined;
 
   /** @param {string} path @param {RequestInit} [init] @param {number[]} [allowed] @param {boolean} [authenticated] */
   async function request(path, init = {}, allowed = [], authenticated = true) {
@@ -140,22 +142,24 @@ export function createClient({ host, token, fetcher = fetch }) {
     },
     /** Start a thread on quoted text. @param {string} docId @param {{anchor: {exact: string, prefix?: string, suffix?: string, section?: string}, body: string, version?: number}} body */
     addThread: (docId, body) =>
-      request(`/api/v1/docs/${encodeURIComponent(docId)}/threads`, { method: "POST", body: JSON.stringify(body) }),
+      request(`/api/v1/docs/${encodeURIComponent(docId)}/threads`, { method: "POST", headers: asAgent, body: JSON.stringify(body) }),
     /** @param {string} docId @param {string} threadId @param {string} body */
     replyToThread: (docId, threadId, body) =>
       request(`/api/v1/docs/${encodeURIComponent(docId)}/threads/${encodeURIComponent(threadId)}/comments`, {
         method: "POST",
+        headers: asAgent,
         body: JSON.stringify({ body }),
       }),
     /** @param {string} docId @param {string} threadId @param {number} [version] the version that addressed it */
     resolveThread: (docId, threadId, version) =>
       request(`/api/v1/docs/${encodeURIComponent(docId)}/threads/${encodeURIComponent(threadId)}/resolve`, {
         method: "POST",
+        headers: asAgent,
         body: JSON.stringify(version === undefined ? {} : { version }),
       }),
     /** @param {string} docId @param {string} threadId */
     reopenThread: (docId, threadId) =>
-      request(`/api/v1/docs/${encodeURIComponent(docId)}/threads/${encodeURIComponent(threadId)}/reopen`, { method: "POST" }),
+      request(`/api/v1/docs/${encodeURIComponent(docId)}/threads/${encodeURIComponent(threadId)}/reopen`, { method: "POST", headers: asAgent }),
     /** Delete the caller's own comment; a thread's first comment takes the thread with it. @param {string} docId @param {string} commentId */
     deleteComment: (docId, commentId) =>
       request(`/api/v1/docs/${encodeURIComponent(docId)}/comments/${encodeURIComponent(commentId)}`, { method: "DELETE" }),

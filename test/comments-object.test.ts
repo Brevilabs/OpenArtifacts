@@ -103,9 +103,44 @@ describe("DocComments", () => {
     const listed = await stub.list({ docId, version: 1 });
     if (!listed.ok) throw new Error();
     expect(listed.threads.map((t) => t.comments[0]?.author)).toEqual([
-      { principal: "acct_alice", kind: "agent", onBehalfOf: "acct_alice" },
-      { principal: "acct_alice", kind: "human", onBehalfOf: null },
+      { principal: "acct_alice", kind: "agent", onBehalfOf: "acct_alice", agentName: null },
+      { principal: "acct_alice", kind: "human", onBehalfOf: null, agentName: null },
     ]);
+  });
+
+  it("stores the client an agent named itself with, on its comments and its resolve, and never for a human", async () => {
+    const { docId, stub } = await start();
+    const agent = { principal: "acct_alice", kind: "agent" as const, onBehalfOf: "acct_alice", agentName: "Claude Code" };
+    const made = mustCreate(await stub.createThread({ docId, ...agent, version: 1, anchor: { exact: "fox" }, body: "x" }));
+    await stub.reply({ docId, ...agent, agentName: "Codex", version: 1, threadId: made.threadId, body: "y" });
+    await stub.reply({ docId, ...alice, agentName: "Smuggled", version: 1, threadId: made.threadId, body: "z" });
+    const resolved = await stub.resolve({ docId, ...agent, threadId: made.threadId, version: 1, scope: ["acct_alice"], isOwner: true });
+    if (!resolved.ok) throw new Error();
+    expect(resolved.thread.comments.map((c) => c.author.agentName)).toEqual(["Claude Code", "Codex", null]);
+    expect(resolved.thread.resolution?.by.agentName).toBe("Claude Code");
+    const reopened = await stub.reopen({ docId, ...agent, threadId: made.threadId, version: 1, scope: ["acct_alice"], isOwner: true });
+    if (!reopened.ok) throw new Error();
+    expect(reopened.thread.resolution).toBeNull();
+  });
+
+  it("opens a table made before agent names existed, and reads its rows as no name", async () => {
+    const { docId, stub } = await start();
+    await runInDurableObject(stub, async (instance: DocComments, state: DurableObjectState) => {
+      void instance;
+      // The two tables as the first deploy made them, with a thread, an agent's comment and its resolve.
+      state.storage.sql.exec(`CREATE TABLE threads (id TEXT PRIMARY KEY, created_version INTEGER NOT NULL, created_by TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, section TEXT, anchor_exact TEXT NOT NULL, anchor_prefix TEXT, anchor_suffix TEXT, state TEXT NOT NULL DEFAULT 'open' CHECK (state IN ('open', 'resolved')), resolved_by TEXT, resolved_kind TEXT, resolved_on_behalf_of TEXT, resolved_at INTEGER, resolved_at_version INTEGER)`);
+      state.storage.sql.exec(`CREATE TABLE comments (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE, author TEXT NOT NULL, author_kind TEXT NOT NULL CHECK (author_kind IN ('human', 'agent')), on_behalf_of TEXT, body TEXT NOT NULL, created_at INTEGER NOT NULL, at_version INTEGER NOT NULL)`);
+      state.storage.sql.exec(`INSERT INTO threads VALUES ('th_old', 1, 'acct_alice', 1, 1, NULL, 'fox', NULL, NULL, 'resolved', 'acct_alice', 'agent', 'acct_alice', 2, 1)`);
+      state.storage.sql.exec(`INSERT INTO comments VALUES ('cm_old', 'th_old', 'acct_alice', 'agent', 'acct_alice', 'old', 1, 1)`);
+    });
+    const listed = await stub.list({ docId, version: 1 });
+    if (!listed.ok) throw new Error();
+    expect(listed.threads[0]?.comments[0]?.author).toEqual({ principal: "acct_alice", kind: "agent", onBehalfOf: "acct_alice", agentName: null });
+    expect(listed.threads[0]?.resolution?.by.agentName).toBeNull();
+    const agent = { principal: "acct_alice", kind: "agent" as const, onBehalfOf: "acct_alice", agentName: "Claude Code" };
+    const reply = await stub.reply({ docId, ...agent, version: 1, threadId: "th_old", body: "new" });
+    if (!reply.ok) throw new Error();
+    expect(reply.thread.comments.map((c) => c.author.agentName)).toEqual([null, "Claude Code"]);
   });
 
   it("refuses malformed input and a quote that is not in the version", async () => {
@@ -377,7 +412,7 @@ describe("DocComments", () => {
     const agent = { principal: "lic_owner", kind: "agent" as const, onBehalfOf: "acct_owner" };
     const r = await stub.resolve({ docId, threadId: t.threadId, version: 1, ...agent, scope: [agent.principal], isOwner: true });
     if (!r.ok) throw new Error();
-    expect(r.thread.resolution?.by).toEqual(agent);
+    expect(r.thread.resolution?.by).toEqual({ ...agent, agentName: null });
   });
 
   it("resolving at a version the object cannot anchor changes nothing", async () => {

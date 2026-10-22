@@ -59,6 +59,7 @@ export async function notifyComment(env: Env, requestUrl: URL, n: Notification, 
         principal: n.actor.principal,
         kind: n.actor.kind,
         onBehalfOf: n.actor.kind === "agent" ? n.actor.principal : null,
+        agentName: null,
       });
       return commentMessage({
         event: n.event,
