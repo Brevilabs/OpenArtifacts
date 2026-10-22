@@ -765,6 +765,18 @@ test("a menu commits only on a click, Enter or Space, never on a stray key", { t
   await frame.locator("main").evaluate((node) => { node.scrollTop = 40; });
   await frame.locator(".pop").waitFor({ state: "detached" });
   assert.deepEqual(writes, []);
+  // Focusing a button below the fold scrolls the list, and the scroll event arrives a frame later:
+  // a menu opened in between is already drawn at the button's new place, and stays open.
+  await frame.locator("main").evaluate((node) => { node.scrollTop = 0; });
+  await frame.evaluate((label) => {
+    const button = document.querySelector(`[aria-label="${label}"]`);
+    button.focus();
+    button.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+  }, `Access for ${person}`);
+  await frame.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  assert.equal(await frame.locator(".pop").count(), 1, "the scroll the focus caused does not close the menu");
+  await page.keyboard.press("Escape");
+  await frame.locator(".pop").waitFor({ state: "detached" });
 
   // Enter on an option writes: open with Enter, move up to Can view, press Enter.
   const role = accessOf(frame, `Access for ${person}`);

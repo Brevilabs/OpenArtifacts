@@ -998,9 +998,11 @@ export const FRAME_SCRIPT = String.raw`(() => {
     if (openMenu !== null && !openMenu.pop.contains(event.target) && !openMenu.trigger.contains(event.target)) closeMenu(false);
   }, true);
   window.addEventListener("blur", () => closeMenu(false));
-  // The popup is fixed in the frame, so it would stay put while its button moves.
+  // The popup is fixed in the frame, so it would stay put while its button moves. Only a move counts:
+  // focusing a button scrolls it into view a frame before the scroll event, and a menu opened in
+  // between is already drawn where the button now is.
   window.addEventListener("resize", () => closeMenu(false));
-  main.addEventListener("scroll", () => closeMenu(false));
+  main.addEventListener("scroll", () => { if (openMenu !== null && openMenu.trigger.getBoundingClientRect().top !== openMenu.top) closeMenu(false); });
   // The options are a list of {value, label, danger}, with null for a separator; pick gets the value chosen.
   const menu = (ariaLabel, options, current, pick) => {
     const shown = options.find((option) => option !== null && option.value === current);
@@ -1041,7 +1043,7 @@ export const FRAME_SCRIPT = String.raw`(() => {
       pop.style.top = Math.round(flip ? box.top - 4 - pop.offsetHeight : box.bottom + 4) + "px";
       pop.style.left = Math.round(Math.max(8, Math.min(box.right - pop.offsetWidth, window.innerWidth - pop.offsetWidth - 8))) + "px";
       trigger.setAttribute("aria-expanded", "true");
-      openMenu = { trigger: trigger, pop: pop };
+      openMenu = { trigger: trigger, pop: pop, top: box.top };
       (items.find((item) => item.getAttribute("aria-selected") === "true") || items[0]).focus();
     };
     trigger.addEventListener("click", () => { if (openMenu !== null && openMenu.trigger === trigger) closeMenu(true); else open(); });
