@@ -13,7 +13,7 @@
  * same bytes serve every anonymous reader.
  */
 import type { Env } from "../config.js";
-import { displayNames } from "../db.js";
+import { displayNames, ownerIdentities } from "../db.js";
 import type { Actor, ThreadRecord } from "./object.js";
 
 /** Who is asking, when the surface knows. */
@@ -26,8 +26,17 @@ export interface Viewer {
 }
 
 export interface Labelled {
+  /** A composed display string, kept for existing clients; new ones compose from `person` and `agent`. */
   name: string;
   kind: "human" | "agent";
+  /**
+   * The human: the commenter, or the account an agent acts for. `isOwner` is sent only as `true`, for
+   * an owner's agent with no display name: it is what `name` ("Owner's agent") already says, so a
+   * public page's threads reveal nothing about who published it that they did not.
+   */
+  person: { name: string | null; isOwner?: true };
+  /** Present only for an agent; `name` is the client it named itself with, when it did. */
+  agent?: { name: string | null };
 }
 
 /** The account an actor's name is looked up under: a person's own, or the one an agent acts for. */
@@ -51,15 +60,25 @@ export async function labeller(
     for (const comment of thread.comments) ids.add(nameKey(comment.author));
     if (thread.resolution) ids.add(nameKey(thread.resolution.by));
   }
-  return labelWith(await displayNames(env.DB, [...ids]), ownerAccount);
+  const names = await displayNames(env.DB, [...ids]);
+  // Only a nameless agent is ever labelled the owner's, and the owner's own ids are then needed: a
+  // comment written before a license key was linked is stored under the key's owner id.
+  const nameless = [...ids].some((id) => !names.has(id));
+  return labelWith(names, nameless ? await ownerIdentities(env.DB, ownerAccount) : new Set([ownerAccount]));
 }
 
-export function labelWith(names: Map<string, string>, ownerAccount: string): (actor: Actor) => Labelled {
+export function labelWith(names: Map<string, string>, owner: Set<string>): (actor: Actor) => Labelled {
   return (actor) => {
-    const name = names.get(nameKey(actor));
-    if (actor.kind === "human") return { name: name ?? "Someone", kind: "human" };
-    if (name !== undefined) return { name: `${name}'s agent`, kind: "agent" };
-    return { name: nameKey(actor) === ownerAccount ? "Owner's agent" : "An agent", kind: "agent" };
+    const key = nameKey(actor);
+    const name = names.get(key);
+    if (actor.kind === "human") return { name: name ?? "Someone", kind: "human", person: { name: name ?? null } };
+    const ownersAgent = name === undefined && owner.has(key);
+    return {
+      name: name !== undefined ? `${name}'s agent` : ownersAgent ? "Owner's agent" : "An agent",
+      kind: "agent",
+      person: ownersAgent ? { name: null, isOwner: true } : { name: name ?? null },
+      agent: { name: actor.agentName ?? null },
+    };
   };
 }
 

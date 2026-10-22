@@ -3221,8 +3221,8 @@ describe("GET /d/{docId}/threads", () => {
       // Anchored for v2, where "first draft" is gone: both threads orphaned, still there.
       expect(body.threads.map((t) => t.anchorStatus)).toEqual(["orphaned", "orphaned"]);
       expect(body.threads.map((t) => t.comments[0]!.author)).toEqual([
-        { name: "Alice", kind: "human" },
-        { name: "Alice's agent", kind: "agent" },
+        { name: "Alice", kind: "human", person: { name: "Alice" } },
+        { name: "Alice's agent", kind: "agent", person: { name: "Alice" }, agent: { name: null } },
       ]);
       // The reader is anonymous: no viewer, no per-comment ownership, no ids or addresses.
       // And no read ticket: the frame reads a public document's threads without one.

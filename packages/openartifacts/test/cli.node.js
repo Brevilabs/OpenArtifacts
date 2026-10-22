@@ -5,12 +5,12 @@ import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { browserProcess, collectToken, configDir, detectAgents, installSkills, main, npmProcess, prepareComments, preparePublish, prepareShare, presentError } from "../src/cli.js";
+import { browserProcess, collectToken, configDir, detectAgents, installSkills, commentAgent, main, npmProcess, prepareComments, preparePublish, prepareShare, presentError } from "../src/cli.js";
 import { APIError } from "../src/client.js";
 
 /** Point the CLI at a scratch config directory and host for one test. */
 async function withEnvironment(values, run) {
-  const names = ["OPENARTIFACTS_CONFIG_DIR", "OPENARTIFACTS_API_HOST", "OPENARTIFACTS_TOKEN"];
+  const names = ["OPENARTIFACTS_CONFIG_DIR", "OPENARTIFACTS_API_HOST", "OPENARTIFACTS_TOKEN", "OPENARTIFACTS_AGENT", "CLAUDECODE", "CODEX_THREAD_ID", "GEMINI_CLI", "CURSOR_AGENT"];
   const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
   const log = console.log;
   const lines = [];
@@ -209,6 +209,7 @@ async function publishingServer() {
         method: request.method,
         path: request.url,
         authorization: request.headers.authorization,
+        agent: request.headers["openartifacts-agent"],
         body: body ? JSON.parse(body) : undefined,
       });
       response.setHeader("content-type", "application/json");
@@ -998,6 +999,73 @@ test("prepareComments returns the request it will send", () => {
   assert.deepEqual(prepareComments("add", [DOC, "--quote", "Q3", "--body", "hi"]), {
     action: "add", docId: DOC, body: { anchor: { exact: "Q3" }, body: "hi" },
   });
+});
+
+test("comment writes send the agent's name from --agent, else OPENARTIFACTS_AGENT, else the detected agent, else nothing", async () => {
+  const remote = await publishingServer();
+  const directory = await mkdtemp(join(tmpdir(), "openartifacts-agent-"));
+  const run = (env, args, more = {}) => withEnvironment({
+    ...more,
+    OPENARTIFACTS_CONFIG_DIR: directory,
+    OPENARTIFACTS_API_HOST: remote.host,
+    OPENARTIFACTS_TOKEN: "opaque-test-token",
+    OPENARTIFACTS_AGENT: env,
+  }, async () => { await main(args); });
+  try {
+    await run(undefined, ["comments", "reply", DOC, THREAD, "--body", "a"]);
+    await run("From Env", ["comments", "reply", DOC, THREAD, "--body", "b"]);
+    await run("From Env", ["comments", "resolve", DOC, THREAD, "--agent", "Claude Code"]);
+    await run("From Env", ["comments", "list", DOC]);
+    await run(undefined, ["comments", "reopen", DOC, THREAD], { CLAUDECODE: "1" });
+    await run("From Env", ["comments", "reopen", DOC, THREAD], { CLAUDECODE: "1" });
+    await assert.rejects(run("caf\u00e9", ["comments", "reply", DOC, THREAD, "--body", "x"]), /OPENARTIFACTS_AGENT must be 1 to 64 printable ASCII characters\./);
+  } finally {
+    remote.server.close();
+  }
+  assert.deepEqual(remote.requests.map(({ method, agent }) => [method, agent]), [
+    ["POST", undefined],
+    ["POST", "From Env"],
+    ["POST", "Claude Code"],
+    ["GET", undefined],
+    ["POST", "Claude Code"],
+    ["POST", "From Env"],
+  ]);
+});
+
+test("commentAgent takes the flag, then OPENARTIFACTS_AGENT, then the agent the environment shows, then nothing", () => {
+  const detected = [
+    [{ CLAUDECODE: "1" }, "Claude Code"],
+    [{ CODEX_THREAD_ID: "019a-thread" }, "Codex"],
+    [{ GEMINI_CLI: "1" }, "Gemini CLI"],
+    [{ CURSOR_AGENT: "1" }, "Cursor"],
+  ];
+  for (const [env, name] of detected) {
+    assert.equal(commentAgent(undefined, env), name);
+    assert.equal(commentAgent("Flag", env), "Flag");
+    assert.equal(commentAgent(undefined, { ...env, OPENARTIFACTS_AGENT: " From Env " }), "From Env");
+  }
+  // A marker with the wrong value, or an empty one, is no marker; nothing is sent when nothing matches.
+  for (const env of [{}, { CLAUDECODE: "0" }, { GEMINI_CLI: "" }, { CODEX_THREAD_ID: "" }, { OPENARTIFACTS_AGENT: "  " }]) {
+    assert.equal(commentAgent(undefined, env), undefined);
+  }
+  // A bad variable is refused before any request, even where the environment shows an agent.
+  for (const bad of ["x".repeat(65), "caf\u00e9"]) {
+    assert.throws(() => commentAgent(undefined, { OPENARTIFACTS_AGENT: bad, CLAUDECODE: "1" }), /OPENARTIFACTS_AGENT must be 1 to 64 printable ASCII characters\./);
+  }
+});
+
+test("prepareComments reads --agent on every write and rejects an empty or long one", () => {
+  const T = "th_" + "a".repeat(16);
+  assert.deepEqual(prepareComments("add", [DOC, "--quote", "Q3", "--body", "hi", "--agent", " Claude Code "]), {
+    action: "add", docId: DOC, body: { anchor: { exact: "Q3" }, body: "hi" }, agent: "Claude Code",
+  });
+  assert.equal(prepareComments("reply", [DOC, T, "--body", "hi", "--agent", "Codex"]).agent, "Codex");
+  assert.equal(prepareComments("resolve", [DOC, T, "--agent", "Codex"]).agent, "Codex");
+  assert.equal(prepareComments("reopen", [DOC, T, "--agent", "Codex"]).agent, "Codex");
+  assert.equal("agent" in prepareComments("reopen", [DOC, T]), false);
+  for (const bad of ["  ", "x".repeat(65), "caf\u00e9", "bad\u0007"]) {
+    assert.throws(() => prepareComments("reply", [DOC, T, "--body", "hi", "--agent", bad]), /--agent must be 1 to 64 printable ASCII characters\./);
+  }
 });
 
 test("comments name a missing resource the same way whatever the reason", async () => {

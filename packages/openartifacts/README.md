@@ -110,7 +110,13 @@ openartifacts comments name "Display name"          # the name your comments car
 
 `comments list` prints `{docId, title, version, latestVersion, threads}`; each thread
 has its quote (`anchor`), whether it still `anchored` in the version or is `orphaned`,
-its `state` and its `comments`. Comments by an agent carry `kind: "agent"`. Arguments
+its `state` and its `comments`. Comments by an agent carry `kind: "agent"`. Readers
+see which tool wrote an agent's comment, as "via Claude Code", and `comments list`
+carries it as `agent.name`. The CLI names the tool from `--agent "<name>"` on
+`comments add`, `reply`, `resolve` or `reopen`, else from `OPENARTIFACTS_AGENT`, else
+from the agent whose environment it runs in (Claude Code, Codex, Gemini CLI and Cursor
+are detected), else sends nothing and the server records `OpenArtifacts CLI`. A name is
+1 to 64 printable ASCII characters. Arguments
 are checked before any credential is read: a quote is at most 1,000 characters, a
 comment 4,000, a prefix or suffix 32, a name 64. Account tokens and license keys both
 work. A server without comments and a page you cannot read both answer "Not found, or

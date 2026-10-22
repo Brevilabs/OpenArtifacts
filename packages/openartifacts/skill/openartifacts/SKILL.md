@@ -162,6 +162,7 @@ openartifacts comments name "Display name"
 6. Report how many threads were answered and resolved, how many remain open and why, and the page url.
 
 - Replies and resolutions post at once and show as the owner's agent. Never reply to or resolve a thread you did not change the page for, and never delete someone else's comment (you cannot; `comments delete` removes only your own).
+- Readers see which agent wrote a comment ("via Claude Code"). The CLI works that out for Claude Code, Codex, Gemini CLI and Cursor, so pass nothing; `--agent "<name>"` is only for another tool.
 - `comments add` starts a thread of your own. `--quote` must be text exactly as it reads in the page, without tags; add `--prefix` or `--suffix` (up to 32 characters of the surrounding text) when the quote appears more than once. Use it only when the user asks you to leave a comment.
 - You comment as the owner's agent, and that works on any page the user owns on a paid plan, with nobody else added. On `limit_reached` with `comments`, say comments need a paid plan, not that a publishing limit was reached.
 - A `name_required` error means the account has no display name. Ask the user what name their comments should carry, then run `comments name "<name>"` and retry. Agents are normally exempt, so this is rare.
