@@ -1,6 +1,6 @@
 import { startBrowserLogin, consumeBrowserLogin } from "./browser-login.js";
 import { consumeHandoff, stringField } from "./account.js";
-import { linkExternalOwner, lookupExternalOwner, createLinkedAccount } from "./owners.js";
+import { linkExternalOwner, lookupExternalOwner, createLinkedAccount, unlinkExternalOwner } from "./owners.js";
 import { parseBearerToken } from "./auth.js";
 import type { Env } from "./config.js";
 import { errorResponse } from "./errors.js";
@@ -13,6 +13,7 @@ export const ADMIN_PREFIX = "/admin/v1";
 export async function handleAdmin(request: Request, url: URL, env: Env): Promise<Response> {
   const routes = [
     ["PUT", /^\/admin\/v1\/accounts\/([^/]+)\/(plan|external-owner)$/, "account"],
+    ["DELETE", /^\/admin\/v1\/accounts\/([^/]+)\/(external-owner)$/, "account"],
     ["POST", /^\/admin\/v1\/handoffs\/consume$/, "handoff"],
     ["POST", /^\/admin\/v1\/browser-logins$/, "browser-start"],
     ["POST", /^\/admin\/v1\/browser-logins\/consume$/, "browser-consume"],
@@ -56,6 +57,13 @@ export async function handleAdmin(request: Request, url: URL, env: Env): Promise
   if (match![2] === "external-owner") {
     const externalOwner = await stringField(request, "externalOwner");
     if (externalOwner === null) return errorResponse("bad_request", "Expected only externalOwner.");
+    if (request.method === "DELETE") {
+      const unlinkedAt = Date.now();
+      const removed = await unlinkExternalOwner(env.DB, externalOwner, owner, unlinkedAt);
+      if (removed === "invalid") return errorResponse("bad_request", "Invalid owner identity.");
+      if (removed === "not_linked") return errorResponse("not_found", "That owner is not linked to that account.");
+      return Response.json({ accountId: owner, externalOwner, linkedAt: removed.linkedAt, unlinkedAt }, { headers: { "cache-control": "no-store" } });
+    }
     const result = await linkExternalOwner(env.DB, externalOwner, owner, Date.now());
     if (result === "invalid") return errorResponse("bad_request", "Invalid owner identity.");
     if (result === "account_not_found") return errorResponse("not_found", "No account with that id.");

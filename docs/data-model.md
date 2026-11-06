@@ -1,7 +1,7 @@
 # Data model
 
 Every place this Worker keeps state, on one page: D1 tables, R2 keys, Durable
-Object storage, and the small rest. Current as of migration `0017_publisher_origins.sql`.
+Object storage, and the small rest. Current as of migration `0019_owner_unlinks.sql`.
 
 > **Update this file in the same PR as any migration or storage-key change.**
 
@@ -19,7 +19,7 @@ is an app-sites `User.id` from the license server.
 
 ## D1
 
-Binding `DB`, database `symposium`, migrations in `migrations/`. Sixteen tables.
+Binding `DB`, database `symposium`, migrations in `migrations/`. Eighteen tables.
 
 ### Documents
 
@@ -157,7 +157,7 @@ Accounts this deployment owns. PK `id`. Also holds the cached plan.
 | `newsletter_synced_at` | INTEGER | NULL | When the opt-in reached the mailing list |
 | `display_name` | TEXT | NULL | Comment author name, at most 64 characters (Worker-checked) |
 
-- Written by: first approval (insert), entitlement refresh and admin plan changes (`plan*`), newsletter sync, the display-name prompt. Trigger `owner_link_refresh` clears `plan_checked_at` and `plan_retry_after` when an owner link is inserted.
+- Written by: first approval (insert), entitlement refresh and admin plan changes (`plan*`), newsletter sync, the display-name prompt. Trigger `owner_link_refresh` clears `plan_checked_at` and `plan_retry_after` when an owner link is inserted; trigger `owner_unlink_refresh` also sets `plan_expires_at = 0` when one is deleted, because the plan came through the link.
 
 #### `identities`
 
@@ -227,9 +227,22 @@ Columns: `code_hash`, `account_id`, `token_id`, `expires_at`. Index
 Joins a license owner's documents to an account without rewriting ownership. PK
 `external_owner` (CHECK: 1 to 256 characters, trimmed, not `oa_`-prefixed).
 `account_id` is UNIQUE and CHECKed to be a well-formed `oa_` id; `created_at` CHECK
->= 0. **Immutable**: triggers `owner_links_no_update` and `owner_links_no_delete`
-abort. This pair defines the owner scope that quotas and `docs` queries read.
-Written by: the admin link endpoint, once.
+>= 0. **Never updated**: trigger `owner_links_no_update` aborts. **Deleted only
+with its `owner_unlinks` row**: trigger `owner_links_audited_delete` aborts a
+delete unless a row for that owner, account and `created_at` exists. This pair
+defines the owner scope that quotas and `docs` queries read.
+Written by: the admin link endpoint, once; deleted by the admin unlink.
+
+#### `owner_unlinks`
+
+Permanent audit of each removed owner link. PK `(external_owner, linked_at)`.
+Columns: `external_owner`, `account_id`, `linked_at` (the removed link's
+`created_at`), `unlinked_at` (CHECK >= 0). No foreign key, so it outlives its
+account. Keyed like the link it removes, so an old row can never authorize
+deleting a later link of the same pair.
+
+- Written: by `DELETE /admin/v1/accounts/{id}/external-owner`, one row per removed link, in the same batch as the delete (a failure rolls back both).
+- Never updated or deleted.
 
 #### `publishers`
 

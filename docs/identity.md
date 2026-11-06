@@ -45,10 +45,32 @@ provided by this database primitive. It must not accept stale outage validation
 as proof or infer external ownership from an email address.
 
 `owner_links` pairs one external owner with one existing local account. Both
-columns are unique, the ID spaces are disjoint, and associations cannot be
-updated or deleted. Reconfirming the same pair is idempotent; conflicting pairs
-are refused. Account deletion must therefore preserve the ownership record or
-use a separately designed operator process, never cascade an unlink.
+columns are unique, the ID spaces are disjoint, and associations are never
+updated. An operator can remove a mistaken one only through the admin unlink
+(`DELETE /admin/v1/accounts/{id}/external-owner`), which names both ids and
+records the removal permanently in `owner_unlinks`; the database aborts any
+other delete. Reconfirming the same pair is idempotent; conflicting pairs are
+refused. Account deletion must therefore preserve the ownership record or use
+the same unlink, never cascade one.
+
+To remove a mistaken link:
+
+1. A person reports it, for example the website said an existing link cannot be
+   replaced, or their license lists someone else's pages.
+2. Look the link up with `GET /admin/v1/external-owners/{owner}` and confirm
+   with the person that the account it names is the wrong one.
+3. Send `DELETE /admin/v1/accounts/{accountId}/external-owner` with the body
+   `{"externalOwner":"…"}`.
+4. Read the answer. `200` means the link is gone; keep the response in the
+   support thread. `404 not_found` means those two ids are not linked and
+   nothing changed: go back to step 2.
+5. The lookup now returns `404`. Tell the person to sign in with Copilot at the
+   account page and link the account they want.
+
+An unlink moves no document: each keeps its original `owner`, so the two
+collections only stop being listed together. It ends the paid plan that came
+through the link at once, and the unlinked account returns to its own plan on
+its next entitlement refresh.
 
 The local account is the canonical collection, but document rows retain their
 original `owner` as provenance. Each ownership query derives the joined owner

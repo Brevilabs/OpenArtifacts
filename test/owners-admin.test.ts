@@ -6,6 +6,7 @@ import { sha256Hex } from "../src/hash.js";
 import worker from "../src/index.js";
 
 const SERVICE = "owner-admin-test-secret";
+const ACCOUNT = "oa_aaaaaaaaaaaaaaaaaaaaaaaaaa";
 const input = { email: " Person@Example.com ", externalOwner: "external-owner" };
 async function send(method: string, path: string, body?: unknown, credential = SERVICE) {
   const ctx = createExecutionContext();
@@ -35,6 +36,23 @@ async function account() {
   const result = await create();
   expect(result.status).toBe(201);
   return result.json<{ accountId: string; email: string }>();
+}
+const unlink = (accountId: string, externalOwner = "external-owner") =>
+  send("DELETE", `/admin/v1/accounts/${accountId}/external-owner`, { externalOwner });
+const state = (accountId: string) =>
+  env.DB.prepare(
+    "SELECT plan_expires_at, plan_checked_at, plan_retry_after FROM accounts WHERE id = ?",
+  )
+    .bind(accountId)
+    .first();
+async function paidAccount() {
+  const created = await account();
+  await env.DB.prepare(
+    "UPDATE accounts SET plan = 'pro', plan_expires_at = 9000000000000, plan_checked_at = 5, plan_retry_after = 6 WHERE id = ?",
+  )
+    .bind(created.accountId)
+    .run();
+  return created;
 }
 async function tokenFor(accountId: string) {
   const token = newApiToken();
@@ -81,6 +99,7 @@ it("returns explicit missing and invalid owner errors and requires admin authent
   for (const [method, path, body] of [
     ["GET", "/admin/v1/external-owners/missing", undefined],
     ["POST", "/admin/v1/accounts", input],
+    ["DELETE", `/admin/v1/accounts/${ACCOUNT}/external-owner`, { externalOwner: "external-owner" }],
   ] as const) {
     const response = await send(method, path, body, "wrong");
     expect(response.status).toBe(401);
@@ -169,4 +188,65 @@ it("has no Copilot proof API", async () => {
   const result = await send("POST", "/api/v1/copilot/prove", {}, await tokenFor(created.accountId));
   expect(result.status).toBe(404);
   expect(await result.json()).toMatchObject({ error: { code: "not_found" } });
+});
+
+it("unlinks the exact pair, ends its plan and keeps the delete guard", async () => {
+  const { accountId } = await paidAccount();
+  const link = await env.DB.prepare("SELECT created_at FROM owner_links").first<{ created_at: number }>();
+  const result = await unlink(accountId);
+  expect(result.status).toBe(200);
+  expect(result.headers.get("cache-control")).toBe("no-store");
+  const body = await result.json<{ unlinkedAt: number }>();
+  expect(body).toEqual({
+    accountId,
+    externalOwner: "external-owner",
+    linkedAt: link!.created_at,
+    unlinkedAt: body.unlinkedAt,
+  });
+  expect((await send("GET", "/admin/v1/external-owners/external-owner")).status).toBe(404);
+  expect(await count("owner_unlinks")).toBe(1);
+  expect(await env.DB.prepare("SELECT * FROM owner_unlinks").first()).toEqual({
+    external_owner: "external-owner",
+    account_id: accountId,
+    linked_at: link!.created_at,
+    unlinked_at: body.unlinkedAt,
+  });
+  expect(await state(accountId)).toEqual({
+    plan_expires_at: 0,
+    plan_checked_at: null,
+    plan_retry_after: null,
+  });
+  // The pair can link again, and the old audit row does not unlock the new link.
+  expect(
+    (await send("PUT", `/admin/v1/accounts/${accountId}/external-owner`, {
+      externalOwner: "external-owner",
+    })).status,
+  ).toBe(200);
+  await expect(env.DB.prepare("DELETE FROM owner_links").run()).rejects.toThrow(/audited unlink/);
+});
+
+it("refuses any other pair without writing anything", async () => {
+  const { accountId } = await paidAccount();
+  const before = await state(accountId);
+  expect((await unlink(ACCOUNT)).status).toBe(404);
+  expect((await unlink(accountId, "other-owner")).status).toBe(404);
+  expect(await count("owner_links")).toBe(1);
+  expect(await count("owner_unlinks")).toBe(0);
+  expect(await state(accountId)).toEqual(before);
+});
+
+it("rolls back the audit row and keeps the delete guard if the unlink fails midway", async () => {
+  const { accountId } = await paidAccount();
+  const before = await state(accountId);
+  await env.DB.prepare(
+    `CREATE TRIGGER test_unlink_failure AFTER DELETE ON owner_links
+    BEGIN SELECT RAISE(ABORT, 'forced unlink failure'); END`,
+  ).run();
+  const response = await unlink(accountId);
+  expect(response.status).toBe(500);
+  expect(await response.json()).toMatchObject({ error: { code: "internal" } });
+  expect(await count("owner_links")).toBe(1);
+  expect(await count("owner_unlinks")).toBe(0);
+  expect(await state(accountId)).toEqual(before);
+  await expect(env.DB.prepare("DELETE FROM owner_links").run()).rejects.toThrow(/audited unlink/);
 });

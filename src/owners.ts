@@ -1,6 +1,7 @@
 /**
  * Document ownership can join two proven identities without moving their rows.
  * Keep credential identity separate: these aliases never authorize token access.
+ * A link is removed only by `unlinkExternalOwner`, which leaves a permanent record.
  */
 import { ACCOUNT_ID_PREFIX, newAccountId } from "./ids.js";
 import type { Env } from "./config.js";
@@ -45,12 +46,21 @@ export const PUBLISHER_USER_ID_SQL = `(SELECT COALESCE(
   canonical.id
 ) FROM canonical)`;
 
+function validOwnerPair(externalOwner: string, accountId: string, atMs: number): boolean {
+  return (
+    validExternalOwner(externalOwner) &&
+    /^oa_[0-9abcdefghjkmnpqrstvwxyz]{26}$/.test(accountId) &&
+    Number.isSafeInteger(atMs) && atMs >= 0
+  );
+}
+
 export type OwnerLinkResult = "linked" | "conflict" | "invalid" | "account_not_found";
 
 /**
  * Trusted callers must prove both identities before invoking this primitive.
- * Email equality or an outage cache is not proof. Associations are permanent;
- * repeated confirmation of the same pair succeeds without changing anything.
+ * Email equality or an outage cache is not proof. Associations are never
+ * updated; repeated confirmation of the same pair succeeds without changing
+ * anything.
  */
 export async function linkExternalOwner(
   db: D1Database,
@@ -58,11 +68,7 @@ export async function linkExternalOwner(
   accountId: string,
   atMs: number,
 ): Promise<OwnerLinkResult> {
-  if (
-    !validExternalOwner(externalOwner) ||
-    !/^oa_[0-9abcdefghjkmnpqrstvwxyz]{26}$/.test(accountId) ||
-    !Number.isSafeInteger(atMs) || atMs < 0
-  ) return "invalid";
+  if (!validOwnerPair(externalOwner, accountId, atMs)) return "invalid";
 
   const inserted = await db.prepare(
     `INSERT INTO owner_links (external_owner, account_id, created_at)
@@ -78,6 +84,33 @@ export async function linkExternalOwner(
   const account = await db.prepare("SELECT id FROM accounts WHERE id = ?")
     .bind(accountId).first();
   return account === null ? "account_not_found" : "conflict";
+}
+
+/**
+ * Remove one mistaken link, naming both ids. The audit row is what lets the
+ * delete guard (migration 0019) pass, and it is written in the same batch, so
+ * a link never goes without its record. Count the `RETURNING` rows, never
+ * `meta.changes`: the unlink trigger's own write inflates it.
+ */
+export async function unlinkExternalOwner(
+  db: D1Database,
+  externalOwner: string,
+  accountId: string,
+  atMs: number,
+): Promise<{ linkedAt: number } | "not_linked" | "invalid"> {
+  if (!validOwnerPair(externalOwner, accountId, atMs)) return "invalid";
+  const [, removed] = await db.batch<{ linkedAt: number }>([
+    db.prepare(
+      `INSERT INTO owner_unlinks (external_owner, account_id, linked_at, unlinked_at)
+      SELECT external_owner, account_id, created_at, ? FROM owner_links
+      WHERE external_owner = ? AND account_id = ?`,
+    ).bind(atMs, externalOwner, accountId),
+    db.prepare(
+      `DELETE FROM owner_links WHERE external_owner = ? AND account_id = ?
+      RETURNING created_at AS linkedAt`,
+    ).bind(externalOwner, accountId),
+  ]);
+  return removed!.results[0] ?? "not_linked";
 }
 
 /** The admin caller has already proved control of this external identity. */
