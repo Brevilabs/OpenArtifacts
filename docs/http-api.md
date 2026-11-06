@@ -1600,12 +1600,12 @@ document IDs, or stored versions.
 `DELETE /admin/v1/accounts/{accountId}/external-owner` accepts exactly
 `{"externalOwner":"…"}` and removes only that pair. The trusted caller must have
 confirmed with the account holder that the association is a mistake. Success
-returns `200` with
-`{"accountId":"oa_…","externalOwner":"…","linkedAt":1791000000000,"unlinkedAt":1794500000000}`
-(Unix milliseconds) and `cache-control: no-store`, and writes one permanent
-`owner_unlinks` row in the same batch. Any other pair, or a pair already
-removed, returns `404 not_found` and writes nothing; invalid identities return
-`400`. No document, version or token moves.
+returns `200` with `{"accountId":"oa_…","externalOwner":"…"}` and
+`cache-control: no-store`, writes one permanent `owner_unlinks` row, and ends
+the account's paid plan snapshot and clears its freshness, so it uses the
+default plan until its next refresh. Any other pair, or a pair already removed,
+returns `404 not_found` and writes nothing; invalid identities return `400`.
+No document, version or token moves.
 
 ### Pulled account entitlement
 
@@ -1628,9 +1628,7 @@ Only a newer fetch may replace the cached plan, and the association must still
 match the one observed before that fetch. Losing or failed requests reread the
 winning stored state. Linking clears freshness; manual `{plan}` assignments reset
 expiry and advance freshness to prevent an older pending response overwriting them.
-Neither operation changes document ownership, usage, or tokens. Unlinking ends
-the linked paid snapshot (`plan_expires_at = 0`) and clears freshness, so the
-unlinked account uses the default plan until its next refresh.
+Neither operation changes document ownership, usage, or tokens.
 
 Failed refreshes preserve the last snapshot only until its paid expiry, then the
 local default plan applies. Free publishing, listing and withdrawal remain usable.

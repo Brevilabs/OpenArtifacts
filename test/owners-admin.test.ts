@@ -190,63 +190,45 @@ it("has no Copilot proof API", async () => {
   expect(await result.json()).toMatchObject({ error: { code: "not_found" } });
 });
 
-it("unlinks the exact pair, ends its plan and keeps the delete guard", async () => {
+it("unlinks the exact pair, resets its plan and keeps the delete guard", async () => {
   const { accountId } = await paidAccount();
   const link = await env.DB.prepare("SELECT created_at FROM owner_links").first<{ created_at: number }>();
   const result = await unlink(accountId);
   expect(result.status).toBe(200);
   expect(result.headers.get("cache-control")).toBe("no-store");
-  const body = await result.json<{ unlinkedAt: number }>();
-  expect(body).toEqual({
-    accountId,
-    externalOwner: "external-owner",
-    linkedAt: link!.created_at,
-    unlinkedAt: body.unlinkedAt,
-  });
+  expect(await result.json()).toEqual({ accountId, externalOwner: "external-owner" });
   expect((await send("GET", "/admin/v1/external-owners/external-owner")).status).toBe(404);
-  expect(await count("owner_unlinks")).toBe(1);
-  expect(await env.DB.prepare("SELECT * FROM owner_unlinks").first()).toEqual({
-    external_owner: "external-owner",
-    account_id: accountId,
-    linked_at: link!.created_at,
-    unlinked_at: body.unlinkedAt,
+  expect(await env.DB.prepare("SELECT * FROM owner_unlinks").all()).toMatchObject({
+    results: [{ external_owner: "external-owner", account_id: accountId, linked_at: link!.created_at }],
   });
+  expect(await count("owner_unlinks")).toBe(1);
   expect(await state(accountId)).toEqual({
     plan_expires_at: 0,
     plan_checked_at: null,
     plan_retry_after: null,
   });
-  // The pair can link again, and the old audit row does not unlock the new link.
+  // The same pair can link again, and the old audit row does not unlock the new link.
   expect(
     (await send("PUT", `/admin/v1/accounts/${accountId}/external-owner`, {
       externalOwner: "external-owner",
     })).status,
   ).toBe(200);
-  await expect(env.DB.prepare("DELETE FROM owner_links").run()).rejects.toThrow(/audited unlink/);
+  await expect(env.DB.prepare("DELETE FROM owner_links").run()).rejects.toThrow(/immutable/);
 });
 
-it("refuses any other pair without writing anything", async () => {
+it("changes nothing for any other pair or a failed unlink", async () => {
   const { accountId } = await paidAccount();
   const before = await state(accountId);
   expect((await unlink(ACCOUNT)).status).toBe(404);
   expect((await unlink(accountId, "other-owner")).status).toBe(404);
-  expect(await count("owner_links")).toBe(1);
-  expect(await count("owner_unlinks")).toBe(0);
-  expect(await state(accountId)).toEqual(before);
-});
-
-it("rolls back the audit row and keeps the delete guard if the unlink fails midway", async () => {
-  const { accountId } = await paidAccount();
-  const before = await state(accountId);
   await env.DB.prepare(
-    `CREATE TRIGGER test_unlink_failure AFTER DELETE ON owner_links
-    BEGIN SELECT RAISE(ABORT, 'forced unlink failure'); END`,
+    `CREATE TRIGGER test_plan_failure BEFORE UPDATE ON accounts
+    BEGIN SELECT RAISE(ABORT, 'forced plan failure'); END`,
   ).run();
-  const response = await unlink(accountId);
-  expect(response.status).toBe(500);
-  expect(await response.json()).toMatchObject({ error: { code: "internal" } });
+  const failed = await unlink(accountId);
+  expect(failed.status).toBe(500);
+  expect(await failed.json()).toMatchObject({ error: { code: "internal" } });
   expect(await count("owner_links")).toBe(1);
   expect(await count("owner_unlinks")).toBe(0);
   expect(await state(accountId)).toEqual(before);
-  await expect(env.DB.prepare("DELETE FROM owner_links").run()).rejects.toThrow(/audited unlink/);
 });

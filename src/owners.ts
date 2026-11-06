@@ -87,30 +87,32 @@ export async function linkExternalOwner(
 }
 
 /**
- * Remove one mistaken link, naming both ids. The audit row is what lets the
- * delete guard (migration 0019) pass, and it is written in the same batch, so
- * a link never goes without its record. Count the `RETURNING` rows, never
- * `meta.changes`: the unlink trigger's own write inflates it.
+ * Remove one mistaken link, naming both ids. The audit row is the permit the
+ * delete guard (migration 0019) looks for, and the plan reset runs only if the
+ * delete removed the link. Count the `RETURNING` rows, not `meta.changes`.
  */
 export async function unlinkExternalOwner(
   db: D1Database,
   externalOwner: string,
   accountId: string,
   atMs: number,
-): Promise<{ linkedAt: number } | "not_linked" | "invalid"> {
+): Promise<"unlinked" | "not_linked" | "invalid"> {
   if (!validOwnerPair(externalOwner, accountId, atMs)) return "invalid";
-  const [, removed] = await db.batch<{ linkedAt: number }>([
+  const [, removed] = await db.batch<{ account_id: string }>([
     db.prepare(
       `INSERT INTO owner_unlinks (external_owner, account_id, linked_at, unlinked_at)
       SELECT external_owner, account_id, created_at, ? FROM owner_links
       WHERE external_owner = ? AND account_id = ?`,
     ).bind(atMs, externalOwner, accountId),
     db.prepare(
-      `DELETE FROM owner_links WHERE external_owner = ? AND account_id = ?
-      RETURNING created_at AS linkedAt`,
+      "DELETE FROM owner_links WHERE external_owner = ? AND account_id = ? RETURNING account_id",
     ).bind(externalOwner, accountId),
+    db.prepare(
+      `UPDATE accounts SET plan_expires_at = 0, plan_checked_at = NULL, plan_retry_after = NULL
+      WHERE id = ? AND changes() > 0`,
+    ).bind(accountId),
   ]);
-  return removed!.results[0] ?? "not_linked";
+  return removed!.results.length ? "unlinked" : "not_linked";
 }
 
 /** The admin caller has already proved control of this external identity. */

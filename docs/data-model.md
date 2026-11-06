@@ -157,7 +157,7 @@ Accounts this deployment owns. PK `id`. Also holds the cached plan.
 | `newsletter_synced_at` | INTEGER | NULL | When the opt-in reached the mailing list |
 | `display_name` | TEXT | NULL | Comment author name, at most 64 characters (Worker-checked) |
 
-- Written by: first approval (insert), entitlement refresh and admin plan changes (`plan*`), newsletter sync, the display-name prompt. Trigger `owner_link_refresh` clears `plan_checked_at` and `plan_retry_after` when an owner link is inserted; trigger `owner_unlink_refresh` also sets `plan_expires_at = 0` when one is deleted, because the plan came through the link.
+- Written by: first approval (insert), entitlement refresh and admin plan changes (`plan*`), newsletter sync, the display-name prompt. Trigger `owner_link_refresh` clears `plan_checked_at` and `plan_retry_after` when an owner link is inserted.
 
 #### `identities`
 
@@ -227,21 +227,21 @@ Columns: `code_hash`, `account_id`, `token_id`, `expires_at`. Index
 Joins a license owner's documents to an account without rewriting ownership. PK
 `external_owner` (CHECK: 1 to 256 characters, trimmed, not `oa_`-prefixed).
 `account_id` is UNIQUE and CHECKed to be a well-formed `oa_` id; `created_at` CHECK
->= 0. **Never updated**: trigger `owner_links_no_update` aborts. **Deleted only
-with its `owner_unlinks` row**: trigger `owner_links_audited_delete` aborts a
-delete unless a row for that owner, account and `created_at` exists. This pair
-defines the owner scope that quotas and `docs` queries read.
-Written by: the admin link endpoint, once; deleted by the admin unlink.
+>= 0. **Immutable**: trigger `owner_links_no_update` aborts every update, and
+`owner_links_no_delete` aborts every delete except one for a link that has its
+`owner_unlinks` row (same owner, account and `created_at`). This pair defines
+the owner scope that quotas and `docs` queries read.
+Written by: the admin link endpoint, once; deleted only by the admin unlink.
 
 #### `owner_unlinks`
 
-Permanent audit of each removed owner link. PK `(external_owner, linked_at)`.
-Columns: `external_owner`, `account_id`, `linked_at` (the removed link's
-`created_at`), `unlinked_at` (CHECK >= 0). No foreign key, so it outlives its
-account. Keyed like the link it removes, so an old row can never authorize
-deleting a later link of the same pair.
+One row per removed owner link, and the permit its delete needs. PK
+`(external_owner, linked_at)`. Columns: `external_owner`, `account_id`,
+`linked_at` (the removed link's `created_at`), `unlinked_at`. No foreign key, so
+it outlives its account. A later link of the same pair has a new `created_at`,
+so an old row never unlocks it.
 
-- Written: by `DELETE /admin/v1/accounts/{id}/external-owner`, one row per removed link, in the same batch as the delete (a failure rolls back both).
+- Written: by `DELETE /admin/v1/accounts/{id}/external-owner`, in the same batch as the delete.
 - Never updated or deleted.
 
 #### `publishers`
