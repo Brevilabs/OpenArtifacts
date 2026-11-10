@@ -45,10 +45,28 @@ provided by this database primitive. It must not accept stale outage validation
 as proof or infer external ownership from an email address.
 
 `owner_links` pairs one external owner with one existing local account. Both
-columns are unique, the ID spaces are disjoint, and associations cannot be
-updated or deleted. Reconfirming the same pair is idempotent; conflicting pairs
-are refused. Account deletion must therefore preserve the ownership record or
-use a separately designed operator process, never cascade an unlink.
+columns are unique, the ID spaces are disjoint, and associations are never
+updated. An operator can remove a mistaken one through the admin unlink
+(`DELETE /admin/v1/accounts/{id}/external-owner`), which names both ids; no
+other code deletes a link, and no record of a removed link is kept.
+Reconfirming the same pair is idempotent; conflicting pairs are refused.
+Account deletion must therefore preserve the ownership record or use the same
+unlink, never cascade one.
+
+To remove a mistaken link:
+
+1. Look the link up with `GET /admin/v1/external-owners/{owner}` and confirm
+   with the person that the account it names is the wrong one.
+2. Send `DELETE /admin/v1/accounts/{accountId}/external-owner` with the body
+   `{"externalOwner":"…"}`.
+3. `200` means the link is gone; `404 not_found` means those two ids are not
+   linked and nothing changed, so go back to step 1.
+4. Tell the person to sign in with Copilot at the account page and link the
+   account they want.
+
+An unlink moves no document: each keeps its original `owner`. The unlinked
+account loses the paid plan that came through the link at once; its own plan,
+if any, returns on its next entitlement refresh.
 
 The local account is the canonical collection, but document rows retain their
 original `owner` as provenance. Each ownership query derives the joined owner

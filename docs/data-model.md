@@ -1,7 +1,7 @@
 # Data model
 
 Every place this Worker keeps state, on one page: D1 tables, R2 keys, Durable
-Object storage, and the small rest. Current as of migration `0017_publisher_origins.sql`.
+Object storage, and the small rest. Current as of migration `0019_owner_unlink.sql`.
 
 > **Update this file in the same PR as any migration or storage-key change.**
 
@@ -19,7 +19,7 @@ is an app-sites `User.id` from the license server.
 
 ## D1
 
-Binding `DB`, database `symposium`, migrations in `migrations/`. Sixteen tables.
+Binding `DB`, database `symposium`, migrations in `migrations/`. Seventeen tables.
 
 ### Documents
 
@@ -227,9 +227,11 @@ Columns: `code_hash`, `account_id`, `token_id`, `expires_at`. Index
 Joins a license owner's documents to an account without rewriting ownership. PK
 `external_owner` (CHECK: 1 to 256 characters, trimmed, not `oa_`-prefixed).
 `account_id` is UNIQUE and CHECKed to be a well-formed `oa_` id; `created_at` CHECK
->= 0. **Immutable**: triggers `owner_links_no_update` and `owner_links_no_delete`
-abort. This pair defines the owner scope that quotas and `docs` queries read.
-Written by: the admin link endpoint, once.
+>= 0. **Never updated**: trigger `owner_links_no_update` aborts every update.
+Migration `0019` dropped the delete guard, so a row can be deleted, and only the
+admin unlink does that. This pair defines the owner scope that quotas and `docs`
+queries read. Written by: the admin link endpoint, once; deleted only by the
+admin unlink, which keeps no record of the removed row.
 
 #### `publishers`
 

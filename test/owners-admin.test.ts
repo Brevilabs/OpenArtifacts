@@ -6,6 +6,7 @@ import { sha256Hex } from "../src/hash.js";
 import worker from "../src/index.js";
 
 const SERVICE = "owner-admin-test-secret";
+const ACCOUNT = "oa_aaaaaaaaaaaaaaaaaaaaaaaaaa";
 const input = { email: " Person@Example.com ", externalOwner: "external-owner" };
 async function send(method: string, path: string, body?: unknown, credential = SERVICE) {
   const ctx = createExecutionContext();
@@ -35,6 +36,23 @@ async function account() {
   const result = await create();
   expect(result.status).toBe(201);
   return result.json<{ accountId: string; email: string }>();
+}
+const unlink = (accountId: string, externalOwner = "external-owner") =>
+  send("DELETE", `/admin/v1/accounts/${accountId}/external-owner`, { externalOwner });
+const state = (accountId: string) =>
+  env.DB.prepare(
+    "SELECT plan_expires_at, plan_checked_at, plan_retry_after FROM accounts WHERE id = ?",
+  )
+    .bind(accountId)
+    .first();
+async function paidAccount() {
+  const created = await account();
+  await env.DB.prepare(
+    "UPDATE accounts SET plan = 'pro', plan_expires_at = 9000000000000, plan_checked_at = 5, plan_retry_after = 6 WHERE id = ?",
+  )
+    .bind(created.accountId)
+    .run();
+  return created;
 }
 async function tokenFor(accountId: string) {
   const token = newApiToken();
@@ -81,6 +99,7 @@ it("returns explicit missing and invalid owner errors and requires admin authent
   for (const [method, path, body] of [
     ["GET", "/admin/v1/external-owners/missing", undefined],
     ["POST", "/admin/v1/accounts", input],
+    ["DELETE", `/admin/v1/accounts/${ACCOUNT}/external-owner`, { externalOwner: "external-owner" }],
   ] as const) {
     const response = await send(method, path, body, "wrong");
     expect(response.status).toBe(401);
@@ -169,4 +188,42 @@ it("has no Copilot proof API", async () => {
   const result = await send("POST", "/api/v1/copilot/prove", {}, await tokenFor(created.accountId));
   expect(result.status).toBe(404);
   expect(await result.json()).toMatchObject({ error: { code: "not_found" } });
+});
+
+it("unlinks the exact pair, resets its plan and lets the pair link again", async () => {
+  const { accountId } = await paidAccount();
+  const result = await unlink(accountId);
+  expect(result.status).toBe(200);
+  expect(result.headers.get("cache-control")).toBe("no-store");
+  expect(await result.json()).toEqual({ accountId, externalOwner: "external-owner" });
+  expect((await send("GET", "/admin/v1/external-owners/external-owner")).status).toBe(404);
+  expect(await count("owner_links")).toBe(0);
+  expect(await state(accountId)).toEqual({
+    plan_expires_at: 0,
+    plan_checked_at: null,
+    plan_retry_after: null,
+  });
+  // The same pair can link again, and a link still cannot be moved.
+  expect(
+    (await send("PUT", `/admin/v1/accounts/${accountId}/external-owner`, {
+      externalOwner: "external-owner",
+    })).status,
+  ).toBe(200);
+  await expect(env.DB.prepare("UPDATE owner_links SET external_owner = 'moved'").run()).rejects.toThrow(/immutable/);
+});
+
+it("changes nothing for any other pair or a failed unlink", async () => {
+  const { accountId } = await paidAccount();
+  const before = await state(accountId);
+  expect((await unlink(ACCOUNT)).status).toBe(404);
+  expect((await unlink(accountId, "other-owner")).status).toBe(404);
+  await env.DB.prepare(
+    `CREATE TRIGGER test_plan_failure BEFORE UPDATE ON accounts
+    BEGIN SELECT RAISE(ABORT, 'forced plan failure'); END`,
+  ).run();
+  const failed = await unlink(accountId);
+  expect(failed.status).toBe(500);
+  expect(await failed.json()).toMatchObject({ error: { code: "internal" } });
+  expect(await count("owner_links")).toBe(1);
+  expect(await state(accountId)).toEqual(before);
 });

@@ -1593,8 +1593,19 @@ identity and obtain the account holder's confirmation before calling this route;
 a license outage cache or matching email does not prove ownership. Success and
 an identical retry return `200` with `{"accountId":"oa_…","externalOwner":"…"}`.
 A conflicting association returns `409 conflict`; invalid identities return
-`400`; a missing local account returns `404`. Associations are permanent and do
-not change plans, credential permissions, document IDs, or stored versions.
+`400`; a missing local account returns `404`. Only the unlink below removes an
+association, and associations do not change plans, credential permissions,
+document IDs, or stored versions.
+
+`DELETE /admin/v1/accounts/{accountId}/external-owner` accepts exactly
+`{"externalOwner":"…"}` and removes only that pair. The trusted caller must have
+confirmed with the account holder that the association is a mistake. Success
+returns `200` with `{"accountId":"oa_…","externalOwner":"…"}` and
+`cache-control: no-store`, and ends
+the account's paid plan snapshot and clears its freshness, so it uses the
+default plan until its next refresh. Any other pair, or a pair already removed,
+returns `404 not_found` and writes nothing; invalid identities return `400`.
+No document, version or token moves.
 
 ### Pulled account entitlement
 

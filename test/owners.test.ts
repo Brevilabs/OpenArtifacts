@@ -69,7 +69,6 @@ it("links one existing account once, without transfers, chains, or missing accou
     { external_owner: EXTERNAL, account_id: ACCOUNT, created_at: 123 },
   ] });
   await expect(env.DB.prepare("UPDATE owner_links SET account_id = ?").bind(OTHER_ACCOUNT).run()).rejects.toThrow();
-  await expect(env.DB.prepare("DELETE FROM owner_links").run()).rejects.toThrow();
 });
 
 it("resolves competing links atomically with one winner", async () => {
