@@ -1601,7 +1601,7 @@ document IDs, or stored versions.
 `{"externalOwner":"…"}` and removes only that pair. The trusted caller must have
 confirmed with the account holder that the association is a mistake. Success
 returns `200` with `{"accountId":"oa_…","externalOwner":"…"}` and
-`cache-control: no-store`, writes one permanent `owner_unlinks` row, and ends
+`cache-control: no-store`, and ends
 the account's paid plan snapshot and clears its freshness, so it uses the
 default plan until its next refresh. Any other pair, or a pair already removed,
 returns `404 not_found` and writes nothing; invalid identities return `400`.

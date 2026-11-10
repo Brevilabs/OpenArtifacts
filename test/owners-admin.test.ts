@@ -190,30 +190,26 @@ it("has no Copilot proof API", async () => {
   expect(await result.json()).toMatchObject({ error: { code: "not_found" } });
 });
 
-it("unlinks the exact pair, resets its plan and keeps the delete guard", async () => {
+it("unlinks the exact pair, resets its plan and lets the pair link again", async () => {
   const { accountId } = await paidAccount();
-  const link = await env.DB.prepare("SELECT created_at FROM owner_links").first<{ created_at: number }>();
   const result = await unlink(accountId);
   expect(result.status).toBe(200);
   expect(result.headers.get("cache-control")).toBe("no-store");
   expect(await result.json()).toEqual({ accountId, externalOwner: "external-owner" });
   expect((await send("GET", "/admin/v1/external-owners/external-owner")).status).toBe(404);
-  expect(await env.DB.prepare("SELECT * FROM owner_unlinks").all()).toMatchObject({
-    results: [{ external_owner: "external-owner", account_id: accountId, linked_at: link!.created_at }],
-  });
-  expect(await count("owner_unlinks")).toBe(1);
+  expect(await count("owner_links")).toBe(0);
   expect(await state(accountId)).toEqual({
     plan_expires_at: 0,
     plan_checked_at: null,
     plan_retry_after: null,
   });
-  // The same pair can link again, and the old audit row does not unlock the new link.
+  // The same pair can link again, and a link still cannot be moved.
   expect(
     (await send("PUT", `/admin/v1/accounts/${accountId}/external-owner`, {
       externalOwner: "external-owner",
     })).status,
   ).toBe(200);
-  await expect(env.DB.prepare("DELETE FROM owner_links").run()).rejects.toThrow(/immutable/);
+  await expect(env.DB.prepare("UPDATE owner_links SET external_owner = 'moved'").run()).rejects.toThrow(/immutable/);
 });
 
 it("changes nothing for any other pair or a failed unlink", async () => {
@@ -229,6 +225,5 @@ it("changes nothing for any other pair or a failed unlink", async () => {
   expect(failed.status).toBe(500);
   expect(await failed.json()).toMatchObject({ error: { code: "internal" } });
   expect(await count("owner_links")).toBe(1);
-  expect(await count("owner_unlinks")).toBe(0);
   expect(await state(accountId)).toEqual(before);
 });

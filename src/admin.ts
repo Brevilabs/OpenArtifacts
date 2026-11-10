@@ -58,7 +58,7 @@ export async function handleAdmin(request: Request, url: URL, env: Env): Promise
     const externalOwner = await stringField(request, "externalOwner");
     if (externalOwner === null) return errorResponse("bad_request", "Expected only externalOwner.");
     if (request.method === "DELETE") {
-      const result = await unlinkExternalOwner(env.DB, externalOwner, owner, Date.now());
+      const result = await unlinkExternalOwner(env.DB, externalOwner, owner);
       if (result === "invalid") return errorResponse("bad_request", "Invalid owner identity.");
       if (result === "not_linked") return errorResponse("not_found", "That owner is not linked to that account.");
       return Response.json({ accountId: owner, externalOwner }, { headers: { "cache-control": "no-store" } });

@@ -46,9 +46,9 @@ as proof or infer external ownership from an email address.
 
 `owner_links` pairs one external owner with one existing local account. Both
 columns are unique, the ID spaces are disjoint, and associations are never
-updated. An operator can remove a mistaken one only through the admin unlink
-(`DELETE /admin/v1/accounts/{id}/external-owner`), which names both ids and
-leaves a permanent `owner_unlinks` row; the database aborts any other delete.
+updated. An operator can remove a mistaken one through the admin unlink
+(`DELETE /admin/v1/accounts/{id}/external-owner`), which names both ids; no
+other code deletes a link, and no record of a removed link is kept.
 Reconfirming the same pair is idempotent; conflicting pairs are refused.
 Account deletion must therefore preserve the ownership record or use the same
 unlink, never cascade one.

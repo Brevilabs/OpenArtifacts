@@ -1,7 +1,7 @@
 /**
  * Document ownership can join two proven identities without moving their rows.
  * Keep credential identity separate: these aliases never authorize token access.
- * A link is removed only by `unlinkExternalOwner`, which leaves a permanent record.
+ * A link is removed only by `unlinkExternalOwner`; it is never updated.
  */
 import { ACCOUNT_ID_PREFIX, newAccountId } from "./ids.js";
 import type { Env } from "./config.js";
@@ -87,23 +87,17 @@ export async function linkExternalOwner(
 }
 
 /**
- * Remove one mistaken link, naming both ids. The audit row is the permit the
- * delete guard (migration 0019) looks for, and the plan reset runs only if the
- * delete removed the link. Count the `RETURNING` rows, not `meta.changes`.
+ * Remove one mistaken link, naming both ids. The plan came through the link, so
+ * the same batch ends it, and only if the delete removed the link. Count the
+ * `RETURNING` rows, not `meta.changes`.
  */
 export async function unlinkExternalOwner(
   db: D1Database,
   externalOwner: string,
   accountId: string,
-  atMs: number,
 ): Promise<"unlinked" | "not_linked" | "invalid"> {
-  if (!validOwnerPair(externalOwner, accountId, atMs)) return "invalid";
-  const [, removed] = await db.batch<{ account_id: string }>([
-    db.prepare(
-      `INSERT INTO owner_unlinks (external_owner, account_id, linked_at, unlinked_at)
-      SELECT external_owner, account_id, created_at, ? FROM owner_links
-      WHERE external_owner = ? AND account_id = ?`,
-    ).bind(atMs, externalOwner, accountId),
+  if (!validOwnerPair(externalOwner, accountId, 0)) return "invalid";
+  const [removed] = await db.batch<{ account_id: string }>([
     db.prepare(
       "DELETE FROM owner_links WHERE external_owner = ? AND account_id = ? RETURNING account_id",
     ).bind(externalOwner, accountId),

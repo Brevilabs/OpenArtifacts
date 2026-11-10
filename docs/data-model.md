@@ -1,7 +1,7 @@
 # Data model
 
 Every place this Worker keeps state, on one page: D1 tables, R2 keys, Durable
-Object storage, and the small rest. Current as of migration `0019_owner_unlinks.sql`.
+Object storage, and the small rest. Current as of migration `0019_owner_unlink.sql`.
 
 > **Update this file in the same PR as any migration or storage-key change.**
 
@@ -19,7 +19,7 @@ is an app-sites `User.id` from the license server.
 
 ## D1
 
-Binding `DB`, database `symposium`, migrations in `migrations/`. Eighteen tables.
+Binding `DB`, database `symposium`, migrations in `migrations/`. Seventeen tables.
 
 ### Documents
 
@@ -227,22 +227,11 @@ Columns: `code_hash`, `account_id`, `token_id`, `expires_at`. Index
 Joins a license owner's documents to an account without rewriting ownership. PK
 `external_owner` (CHECK: 1 to 256 characters, trimmed, not `oa_`-prefixed).
 `account_id` is UNIQUE and CHECKed to be a well-formed `oa_` id; `created_at` CHECK
->= 0. **Immutable**: trigger `owner_links_no_update` aborts every update, and
-`owner_links_no_delete` aborts every delete except one for a link that has its
-`owner_unlinks` row (same owner, account and `created_at`). This pair defines
-the owner scope that quotas and `docs` queries read.
-Written by: the admin link endpoint, once; deleted only by the admin unlink.
-
-#### `owner_unlinks`
-
-One row per removed owner link, and the permit its delete needs. PK
-`(external_owner, linked_at)`. Columns: `external_owner`, `account_id`,
-`linked_at` (the removed link's `created_at`), `unlinked_at`. No foreign key, so
-it outlives its account. A later link of the same pair has a new `created_at`,
-so an old row never unlocks it.
-
-- Written: by `DELETE /admin/v1/accounts/{id}/external-owner`, in the same batch as the delete.
-- Never updated or deleted.
+>= 0. **Never updated**: trigger `owner_links_no_update` aborts every update.
+Migration `0019` dropped the delete guard, so a row can be deleted, and only the
+admin unlink does that. This pair defines the owner scope that quotas and `docs`
+queries read. Written by: the admin link endpoint, once; deleted only by the
+admin unlink, which keeps no record of the removed row.
 
 #### `publishers`
 
