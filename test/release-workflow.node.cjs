@@ -1,4 +1,5 @@
 const assert = require("node:assert/strict");
+const { spawnSync } = require("node:child_process");
 const { readFileSync } = require("node:fs");
 const { join } = require("node:path");
 const { test } = require("node:test");
@@ -125,4 +126,25 @@ test("hosted deploy requires both account URLs without imposing them on self-hos
   }
   assert.doesNotThrow(() => checkHostedAccountActions('{"vars":{"API_HOST":"self.example",}}'));
   assert.throws(() => checkHostedAccountActions('{"vars":'), /Invalid Wrangler/);
+});
+
+test("Copilot coverage allows planned work and rejects an undocumented access operation", () => {
+  const coverage = {
+    getAccess: { tool: "list" },
+    setLinkAccess: { uiOnly: "The user changes link access in Share." },
+    addPerson: { tool: "add" },
+    removePerson: { tool: "remove" },
+    declineRequest: { pending: "Finish support after the client is released." },
+  };
+  const check = () => spawnSync(process.execPath, [join(__dirname, "../scripts/check-copilot-access.mjs")], {
+    input: JSON.stringify(coverage),
+    encoding: "utf8",
+  });
+
+  const planned = check();
+  assert.equal(planned.status, 0, planned.stderr);
+  delete coverage.declineRequest;
+  const missing = check();
+  assert.equal(missing.status, 1);
+  assert.match(missing.stderr, /Record a Copilot coverage decision for: declineRequest/);
 });
