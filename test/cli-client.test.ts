@@ -69,7 +69,7 @@ describe("the CLI client against the local Worker", () => {
   });
 });
 
-describe("the comments client against the local Worker", () => {
+describe("the access and comments client against the local Worker", () => {
   // Comments ride on the private-sharing family, so the server needs reader sign-in configured.
   const COMMENTS_HOST = "https://api.openartifacts.ai";
   const withReaders = (): Env => ({
@@ -96,6 +96,26 @@ describe("the comments client against the local Worker", () => {
       .bind(Date.now(), "oa_cli_test_account000000000").run();
     return issued.token;
   }
+
+  it.each(["account token", "Copilot license"] as const)("changes access and invitations using %s authentication", async (credential) => {
+    let token: string;
+    if (credential === "account token") {
+      token = await paidToken();
+    } else {
+      token = "cplus_live_a1b2c3d4e5f60718";
+      await env.DB.prepare("INSERT INTO publishers (key_hash, plan, validated_at, owner) VALUES (?, 'believer', ?, 'copilot-access-owner')")
+        .bind(await sha256Hex(token), Date.now()).run();
+    }
+    const client = createClient({ host: COMMENTS_HOST, token, fetcher: readerFetch });
+    const { docId } = await client.createDoc({ title: "Access", html: "<p>Access</p>" });
+    expect(await client.setLinkAccess(docId, "invited")).toMatchObject({ linkAccess: "invited" });
+
+    const email = "reader+review@example.test";
+    expect(await client.addPerson(docId, email, "view")).toMatchObject({ people: [{ email, role: "view" }] });
+    expect(await client.getAccess(docId)).toMatchObject({ people: [{ email, role: "view" }] });
+    expect(await client.removePerson(docId, email)).toMatchObject({ people: [] });
+    expect(await client.declineRequest(docId, email)).toMatchObject({ requests: [] });
+  });
 
   it("adds, lists, replies, resolves, reopens and deletes", async () => {
     const client = createClient({ host: COMMENTS_HOST, token: await paidToken(), fetcher: readerFetch });

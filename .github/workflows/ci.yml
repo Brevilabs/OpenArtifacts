@@ -28,6 +28,19 @@ jobs:
         if: github.event_name == 'pull_request'
         run: node scripts/check-release-pr.cjs
 
+      - name: Check Copilot access coverage
+        if: github.event_name == 'pull_request' && github.repository == 'Brevilabs/OpenArtifacts'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if git diff --quiet "$BASE_SHA" HEAD -- packages/openartifacts/src/access.cjs; then
+            exit 0
+          fi
+          curl --fail --silent --show-error --retry 3 --max-time 20 \
+            https://raw.githubusercontent.com/logancyang/obsidian-copilot/master/apps/obsidian/src/openArtifacts/accessCoverage.json \
+            --output "$RUNNER_TEMP/openartifacts-access.json"
+          node scripts/check-copilot-access.mjs "$RUNNER_TEMP/openartifacts-access.json"
+
       # No audit: npm's audit endpoint is being retired and can hold `npm ci`
       # for five minutes before giving up. Its report never fails the job anyway.
       - name: Install dependencies

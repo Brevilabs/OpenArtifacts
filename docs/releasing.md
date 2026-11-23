@@ -58,3 +58,22 @@ The registry is verified after publication. An already-published version exits
 successfully, so a rerun after publication is safe. Every merged PR whose title
 is not exactly `vX.Y.Z` stops at the release gate and never requests
 protected-environment approval.
+
+## Copilot access changes
+
+Copilot bundles the `openartifacts/client/access` export. Before merging a
+change to these operations, add a coverage decision to
+[Copilot's access coverage file](https://github.com/logancyang/obsidian-copilot/blob/master/apps/obsidian/src/openArtifacts/accessCoverage.json).
+OpenArtifacts CI reads that file for PRs that change the shared access module.
+Use `pending` with a Copilot issue when the implementation needs the new npm
+package first. The Copilot dependency PR must then replace that decision with
+working tool coverage or a documented decision to keep the action out of chat.
+
+Copilot's Dependabot checks npm on weekdays and opens a dependency PR when it
+finds a newer version. A merged dependency PR is included in the next Copilot
+plugin release. See the released plugin version to confirm availability.
+
+For the first rollout, merge Copilot's coverage file first so OpenArtifacts CI
+can read it. Then merge the shared export and publish it through the normal npm
+release process. Verify the Copilot dependency lock against the published
+package before merging the Copilot client change.
