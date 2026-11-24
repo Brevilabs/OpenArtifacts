@@ -61,16 +61,21 @@ export interface LimitDetails {
   upgrade_url?: string;
 }
 
+/** When a refused action is next allowed, in Unix milliseconds. */
+export interface RetryDetails {
+  retry_at: number;
+}
+
 /** The wire shape. Clients match on `code`; `message` is human-facing only. */
 export interface ErrorBody {
-  error: { code: ErrorCode; message: string } & Partial<LimitDetails>;
+  error: { code: ErrorCode; message: string } & Partial<LimitDetails> & Partial<RetryDetails>;
 }
 
 export function errorResponse(
   code: ErrorCode,
   message: string,
   headers?: HeadersInit,
-  details?: LimitDetails,
+  details?: LimitDetails | RetryDetails,
 ): Response {
   const body: ErrorBody = { error: { code, message, ...details } };
   return Response.json(body, { status: ERROR_STATUS[code], headers });

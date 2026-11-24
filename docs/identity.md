@@ -47,8 +47,10 @@ as proof or infer external ownership from an email address.
 `owner_links` pairs one external owner with one existing local account. Both
 columns are unique, the ID spaces are disjoint, and associations are never
 updated. An operator can remove a mistaken one through the admin unlink
-(`DELETE /admin/v1/accounts/{id}/external-owner`), which names both ids; no
-other code deletes a link, and no record of a removed link is kept.
+(`DELETE /admin/v1/accounts/{id}/external-owner`), and the account holder can
+remove their own from the account page (`…/external-owner/self`, below). Both
+name both ids, both record the removed link in `owner_unlinks`, and no other
+code deletes a link.
 Reconfirming the same pair is idempotent; conflicting pairs are refused.
 Account deletion must therefore preserve the ownership record or use the same
 unlink, never cascade one.
@@ -67,6 +69,19 @@ To remove a mistaken link:
 An unlink moves no document: each keeps its original `owner`. The unlinked
 account loses the paid plan that came through the link at once; its own plan,
 if any, returns on its next entitlement refresh.
+
+**Self-serve unlink.** The account page offers the signed-in account holder an
+Unlink button under their linked license. The website proves the account the
+same way it does for linking (the signed handoff or browser-login session and
+its nonce) and calls `DELETE /admin/v1/accounts/{accountId}/external-owner/self`
+with the session's own `externalOwner`, so it can only name the pair the person
+is signed in as. It runs the same unlink, with one limit so a license cannot hop
+between accounts to share a paid plan: a self-serve unlink is refused while
+another self-serve unlink of the same license or the same account is younger
+than 24 hours. The refusal is `429 quota_exceeded` with `retry_at`. Support can
+still use the admin unlink for an exception; admin unlinks neither check nor
+start the cooldown. Relinking is not limited; it goes through the usual link
+flow.
 
 The local account is the canonical collection, but document rows retain their
 original `owner` as provenance. Each ownership query derives the joined owner

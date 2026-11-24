@@ -1,7 +1,8 @@
 /**
  * Document ownership can join two proven identities without moving their rows.
  * Keep credential identity separate: these aliases never authorize token access.
- * A link is removed only by `unlinkExternalOwner`; it is never updated.
+ * A link is removed only by `unlinkExternalOwner` (admin or the account holder);
+ * it is never updated.
  */
 import { ACCOUNT_ID_PREFIX, newAccountId } from "./ids.js";
 import type { Env } from "./config.js";
@@ -86,27 +87,66 @@ export async function linkExternalOwner(
   return account === null ? "account_not_found" : "conflict";
 }
 
+/** How long after one self-serve unlink the same license or account must wait for another. */
+export const SELF_UNLINK_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+
+export type UnlinkResult =
+  | { result: "unlinked" }
+  | { result: "not_linked" }
+  | { result: "invalid" }
+  /** A self-serve unlink of this license or account happened too recently. */
+  | { result: "cooldown"; retryAt: number };
+
 /**
- * Remove one mistaken link, naming both ids. The plan came through the link, so
- * the same batch ends it, and only if the delete removed the link. Count the
- * `RETURNING` rows, not `meta.changes`.
+ * Remove one link, naming both ids, in one batch: record it in `owner_unlinks`,
+ * delete it, and end the plan that came through it. Each step runs only if the
+ * one before it wrote a row, so a refused or repeated call writes nothing.
+ * Count the `RETURNING` rows, not `meta.changes`.
+ *
+ * `byOwner` is the account holder's own unlink. It is refused while an earlier
+ * self-serve unlink of the same license or the same account is younger than
+ * `SELF_UNLINK_COOLDOWN_MS`, so a license cannot hop between accounts. Admin
+ * unlinks are recorded but neither checked nor counted.
  */
 export async function unlinkExternalOwner(
   db: D1Database,
   externalOwner: string,
   accountId: string,
-): Promise<"unlinked" | "not_linked" | "invalid"> {
-  if (!validOwnerPair(externalOwner, accountId, 0)) return "invalid";
-  const [removed] = await db.batch<{ account_id: string }>([
+  { byOwner = false, now = Date.now() }: { byOwner?: boolean; now?: number } = {},
+): Promise<UnlinkResult> {
+  if (!validOwnerPair(externalOwner, accountId, now)) return { result: "invalid" };
+  const since = now - SELF_UNLINK_COOLDOWN_MS;
+  const [, removed] = await db.batch<{ account_id: string }>([
     db.prepare(
-      "DELETE FROM owner_links WHERE external_owner = ? AND account_id = ? RETURNING account_id",
+      `INSERT INTO owner_unlinks (external_owner, account_id, linked_at, unlinked_at, by_owner)
+      SELECT external_owner, account_id, created_at, ?, ? FROM owner_links
+      WHERE external_owner = ? AND account_id = ?
+        AND (? = 0 OR NOT EXISTS (SELECT 1 FROM owner_unlinks
+          WHERE by_owner = 1 AND unlinked_at > ? AND (external_owner = ? OR account_id = ?)))`,
+    ).bind(now, byOwner ? 1 : 0, externalOwner, accountId, byOwner ? 1 : 0,
+      since, externalOwner, accountId),
+    db.prepare(
+      `DELETE FROM owner_links WHERE external_owner = ? AND account_id = ? AND changes() > 0
+      RETURNING account_id`,
     ).bind(externalOwner, accountId),
     db.prepare(
       `UPDATE accounts SET plan_expires_at = 0, plan_checked_at = NULL, plan_retry_after = NULL
       WHERE id = ? AND changes() > 0`,
     ).bind(accountId),
   ]);
-  return removed!.results.length ? "unlinked" : "not_linked";
+  if (removed!.results.length) return { result: "unlinked" };
+  if (byOwner) {
+    const row = await db.prepare(
+      `SELECT EXISTS(SELECT 1 FROM owner_links WHERE external_owner = ? AND account_id = ?) AS linked,
+        (SELECT MAX(unlinked_at) FROM owner_unlinks WHERE by_owner = 1 AND unlinked_at > ?
+          AND (external_owner = ? OR account_id = ?)) AS last`,
+    ).bind(externalOwner, accountId, since, externalOwner, accountId)
+      .first<{ linked: number; last: number | null }>();
+    if (row?.linked && row.last !== null) {
+      return { result: "cooldown", retryAt: row.last + SELF_UNLINK_COOLDOWN_MS };
+    }
+  }
+  return { result: "not_linked" };
 }
 
 /** The admin caller has already proved control of this external identity. */
