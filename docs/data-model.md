@@ -1,7 +1,7 @@
 # Data model
 
 Every place this Worker keeps state, on one page: D1 tables, R2 keys, Durable
-Object storage, and the small rest. Current as of migration `0019_owner_unlink.sql`.
+Object storage, and the small rest. Current as of migration `0020_owner_unlinks.sql`.
 
 > **Update this file in the same PR as any migration or storage-key change.**
 
@@ -228,10 +228,23 @@ Joins a license owner's documents to an account without rewriting ownership. PK
 `external_owner` (CHECK: 1 to 256 characters, trimmed, not `oa_`-prefixed).
 `account_id` is UNIQUE and CHECKed to be a well-formed `oa_` id; `created_at` CHECK
 >= 0. **Never updated**: trigger `owner_links_no_update` aborts every update.
-Migration `0019` dropped the delete guard, so a row can be deleted, and only the
-admin unlink does that. This pair defines the owner scope that quotas and `docs`
+Migration `0019` dropped the delete guard, so a row can be deleted, and only
+`unlinkExternalOwner` does that. This pair defines the owner scope that quotas and `docs`
 queries read. Written by: the admin link endpoint, once; deleted only by the
-admin unlink, which keeps no record of the removed row.
+admin unlink or the account holder's own unlink, each of which first copies the
+row into `owner_unlinks`.
+
+#### `owner_unlinks`
+
+One row per removed `owner_links` row (migration `0020`), written in the same
+batch as the delete. Columns: `external_owner`, `account_id`, `linked_at` (the
+link's `created_at`), `unlinked_at`, `by_owner` (CHECK 0 or 1: 1 for the account
+holder's own unlink from the account page, 0 for the admin unlink). No primary
+key or foreign key: the history outlives the link. Indexed on
+`(external_owner, unlinked_at)` and `(account_id, unlinked_at)` for the
+self-serve cooldown, which refuses a `by_owner` unlink while another `by_owner`
+row for the same license or account is younger than 24 hours. Admin rows are
+history only. Written by: `unlinkExternalOwner`. Never updated or deleted.
 
 #### `publishers`
 

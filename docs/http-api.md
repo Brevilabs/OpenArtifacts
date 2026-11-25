@@ -1605,7 +1605,16 @@ returns `200` with `{"accountId":"oa_…","externalOwner":"…"}` and
 the account's paid plan snapshot and clears its freshness, so it uses the
 default plan until its next refresh. Any other pair, or a pair already removed,
 returns `404 not_found` and writes nothing; invalid identities return `400`.
-No document, version or token moves.
+No document, version or token moves. The removed link is recorded in
+`owner_unlinks`.
+
+`DELETE /admin/v1/accounts/{accountId}/external-owner/self` is the same unlink
+for the account holder's own request from the account page. The trusted caller
+must take both ids from the account holder's verified session, never from
+input. It answers exactly as the route above, plus `429 quota_exceeded` with
+`"retry_at"` (Unix milliseconds) and `cache-control: no-store` when another
+self-serve unlink of the same license or account happened in the last 24 hours;
+nothing is written then. Admin unlinks do not count toward that limit.
 
 ### Pulled account entitlement
 

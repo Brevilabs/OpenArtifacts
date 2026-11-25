@@ -13,7 +13,8 @@ export const ADMIN_PREFIX = "/admin/v1";
 export async function handleAdmin(request: Request, url: URL, env: Env): Promise<Response> {
   const routes = [
     ["PUT", /^\/admin\/v1\/accounts\/([^/]+)\/(plan|external-owner)$/, "account"],
-    ["DELETE", /^\/admin\/v1\/accounts\/([^/]+)\/(external-owner)$/, "account"],
+    // `/self`: the website, for the signed-in account holder (with the cooldown).
+    ["DELETE", /^\/admin\/v1\/accounts\/([^/]+)\/(external-owner)(\/self)?$/, "account"],
     ["POST", /^\/admin\/v1\/handoffs\/consume$/, "handoff"],
     ["POST", /^\/admin\/v1\/browser-logins$/, "browser-start"],
     ["POST", /^\/admin\/v1\/browser-logins\/consume$/, "browser-consume"],
@@ -58,9 +59,17 @@ export async function handleAdmin(request: Request, url: URL, env: Env): Promise
     const externalOwner = await stringField(request, "externalOwner");
     if (externalOwner === null) return errorResponse("bad_request", "Expected only externalOwner.");
     if (request.method === "DELETE") {
-      const result = await unlinkExternalOwner(env.DB, externalOwner, owner);
-      if (result === "invalid") return errorResponse("bad_request", "Invalid owner identity.");
-      if (result === "not_linked") return errorResponse("not_found", "That owner is not linked to that account.");
+      const outcome = await unlinkExternalOwner(env.DB, externalOwner, owner, { byOwner: !!match[3] });
+      if (outcome.result === "invalid") return errorResponse("bad_request", "Invalid owner identity.");
+      if (outcome.result === "not_linked") return errorResponse("not_found", "That owner is not linked to that account.");
+      if (outcome.result === "cooldown") {
+        return errorResponse(
+          "quota_exceeded",
+          `This license or account was unlinked recently. You can unlink again after ${new Date(outcome.retryAt).toISOString()}, or contact support.`,
+          { "cache-control": "no-store" },
+          { retry_at: outcome.retryAt },
+        );
+      }
       return Response.json({ accountId: owner, externalOwner }, { headers: { "cache-control": "no-store" } });
     }
     const result = await linkExternalOwner(env.DB, externalOwner, owner, Date.now());
