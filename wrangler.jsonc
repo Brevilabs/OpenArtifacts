@@ -214,6 +214,7 @@
     "API_HOST": "api.openartifacts.ai",
     "LEGACY_SERVING_HOST": "symposium.site",
     "RETIRED_API_HOST": "api.symposium.md",
+    "APP_HOST": "app.openartifacts.ai",
     "DEFAULT_PLAN": "free",
     "ACCOUNT_ACTION_URL": "https://openartifacts.ai/account",
     "UPGRADE_URL": "https://openartifacts.ai/account",
