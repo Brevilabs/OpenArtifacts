@@ -103,18 +103,30 @@ import {
   signPayload,
   verifyPayload,
 } from "./session.js";
-import { publicDocUrl } from "./urls.js";
+import { appOrigin, publicDocUrl } from "./urls.js";
 
 /**
- * The script's validator: the first 32 hex characters of its SHA-256, computed
- * once per isolate. The script is a constant, so the hash never changes within
- * one deploy and always changes with one that edits it.
+ * The script with the app origin filled in, so its frames open where the
+ * reader session is even when an old pinned page loads it from the API host.
+ * One deploy has one app origin, so the body and its validator (the first 32
+ * hex characters of its SHA-256) are computed once per isolate and change only
+ * with a deploy.
  */
-let pageScriptEtag: Promise<string> | undefined;
+export function pageScriptBody(app: string): string {
+  return PAGE_SCRIPT.replace('const APP_ORIGIN = "";', `const APP_ORIGIN = ${JSON.stringify(app)};`);
+}
 
-function pageScriptValidator(): Promise<string> {
-  pageScriptEtag ??= sha256Hex(PAGE_SCRIPT).then((hex) => `"${hex.slice(0, 32)}"`);
-  return pageScriptEtag;
+const pageScriptServed = new Map<string, Promise<{ body: string; etag: string }>>();
+
+function pageScriptForDeploy(env: Env): Promise<{ body: string; etag: string }> {
+  const app = appOrigin(env) ?? "";
+  let served = pageScriptServed.get(app);
+  if (served === undefined) {
+    const body = pageScriptBody(app);
+    served = sha256Hex(body).then((hex) => ({ body, etag: `"${hex.slice(0, 32)}"` }));
+    pageScriptServed.set(app, served);
+  }
+  return served;
 }
 
 /** `W/"x"` and `"x"` name the same bytes here, so the comparison is weak. */
@@ -141,14 +153,14 @@ function etagMatches(ifNoneMatch: string, etag: string): boolean {
  * year and carry this tag, so the address can never move or change meaning. A
  * fix to the script reaches every page through this route's cache lifetime.
  *
- * The body is a constant and the response never reads a cookie: it is fetched
- * cross-site from every document, and the serving pages' `no-referrer` means
- * the app host cannot tell which document loaded it.
+ * The body is constant within a deploy and the response never reads a cookie:
+ * it is fetched cross-site from every document, and the serving pages'
+ * `no-referrer` means the app host cannot tell which document loaded it.
  */
-async function pageScript(request: Request): Promise<Response> {
+async function pageScript(request: Request, env: Env): Promise<Response> {
   if (request.method !== "GET" && request.method !== "HEAD") return READER_NOT_FOUND();
 
-  const etag = await pageScriptValidator();
+  const { body, etag } = await pageScriptForDeploy(env);
   const headers = new Headers({
     "content-type": "text/javascript; charset=utf-8",
     "x-content-type-options": "nosniff",
@@ -161,7 +173,7 @@ async function pageScript(request: Request): Promise<Response> {
   if (ifNoneMatch !== null && etagMatches(ifNoneMatch, etag)) {
     return new Response(null, { status: 304, headers });
   }
-  return new Response(request.method === "HEAD" ? null : PAGE_SCRIPT, { status: 200, headers });
+  return new Response(request.method === "HEAD" ? null : body, { status: 200, headers });
 }
 
 /** The frame's JSON and the claim are never cached, and never read a cookie. */
@@ -479,7 +491,7 @@ export async function handleEmbed(
   ctx: ExecutionContext,
 ): Promise<Response> {
   const now = Date.now();
-  if (url.pathname === PAGE_SCRIPT_PATH) return await pageScript(request);
+  if (url.pathname === PAGE_SCRIPT_PATH) return await pageScript(request, env);
   if (url.pathname === EMBED_SHARE_PATH) return await shareFrame(request, url, env);
   if (url.pathname === EMBED_COMMENTS_PATH) return await commentsFrame(request, url, env);
   if (url.pathname === EMBED_SIGNIN_PATH) return await popup(request, url, env, now);

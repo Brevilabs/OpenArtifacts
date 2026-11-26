@@ -87,6 +87,10 @@ export const PAGE_SCRIPT = String.raw`(() => {
   try { api = new URL(script.src).origin; target = new URL(link.href); } catch { return; }
   const parts = target.pathname.split("/");
   if (target.origin !== api || parts.length !== 3 || parts[1] !== "share" || !/^[0-9a-z]{16}$/.test(parts[2])) return;
+  // The frames live on the app host, which the route below fills in. A pinned page cached before the app host existed
+  // still loads this script from the API host, and its frames would land on the app host by redirect.
+  const APP_ORIGIN = "";
+  if (APP_ORIGIN) api = APP_ORIGIN;
   const docId = parts[2];
   link.setAttribute("data-openartifacts-share", "bound");
   link.setAttribute("aria-haspopup", "dialog");

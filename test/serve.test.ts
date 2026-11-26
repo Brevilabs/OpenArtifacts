@@ -15,6 +15,7 @@ import { OPENARTIFACTS_BAR_SPACER, OPENARTIFACTS_BAR_STYLE } from "../src/render
 import { SHARE_TOKEN_PREFIX } from "../src/ids.js";
 import { putEmbedHandoff, takeEmbedHandoff } from "../src/db.js";
 import { FRAME_SCRIPT, POPUP_DONE_SCRIPT } from "../src/embed-scripts.js";
+import { pageScriptBody } from "../src/embed.js";
 import { COMMENTS_FRAME_CSS, COMMENTS_FRAME_SCRIPT, PAGE_COMMENTS_SCRIPT } from "../src/comments-scripts.js";
 import { versionObjectKey } from "../src/storage.js";
 import worker from "../src/index.js";
@@ -1784,13 +1785,14 @@ describe("an invited-only document", () => {
 
   describe("the page script", () => {
     const SCRIPT = "https://api.openartifacts.ai/embed/page.js";
-    const etagOf = async () => `"${(await sha256Hex(PAGE_SCRIPT)).slice(0, 32)}"`;
+    const BODY = pageScriptBody(API);
+    const etagOf = async () => `"${(await sha256Hex(BODY)).slice(0, 32)}"`;
 
     it("S3: is the constant script, cached by the browser for an hour, with the headers that make it safe to load cross-site", async () => {
       const response = await getFrom(SCRIPT, {}, PRIVATE);
 
       expect(response.status).toBe(200);
-      expect(await response.text()).toBe(PAGE_SCRIPT);
+      expect(await response.text()).toBe(BODY);
       expect(response.headers.get("content-type")).toBe("text/javascript; charset=utf-8");
       expect(response.headers.get("x-content-type-options")).toBe("nosniff");
       expect(response.headers.get("cross-origin-resource-policy")).toBe("cross-origin");
@@ -1814,7 +1816,18 @@ describe("an invited-only document", () => {
       }
       const stale = await getFrom(SCRIPT, { headers: { "if-none-match": '"0123"' } }, PRIVATE);
       expect(stale.status).toBe(200);
-      expect(await stale.text()).toBe(PAGE_SCRIPT);
+      expect(await stale.text()).toBe(BODY);
+    });
+
+    it("S3: sends an old pinned page's script on to the app host, which names the app host as the frames' origin", async () => {
+      const hosts = { ...PRIVATE, APP_HOST: "app.openartifacts.ai" };
+      const moved = await getFrom(SCRIPT, {}, hosts);
+      expect(moved.status).toBe(307);
+      expect(moved.headers.get("location")).toBe("https://app.openartifacts.ai/embed/page.js");
+
+      const body = await (await getFrom("https://app.openartifacts.ai/embed/page.js", {}, hosts)).text();
+      expect(body).toBe(pageScriptBody("https://app.openartifacts.ai"));
+      expect(body).toContain('const APP_ORIGIN = "https://app.openartifacts.ai";');
     });
 
     it("S3: answers HEAD with the headers and no body, and every other method as not found", async () => {
@@ -1844,7 +1857,7 @@ describe("an invited-only document", () => {
       for (const over of [{ ...PRIVATE, READER_SESSION_SECRET: undefined }, { ...PRIVATE, OAUTH_GITHUB_CLIENT_ID: "", EMAIL: undefined }, { ...PRIVATE, API_HOST: "" }]) {
         const response = await getFrom(SCRIPT, {}, over);
         expect(response.status).toBe(404);
-        expect(await response.text()).not.toBe(PAGE_SCRIPT);
+        expect(await response.text()).not.toBe(BODY);
         expect(response.headers.get("etag")).toBeNull();
       }
     });
