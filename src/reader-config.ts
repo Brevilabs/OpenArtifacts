@@ -46,3 +46,16 @@ export function readerSignInConfigured(env: Env): boolean {
     (configuredProviders(env).length > 0 || emailConfigured(env))
   );
 }
+
+/**
+ * Whether custom domains are on: reader sign-in is configured (a custom host
+ * serves private pages through the same grant), and both the Cloudflare for
+ * SaaS zone id and its API token are set. When it is false the server answers
+ * as one without the feature: no Home line, `/home/domain` is `404`, a host
+ * that is not ours is `404`, `/open` uses the code host, no response carries
+ * `customUrl`, and the daily sync does nothing. Deleting the token is the off
+ * switch (docs/deploying.md).
+ */
+export function customDomainsConfigured(env: Env): boolean {
+  return readerSignInConfigured(env) && Boolean(env.CF_SAAS_ZONE_ID?.trim()) && Boolean(env.CF_SAAS_API_TOKEN?.trim());
+}

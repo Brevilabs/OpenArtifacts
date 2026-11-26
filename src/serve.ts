@@ -236,11 +236,12 @@ export function servingError(method: string, code: "not_found" | "internal"): Re
 /**
  * A redirect with the serving origin's full safety policy. `307` for the legacy
  * host; private documents use `302` to sign in and `303` to swap a grant for a
- * cookie, which is the only `Set-Cookie` this surface produces.
+ * cookie, which is the only `Set-Cookie` this surface produces; a custom domain
+ * sends `http:` to `https:` with `301`.
  */
 export function servingRedirect(
   location: string,
-  status: 302 | 303 | 307 = 307,
+  status: 301 | 302 | 303 | 307 = 307,
   setCookie?: string,
 ): Response {
   const headers = servingHeaders("no-store");

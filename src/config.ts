@@ -236,6 +236,18 @@ export interface Env {
   COMMENT_EMAIL_LIMITER?: RateLimit;
 
   /**
+   * Custom domains (docs/deploying.md). The Cloudflare for SaaS zone id of
+   * `SERVING_HOST`, a var, and an API token with SSL and Certificates Edit on
+   * that zone, a secret. The feature is on only when both are set and reader
+   * sign-in is configured (`customDomainsConfigured`); deleting the token is the
+   * off switch.
+   */
+  CF_SAAS_ZONE_ID?: string;
+  CF_SAAS_API_TOKEN?: string;
+  /** **Check now** on the custom domain page, counted per account. Absent means no limit. */
+  DOMAIN_CHECK_LIMITER?: RateLimit;
+
+  /**
    * One SQLite Durable Object per document, holding its comment threads
    * (`COMMENTS.idFromName(docId)`, src/comments/object.ts).
    *

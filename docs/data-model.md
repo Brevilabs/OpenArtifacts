@@ -137,6 +137,24 @@ A publisher's permanent origin code: the 6-character subdomain
 - Read in the same query as the document (`findReadableDoc`), so a code host compares its code to the owner's without a second round trip.
 - Rebuildable: each document's manifest carries `originCode`, and `src/rebuild.ts` emits `INSERT OR IGNORE` rows (the first manifest wins and a contradiction is reported, never applied).
 
+#### `publisher_hosts`
+
+An account's custom domain, such as `docs.acme.com` (docs/private-sharing.md). Migration `0021`.
+
+| Column | Type | Constraints | Notes |
+| --- | --- | --- | --- |
+| `account_id` | TEXT | PRIMARY KEY, REFERENCES `accounts(id)` | One domain per account |
+| `hostname` | TEXT | NOT NULL | ASCII, lowercase, no trailing dot |
+| `token` | TEXT | NOT NULL | The TXT value, `openartifacts-verify=…`, random per claim |
+| `proved_at` | INTEGER | | The first **Check now** that found the token; the row may own a Cloudflare hostname |
+| `active_at` | INTEGER | | Live since; set only by **Check now**, cleared only by the daily sync |
+| `created_at` | INTEGER | NOT NULL | Epoch ms |
+
+- `publisher_hosts_live`: UNIQUE on `hostname` WHERE `active_at IS NOT NULL`, so one account at most is live on a hostname. A pending row blocks no one.
+- Written by `src/custom-domains.ts`: `addDomain` inserts, `checkDomain` sets `proved_at` and `active_at` and deletes another account's live row for the hostname, `removeDomain` deletes, `syncAll` clears `active_at` with `WHERE active_at = {the value read}`.
+- Read as `custom_host` in the same query as the document (`CUSTOM_HOST_SQL`, through the owner's link to its account), and by Home for the account's own row.
+- Not in the manifests, and not rebuilt: account configuration, covered by D1 Time Travel.
+
 ### Identity and credentials
 
 #### `accounts`
@@ -301,5 +319,5 @@ carries only `docs.has_threads`. Source: `src/comments/object.ts`.
 ## What is the system of record
 
 - **Document state is rebuildable from R2**: `manifest.json` carries owner, title, timestamps, deletion, access and the invite list, the version objects carry the version log, and `has_threads` comes from the manifest or, for one written before it, from a `threads.json` under the prefix. `src/rebuild.ts` turns them back into `docs`, `doc_invites`, `versions`, `publisher_origins` (from `originCode`) and `storage_usage` rows, and fails closed (`docs/deploying.md`).
-- **D1 is still the only record** of accounts, sessions, owner links, the publishers cache and pending access requests; D1 Time Travel (30 days) covers them. Only `publishers` (and the plan columns on `accounts`) cache something held elsewhere.
+- **D1 is still the only record** of accounts, sessions, owner links, custom domains, the publishers cache and pending access requests; D1 Time Travel (30 days) covers them. Only `publishers` (and the plan columns on `accounts`) cache something held elsewhere.
 - **The Durable Object is the only live record of comments**; `threads.json` is its backup.

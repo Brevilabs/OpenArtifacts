@@ -16,6 +16,7 @@ The surfaces:
 | API | `/api/v1/*` | required | Publisher-facing. JSON in, JSON out. |
 | Serving | `/d/*` | none | Reader-facing. Public HTML on `openartifacts.site`, which never sets a cookie. |
 | Private serving | `/d/*` on `{code}.openartifacts.site` | grant cookie | One publisher's invited-only documents per origin. Sets one read-only grant cookie. See [Private documents](#private-documents). |
+| Custom domain | `/d/*` on a publisher's verified domain, such as `docs.acme.com` | none, or the grant cookie | One account's public and private documents, as a second address for its own origin. See [Custom domains](#custom-domains). |
 | Reader | `/open/*` (`GET`, and `POST /open/{docId}/request`), `/signin/*`, `/share/*`, `/embed/sign-in` | session | Human-facing HTML pages on the app host: sign in, the door a private document opens through, requesting access, the share page, and the Share popover's sign-in popup. Not a client surface. |
 | Embed | `/embed/page.js`, `/embed/share`, `/embed/sign-in`, `/embed/token`, `/embed/api/*` | none, the session (sign-in only) or the popover token | The top bar's page script, the Share popover frame, its sign-in popup and the routes the frame calls, on the app host. Not a client surface. See [The top bar, the Share popover and the share page](#the-top-bar-the-share-popover-and-the-share-page). |
 | Comments | `/api/v1/docs/{docId}/threads…`, `/d/{docId}/threads`, `/embed/comments`, `/embed/api/docs/{docId}/threads…` | token, none, or the popover token | Inline comments: the agent routes, the unauthenticated threads resource on the serving origin, and the frame and its JSON. See [Comments](#comments). |
@@ -27,7 +28,9 @@ and the pages for people (the Reader, Embed and Approval rows, and Home) from th
 app host, `app.openartifacts.ai`.
 The `url` field a push returns therefore points at a different host than the one
 the client called, which is the reason a client must never build a doc url
-itself. **Always use the `url` the API returns.**
+itself. **Always use the `url` the API returns.** A receipt may also carry
+`customUrl`, the same page on the publisher's custom domain
+([Custom domains](#custom-domains)); `url` never changes.
 
 Compatibility is read-only. `symposium.site` returns `307` for GET and HEAD to
 the exact same path and query on `openartifacts.site`; other methods fail with a
@@ -551,7 +554,8 @@ answers `200` with the same list. An `Access` response is `no-store`.
  "requests": [{"email": "bob@other.com", "requestedAt": 1785000100000}]}
 ```
 
-`url` is always the canonical link, never a grant. `email` says whether this
+`url` is always the canonical link, never a grant; `customUrl` is added while the
+account's custom domain is live ([Custom domains](#custom-domains)). `email` says whether this
 server can send invite and request emails, not that one was delivered (a
 rate limit or the mail service can drop one): when it is `false` the owner
 shares the link themselves. `role` is one of an ordered ladder, `"view"` then
@@ -1401,11 +1405,37 @@ Three of these are worth handling deliberately in a client:
   request route answers the same **Request sent** page for every id, so all of
   them are indistinguishable from a document that never existed.
 
+## Custom domains
+
+An account on a plan with `customDomain` may connect one subdomain it owns, such as
+`docs.acme.com`, on Home (`/home/domain` on the app host). Only **Check now** makes it
+live: the TXT record `_openartifacts.{hostname}` holds the account's token at that
+moment, and Cloudflare reports the hostname and its certificate active. A daily sync
+only ever turns a domain off. Without `CF_SAAS_ZONE_ID` and `CF_SAAS_API_TOKEN`
+(docs/deploying.md) none of this exists, and every answer is as without the feature.
+
+While the domain is live:
+
+- `customUrl`, `https://{hostname}/d/{docId}`, is added to the three publish receipts
+  and to the `Access` object. It is absent otherwise. `url` is unchanged in every
+  case, and a client that ignores `customUrl` works as before.
+- `https://{hostname}/d/{docId}[/v{n}]` serves the account's public documents as
+  `openartifacts.site` does, and its invited-only documents under the code host's
+  rules: no grant cookie sends the reader to `/open/{docId}?custom` on the app host,
+  which after sign-in hands an allowed reader back to the custom domain. `/open`
+  without `?custom` (every `openartifacts.site` link and invite email) and
+  `POST …/open` still open the code host. Another account's document, and any other
+  path, is the same `404` as a missing one. `http:` answers `301` to `https:`.
+- `GET /api/v1/account` reports `customDomain: true` in `limits` for a plan that
+  has it.
+
 ## Account plans
 
 Worker var `PLAN_LIMITS` is a JSON string mapping plan names to positive integer
-ceilings, plus the optional boolean `privateSharing` (the plan may make documents
-invited-only and add people to them; absent means it may not). HTML is measured in UTF-8 bytes and cannot exceed the 10 MiB safety bound:
+ceilings, plus the optional booleans `privateSharing` (the plan may make documents
+invited-only and add people to them; absent means it may not), `comments`, and
+`customDomain` (the plan may add a custom domain; only adding one checks it, so a
+domain outlives a lapse). HTML is measured in UTF-8 bytes and cannot exceed the 10 MiB safety bound:
 
 ```json
 {"free":{"documents":3,"pushesPerDay":30,"htmlBytes":1048576,"storageBytes":262144000},"pro":{"documents":500,"pushesPerDay":500,"htmlBytes":10485760,"storageBytes":5368709120}}

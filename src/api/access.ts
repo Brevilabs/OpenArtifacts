@@ -70,7 +70,7 @@ import { readBodyWithin } from "../quota.js";
 import { readerSignInConfigured } from "../reader-config.js";
 import { stringField } from "../account.js";
 import { STORED_CONTENT_TYPE, versionObjectKey } from "../storage.js";
-import { publicDocUrl } from "../urls.js";
+import { customUrlField, publicDocUrl } from "../urls.js";
 
 const NO_STORE = { "cache-control": "no-store" };
 
@@ -392,7 +392,8 @@ export async function withCurrentPlan(env: Env, owner: Publisher): Promise<Publi
 const PLAN_RECHECK_MS = 30_000;
 
 /**
- * The frozen `Access` object: `url` is always the canonical link, never a grant.
+ * The frozen `Access` object: `url` is always the canonical link, never a grant,
+ * and `customUrl` is added only while the account's custom domain is live.
  * The popover's owner view is this plus who is asking, so both surfaces name
  * the same fields.
  */
@@ -401,6 +402,8 @@ export function accessBody(env: Env, requestUrl: URL, docId: string, state: Acce
   return {
     docId,
     url: publicDocUrl(env, requestUrl, docId),
+    // The branded link while the account's custom domain is live; `url` never changes.
+    ...customUrlField(env, state.custom_host, docId),
     linkAccess: state.link_access,
     // The roles the caller may grant now, in ladder order; left out where the server has no comments.
     ...(roles === undefined ? {} : { roles }),

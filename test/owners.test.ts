@@ -85,7 +85,7 @@ it("joins both live collections with stable pagination and preserves deleted pro
   const c = doc(EXTERNAL, 3);
   const unrelated = doc(OTHER_ACCOUNT, 4);
   // Unlinked, each row's publisher id is the owner that inserted it.
-  for (const row of [a, b, c, unrelated]) expect(await insertDocWithinQuota(env.DB, row, 10)).toBe(row.owner);
+  for (const row of [a, b, c, unrelated]) expect((await insertDocWithinQuota(env.DB, row, 10))?.owner).toBe(row.owner);
   await softDeleteDoc(env.DB, c.id, EXTERNAL, 4);
   expect(await canManage(env.DB, a.id, ACCOUNT)).toBe(false);
   await link();
@@ -100,7 +100,7 @@ it("joins both live collections with stable pagination and preserves deleted pro
   // Both writes name the linked app-sites user whichever credential reached
   // them: `a` is pushed as ACCOUNT, `b` owned by ACCOUNT and withdrawn as
   // EXTERNAL. One publisher, one id, either way round.
-  expect(await reserveNextVersion(env.DB, a.id, ACCOUNT)).toEqual({ version: 2, owner: EXTERNAL });
+  expect(await reserveNextVersion(env.DB, a.id, ACCOUNT)).toEqual({ version: 2, owner: EXTERNAL, custom_host: null });
   expect(await softDeleteDoc(env.DB, b.id, EXTERNAL, 5)).toBe(EXTERNAL);
   expect(await env.DB.prepare("SELECT owner, deleted_at FROM docs WHERE id = ?").bind(c.id).first())
     .toEqual({ owner: EXTERNAL, deleted_at: 4 });
@@ -108,7 +108,7 @@ it("joins both live collections with stable pagination and preserves deleted pro
 
 it("counts both document owners inside reservation, including requests started before linking", async () => {
   const oldRequest = doc(EXTERNAL);
-  expect(await insertDocWithinQuota(env.DB, doc(ACCOUNT), 3)).toBe(ACCOUNT);
+  expect((await insertDocWithinQuota(env.DB, doc(ACCOUNT), 3))?.owner).toBe(ACCOUNT);
   await link();
   const attempts = await Promise.all([
     insertDocWithinQuota(env.DB, oldRequest, 2),
@@ -116,7 +116,7 @@ it("counts both document owners inside reservation, including requests started b
   ]);
   expect(attempts.filter(Boolean)).toHaveLength(1);
   // Linked, so an insert under either credential reports the same user.
-  expect(attempts.find((owner) => owner !== null)).toBe(EXTERNAL);
+  expect(attempts.find((inserted) => inserted !== null)?.owner).toBe(EXTERNAL);
   expect(await insertDocWithinQuota(env.DB, doc(EXTERNAL), 2)).toBeNull();
   expect(await insertDocWithinQuota(env.DB, doc(ACCOUNT), 2)).toBeNull();
 });
@@ -140,7 +140,7 @@ it("combines existing daily usage and refunds its original bucket across linking
 
 it("handles linking between document and daily reservations without quota reset", async () => {
   const pending = doc(EXTERNAL);
-  expect(await insertDocWithinQuota(env.DB, pending, 1)).toBe(EXTERNAL);
+  expect((await insertDocWithinQuota(env.DB, pending, 1))?.owner).toBe(EXTERNAL);
   expect(await reserveDailyPush(env.DB, ACCOUNT, DAY, 1)).toBe(true);
   await link();
   expect(await reserveDailyPush(env.DB, EXTERNAL, DAY, 1)).toBe(false);

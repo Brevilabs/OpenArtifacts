@@ -68,7 +68,10 @@ To remove a mistaken link:
 
 An unlink moves no document: each keeps its original `owner`. The unlinked
 account loses the paid plan that came through the link at once; its own plan,
-if any, returns on its next entitlement refresh.
+if any, returns on its next entitlement refresh. The license's pages also leave
+the account's custom domain at once: a page finds its domain through the link on
+every request (docs/private-sharing.md). Their `openartifacts.site` links keep
+working.
 
 **Self-serve unlink.** The account page offers the signed-in account holder an
 Unlink button under their linked license. The website proves the account the

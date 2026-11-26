@@ -2,7 +2,7 @@
  * Reader sign-in, and the door a private document opens through.
  *
  * ```
- * GET  /open/{docId}[/v{n}]      check the session and `canRead`, then hand off to the publisher's origin
+ * GET  /open/{docId}[/v{n}][?custom]  check the session and `canRead`, then hand off to the publisher's origin
  * POST /open/{docId}/request     ask the owner to let this account in
  * POST /signin/start/{provider}  begin Google or GitHub; the callback is /approve/callback/{provider}
  * POST /signin/email             mail a six-digit code
@@ -69,6 +69,7 @@ import {
 import { servingRedirect } from "./serve.js";
 import {
   cookie,
+  CUSTOM_QUERY,
   LOGIN_COOKIE,
   macHex,
   readSession,
@@ -163,6 +164,9 @@ export function signIn(env: Env, next: string, note?: string): Response {
  * 60-second grant; a document that has since become public redirects to its
  * public url; everything else — not invited, deleted, never existed — is one page.
  *
+ * `?custom` (set by a custom domain's redirect) sends an allowed reader to the
+ * page's live custom domain instead, when it has one.
+ *
  * The grant is minted for the label of the document's own owner, read from its
  * row. It is never derived from the reader's account or from the doc id: a
  * publisher whose key was later linked to an account has documents under two
@@ -175,7 +179,10 @@ async function open(request: Request, url: URL, env: Env, now: number): Promise<
   if (secret === null || !servingHost) return READER_NOT_FOUND();
   const route = parseDocPath(url.pathname, OPEN_PREFIX);
   if (route === null) return READER_NOT_FOUND();
-  const next = docPath(OPEN_PREFIX, route);
+  // Marked by a custom domain's own redirect: only then is that domain where the
+  // reader goes. An `openartifacts.site` link and the invite email stay on our hosts.
+  const custom = url.searchParams.has(CUSTOM_QUERY);
+  const next = `${docPath(OPEN_PREFIX, route)}${custom ? `?${CUSTOM_QUERY}` : ""}`;
 
   const accountId = await readSession(request, secret, now);
   if (accountId === null) return signIn(env, next);
@@ -186,7 +193,7 @@ async function open(request: Request, url: URL, env: Env, now: number): Promise<
       return servingRedirect(`https://${servingHost}${docPath(SERVING_PREFIX, route)}`, 302);
     }
     if (found.allowed) {
-      const grant = await grantUrl(env, found.owner, route, accountId, now, found.origin_code);
+      const grant = await grantUrl(env, found.owner, route, accountId, now, found.origin_code, custom ? found.custom_host : null);
       if (grant !== null) return servingRedirect(grant.url, 302);
     }
   }

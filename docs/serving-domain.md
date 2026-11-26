@@ -130,12 +130,22 @@ credential.** Private documents are served from one origin per *publisher*,
 is 6 random characters stored per `docs.owner` (`publisher_origins`), not derived from the document id, so the
 hostname never reveals the owner or the document. A code host holds one
 read-only grant cookie and checks each document against its access list on every
-request, and it answers `404` for any document whose owner does not have its code. A publisher's custom domain takes the same seat later.
+request, and it answers `404` for any document whose owner does not have its code.
 
 Code hosts are subdomains of the sacrificial domain, never of the brand domain,
 so "Why a subdomain does not work" is untouched: a listing against a code host
 lands on `openartifacts.site`, which is the domain that exists to absorb it. They
 are also never cache-rule targets, as the Cache Rule above says.
+
+A publisher's verified custom domain, such as `docs.acme.com`, takes the same
+seat under the publisher's own name. It is the publisher's own registrable
+domain, so a Safe Browsing listing for it lands on them, not on us; its hostname
+lives on the `openartifacts.site` zone, so a Cloudflare action lands on the
+sacrificial zone. The Worker refuses a hostname equal to or under one of our own
+domains, when it is added and in the router, so user content still never reaches
+`openartifacts.ai`. Our links and emails keep pointing at `openartifacts.site`:
+only a link on the custom domain itself, and the owner's Home, open it
+([private-sharing.md](private-sharing.md#custom-domains)).
 
 The wildcard route and DNS record are one-time setup in
 [deploying.md](deploying.md#private-sharing). It was nearly free to adopt while

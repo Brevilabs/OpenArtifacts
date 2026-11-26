@@ -214,6 +214,26 @@ describe("GET /home", () => {
   });
 });
 
+describe("Home with custom domains", () => {
+  const ON = { ...HOSTS, CF_SAAS_ZONE_ID: "zone", CF_SAAS_API_TOKEN: "token" } as Partial<Env>;
+
+  it("offers a domain, then links every row to it while it is live; /home/domain exists only while the feature is on", async () => {
+    const me = await account();
+    const headers = await session(me.id);
+    const id = await doc(me.id, "On my domain", Date.now(), "invited");
+    expect(await (await get(`${API}/home`, ON, headers)).text()).toContain('Use your own domain for your pages. <a href="/home/domain">Set up a custom domain</a>');
+
+    await env.DB.prepare("INSERT INTO publisher_hosts (account_id, hostname, token, active_at, created_at) VALUES (?, 'docs.acme.com', 't', 1, 1)").bind(me.id).run();
+    const html = await (await get(`${API}/home`, ON, headers)).text();
+    expect(html).toContain('Your pages open on docs.acme.com. <a href="/home/domain">Manage</a>');
+    expect(html).toContain(`<a href="https://docs.acme.com/d/${id}">`);
+
+    expect((await get(`${API}/home/domain`, ON, headers)).status).toBe(200);
+    expect((await get(`${API}/home/domain`, HOSTS, headers)).status).toBe(404);
+    expect(await (await get(`${API}/home`, HOSTS, headers)).text()).toContain(`<a href="${SERVING}/d/${id}">`);
+  });
+});
+
 describe("Home in a served page's top bar", () => {
   it("is a plain link to /home in every page's bar, and the bar's bytes do not vary by cookie", async () => {
     const me = await account();

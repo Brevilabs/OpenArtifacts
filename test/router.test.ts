@@ -115,6 +115,18 @@ describe("resolveSurface — canonical and legacy domains", () => {
   });
 });
 
+describe("resolveSurface — a publisher's custom domain", () => {
+  it("is any host that is not ours, only while custom domains are on", () => {
+    expect(resolveSurface("docs.acme.com", "/d/abc", { ...HOSTS, customDomains: true })).toBe("custom-serving");
+    expect(resolveSurface("docs.acme.com", "/d/abc", HOSTS)).toBe("unknown");
+    // Equal to or under one of our domains, never.
+    for (const host of ["openartifacts.site", "www.openartifacts.site", "x.symposium.site", "openartifacts.ai", "docs.openartifacts.ai", "symposium.md", "a.b.api.symposium.md"]) {
+      const surface = resolveSurface(host, "/d/abc", { ...HOSTS, customDomains: true });
+      expect(surface === "custom-serving", host).toBe(false);
+    }
+  });
+});
+
 describe("resolveSurface — a publisher's own origin", () => {
   const LABEL = "k7m2qx";
   const LEGACY = "0123456789abcdefghjkmnpqrs";

@@ -57,6 +57,7 @@ const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const SERVING = "openartifacts.site";
 const API = "api.openartifacts.ai";
 const APP = "app.openartifacts.ai";
+const CUSTOM = "docs.acme.com";
 const SECRET = "k".repeat(32);
 const KEY = "cplus_live_a1b2c3d4e5f60718";
 const OWNER = "owner-p";
@@ -184,6 +185,9 @@ before(async () => {
       PLAN_LIMITS: vars.PLAN_LIMITS,
       ACCOUNT_ACTION_URL: vars.ACCOUNT_ACTION_URL,
       UPGRADE_URL: vars.UPGRADE_URL,
+      // Custom domains on: a host is one only once an account has a live row.
+      CF_SAAS_ZONE_ID: "zone",
+      CF_SAAS_API_TOKEN: "token",
     },
   });
   const { port } = await mf.ready;
@@ -216,7 +220,7 @@ before(async () => {
     channel: "chrome",
     headless: !process.env.OA_HEADED,
     args: [
-      `--host-resolver-rules=MAP ${SERVING}:443 127.0.0.1:${port}, MAP *.${SERVING}:443 127.0.0.1:${port}, MAP ${API}:443 127.0.0.1:${port}, MAP ${APP}:443 127.0.0.1:${port}`,
+      `--host-resolver-rules=MAP ${SERVING}:443 127.0.0.1:${port}, MAP *.${SERVING}:443 127.0.0.1:${port}, MAP ${API}:443 127.0.0.1:${port}, MAP ${APP}:443 127.0.0.1:${port}, MAP ${CUSTOM}:443 127.0.0.1:${port}`,
       "--ignore-certificate-errors",
     ],
   });
@@ -1085,6 +1089,28 @@ test("a pasted batch stops when the document goes private part way through", { t
   assert.deepEqual(puts, ["ann@example.com"]);
   assert.deepEqual((await (await api(`/api/v1/docs/${X}/access`)).json()).people.map((entry) => entry.email), ["ann@example.com"]);
   await context.close();
+});
+
+test("on a custom domain, Share opens the popover and Copy link copies the custom link", { timeout: 120_000 }, async () => {
+  const X = await publish("On my own domain", "<p>Mine.</p>");
+  await db
+    .prepare("INSERT INTO publisher_hosts (account_id, hostname, token, proved_at, active_at, created_at) VALUES (?, ?, 't', 1, 1, 1)")
+    .bind(OWNER_ACCOUNT, CUSTOM)
+    .run();
+  const context = await newContext();
+  try {
+    const page = await context.newPage();
+    await page.goto(`https://${CUSTOM}/d/${X}`);
+    await page.locator("a[data-openartifacts-share]").click();
+    const frame = await until("the Share frame", () => frameOf(page, X));
+    await frame.getByRole("button", { name: "Copy link" }).waitFor();
+    await frame.evaluate(() => { navigator.clipboard.writeText = (text) => { window.copiedText = text; return Promise.resolve(); }; });
+    await frame.getByRole("button", { name: "Copy link" }).click();
+    assert.equal(await until("the copied link", () => frame.evaluate(() => window.copiedText)), `https://${CUSTOM}/d/${X}`);
+  } finally {
+    await context.close();
+    await db.prepare("DELETE FROM publisher_hosts WHERE account_id = ?").bind(OWNER_ACCOUNT).run();
+  }
 });
 
 test("Home search opens owned pages by keyboard and click without filtering the list", { timeout: 120_000 }, async () => {

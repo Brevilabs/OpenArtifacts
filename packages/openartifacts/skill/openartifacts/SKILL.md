@@ -81,7 +81,7 @@ before going ahead, and never retry without the flag.
 The command prints `{"docId":"…","url":"…","version":1,"linkAccess":"anyone"}` for a
 public page. A private publish prints `"linkAccess":"invited"` and also a `manageUrl`; `share` prints
 `manageUrl` too, and `email`, which says whether the server can send invitation emails. It does not say one was delivered: the server's per-publisher limit or its mail service may still drop one. Give the user the url
-and say who can open it. Word the report from the receipt's `linkAccess`, never from the flag you passed.
+and say who can open it. When the receipt has `customUrl`, give that link as {url}: it is the same page on the publisher's own domain. Word the report from the receipt's `linkAccess`, never from the flag you passed.
 
 - Private: "Published privately: {url}. Only you and {addresses} can open it. OpenArtifacts emails {Name} an invitation, and they sign in with that address. If they do not get it, send them the link." Say "Only you can open it." when nobody was named. When `email` is false, say the server sends no email, that the user should send the link to the invitee, and that the invitee signs in with that address. Never claim an invitation was delivered, even when `email` is true: say only that OpenArtifacts emails one, and that the user can send the link if the invitee does not get it.
 - Public: "Published: {url}. Anyone with the link can open it."

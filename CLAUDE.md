@@ -57,9 +57,13 @@ in the positioning doc.
 These are day-one decisions, not retrofits:
 
 - User content is served from a **sacrificial domain** (`openartifacts.site`),
-  separate from the brand domain. Reputation damage must not land on
+  separate from the brand domain, or from the publisher's own verified custom
+  domain, and **never from the brand domain**. Reputation damage must not land on
   `openartifacts.ai`. `docs/serving-domain.md` is why, and why a subdomain does not
-  substitute. There is no migration path once links are in the wild.
+  substitute. There is no migration path once links are in the wild. A custom
+  domain is one publisher's origin, like a code host: it serves one account's pages
+  only, never a host equal to or under our own domains, and "404, never 403" covers
+  it (`docs/private-sharing.md`).
 - Shared docs are **`noindex` + `nofollow` by default**.
 - **Publisher-gated, reader-open**: publishing requires a key; reading a public
   document requires nothing. New pages from the CLI start invited-only when the

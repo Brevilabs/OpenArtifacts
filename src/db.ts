@@ -240,16 +240,16 @@ export async function insertDocWithinQuota(
   db: D1Database,
   doc: Omit<DocRow, "deleted_at" | "latest_version" | "link_access"> & { link_access?: LinkAccess },
   maxDocs: number,
-): Promise<string | null> {
+): Promise<{ owner: string; custom_host: string | null } | null> {
   // `link_access` is written by the insert itself, so a private create is never
   // public, not even for the moment between two statements.
-  const inserted = await db
+  return await db
     .prepare(
       `${OWNER_SCOPE_SQL}
        INSERT INTO docs (id, owner, title, latest_version, created_at, updated_at, link_access)
        SELECT ?, ?, ?, ?, ?, ?, ?
         WHERE (SELECT COUNT(*) FROM docs WHERE owner IN (SELECT owner FROM owner_scope) AND deleted_at IS NULL) < ?
-       RETURNING ${PUBLISHER_USER_ID_SQL} AS owner`,
+       RETURNING ${PUBLISHER_USER_ID_SQL} AS owner, ${SCOPE_CUSTOM_HOST_SQL} AS custom_host`,
     )
     .bind(
       doc.owner,
@@ -263,9 +263,7 @@ export async function insertDocWithinQuota(
       doc.link_access ?? "anyone",
       maxDocs,
     )
-    .first<{ owner: string }>();
-
-  return inserted === null ? null : inserted.owner;
+    .first<{ owner: string; custom_host: string | null }>();
 }
 
 /**
@@ -305,6 +303,8 @@ export interface ReservedVersion {
   version: number;
   /** The publisher's user id (`PUBLISHER_USER_ID_SQL`), under either linked credential. */
   owner: string;
+  /** The account's live custom domain, or null (`customUrl`). */
+  custom_host: string | null;
 }
 
 /**
@@ -339,12 +339,14 @@ export async function reserveNextVersion(
        UPDATE docs
           SET latest_version = latest_version + 1
         WHERE id = ? AND owner IN (SELECT owner FROM owner_scope) AND deleted_at IS NULL
-        RETURNING latest_version, ${PUBLISHER_USER_ID_SQL} AS owner`,
+        RETURNING latest_version, ${PUBLISHER_USER_ID_SQL} AS owner, ${SCOPE_CUSTOM_HOST_SQL} AS custom_host`,
     )
     .bind(owner, owner, docId)
-    .first<{ latest_version: number; owner: string }>();
+    .first<{ latest_version: number; owner: string; custom_host: string | null }>();
 
-  return reserved === null ? null : { version: reserved.latest_version, owner: reserved.owner };
+  return reserved === null
+    ? null
+    : { version: reserved.latest_version, owner: reserved.owner, custom_host: reserved.custom_host };
 }
 
 /**
@@ -506,6 +508,20 @@ export const CAN_READ_SQL = `(d.link_access = 'anyone'
   OR ${CAN_MANAGE_SQL}
   OR EXISTS (SELECT 1 FROM accounts a JOIN doc_invites i ON i.email = a.email
               WHERE a.id = ? AND i.doc_id = d.id))`;
+
+/**
+ * The live custom domain of document `d`'s account, or NULL: the hostname of the
+ * `publisher_hosts` row of the account that owns `d.owner` (directly, or through
+ * a linked license), while it is live. So a domain serves the account's whole
+ * owner scope, and an unlinked license's pages leave it at once.
+ */
+const CUSTOM_HOST_SQL = `(SELECT ph.hostname FROM publisher_hosts ph
+  WHERE ph.account_id = COALESCE((SELECT account_id FROM owner_links WHERE external_owner = d.owner), d.owner)
+    AND ph.active_at IS NOT NULL)`;
+
+/** The same for a statement that starts with `OWNER_SCOPE_SQL` and has no `d`: the canonical account's domain. */
+const SCOPE_CUSTOM_HOST_SQL = `(SELECT ph.hostname FROM publisher_hosts ph
+  WHERE ph.account_id = (SELECT id FROM canonical) AND ph.active_at IS NOT NULL)`;
 
 /** What the operations on a document's access need to know about a document the caller manages. */
 export interface ManagedDoc {
@@ -1539,6 +1555,8 @@ export interface ReadableDoc {
   owner: string;
   /** The owner's stored origin code, or null before one is allocated. */
   origin_code: string | null;
+  /** The owning account's live custom domain, or null (`CUSTOM_HOST_SQL`). */
+  custom_host: string | null;
   /** For the Share popover's reader view, shown only once a token has proved `canRead`. */
   title: string;
   deleted_at: number | null;
@@ -1578,6 +1596,7 @@ export async function findReadableDoc(
       `${OWNER_SCOPE_SQL}
        SELECT d.owner AS owner, d.title AS title, d.deleted_at AS deleted_at, d.link_access AS link_access,
               (SELECT code FROM publisher_origins po WHERE po.owner = d.owner) AS origin_code,
+              ${CUSTOM_HOST_SQL} AS custom_host,
               ${HAS_COMMENTS_SQL} AS has_comments,
               (SELECT MAX(v.n) FROM versions v
                 WHERE v.doc_id = d.id AND (? IS NULL OR v.n = ?)) AS version,
@@ -1602,6 +1621,8 @@ export interface CommentableDoc {
   owner: string;
   /** The owner's stored origin code, or null before one is allocated. */
   origin_code: string | null;
+  /** The owning account's live custom domain, or null (`CUSTOM_HOST_SQL`). */
+  custom_host: string | null;
   title: string;
   deleted_at: number | null;
   link_access: LinkAccess;
@@ -1668,6 +1689,7 @@ export async function findCommentableDoc(
       `${OWNER_SCOPE_SQL}
        SELECT d.owner AS owner, d.title AS title, d.deleted_at AS deleted_at, d.link_access AS link_access,
               (SELECT code FROM publisher_origins po WHERE po.owner = d.owner) AS origin_code,
+              ${CUSTOM_HOST_SQL} AS custom_host,
               d.has_threads AS has_threads,
               ${COMMENTER_LISTED_SQL} AS commentable,
               (SELECT MAX(v.n) FROM versions v
@@ -1893,9 +1915,14 @@ export interface RequestRow {
 export async function readAccess(
   db: D1Database,
   docId: string,
-): Promise<{ title: string; link_access: LinkAccess; people: InviteRow[]; requests: RequestRow[] } | null> {
+): Promise<(DocAccessRow & { people: InviteRow[]; requests: RequestRow[] }) | null> {
   const [doc, people, requests] = await db.batch<DocAccessRow | InviteRow | RequestRow>([
-    db.prepare("SELECT title, link_access FROM docs WHERE id = ? AND deleted_at IS NULL").bind(docId),
+    db
+      .prepare(
+        `SELECT d.title AS title, d.link_access AS link_access, ${CUSTOM_HOST_SQL} AS custom_host
+           FROM docs d WHERE d.id = ? AND d.deleted_at IS NULL`,
+      )
+      .bind(docId),
     db
       .prepare("SELECT email, role, created_at FROM doc_invites WHERE doc_id = ? ORDER BY created_at, email")
       .bind(docId),
@@ -1913,7 +1940,7 @@ export async function readAccess(
     : null;
 }
 
-type DocAccessRow = { title: string; link_access: LinkAccess };
+type DocAccessRow = { title: string; link_access: LinkAccess; custom_host: string | null };
 
 /**
  * Set a live document's mode. True only when this call changed it: false means
