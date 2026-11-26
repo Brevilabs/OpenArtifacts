@@ -5,6 +5,7 @@ import { MAX_DOCS_PER_PUBLISHER, MAX_DOC_BYTES, MAX_PUSHES_PER_DAY, MAX_STORED_B
 import { commitVersionMetadata } from "../src/db.js";
 import type { DocRow, PushQuotaRow, VersionRow } from "../src/db.js";
 import { DOC_ID_LENGTH, isDocId } from "../src/ids.js";
+import { linkExternalOwner } from "../src/owners.js";
 import { MAX_REQUEST_BYTES, utcDay, utf8Length } from "../src/quota.js";
 import { NOINDEX_META, OPENARTIFACTS_FOOTER } from "../src/render.js";
 import { versionObjectKey } from "../src/storage.js";
@@ -75,8 +76,9 @@ async function send(
   body?: unknown,
   overrides: Partial<Env> = {},
   origin = API_ORIGIN,
+  extraHeaders: HeadersInit = {},
 ): Promise<Response> {
-  const headers = new Headers();
+  const headers = new Headers(extraHeaders);
   if (key !== null) headers.set("authorization", `Bearer ${key}`);
 
   const init: RequestInit = { method, headers };
@@ -239,6 +241,49 @@ describe("POST /api/v1/docs", () => {
     const body = await pushedOk(await post(KEY_A, { html: page("<p>x</p>") }), 201);
 
     expect((await docRow(body.docId))?.title).toBe("Untitled");
+  });
+
+  it("offers account linking to an unlinked Copilot caller on either create until it links", async () => {
+    const ACCOUNT_ACTION_URL = "https://actions.example.test/account";
+    // Reader sign-in is configured so `POST /private-docs` exists at all.
+    const withPrivateSharing = {
+      ACCOUNT_ACTION_URL,
+      SERVING_HOST: "openartifacts.site",
+      API_HOST: "api.openartifacts.ai",
+      READER_SESSION_SECRET: "k".repeat(32),
+      EMAIL: { send: async () => {} },
+      EMAIL_FROM: "share@mail.openartifacts.ai",
+    } as Partial<Env>;
+    const publish = (route: "docs" | "private-docs", headers: HeadersInit = {}) =>
+      send("POST", `/api/v1/${route}`, KEY_A, { html: page("<p>x</p>") }, withPrivateSharing,
+        "https://api.openartifacts.ai", headers);
+    const copilot = { "x-openartifacts-client": "obsidian-copilot" };
+    type Offered = PushResponse & { guidance?: { message: string; url: string } };
+
+    const offered = (await pushedOk(await publish("docs", copilot), 201)) as Offered;
+    expect(offered.guidance?.url).toBe(ACCOUNT_ACTION_URL);
+    expect(offered.guidance?.message).toContain("get an email when people you share with comment or ask for access");
+    // A server that cannot send email does not promise any.
+    const quiet = (await pushedOk(await send("POST", "/api/v1/docs", KEY_A, { html: page("<p>x</p>") }, { ACCOUNT_ACTION_URL, EMAIL: undefined },
+      API_ORIGIN, copilot), 201)) as Offered;
+    expect(quiet.guidance?.message).not.toContain("email");
+    // Nor one for a route it does not serve: without reader sign-in neither
+    // access requests nor comments exist, and without `COMMENTS` no comments do.
+    const noReader = (await pushedOk(await send("POST", "/api/v1/docs", KEY_A, { html: page("<p>x</p>") },
+      { ...withPrivateSharing, READER_SESSION_SECRET: undefined }, "https://api.openartifacts.ai", copilot), 201)) as Offered;
+    expect(noReader.guidance?.message).not.toContain("email");
+    const noComments = (await pushedOk(await send("POST", "/api/v1/docs", KEY_A, { html: page("<p>x</p>") },
+      { ...withPrivateSharing, COMMENTS: undefined }, "https://api.openartifacts.ai", copilot), 201)) as Offered;
+    expect(noComments.guidance?.message).toContain("get an email when people you share with ask for access");
+    expect(((await pushedOk(await publish("private-docs", copilot), 201)) as Offered).guidance?.url).toBe(ACCOUNT_ACTION_URL);
+    expect(Object.keys(await pushedOk(await publish("docs"), 201)).sort()).toEqual(["docId", "linkAccess", "url", "version"]);
+
+    const account = "oa_aaaaaaaaaaaaaaaaaaaaaaaaaa";
+    await env.DB.prepare("INSERT INTO accounts (id, email, created_at, plan) VALUES (?, ?, 0, 'pro')")
+      .bind(account, "linked@example.test")
+      .run();
+    expect(await linkExternalOwner(env.DB, ownerA, account, Date.now())).toBe("linked");
+    expect(await pushedOk(await publish("docs", copilot), 201)).not.toHaveProperty("guidance");
   });
 
   it("returns a canonical document url through the canonical API host (D3)", async () => {
