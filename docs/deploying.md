@@ -201,7 +201,9 @@ itself would exhaust the account's daily write budget — see
 [cost at scale](cost-at-scale.md).
 
 For a public deployment, add WAF rate limiting rules on `POST /device/code`,
-`POST /device/token`, `/approve` and `/signin` as a second layer. The binding runs inside
+`POST /device/token`, `/approve` and `/signin` as a second layer. With an app
+host, `/approve` and `/signin` are served there, so a rule that names a host
+must name the app host for them. The binding runs inside
 the Worker, so a request it refuses has still been billed as a request; a WAF
 rule refuses at the edge before that.
 
@@ -419,11 +421,13 @@ the comments deploy ships, that is the comments floor.
   change, so nothing can be activated below it. See
   [Comments rollback floor](#comments-rollback-floor).
 
-The app host (`APP_HOST`) is not a floor. A version older than the first one with
-it brings the pages back on `api.openartifacts.ai` at once, and the old session
-cookies there still work. But `app.openartifacts.ai` stays attached and that
-version answers it `404`, so links sent since (request emails, device approval,
-bookmarks) fail until you roll forward. Prefer rolling forward.
+The app host (`APP_HOST`) is not a floor. It ships in two steps: the first
+deploy attaches `app.openartifacts.ai` with `APP_HOST` unset, so the name answers
+`404` and nothing visible changes; a second change sets `APP_HOST` and the deploy
+check's `200`. Turning it off is the revert of that second change, which brings
+the pages back on `api.openartifacts.ai` at once, where the old session cookies
+still work. Links sent since (request emails, device approval, bookmarks) then
+answer `404` until it is on again, so prefer rolling forward.
 
 ```bash
 npx wrangler versions list          # ids, timestamps, and the commit in Message

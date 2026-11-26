@@ -1314,6 +1314,24 @@ describe("reader sign-in", () => {
     expect(document.headers.get("set-cookie")).toBeNull();
   });
 
+  it("trades the code with the API host's callback when the API host passed the callback on to the app host", async () => {
+    await findOrCreateAccount(env.DB, newAccountId(), "alice@acme.com", NOW);
+    const { login, state } = await startGoogle();
+    const oauth = oauthAnswering("alice@acme.com");
+    let traded = "";
+    oauth.verifiedIdentity = async (_provider, redirectUri) => {
+      traded = redirectUri;
+      return { subject: "sub-alice@acme.com", email: "alice@acme.com" };
+    };
+    const url = new URL(`https://app.openartifacts.ai/approve/callback/google?state=${state}&code=authorization-code`);
+    const onApp = configured({ ...hosts, APP_HOST: "app.openartifacts.ai" });
+    const signedIn = await handleApproval(new Request(url, { headers: { cookie: login } }), url, onApp, { now: () => NOW, oauth });
+
+    // Google refuses a trade whose redirect_uri differs from the one the browser was sent with.
+    expect(traded).toBe("https://api.openartifacts.ai/approve/callback/google");
+    expect(cookiesOf(signedIn)[0]).toMatch(/^__Host-oa_session=/);
+  });
+
   it("clears the login cookie on every exit once the browser is proved, and says nothing a terminal would", async () => {
     // Cancelled at the provider: no `code`.
     const cancelled = await startGoogle();

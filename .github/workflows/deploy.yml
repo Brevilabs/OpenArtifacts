@@ -210,7 +210,7 @@ jobs:
           set -euo pipefail
           for spec in \
             "api.openartifacts.ai 200 -" \
-            "app.openartifacts.ai 200 -" \
+            "app.openartifacts.ai 404 -" \
             "openartifacts.site 200 -" \
             "api.symposium.md 410 -" \
             "symposium.site 307 https://openartifacts.site/health?probe=deploy"
