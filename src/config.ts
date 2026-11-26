@@ -5,7 +5,8 @@
  * Local development leaves all four empty, where the router falls back to path
  * prefixes. Production configures them together so unknown hosts fail closed.
  * Publisher origins (`{26-character label}.{SERVING_HOST}`) are derived from
- * `SERVING_HOST` and need no var of their own.
+ * `SERVING_HOST` and need no var of their own. `APP_HOST`, the app host, is
+ * optional; without it the pages for people stay on the API host.
  */
 export interface Env {
   /** R2 bucket holding the served bytes. System of record. */
@@ -90,6 +91,15 @@ export interface Env {
   LEGACY_SERVING_HOST?: string;
   /** Previous API host. Every request receives 410 without authentication. */
   RETIRED_API_HOST?: string;
+  /**
+   * The app host: where pages for people live (Home, sign-in, the share page,
+   * `/open`, approval and the `/embed/*` frames), and the only host that sets
+   * the reader session cookie. Optional. Unset, or equal to `API_HOST`, the
+   * pages stay on the API host. Set, the API host answers a `GET` or `HEAD` of
+   * a page with `307` to the same path here. The provider callback to register
+   * stays on `API_HOST` either way.
+   */
+  APP_HOST?: string;
 
   /**
    * Base url of the Brevilabs license server, e.g. `https://api.brevilabs.com`.
@@ -125,7 +135,8 @@ export interface Env {
    * cannot advertise a button that leads to a broken handshake.
    *
    * The redirect uri to register with each provider is the approval callback on
-   * the API host: `https://{API_HOST}/approve/callback/{provider}`.
+   * the API host: `https://{API_HOST}/approve/callback/{provider}`. It stays
+   * there when `APP_HOST` is set; the API host passes the callback on.
    */
   OAUTH_GOOGLE_CLIENT_ID?: string;
   OAUTH_GOOGLE_CLIENT_SECRET?: string;

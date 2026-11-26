@@ -41,6 +41,7 @@ import { sha256Hex } from "./hash.js";
 import { newApiToken, newDeviceCode, newTokenId, newUserCode } from "./ids.js";
 import { withinClientLimit, withinLimit } from "./limits.js";
 import { readBodyWithin } from "./quota.js";
+import { appOrigin } from "./urls.js";
 
 /** Path prefix of the device surface, used by the router on the API host. */
 export const DEVICE_PREFIX = "/device";
@@ -220,7 +221,7 @@ async function mint(
     return errorResponse("internal", "Could not start a sign-in. Please try again.");
   }
 
-  const verificationUri = `${url.origin}${APPROVAL_PREFIX}`;
+  const verificationUri = `${appOrigin(env) ?? url.origin}${APPROVAL_PREFIX}`;
   const authorization: DeviceAuthorization = {
     device_code: deviceCode,
     user_code: userCode,

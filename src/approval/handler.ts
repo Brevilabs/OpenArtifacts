@@ -70,7 +70,7 @@ import {
   type ProviderId,
 } from "./providers.js";
 
-/** Path prefix of the approval surface, used by the router on the API host. */
+/** Path prefix of the approval surface, used by the router on the app host. */
 export const APPROVAL_PREFIX = "/approve";
 
 /** The query parameter carrying the device code the CLI is waiting on. */
@@ -167,10 +167,8 @@ export function normalizeUserCode(raw: string | null): string | null {
  * The methods are the design rather than a convention. Only the three `POST`s
  * change what a device code is worth, and none can be caused by a link.
  *
- * @param url the request url, whose origin is also the redirect uri the
- *   providers are registered against — the router has already refused every
- *   host but the configured API one, so it is the deployment's own name rather
- *   than something a caller chose
+ * @param url the request url; with no API host configured, its origin is also
+ *   the redirect uri the providers are registered against (`redirectUri`)
  */
 export async function handleApproval(
   request: Request,
@@ -318,7 +316,7 @@ async function begin(
   }
 
   const oauth = deps.oauth ?? arcticOAuthClient(env);
-  const target = oauth.authorizationUrl(chosen, redirectUri(url, chosen), state, verifier);
+  const target = oauth.authorizationUrl(chosen, redirectUri(env, url, chosen), state, verifier);
 
   // 303, so the browser follows with a `GET`. After a `POST`, a 302 leaves the
   // method to the browser, and the provider has no use for a re-posted body.
@@ -432,7 +430,7 @@ async function prove(
   try {
     asserted = await oauth.verifiedIdentity(
       handshake.provider as ProviderId,
-      redirectUri(url, handshake.provider as ProviderId),
+      redirectUri(env, url, handshake.provider as ProviderId),
       code,
       handshake.verifier,
     );
@@ -641,13 +639,16 @@ async function deny(request: Request, env: Env, deps: ApprovalDeps): Promise<Res
 }
 
 /**
- * Where the provider sends the browser back. Built from the request's own
- * origin so a deployment needs no extra host configuration: the router has
- * already refused every host but the configured API one, so this is the
- * deployment's own name. Register it with each provider verbatim.
+ * Where the provider sends the browser back: always the API host, the address
+ * Google and GitHub have on file, even when the handshake starts on the app
+ * host. The API host passes the callback on to the app host with a `307`, so
+ * no provider setting changes when `APP_HOST` is set. Local development has no
+ * API host and uses the request's own origin. Register it with each provider
+ * verbatim.
  */
-function redirectUri(url: URL, provider: ProviderId): string {
-  return `${url.origin}${APPROVAL_PREFIX}/callback/${provider}`;
+export function redirectUri(env: Env, url: URL, provider: ProviderId): string {
+  const apiHost = env.API_HOST?.trim().toLowerCase();
+  return `${apiHost ? `https://${apiHost}` : url.origin}${APPROVAL_PREFIX}/callback/${provider}`;
 }
 
 /**

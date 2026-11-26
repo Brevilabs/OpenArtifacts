@@ -116,7 +116,7 @@ popover exist only where reader sign-in is configured, so a page served locally
 keeps the header byline and has no bar, no script tag and no popover. Nor can it
 be switched on there: `wrangler dev` rewrites every local request to one upstream
 host (the route's host, wrangler's `getInferredHost`), so the host router never sees
-the apex, a label host and the API host as different hosts, and the path-prefix
+the apex, a label host and the app host as different hosts, and the path-prefix
 fallback is the only routing it ever does. The workerd tests set the hosts per test
 and cover the bar's markup and the frame's HTTP contract; they cannot load a page,
 a frame or a popup. The browser test does:
@@ -141,7 +141,7 @@ and writes at the version on screen.
 and runs it under Miniflare over HTTPS with real D1 and R2 and no `upstream`, so
 the router sees each request's own `Host` and its allowlist runs as in
 production. Chrome (the machine's own, through `playwright-core`; no browsers are
-downloaded) reaches `openartifacts.site` and `api.openartifacts.ai` through
+downloaded) reaches `openartifacts.site`, `api.openartifacts.ai` and `app.openartifacts.ai` through
 `--host-resolver-rules` (which also maps `*.openartifacts.site`, but the test
 loads only public documents on the apex; the label-host path is covered by
 `test/serve.test.ts` at the HTTP level only), which is the one local way to see

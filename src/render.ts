@@ -414,13 +414,13 @@ const SHARE_STYLE =
 
 /**
  * Where a served page's Share link leads and which script upgrades it. Both are
- * built from the deployment's API host (`serve.ts`), and the bar exists only
+ * built from the deployment's app host (`serve.ts`), and the bar exists only
  * when reader sign-in is configured.
  */
 export interface TopBar {
-  /** `https://{API_HOST}/share/{docId}`: the plain link, which works with no script. */
+  /** `https://{app host}/share/{docId}`: the plain link, which works with no script. */
   shareUrl: string;
-  /** `https://{API_HOST}/embed/page.js`: the script that turns the link into a popover. */
+  /** `https://{app host}/embed/page.js`: the script that turns the link into a popover. */
   scriptUrl: string;
   /**
    * Whether the page has comments to show: a thread exists, or a person holds a
@@ -437,7 +437,7 @@ export interface TopBar {
    * names its version in its path.
    */
   version?: number;
-  /** `https://{API_HOST}/home`: where **Home** leads, the same for every viewer. */
+  /** `https://{app host}/home`: where **Home** leads, the same for every viewer. */
   homeUrl: string;
 }
 

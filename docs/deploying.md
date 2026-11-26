@@ -45,7 +45,10 @@ The D1 command prints a `database_id`. Edit `wrangler.jsonc` before continuing:
    still be created but nobody can open them. See [Self-hosting](#self-hosting)
    under Private sharing.
 3. Keep `SERVING_HOST` and `API_HOST` under `vars`, set to those same hosts. A
-   fresh install has no legacy or retired host. `EMAIL_FROM` and the `send_email`
+   fresh install has no legacy or retired host. Delete `APP_HOST` and the
+   `app.openartifacts.ai` route, which keeps the pages for people on your API
+   host, or set `APP_HOST` to your own app host with a `custom_domain` route of
+   its own. Never keep Brevilabs' value: your pages would redirect to our host. `EMAIL_FROM` and the `send_email`
    block ship pointing at Brevilabs' sending address: set `EMAIL_FROM` and
    `allowed_sender_addresses` to an address on a domain you have onboarded to
    Email Service, or delete both if you do not use email (the binding needs
@@ -198,7 +201,9 @@ itself would exhaust the account's daily write budget — see
 [cost at scale](cost-at-scale.md).
 
 For a public deployment, add WAF rate limiting rules on `POST /device/code`,
-`POST /device/token`, `/approve` and `/signin` as a second layer. The binding runs inside
+`POST /device/token`, `/approve` and `/signin` as a second layer. With an app
+host, `/approve` and `/signin` are served there, so a rule that names a host
+must name the app host for them. The binding runs inside
 the Worker, so a request it refuses has still been billed as a request; a WAF
 rule refuses at the edge before that.
 
@@ -416,6 +421,14 @@ the comments deploy ships, that is the comments floor.
   change, so nothing can be activated below it. See
   [Comments rollback floor](#comments-rollback-floor).
 
+The app host (`APP_HOST`) is not a floor. It ships in two steps: the first
+deploy attaches `app.openartifacts.ai` with `APP_HOST` unset, so the name answers
+`404` and nothing visible changes; a second change sets `APP_HOST` and the deploy
+check's `200`. Turning it off is the revert of that second change, which brings
+the pages back on `api.openartifacts.ai` at once, where the old session cookies
+still work. Links sent since (request emails, device approval, bookmarks) then
+answer `404` until it is on again, so prefer rolling forward.
+
 ```bash
 npx wrangler versions list          # ids, timestamps, and the commit in Message
 npx wrangler rollback <version-id>  # the newest of the floors, or later
@@ -575,7 +588,8 @@ says what each piece is for.
 
 Google and GitHub reader sign-in reuse the OAuth apps and the
 `/approve/callback/{provider}` redirect URLs already registered for device
-approval, so no new OAuth registration is needed. The five private-sharing
+approval, so no new OAuth registration is needed. The callback stays on the API
+host when `APP_HOST` is set: the API host sends it on to the app host with `307`. The five private-sharing
 limiters are declared in `wrangler.jsonc` and described under
 [The private-sharing limiters](#the-private-sharing-limiters).
 

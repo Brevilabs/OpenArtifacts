@@ -1,6 +1,6 @@
 /**
  * Where things live in a url: the path prefixes of the serving host and of the
- * API host's reader surface, and the reading and writing of a document's path.
+ * app host's reader surface, and the reading and writing of a document's path.
  *
  * A leaf, importing only `ids.ts`. The signed values in `session.ts` need to
  * read a return path and the pages and routes need the same prefixes, so they
@@ -12,7 +12,7 @@ import { isDocId } from "./ids.js";
 /** Path prefix of the serving surface, used by the router's path fallback. */
 export const SERVING_PREFIX = "/d";
 
-/** The door a private document opens through, on the API host. */
+/** The door a private document opens through, on the app host. */
 export const OPEN_PREFIX = "/open";
 
 export const SIGNIN_PREFIX = "/signin";
@@ -20,11 +20,11 @@ export const SIGNIN_PREFIX = "/signin";
 /** The share page, where an owner manages one document: `/share/{docId}`. */
 export const SHARE_PREFIX = "/share";
 
-/** Home, the signed-in owner's list of their pages: `GET /home` on the API host. */
+/** Home, the signed-in owner's list of their pages: `GET /home` on the app host. */
 export const HOME_PATH = "/home";
 
 /**
- * Everything the top bar's Share button needs from the API host: the page
+ * Everything the top bar's Share button needs from the app host: the page
  * script, the popover frame, its sign-in popup and the routes the frame calls.
  * Not a client surface.
  */
@@ -68,7 +68,7 @@ export function docPath(prefix: string, route: DocRoute): string {
 
 /**
  * Parse `/d/{docId}` and `/d/{docId}/v{n}` (or the same under another prefix,
- * which is how `/open/…` on the API host is read), or null for anything else.
+ * which is how `/open/…` on the app host is read), or null for anything else.
  *
  * The prefix is matched rather than sliced off blind: on the serving host every
  * path lands here, so `/dx{docId}` reaches this function too and must not be

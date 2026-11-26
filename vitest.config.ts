@@ -31,7 +31,10 @@ export default defineWorkersConfig(async () => {
             // binary supports rather than left to drift silently.
             compatibilityDate: "2026-03-01",
 
-            bindings: { TEST_MIGRATIONS: migrations },
+            // `APP_HOST` empty runs the suite as a one-host deployment, the pages
+            // on the API host, which is the regression test for self-hosters who
+            // set none. A test about the app host sets it itself.
+            bindings: { TEST_MIGRATIONS: migrations, APP_HOST: "" },
           },
         },
       },

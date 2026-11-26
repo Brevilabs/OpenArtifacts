@@ -199,7 +199,7 @@ The D1 command prints a `database_id`. Update `wrangler.jsonc` for your account:
 4. Replace `routes` with exactly two `custom_domain` entries: your document
    host and your API host. (Private sharing, below, adds one optional wildcard
    route.)
-5. Set `SERVING_HOST` and `API_HOST` under `vars` to those hosts and remove the two legacy host vars. Keep your chosen `PLAN_LIMITS`/`DEFAULT_PLAN`.
+5. Set `SERVING_HOST` and `API_HOST` under `vars` to those hosts and remove the two legacy host vars and `APP_HOST`. Without `APP_HOST` the pages for people stay on your API host; to move them, set it to your own app host and add its `custom_domain` route. Keep your chosen `PLAN_LIMITS`/`DEFAULT_PLAN`.
 6. Keep `workers_dev` set to `false`.
 
 Apply the schema, create a publisher key, deploy, and run the smoke test:

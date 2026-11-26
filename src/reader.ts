@@ -15,7 +15,7 @@
  * `GET`/`POST /share/{docId}` is the owner's side of the same session and lives
  * in `share.ts`.
  *
- * All of it lives on the API host, which is the one place a reader session
+ * All of it lives on the app host, which is the one place a reader session
  * exists. The session is a stateless signed cookie (`session.ts`), only these
  * routes, the share page and the Share popover's popup read it, and `/api/v1` ignores it, so the cookie
  * adds no cross-site surface to the bearer API. The sign-in pages return only
@@ -30,7 +30,7 @@
  * account, and an address with no account goes through the Terms first.
  */
 import { NO_ANALYTICS, type AnalyticsSink } from "./analytics.js";
-import { APPROVAL_PREFIX, CONFIRM_TOKEN_FIELD, READER_USER_CODE_PREFIX, readSmallForm } from "./approval/handler.js";
+import { CONFIRM_TOKEN_FIELD, READER_USER_CODE_PREFIX, readSmallForm, redirectUri } from "./approval/handler.js";
 import {
   arcticOAuthClient,
   configuredProviders,
@@ -78,6 +78,7 @@ import {
   signPayload,
   verifyPayload,
 } from "./session.js";
+import { appOrigin } from "./urls.js";
 
 /** A provider handshake, an emailed code and the Terms token all live ten minutes. */
 const SIGNIN_TTL_MS = 10 * 60 * 1000;
@@ -249,7 +250,7 @@ async function notifyOwner(
   analytics: AnalyticsSink,
 ): Promise<void> {
   await sendEmail(env, analytics, { type: "access_request", docId, to: () => ownerEmail(env.DB, added.owner) }, () => {
-    const manage = `https://${env.API_HOST!.trim()}${SHARE_PREFIX}/${docId}`;
+    const manage = `${appOrigin(env)}${SHARE_PREFIX}/${docId}`;
     return requestMessage(added.email, added.title, manage);
   });
 }
@@ -284,7 +285,7 @@ async function start(
   const login = await signPayload(secret, "login", { s: state, n: next }, now + SIGNIN_TTL_MS);
   const target = arcticOAuthClient(env).authorizationUrl(
     chosen,
-    `${url.origin}${APPROVAL_PREFIX}/callback/${chosen}`,
+    redirectUri(env, url, chosen),
     state,
     verifier,
   );

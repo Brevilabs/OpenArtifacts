@@ -146,11 +146,15 @@ domain, and both are easy to miss because nothing fails loudly without them:
   in the same change: otherwise a document made private stays readable from the
   edge.
 
-All four canonical, legacy, and retired host vars are set in `wrangler.jsonc`,
-which makes the router resolve by an explicit host allowlist (those four hosts
-plus `{6-char code}.{SERVING_HOST}`, the publisher origins, and the retired 26-char label hosts, which only redirect to `/open`) and fail closed on
+All four canonical, legacy, and retired host vars, and `APP_HOST`, are set in
+`wrangler.jsonc`, which makes the router resolve by an explicit host allowlist
+(those five hosts plus `{6-char code}.{SERVING_HOST}`, the publisher origins, and the retired 26-char label hosts, which only redirect to `/open`) and fail closed on
 everything else. Leave them set together. Path-prefix fallback exists only for
-local development when every host var is empty.
+local development when every host var is empty. The app host
+(`app.openartifacts.ai`) serves the pages for people and holds the reader
+session; the API host serves programs, keeps the provider callback, and answers
+a `GET` or `HEAD` of an old page address with `307` to the app host. Without
+`APP_HOST` the pages stay on the API host.
 
 The first four-domain cutover is one production deployment. Record that Worker
 version id as the hard rollback floor. Never roll back below it while either new

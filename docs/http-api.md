@@ -16,13 +16,15 @@ The surfaces:
 | API | `/api/v1/*` | required | Publisher-facing. JSON in, JSON out. |
 | Serving | `/d/*` | none | Reader-facing. Public HTML on `openartifacts.site`, which never sets a cookie. |
 | Private serving | `/d/*` on `{code}.openartifacts.site` | grant cookie | One publisher's invited-only documents per origin. Sets one read-only grant cookie. See [Private documents](#private-documents). |
-| Reader | `/open/*` (`GET`, and `POST /open/{docId}/request`), `/signin/*`, `/share/*`, `/embed/sign-in` | session | Human-facing HTML pages on the API host: sign in, the door a private document opens through, requesting access, the share page, and the Share popover's sign-in popup. Not a client surface. |
-| Embed | `/embed/page.js`, `/embed/share`, `/embed/sign-in`, `/embed/token`, `/embed/api/*` | none, the session (sign-in only) or the popover token | The top bar's page script, the Share popover frame, its sign-in popup and the routes the frame calls, on the API host. Not a client surface. See [The top bar, the Share popover and the share page](#the-top-bar-the-share-popover-and-the-share-page). |
+| Reader | `/open/*` (`GET`, and `POST /open/{docId}/request`), `/signin/*`, `/share/*`, `/embed/sign-in` | session | Human-facing HTML pages on the app host: sign in, the door a private document opens through, requesting access, the share page, and the Share popover's sign-in popup. Not a client surface. |
+| Embed | `/embed/page.js`, `/embed/share`, `/embed/sign-in`, `/embed/token`, `/embed/api/*` | none, the session (sign-in only) or the popover token | The top bar's page script, the Share popover frame, its sign-in popup and the routes the frame calls, on the app host. Not a client surface. See [The top bar, the Share popover and the share page](#the-top-bar-the-share-popover-and-the-share-page). |
 | Comments | `/api/v1/docs/{docId}/threads…`, `/d/{docId}/threads`, `/embed/comments`, `/embed/api/docs/{docId}/threads…` | token, none, or the popover token | Inline comments: the agent routes, the unauthenticated threads resource on the serving origin, and the frame and its JSON. See [Comments](#comments). |
-| Approval | `/approve/*` | none | Human-facing. HTML pages on the API host. Not a client surface. |
+| Approval | `/approve/*` | none | Human-facing. HTML pages on the app host. Not a client surface. |
 | Device | `/device/*` | none | How a client with no credential gets one. JSON, on the API host. |
 
-The API is served from `api.openartifacts.ai` and documents from `openartifacts.site`.
+The API is served from `api.openartifacts.ai`, documents from `openartifacts.site`,
+and the pages for people (the Reader, Embed and Approval rows, and Home) from the
+app host, `app.openartifacts.ai`.
 The `url` field a push returns therefore points at a different host than the one
 the client called, which is the reason a client must never build a doc url
 itself. **Always use the `url` the API returns.**
@@ -33,7 +35,16 @@ serving-surface `404`. `api.symposium.md` is not an API alias. Every method and
 path on that retired host returns `410 gone` before authentication, without a
 redirect.
 
-`GET /health` → `200 {"ok": true}` is reachable on both canonical hosts. The
+`api.openartifacts.ai` answers a `GET` or `HEAD` of a page address (`/open/*`,
+`/signin/*`, `/share/*`, `/home`, `/embed/*`, `/approve/*`) with `307`,
+`no-store`, to the same path and query on the app host, and will keep doing so:
+emails, bookmarks and the CLI's `manageUrl` carry those addresses. Other methods
+on those paths answer `404`. Google and GitHub return to
+`https://api.openartifacts.ai/approve/callback/{provider}`, which reaches the app
+host the same way. A deployment with no app host (`APP_HOST`) serves these pages
+on the API host.
+
+`GET /health` → `200 {"ok": true}` is reachable on both canonical hosts and the app host. The
 legacy document host redirects it, and the retired API host returns `410`.
 
 ## Authentication
@@ -128,7 +139,7 @@ is one cookie per publisher, not one per document.
 
 ## The approval page
 
-`/approve` on the API host is where a person creates an OpenArtifacts account,
+`/approve` on the app host is where a person creates an OpenArtifacts account,
 by proving an email address with Google or GitHub and approving a device code
 their terminal is waiting on. **A client never calls it and never parses it**:
 every response is an HTML page for a human, not the JSON envelope below, and its
@@ -155,7 +166,7 @@ Three consequences worth stating, because all three are promises made elsewhere:
   callback `/approve/callback/{provider}` when it ends a *reader's* sign-in
   (see [Private documents](#private-documents)): it reads the `__Host-oa_login`
   cookie that bound the handshake to its browser, clears it, and sets the reader
-  session, on the API host only. `openartifacts.site` never sets a cookie.
+  session, on the app host only. `openartifacts.site` never sets a cookie.
 - **Proving an identity and approving a device are two steps.** The provider's
   redirect back is a `GET`, and it only ever renders a confirmation; the approval
   is a `POST` a person presses. RFC 8628 §5.4 is why: a `GET` that completed an
@@ -422,12 +433,12 @@ publisher's document exactly as it was pushed.
 On a server with reader sign-in configured, a **top bar** replaces the header
 byline: a spacer as the first child of `<body>`, one small `<style>` element, a
 strip fixed to the top of the viewport, and a `<script defer
-src="https://{API host}/embed/page.js">` tag. The strip carries the byline's text
+src="https://{app host}/embed/page.js">` tag. The strip carries the byline's text
 (`Shared from Copilot for Obsidian`) on the left, only for Copilot-rendered HTML,
-and **Share** on the right, a plain link to `https://{API host}/share/{docId}`.
+and **Share** on the right, a plain link to `https://{app host}/share/{docId}`.
 It is the same bytes for every viewer of a document, public or private, and
 names no identity, so public pages stay cacheable. Ahead of the byline's text,
-**Home** is a plain link to `https://{API host}/home`, the same for every
+**Home** is a plain link to `https://{app host}/home`, the same for every
 viewer. The footer byline is as
 before. On a server without reader sign-in no page carries the top bar or the
 page script, and the header byline is as it was (see [The top bar, the Share
@@ -455,7 +466,7 @@ self-contained HTML page:
 
 | Status | Reader sees |
 | --- | --- |
-| `302 Found` | An invited-only document: no body, `no-store`, to the sign-in door on the API host ([Private documents](#private-documents)). |
+| `302 Found` | An invited-only document: no body, `no-store`, to the sign-in door on the app host ([Private documents](#private-documents)). |
 | `404 Not Found` | A neutral unavailable page for an unknown or malformed link, a missing version, or missing stored bytes. |
 | `410 Gone` | An explicit deleted page when the retained doc row proves the author withdrew it. |
 | `500 Internal Server Error` | A temporary-unavailable page when a serving dependency fails. |
@@ -629,11 +640,11 @@ same-origin`.
 
 `GET /d/{docId}[/v{n}]` on `openartifacts.site` for an invited-only document
 answers `302`, `Cache-Control: no-store`, to
-`https://{API host}/open/{docId}[/v{n}]`, with no body, no cookie, no view event
+`https://{app host}/open/{docId}[/v{n}]`, with no body, no cookie, no view event
 and the full serving header policy. Unknown ids are still `404` and deleted ones
 `410`. From there:
 
-1. **`GET /open/{docId}[/v{n}]`** on the API host. With no session it shows a
+1. **`GET /open/{docId}[/v{n}]`** on the app host. With no session it shows a
    sign-in page, **Sign in or create an account to open this document**, that names
    no address and offers only the methods this server has (Google, GitHub, an
    emailed code), and returns to this path afterwards. With a session: a document
@@ -661,19 +672,19 @@ and the full serving header policy. Unknown ids are still `404` and deleted ones
    one publisher and answers `404` for any document whose owner's code is not its
    own. The code is an address, not a password: it grants nothing and reveals
    nothing about the owner. The retired 26-character label hosts still answer a
-   `GET` or `HEAD` of `/d/{docId}[/v{n}]` with `302` to `/open` on the API host,
+   `GET` or `HEAD` of `/d/{docId}[/v{n}]` with `302` to `/open` on the app host,
    which sends the reader to their code host; every other request to one is the
    `404` an unknown host gets. That legacy branch is removed in a later cleanup.
    A valid `?grant=` is swapped for a cookie with a bodiless `303` to the clean
    path. A missing, expired or foreign grant or cookie is `302` to
-   `https://{API host}/open/{docId}[/v{n}]`. With a valid cookie: deleted is
+   `https://{app host}/open/{docId}[/v{n}]`. With a valid cookie: deleted is
    `410`, a document that is public now is `302` to the public url, a reader who
    is not allowed is `302` to `/open` (a code host never renders the unavailable
    page), and an allowed one is served.
 
 | | Lifetime | Holds |
 | --- | --- | --- |
-| Reader session `__Host-oa_session`, on the API host | 30 days | An account id. Read only by `/open/*`, `/share/*`, `/signin/*` and `/embed/sign-in`; `/api/v1` ignores it. |
+| Reader session `__Host-oa_session`, on the app host | 30 days | An account id. Read only by `/open/*`, `/share/*`, `/signin/*` and `/embed/sign-in`; `/api/v1` ignores it. |
 | Popover token, in the Share frame's own storage | 24 hours | An account id and one document id; prefixed `oas_`, which `/api/v1` refuses. Accepted only by `/embed/api/docs/{docId}/…` for that document, and by `PUT /embed/api/account` (the display name) with a token for any document. |
 | URL grant `?grant=` | 60 seconds | An origin code and a principal. Never stays in the address bar. |
 | Origin cookie `__Host-oa_grant`, on the publisher's origin | 1 hour | An origin code and a principal. Every document is checked again on every request. |
@@ -696,7 +707,7 @@ Everything here is for people in a browser. None of it is under `/api/v1`, and
 none of it is part of the client contract; it is documented because it is on the
 wire. [private-sharing.md](private-sharing.md) has the reasons.
 
-**The page script.** `GET` or `HEAD https://{API host}/embed/page.js` is the
+**The page script.** `GET` or `HEAD https://{app host}/embed/page.js` is the
 script every served page loads, from the tag in the top bar. It is a constant:
 `Content-Type: text/javascript`, `Cache-Control: public, max-age=3600,
 stale-while-revalidate=86400`, an `ETag` (`If-None-Match` answers `304`),
@@ -708,8 +719,8 @@ popover and, where comments are available, runs the comments sidebar (see [Comme
 storage. Where a page's own policy blocks it, or scripts do not run, **Share** is
 still the plain link to the share page.
 
-**The popover frame.** `GET https://{API host}/embed/share?doc={docId}&origin=…`
-is what the popover draws, in an `iframe` on the API host: the credential that
+**The popover frame.** `GET https://{app host}/embed/share?doc={docId}&origin=…`
+is what the popover draws, in an `iframe` on the app host: the credential that
 changes who can read a document must never be on a page whose scripts the author
 writes. `origin` is the page's own origin, which the script fills in.
 
@@ -782,7 +793,7 @@ access or the invite list; a decline, a `GET` and a repeat answer `false`) for t
 does not manage it, and `404` for everyone else. A missing, expired or foreign
 token is `401`.
 
-**Home.** `GET https://{API host}/home` is a page for the signed-in owner: every
+**Home.** `GET https://{app host}/home` is a page for the signed-in owner: every
 live page in their account's scope (the account's own and those published with a
 linked license key), newest first, 50 to a page with a **Show more** link
 (`?cursor=…`; a cursor that does not decode starts again from the top). Each row
@@ -794,7 +805,7 @@ Home has one hash-authorized typeahead script and same-origin search, and loads
 nothing from another origin. It remains
 `Cache-Control: no-store`, `Referrer-Policy: no-referrer`.
 
-`GET https://{API host}/home?q=…` requires the same reader session and returns
+`GET https://{app host}/home?q=…` requires the same reader session and returns
 `401` JSON when signed out. A trimmed nonempty query returns
 `{"pages":[{"id":"…","title":"…","url":"…"}]}` with up to eight literal
 substring matches in title or `/d/{id}` path across the owner's entire live,
@@ -802,7 +813,7 @@ landed page set, including linked keys. An empty query returns `{"pages":[]}`;
 `cursor` is ignored in search mode. The list itself is not filtered. `GET` only;
 the serving host never answers Home.
 
-**The share page.** `GET https://{API host}/share/{docId}` is the same controls as
+**The share page.** `GET https://{app host}/share/{docId}` is the same controls as
 a page, with the session cookie. It is where **Share** leads with no script, the
 request email's **Review request** and the url `share` prints.
 
@@ -1058,7 +1069,7 @@ on the apex.
   cookie or an unreadable document is `404` JSON. The answer adds `readTicket`
   (an added field): a five-minute pass that names the document and no reader, so
   every reader still gets the same answer apart from its expiry. The page relays it
-  to the comments frame, which reads the same threads from the API host with it
+  to the comments frame, which reads the same threads from the app host with it
   (below), so the frame can show the names itself.
 - An unknown id, comments unavailable, a malformed `v` and a version
   that does not exist are `404`; a deleted document is `410`, decided before the
@@ -1068,8 +1079,8 @@ on the apex.
 
 The remainder is for people in a browser, documented because it is on the wire.
 
-**The comments frame.** `GET https://{API host}/embed/comments?doc={docId}&origin=…[&v={n}]`
-is what draws the cards, in an `iframe` on the API host, like the Share popover and
+**The comments frame.** `GET https://{app host}/embed/comments?doc={docId}&origin=…[&v={n}]`
+is what draws the cards, in an `iframe` on the app host, like the Share popover and
 for the same reason: the token it writes with must never be on a page whose
 scripts the author writes. It is built exactly as the popover's frame is: one shell
 for every id and every viewer carrying only the id and the embedder's origin, a
@@ -1245,8 +1256,8 @@ browser.
 ```json
 {"device_code": "hy3m…",
  "user_code": "WDJBM-JHTQR",
- "verification_uri": "https://api.openartifacts.ai/approve",
- "verification_uri_complete": "https://api.openartifacts.ai/approve?user_code=WDJBM-JHTQR",
+ "verification_uri": "https://app.openartifacts.ai/approve",
+ "verification_uri_complete": "https://app.openartifacts.ai/approve?user_code=WDJBM-JHTQR",
  "expires_in": 900,
  "interval": 10}
 ```

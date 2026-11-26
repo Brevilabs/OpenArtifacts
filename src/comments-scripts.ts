@@ -11,7 +11,7 @@
  * - `PAGE_COMMENTS_SCRIPT` runs inside the publisher's page, as the second half
  *   of `PAGE_SCRIPT` (`embed-scripts.ts` joins them, so both share the Share
  *   half's `api`, `docId` and `link`). It holds no credential.
- * - `COMMENTS_FRAME_SCRIPT` runs in the comments frame on the API host (the
+ * - `COMMENTS_FRAME_SCRIPT` runs in the comments frame on the app host (the
  *   sidebar, or the bottom sheet) and holds the reader's token.
  */
 

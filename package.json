@@ -11,7 +11,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "dev": "wrangler dev --var SERVING_HOST: --var API_HOST: --var LEGACY_SERVING_HOST: --var RETIRED_API_HOST: --local-upstream 127.0.0.1:8787",
+    "dev": "wrangler dev --var SERVING_HOST: --var API_HOST: --var LEGACY_SERVING_HOST: --var RETIRED_API_HOST: --var APP_HOST: --local-upstream 127.0.0.1:8787",
     "deploy": "node scripts/check-account-actions.cjs && wrangler deploy",
     "typecheck": "tsc --noEmit && npm run typecheck -w packages/openartifacts",
     "test": "vitest run && npm test -w packages/openartifacts",

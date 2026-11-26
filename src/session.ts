@@ -80,7 +80,7 @@ export const embedCookieName = (h: string): string => `${EMBED_COOKIE_PREFIX}${h
 /** The nonce hash in a popup url: lowercase SHA-256 hex. */
 export const EMBED_HASH = /^[0-9a-f]{64}$/;
 
-/** How long a signed-in reader stays signed in on the API host. */
+/** How long a signed-in reader stays signed in on the app host. */
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 const encoder = new TextEncoder();

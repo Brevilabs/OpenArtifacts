@@ -37,10 +37,12 @@ export { DocComments } from "./comments/object.js";
  * turns out to be phishing should cost us the serving domain, not the brand
  * domain. A third, `publisher-serving`, is one publisher's own origin
  * (`{code}.{SERVING_HOST}`), where that publisher's invited-only documents are
- * served and only that publisher's scripts run.
+ * served and only that publisher's scripts run. `app`, when configured, carries
+ * the pages for people, so the API host is for programs only.
  */
 export type Surface =
   | "api"
+  | "app"
   | "serving"
   | "publisher-serving"
   | "legacy-serving"
@@ -56,6 +58,8 @@ export interface SurfaceConfig {
   legacyServingHost?: string;
   /** Previous API host. It returns 410 without entering the API path. */
   retiredApiHost?: string;
+  /** Host serving the pages for people. Unset or equal to apiHost keeps them on the API host. */
+  appHost?: string;
 }
 
 const API_PREFIX = "/api/v1";
@@ -107,7 +111,32 @@ function hostsAreConfigured(config: SurfaceConfig): boolean {
     config.apiHost,
     config.legacyServingHost,
     config.retiredApiHost,
+    config.appHost,
   ].some((host) => host?.trim());
+}
+
+/**
+ * The same path and query on `host`, over HTTPS: the old document host's
+ * redirect, and the API host's for a page that moved to the app host.
+ */
+function sameUrlOn(url: URL, host: string): string {
+  const target = new URL(url);
+  target.protocol = "https:";
+  target.hostname = normalizeHostname(host);
+  target.port = "";
+  return target.toString();
+}
+
+/** The pages for people: approval, reader sign-in, `/open`, the share page, Home and the frames. */
+function isPagePath(pathname: string): boolean {
+  return (
+    pathIsUnder(pathname, APPROVAL_PREFIX) ||
+    pathIsUnder(pathname, OPEN_PREFIX) ||
+    pathIsUnder(pathname, SIGNIN_PREFIX) ||
+    pathIsUnder(pathname, SHARE_PREFIX) ||
+    pathname === HOME_PATH ||
+    pathIsUnder(pathname, EMBED_PREFIX)
+  );
 }
 
 /**
@@ -123,6 +152,8 @@ export function resolveSurface(hostname: string, pathname: string, config: Surfa
   if (hostMatches(hostname, config.servingHost)) return "serving";
   if (hostMatches(hostname, config.legacyServingHost)) return "legacy-serving";
   if (hostMatches(hostname, config.apiHost)) return "api";
+  // After the API host, so an app host equal to it stays the API surface.
+  if (hostMatches(hostname, config.appHost)) return "app";
   if (hostMatches(hostname, config.retiredApiHost)) return "retired-api";
   if (resolvePublisherHost(hostname, config.servingHost) !== null) return "publisher-serving";
 
@@ -130,16 +161,10 @@ export function resolveSurface(hostname: string, pathname: string, config: Surfa
 
   if (pathIsUnder(pathname, API_PREFIX)) return "api";
   if (pathIsUnder(pathname, ADMIN_PREFIX)) return "api";
-  // The approval page and the device flow share the API host in production;
-  // locally they share the API surface's path fallback, so `wrangler dev` can
-  // serve them too.
-  if (pathIsUnder(pathname, APPROVAL_PREFIX)) return "api";
+  // The pages for people and the device flow; locally they share the API
+  // surface's path fallback, so `wrangler dev` can serve them too.
   if (pathIsUnder(pathname, DEVICE_PREFIX)) return "api";
-  if (pathIsUnder(pathname, OPEN_PREFIX)) return "api";
-  if (pathIsUnder(pathname, SIGNIN_PREFIX)) return "api";
-  if (pathIsUnder(pathname, SHARE_PREFIX)) return "api";
-  if (pathname === HOME_PATH) return "api";
-  if (pathIsUnder(pathname, EMBED_PREFIX)) return "api";
+  if (isPagePath(pathname)) return "api";
   if (pathIsUnder(pathname, SERVING_PREFIX)) return "serving";
   return "unknown";
 }
@@ -241,6 +266,47 @@ async function handleApi(
   return errorResponse("not_found", `No API route for ${url.pathname}`);
 }
 
+/**
+ * The pages for people (`isPagePath`), on the app host, or on the API host when
+ * no app host is configured. Every dispatch is `return await`, for the reason
+ * the router's catch gives.
+ */
+async function handlePage(
+  request: Request,
+  url: URL,
+  env: Env,
+  analytics: AnalyticsSink,
+  ctx: ExecutionContext,
+): Promise<Response> {
+  if (pathIsUnder(url.pathname, APPROVAL_PREFIX)) {
+    return await handleApproval(request, url, env);
+  }
+  // The top bar's page script and, with it, everything the Share popover is
+  // made of. Served from the app host because the popover holds a credential
+  // no document's origin may see. Gated like the pages below: a server with no
+  // reader sign-in has no `/embed/*` and renders no tag that would ask for it.
+  // Wrapped like them too, so every response carries one opener policy.
+  if (pathIsUnder(url.pathname, EMBED_PREFIX)) {
+    return readerIsolate(
+      !readerSignInConfigured(env) ? READER_NOT_FOUND() : await handleEmbed(request, url, env, analytics, ctx),
+    );
+  }
+  // Reader sign-in, the door a private document opens through, the share page
+  // and Home. A server with no reader sign-in configured has none of these
+  // pages, as one that predates private sharing has none. Every response here
+  // carries the same opener policy, redirects included, so a popup is cut off
+  // whatever /open decides.
+  return readerIsolate(
+    !readerSignInConfigured(env)
+      ? READER_NOT_FOUND()
+      : url.pathname === HOME_PATH
+        ? await handleHome(request, url, env)
+        : pathIsUnder(url.pathname, SHARE_PREFIX)
+          ? await handleShare(request, url, env, analytics, ctx)
+          : await handleReader(request, url, env, ctx, analytics),
+  );
+}
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
@@ -250,6 +316,7 @@ export default {
       apiHost: env.API_HOST,
       legacyServingHost: env.LEGACY_SERVING_HOST,
       retiredApiHost: env.RETIRED_API_HOST,
+      appHost: env.APP_HOST,
     };
     const surface = resolveSurface(url.hostname, url.pathname, surfaceConfig);
 
@@ -272,11 +339,7 @@ export default {
       const servingHost = env.SERVING_HOST?.trim();
       if (!servingHost) return servingError(request.method, "internal");
 
-      const target = new URL(url);
-      target.protocol = "https:";
-      target.hostname = normalizeHostname(servingHost);
-      target.port = "";
-      return servingRedirect(target.toString());
+      return servingRedirect(sameUrlOn(url, servingHost));
     }
 
     // Local development has no configured hosts. In production, health answers
@@ -312,46 +375,19 @@ export default {
           if (pathIsUnder(url.pathname, ADMIN_PREFIX)) {
             return await handleAdmin(request, url, env);
           }
-          // Before `handleApi`, because approval is the one thing on this host
-          // a person reaches with a browser and no credential — authenticating
-          // it would answer a human with `401` JSON. It is not under
-          // `/api/v1`, so nothing in the frozen contract moves.
-          if (pathIsUnder(url.pathname, APPROVAL_PREFIX)) {
-            return await handleApproval(request, url, env);
-          }
-          // Reader sign-in, the door a private document opens through and the
-          // share page and Home: pages a person reaches with a browser, not API routes,
-          // so they sit outside `/api/v1` for the same reason approval does.
-          if (
-            pathIsUnder(url.pathname, OPEN_PREFIX) ||
-            pathIsUnder(url.pathname, SIGNIN_PREFIX) ||
-            pathIsUnder(url.pathname, SHARE_PREFIX) ||
-            url.pathname === HOME_PATH
-          ) {
-            // A server with no reader sign-in configured has none of these
-            // pages, as one that predates private sharing has none.
-            // Every response here carries the same opener policy, redirects
-            // included, so a popup is cut off whatever /open decides.
-            return readerIsolate(
-              !readerSignInConfigured(env)
-                ? READER_NOT_FOUND()
-                : url.pathname === HOME_PATH
-                  ? await handleHome(request, url, env)
-                  : pathIsUnder(url.pathname, SHARE_PREFIX)
-                    ? await handleShare(request, url, env, analytics, ctx)
-                    : await handleReader(request, url, env, ctx, analytics),
-            );
-          }
-          // The top bar's page script and, with it, everything the Share
-          // popover is made of. Served from the API host because the popover
-          // holds a credential no document's origin may see. Gated like the
-          // pages above: a server with no reader sign-in has no `/embed/*`
-          // and renders no tag that would ask for it. Wrapped like them too,
-          // so every response carries one opener policy.
-          if (pathIsUnder(url.pathname, EMBED_PREFIX)) {
-            return readerIsolate(
-              !readerSignInConfigured(env) ? READER_NOT_FOUND() : await handleEmbed(request, url, env, analytics, ctx),
-            );
+          // The pages for people, before `handleApi`: a person reaches them with
+          // a browser and no credential, and authenticating them would answer
+          // a human with `401` JSON. None is under `/api/v1`, so nothing in the
+          // frozen contract moves. With an app host they live there, and an old
+          // link here is sent on with its exact path and query. A write is never
+          // redirected.
+          if (isPagePath(url.pathname)) {
+            const appHost = env.APP_HOST?.trim();
+            if (!appHost || hostMatches(url.hostname, appHost)) {
+              return await handlePage(request, url, env, analytics, ctx);
+            }
+            if (request.method !== "GET" && request.method !== "HEAD") return readerIsolate(READER_NOT_FOUND());
+            return readerIsolate(servingRedirect(sameUrlOn(url, appHost)));
           }
           // Likewise before `handleApi`: a terminal asking for a device code
           // has no credential yet, which is the entire reason it is asking.
@@ -361,6 +397,10 @@ export default {
             return await handleDevice(request, url, env);
           }
           return await handleApi(request, url, env, analytics, ctx);
+        case "app":
+          if (url.pathname === "/") return readerIsolate(servingRedirect(HOME_PATH, 302));
+          if (isPagePath(url.pathname)) return await handlePage(request, url, env, analytics, ctx);
+          return readerIsolate(READER_NOT_FOUND());
         case "serving":
           return await handleServing(request, url, env, analytics);
         case "publisher-serving": {

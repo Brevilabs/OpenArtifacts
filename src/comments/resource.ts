@@ -13,7 +13,7 @@
  * so the author's script, which can read this response, learns nothing about
  * who is looking. A publisher's origin adds `readTicket` (`private.ts`): a
  * five-minute pass, naming the document and no one, that lets the comments frame
- * read this same answer from the API host itself, so it can trust the names.
+ * read this same answer from the app host itself, so it can trust the names.
  *
  * Whether the caller may read is the origin's own rule, handed in as `judge`:
  * the apex serves only an `anyone` document and answers `404` for an invited-only

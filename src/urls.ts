@@ -18,3 +18,14 @@ export function publicDocUrl(env: Env, requestUrl: URL, docId: string): string {
   const origin = servingHost ? `https://${servingHost}` : requestUrl.origin;
   return `${origin}/d/${docId}`;
 }
+
+/**
+ * `https://{app host}`: where every page for people lives, and so the origin
+ * of every link to one (Home, the share page, `/open`, approval, the page
+ * script). The app host when one is configured, the API host otherwise, and
+ * null when neither is, which is local development.
+ */
+export function appOrigin(env: Env): string | null {
+  const host = (env.APP_HOST?.trim() || env.API_HOST?.trim())?.toLowerCase();
+  return host ? `https://${host}` : null;
+}

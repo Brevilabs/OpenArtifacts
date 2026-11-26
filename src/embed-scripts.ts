@@ -12,9 +12,9 @@
 import { PAGE_COMMENTS_SCRIPT } from "./comments-scripts.js";
 
 /**
- * The script every served page loads, from `https://{API_HOST}/embed/page.js`
+ * The script every served page loads, from `https://{app host}/embed/page.js`
  * (`src/embed.ts`). It turns the top bar's **Share** link into a popover: a
- * frame on the API host, drawn under the button.
+ * frame on the app host, drawn under the button.
  *
  * It runs inside the publisher's page, so it is written as the least trusting
  * code on that page can be. It defines no global, binds only our own link, reads
@@ -73,7 +73,7 @@ import { PAGE_COMMENTS_SCRIPT } from "./comments-scripts.js";
  * **Comments are the second half** (`PAGE_COMMENTS_SCRIPT`, `src/comments-scripts.ts`,
  * joined here so both share `api`, `docId` and `link`). It is inert when the bar says
  * the document has no comments to show, and otherwise unless its threads resource answers, adds a Comments button to the bar and a
- * comments frame on the API host (a sidebar, or a bottom sheet), and holds no credential either: everything above about what
+ * comments frame on the app host (a sidebar, or a bottom sheet), and holds no credential either: everything above about what
  * the page script holds is true of it too. It reads the Share half's `api`,
  * `docId`, `link` and `viewport` and changes none of them, and closes its own
  * sheet when Share is pressed.
@@ -87,6 +87,10 @@ export const PAGE_SCRIPT = String.raw`(() => {
   try { api = new URL(script.src).origin; target = new URL(link.href); } catch { return; }
   const parts = target.pathname.split("/");
   if (target.origin !== api || parts.length !== 3 || parts[1] !== "share" || !/^[0-9a-z]{16}$/.test(parts[2])) return;
+  // The frames live on the app host, which the route below fills in. A pinned page cached before the app host existed
+  // still loads this script from the API host, and its frames would land on the app host by redirect.
+  const APP_ORIGIN = "";
+  if (APP_ORIGIN) api = APP_ORIGIN;
   const docId = parts[2];
   link.setAttribute("data-openartifacts-share", "bound");
   link.setAttribute("aria-haspopup", "dialog");
@@ -197,7 +201,7 @@ export const PAGE_SCRIPT = String.raw`(() => {
  * of one element, so nothing is interpolated into script.
  *
  * The target origin is this page's own, never `*`: the only frame that may act
- * on the message is the Share frame, which is on the API host, and it checks
+ * on the message is the Share frame, which is on the app host, and it checks
  * the sender's window as well. Embedded in a document page there is no opener
  * to post to: the page around the frame sends no opener policy and this one
  * sends `same-origin`, so Chrome opens the popup in a new browsing context group

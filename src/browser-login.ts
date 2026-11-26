@@ -1,5 +1,5 @@
 import { actionUrl } from "./account.js";
-import { APPROVAL_PREFIX, BROWSER_USER_CODE_PREFIX } from "./approval/handler.js";
+import { BROWSER_USER_CODE_PREFIX, redirectUri } from "./approval/handler.js";
 import { confirmDeviceApproval, sweepExpired } from "./db.js";
 import { errorResponse } from "./errors.js";
 import type { Env } from "./config.js";
@@ -76,7 +76,7 @@ export async function startBrowserLogin(
     .run();
 
   const oauth = deps.oauth ?? arcticOAuthClient(env);
-  const redirect = `${new URL(request.url).origin}${APPROVAL_PREFIX}/callback/${provider}`;
+  const redirect = redirectUri(env, new URL(request.url), provider);
   const url = oauth.authorizationUrl(provider, redirect, state, verifier);
   return Response.json({ url: url.toString(), state }, { headers: HEADERS });
 }

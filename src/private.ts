@@ -20,7 +20,7 @@
  * code is not its own, so a host never serves, or even confirms, another
  * publisher's document.
  *
- * How a reader gets here: `/open/{docId}` on the API host checks the session
+ * How a reader gets here: `/open/{docId}` on the app host checks the session
  * and `canRead`, then redirects to this origin with a 60-second grant in the
  * URL. This origin answers that with a bodiless `303` that swaps the grant for
  * a one-hour cookie, so the credential never sits in the address bar. The grant
@@ -45,6 +45,7 @@ import {
   THREADS_READ_TTL_MS,
   verifyPayload,
 } from "./session.js";
+import { appOrigin } from "./urls.js";
 
 /** The retired hash-label host's name: 16 bytes of hash as base32, so always 26 characters. */
 export const LEGACY_LABEL = /^[0-9abcdefghjkmnpqrstvwxyz]{26}$/;
@@ -131,11 +132,11 @@ export function judgeForPublisher(
  * removes this and `LEGACY_LABEL`.
  */
 export function legacyLabelResponse(request: Request, url: URL, env: Env): Response | null {
-  const apiHost = env.API_HOST?.trim();
-  if ((request.method !== "GET" && request.method !== "HEAD") || !apiHost) return null;
+  const app = appOrigin(env);
+  if ((request.method !== "GET" && request.method !== "HEAD") || !app) return null;
   const route = parseDocPath(url.pathname);
   if (route === null) return null;
-  return isolate(servingRedirect(`https://${apiHost}${docPath("/open", route)}`, 302));
+  return isolate(servingRedirect(`${app}${docPath("/open", route)}`, 302));
 }
 
 /**
@@ -183,8 +184,8 @@ async function publisherResponse(
   const threadsDoc = parseThreadsPath(url.pathname);
   const route = threadsDoc === null ? parseDocPath(url.pathname) : null;
   const secret = readerSecret(env);
-  const apiHost = env.API_HOST?.trim();
-  if ((route === null && threadsDoc === null) || secret === null || !apiHost || !readerSignInConfigured(env)) {
+  const app = appOrigin(env);
+  if ((route === null && threadsDoc === null) || secret === null || !app || !readerSignInConfigured(env)) {
     return servingError(method, "not_found");
   }
 
@@ -212,7 +213,7 @@ async function publisherResponse(
   if (route === null) return servingError(method, "not_found");
 
   // Absolute: this host has no sign-in page, and a relative path would resolve here.
-  const signIn = servingRedirect(`https://${apiHost}${docPath("/open", route)}`, 302);
+  const signIn = servingRedirect(`${app}${docPath("/open", route)}`, 302);
 
   const urlGrant = url.searchParams.get("grant");
   if (urlGrant !== null) {
@@ -246,7 +247,7 @@ async function publisherResponse(
   if (verdict === "public") {
     return servingRedirect(`https://${env.SERVING_HOST?.trim()}${docPath(SERVING_PREFIX, route)}`, 302);
   }
-  // Not allowed goes to the one not-available page, on the API host. This host
+  // Not allowed goes to the one not-available page, on the app host. This host
   // never renders it: the Request access form must post with the session cookie,
   // so there is exactly one copy. No loop is possible, because `/open` redirects
   // here only when `canRead` says allowed, the same predicate as above.

@@ -4,7 +4,7 @@
  * `GET /home[?cursor=…]` serves the account's live pages, newest first, 50 to a page.
  * `GET /home?q=…` searches that owner's live, landed pages and returns up to eight suggestions.
  *
- * On the API host because the reader session lives there. It is the one address
+ * On the app host because the reader session lives there. It is the one address
  * every page's **Home** button leads to, so it lists whoever is
  * signed in and never the owner of the page the button was on. Signed out, it is
  * the sign-in page and comes back to `/home`.
@@ -31,7 +31,7 @@ const PAGE_SIZE = 50;
 
 // Mirrors apps/openartifacts/src/app/page.tsx and src/styles/globals.css; font stacks follow
 // src/app/layout.tsx and tailwind.config.ts. The independently deployed Worker does not share them.
-// The fonts are named, not loaded, as on the brand pages (`page.ts`): a page on the API host fetches no third party.
+// The fonts are named, not loaded, as on the brand pages (`page.ts`): a page on the app host fetches no third party.
 const HOME_STYLE = `<style>
 :root{color-scheme:dark;--bg-hsl:222 24% 4%;--line-hsl:219 16% 15%;--line-2-hsl:220 16% 10%;--text-hsl:214 12% 92%;--text-2-hsl:213 12% 64%;--text-3-hsl:216 9% 46%;--artifact-accent:#f6ae52;--artifact-accent-rgb:246 174 82;--bg:hsl(var(--bg-hsl));--text:hsl(var(--text-hsl));--shell:1060px;--font-archivo:"Archivo";--font-plex-mono:"IBM Plex Mono";--font-body:var(--font-archivo),ui-sans-serif,system-ui,sans-serif;--font-display:var(--font-archivo),"Helvetica Neue",Helvetica,Arial,sans-serif;--font-mono:var(--font-plex-mono),ui-monospace,Menlo,Consolas,monospace;--control-well:#0b0d10}
 *{box-sizing:border-box}body{margin:0;min-height:100vh;background:var(--bg);color:var(--text);font-family:var(--font-body);font-size:16px;line-height:1.6;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}::selection{background:rgb(var(--artifact-accent-rgb)/.24);color:var(--text)}:focus-visible{outline:2px solid var(--artifact-accent);outline-offset:3px;border-radius:2px}
