@@ -1,5 +1,5 @@
 /**
- * The embed surface: `/embed/*` on the API host, what the top bar's **Share**
+ * The embed surface: `/embed/*` on the app host, what the top bar's **Share**
  * button is built from.
  *
  * ```
@@ -11,7 +11,7 @@
  * GET|PUT|DELETE /embed/api/docs/{docId}/access…  the frame's JSON, behind the token
  * ```
  *
- * It lives on the API host and not on a document host for the reason the share
+ * It lives on the app host and not on a document host for the reason the share
  * page does: the credential that changes who can read a document must never be
  * on an origin whose scripts the author writes. The script is the only part
  * that runs on the document's page, and it holds no credential. The controls
@@ -143,7 +143,7 @@ function etagMatches(ifNoneMatch: string, etag: string): boolean {
  *
  * The body is a constant and the response never reads a cookie: it is fetched
  * cross-site from every document, and the serving pages' `no-referrer` means
- * the API host cannot tell which document loaded it.
+ * the app host cannot tell which document loaded it.
  */
 async function pageScript(request: Request): Promise<Response> {
   if (request.method !== "GET" && request.method !== "HEAD") return READER_NOT_FOUND();
@@ -256,7 +256,7 @@ async function shareFrame(request: Request, url: URL, env: Env): Promise<Respons
  * not promise: curl can send `Sec-Fetch-Site: same-origin` and create a row for
  * its own `h`.
  *
- * **One rule holds this together: no page or redirect on the API host may carry
+ * **One rule holds this together: no page or redirect on the app host may carry
  * an `/embed/sign-in` address whose `h` did not come from a bound request.**
  * Today the producers are the frame's `window.open`, the sign-in page rendered
  * below (its `next`), and the login cookie that carries that `next`. Every

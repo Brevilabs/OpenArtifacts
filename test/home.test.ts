@@ -226,6 +226,13 @@ describe("Home in a served page's top bar", () => {
     expect(html).toContain('<a class="openartifacts-home" href="https://api.openartifacts.ai/home"');
     expect(await cookied.text()).toBe(html);
 
+    // With an app host, the bar's Home, Share and page script all point there.
+    const onApp = await (await get(`${SERVING}/d/${id}`, { ...HOSTS, APP_HOST: "app.openartifacts.ai" })).text();
+    expect(onApp).toContain('<a class="openartifacts-home" href="https://app.openartifacts.ai/home"');
+    expect(onApp).toContain(`href="https://app.openartifacts.ai/share/${id}"`);
+    expect(onApp).toContain('src="https://app.openartifacts.ai/embed/page.js"');
+    expect(onApp).not.toContain("https://api.openartifacts.ai");
+
     // A server with no reader sign-in renders no bar, and has no Home to link to.
     const bare = await (await get(`${SERVING}/d/${id}`, { ...HOSTS, READER_SESSION_SECRET: undefined })).text();
     expect(bare).not.toContain("openartifacts-home");

@@ -1,5 +1,5 @@
 /**
- * The pages a reader sees on the API host while opening a private document.
+ * The pages a reader sees on the app host while opening a private document.
  *
  * Kept apart from the routes (`reader.ts`) and from the OAuth callback
  * (`approval/handler.ts`), which both render them, so neither has to import the
@@ -27,7 +27,7 @@ const isManagePath = (next: string): boolean =>
 export const READER_CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; frame-ancestors 'none'";
 
 /**
- * A page on the API host. Its referrer policy is `same-origin`, not
+ * A page on the app host. Its referrer policy is `same-origin`, not
  * `no-referrer`, on purpose: a form posted from a `no-referrer` page carries
  * `Origin: null`, and a browser without Fetch Metadata (Safari before 16.4) has
  * only `Origin` for `sameOriginPost` to fall back on. Same-origin keeps the real
@@ -56,7 +56,7 @@ export function readerResponse(html: string, status: number, csp = READER_CSP): 
   });
 }
 
-/** Every reader page and redirect on the API host: a popup loses its opener whatever /open decides, so `w.closed` tells an opener nothing. */
+/** Every reader page and redirect on the app host: a popup loses its opener whatever /open decides, so `w.closed` tells an opener nothing. */
 export const READER_OPENER_POLICY = "same-origin";
 export function readerIsolate(response: Response): Response {
   const isolated = new Response(response.body, response);

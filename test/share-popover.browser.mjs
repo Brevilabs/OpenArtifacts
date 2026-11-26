@@ -11,10 +11,12 @@
  * Miniflare over HTTPS with real D1 and R2, and no `upstream`, so the Worker
  * sees each request's real `Host` and its host allowlist runs as in production.
  * Chrome (the runner's own, through `channel: "chrome"`) is pointed at it with
- * `--host-resolver-rules`, so `openartifacts.site` and `api.openartifacts.ai` are
- * reached by name (the rule also maps `*.openartifacts.site`, where the owner's
- * private documents are served; their label host's own rules are covered by
- * `test/serve.test.ts` at the HTTP level). Every request therefore goes
+ * `--host-resolver-rules`, so `openartifacts.site`, `api.openartifacts.ai` and
+ * `app.openartifacts.ai` are reached by name (the rule also maps
+ * `*.openartifacts.site`, where the owner's private documents are served; their
+ * label host's own rules are covered by `test/serve.test.ts` at the HTTP level).
+ * The pages and frames are on the app host and publishing is on the API host,
+ * as in production. Every request therefore goes
  * through Chrome's network stack, where Fetch Metadata, cookies, CSP,
  * `frame-ancestors`, the opener policy and storage partitioning are Chrome's.
  *
@@ -54,6 +56,7 @@ const { readD1Migrations } = require("@cloudflare/vitest-pool-workers/config");
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const SERVING = "openartifacts.site";
 const API = "api.openartifacts.ai";
+const APP = "app.openartifacts.ai";
 const SECRET = "k".repeat(32);
 const KEY = "cplus_live_a1b2c3d4e5f60718";
 const OWNER = "owner-p";
@@ -75,7 +78,7 @@ function sessionValue(account) {
 const sessionCookie = (account) => ({
   name: "__Host-oa_session",
   value: sessionValue(account),
-  url: `https://${API}`,
+  url: `https://${APP}`,
   httpOnly: true,
   secure: true,
   sameSite: "Lax",
@@ -135,7 +138,7 @@ async function publish(title, body, route = "docs") {
 }
 
 const docUrl = (docId) => `https://${SERVING}/d/${docId}`;
-const frameUrl = (docId) => new RegExp(`^https://${API.replaceAll(".", "\\.")}/embed/share\\?doc=${docId}(&|$)`);
+const frameUrl = (docId) => new RegExp(`^https://${APP.replaceAll(".", "\\.")}/embed/share\\?doc=${docId}(&|$)`);
 /** The General access menu button, and a person's role menu button, in a Share frame. */
 const modeOf = (frame) => frame.getByRole("button", { name: "General access", exact: true });
 const accessOf = (frame, label) => frame.getByRole("button", { name: label, exact: true });
@@ -171,6 +174,7 @@ before(async () => {
     bindings: {
       SERVING_HOST: SERVING,
       API_HOST: API,
+      APP_HOST: APP,
       LEGACY_SERVING_HOST: "",
       RETIRED_API_HOST: "",
       READER_SESSION_SECRET: SECRET,
@@ -212,7 +216,7 @@ before(async () => {
     channel: "chrome",
     headless: !process.env.OA_HEADED,
     args: [
-      `--host-resolver-rules=MAP ${SERVING}:443 127.0.0.1:${port}, MAP *.${SERVING}:443 127.0.0.1:${port}, MAP ${API}:443 127.0.0.1:${port}`,
+      `--host-resolver-rules=MAP ${SERVING}:443 127.0.0.1:${port}, MAP *.${SERVING}:443 127.0.0.1:${port}, MAP ${API}:443 127.0.0.1:${port}, MAP ${APP}:443 127.0.0.1:${port}`,
       "--ignore-certificate-errors",
     ],
   });
@@ -233,7 +237,7 @@ test("Share opens the popover, the owner signs in through the popup, and a switc
   const X = await publish("Quarterly plan", "<p>Mine.</p>");
   const Y = await publish(
     "Hostile page",
-    `<iframe id="f" src="https://${API}/embed/share?doc=${X}&origin=${encodeURIComponent(`https://${SERVING}`)}" style="width:380px;height:480px"></iframe>
+    `<iframe id="f" src="https://${APP}/embed/share?doc=${X}&origin=${encodeURIComponent(`https://${SERVING}`)}" style="width:380px;height:480px"></iframe>
 <script>
 window.__messages = [];
 window.addEventListener("message", (event) => {
@@ -261,7 +265,7 @@ window.setInterval(() => { if (document.activeElement !== document.body) window.
   await share.waitFor();
   await shoot(page, "bar");
 
-  // 2. Share opens a frame on the API host (the shadow root is closed, so it is
+  // 2. Share opens a frame on the app host (the shadow root is closed, so it is
   //    found through the page's frames), and the frame offers sign-in.
   await share.click();
   const frame = await until("the Share frame", () => frameOf(page, X));
@@ -313,7 +317,7 @@ window.setInterval(() => { if (document.activeElement !== document.body) window.
   // the same document. The stored token is in the storage partition the two
   // pages share, so the frame inside it draws the owner view, and the page
   // around it must learn nothing from that: exactly one message, `ready`, from
-  // the API origin; no focus move; and a token it forges into the frame is
+  // the app origin; no focus move; and a token it forges into the frame is
   // ignored, because the frame accepts one only from the popup it opened.
   const hostile = await context.newPage();
   await hostile.goto(docUrl(Y));
@@ -331,7 +335,7 @@ window.setInterval(() => { if (document.activeElement !== document.body) window.
   );
   assert.equal(await modeOf(frameOf(hostile, X)).isVisible(), true);
   assert.deepEqual(await hostile.evaluate(() => window.__messages), [
-    { origin: `https://${API}`, data: { type: "openartifacts:share", event: "ready" } },
+    { origin: `https://${APP}`, data: { type: "openartifacts:share", event: "ready" } },
   ]);
   assert.equal(await hostile.evaluate(() => window.__focusMoved), undefined);
   await hostile.close();
@@ -360,7 +364,7 @@ test("a frame a hostile page embedded while the document was public shows no con
   // the owner's token in the storage they share would draw the owner's controls
   // under that page after the document goes private.
   const X = await publish("Went private", "<p>Mine.</p>");
-  const embed = `<iframe id="f" src="https://${API}/embed/share?doc=${X}&origin=${encodeURIComponent(`https://${SERVING}`)}" style="width:380px;height:480px"></iframe>`;
+  const embed = `<iframe id="f" src="https://${APP}/embed/share?doc=${X}&origin=${encodeURIComponent(`https://${SERVING}`)}" style="width:380px;height:480px"></iframe>`;
   const Y1 = await publish("Hostile one", embed);
   const Y2 = await publish("Hostile two", embed);
   const Y3 = await publish("Hostile three", embed);
@@ -806,10 +810,10 @@ test("where comments are not bound, an invitee is just invited, and there is no 
   const context = await newContext(OWNER_ACCOUNT);
   const { page } = await ownerFrame(context, X);
   // The access answer of a server with no comments object leaves `roles` out; the stored role is still `comment`.
-  await page.route(`https://${API}/embed/api/docs/${X}/access`, async (route) => {
+  await page.route(`https://${APP}/embed/api/docs/${X}/access`, async (route) => {
     const request = route.request();
     if (request.method() !== "GET") return route.continue();
-    const response = await route.fetch({ url: `https://127.0.0.1:${mfPort}/embed/api/docs/${X}/access`, headers: { ...request.headers(), host: API } });
+    const response = await route.fetch({ url: `https://127.0.0.1:${mfPort}/embed/api/docs/${X}/access`, headers: { ...request.headers(), host: APP } });
     const body = await response.json();
     delete body.roles;
     await route.fulfill({ response, json: body });
@@ -921,7 +925,7 @@ const recordViews = (context) =>
 
 /** Hold every GET of `docId`'s access for `ms` before it goes out, as a slow network would. */
 const slowAccess = (page, docId, ms = 1500) =>
-  page.route(`https://${API}/embed/api/docs/${docId}/access`, async (route) => {
+  page.route(`https://${APP}/embed/api/docs/${docId}/access`, async (route) => {
     if (route.request().method() === "GET") await new Promise((resolve) => setTimeout(resolve, ms));
     await route.continue();
   });
@@ -964,7 +968,7 @@ test("an expired token goes from the skeleton to the signed-out view, and a sign
 
 test("a stale frame whose pre-write read fails does not write", { timeout: 180_000 }, async () => {
   const X = await publish("Read fails", "<p>Mine.</p>");
-  const embed = `<iframe src="https://${API}/embed/share?doc=${X}&origin=${encodeURIComponent(`https://${SERVING}`)}" style="width:380px;height:480px"></iframe>`;
+  const embed = `<iframe src="https://${APP}/embed/share?doc=${X}&origin=${encodeURIComponent(`https://${SERVING}`)}" style="width:380px;height:480px"></iframe>`;
   const Y = await publish("Hostile reader", embed);
   const invitee = "kept@example.com";
   assert.equal((await api(`/api/v1/docs/${X}/access/people/${encodeURIComponent(invitee)}`, { method: "PUT", body: "{}" })).status, 200);
@@ -993,7 +997,7 @@ test("a stale frame whose pre-write read fails does not write", { timeout: 180_0
   // to the focus change, so let the page settle.
   await tab.waitForTimeout(1500);
   for (const [name, fail] of failures) {
-    const url = `https://${API}/embed/api/docs/${X}/access`;
+    const url = `https://${APP}/embed/api/docs/${X}/access`;
     const handler = (route) => (route.request().method() === "GET" ? fail(route) : route.continue());
     await tab.route(url, handler);
     await Promise.all([
@@ -1018,7 +1022,7 @@ test("a read that resolves after the owner's own switch does not undo it", { tim
   const context = await newContext(OWNER_ACCOUNT);
   const { page, frame } = await ownerFrame(context, X);
   const key = `openartifacts:share-token:${X}`;
-  const Y = await publish("Other page", `<iframe src="https://${API}/embed/share?doc=${X}&origin=${encodeURIComponent(`https://${SERVING}`)}" style="width:380px;height:480px"></iframe>`);
+  const Y = await publish("Other page", `<iframe src="https://${APP}/embed/share?doc=${X}&origin=${encodeURIComponent(`https://${SERVING}`)}" style="width:380px;height:480px"></iframe>`);
   const other = await context.newPage();
   await other.goto(docUrl(Y));
   const sibling = await until("the other page's frame", () => frameOf(other, X));
@@ -1029,12 +1033,12 @@ test("a read that resolves after the owner's own switch does not undo it", { tim
   let release;
   const held = new Promise((resolve) => { release = resolve; });
   let taken = false;
-  const url = `https://${API}/embed/api/docs/${X}/access`;
+  const url = `https://${APP}/embed/api/docs/${X}/access`;
   await page.route(url, async (route) => {
     const request = route.request();
     if (request.method() !== "GET" || taken) return route.continue();
     taken = true;
-    const response = await route.fetch({ url: `https://127.0.0.1:${mfPort}/embed/api/docs/${X}/access`, headers: { ...request.headers(), host: API } });
+    const response = await route.fetch({ url: `https://127.0.0.1:${mfPort}/embed/api/docs/${X}/access`, headers: { ...request.headers(), host: APP } });
     const body = await response.body();
     await held;
     await route.fulfill({ status: response.status(), headers: response.headers(), body });
@@ -1064,7 +1068,7 @@ test("a pasted batch stops when the document goes private part way through", { t
   // Another tab makes the document private while the first address is on its
   // way, after the frame's check for it and before its check for the second.
   const puts = [];
-  await page.route(`https://${API}/embed/api/docs/${X}/access/people/*`, async (route) => {
+  await page.route(`https://${APP}/embed/api/docs/${X}/access/people/*`, async (route) => {
     puts.push(decodeURIComponent(route.request().url().split("/people/")[1]));
     if (puts.length === 1) {
       assert.equal((await api(`/api/v1/docs/${X}/access`, { method: "PUT", body: JSON.stringify({ linkAccess: "invited" }) })).status, 200);
@@ -1088,7 +1092,7 @@ test("Home search opens owned pages by keyboard and click without filtering the 
   const beta = await publish("Home search beta", "<p>Beta</p>");
   const context = await newContext(OWNER_ACCOUNT);
   const page = await context.newPage();
-  await page.goto(`https://${API}/home`);
+  await page.goto(`https://${APP}/home`);
   const input = page.getByRole("combobox", { name: "Search your pages" });
   await input.waitFor();
   assert.equal(await page.locator(".cli-hint").innerText(), "Ask your agent to publish or unpublish any page with the OpenArtifacts CLI.");
@@ -1109,7 +1113,7 @@ test("Home search opens owned pages by keyboard and click without filtering the 
   const firstId = firstUrl.slice(3);
   await Promise.all([page.waitForURL(docUrl(firstId)), input.press("Enter")]);
 
-  await page.goto(`https://${API}/home`);
+  await page.goto(`https://${APP}/home`);
   const search = page.getByRole("combobox", { name: "Search your pages" });
   await search.fill("HOME SEARCH");
   const matches = page.getByRole("option");
@@ -1123,7 +1127,7 @@ test("Home search opens owned pages by keyboard and click without filtering the 
   const otherId = firstId === alpha ? beta : alpha;
   await Promise.all([page.waitForURL(docUrl(otherId)), matches.filter({ hasText: otherId }).click()]);
 
-  await page.goto(`https://${API}/home`);
+  await page.goto(`https://${APP}/home`);
   const finalSearch = page.getByRole("combobox", { name: "Search your pages" });
   const finalRows = await page.locator(".pages > li").count();
   await finalSearch.fill("unmatched Home query");

@@ -84,7 +84,10 @@ documents and `api.symposium.md` serves the API. The cutover makes
 `openartifacts.site` and `api.openartifacts.ai` canonical after their Cloudflare
 zones and custom domains are attached. The legacy document host then redirects
 GET and HEAD with the exact path and query. The old API host remains attached
-only to return `410 Gone` for every request before authentication.
+only to return `410 Gone` for every request before authentication. The pages for
+people (sign-in, `/open`, the share page, Home, approval and the frames) are on
+the app host, `app.openartifacts.ai`, on the brand domain like the API, which
+redirects their old addresses there.
 
 `workers_dev` is `false` and stays that way. With any host var set, the router
 uses an explicit allowlist and fails closed on unknown hosts; the allowlist
@@ -118,7 +121,7 @@ so it did not: `openartifacts.site` is still cookieless and still holds nothing
 but public documents. An invited-only document is never served from it; the
 apex answers a `302` to sign-in.
 
-Identity lives on the brand domain's API host, and a grant alone is not
+Identity lives on the brand domain's app host, and a grant alone is not
 sufficient, because a hostile public document can `window.open` a private one and
 read the grant off the popup once it returns to a shared origin. So the rule
 becomes: **no origin that runs more than one publisher's scripts ever holds a

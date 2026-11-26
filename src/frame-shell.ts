@@ -1,5 +1,5 @@
 /**
- * What the two frames on the API host (the Share popover's, `/embed/share`, and
+ * What the two frames on the app host (the Share popover's, `/embed/share`, and
  * the comments frame, `/embed/comments`) share: which origin may embed them,
  * and the policy that says so.
  *

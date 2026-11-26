@@ -888,7 +888,7 @@ export async function deviceCodeIsPending(
  * cookie, and it costs nothing: the browser is not the thing being authorized,
  * so it has nothing to remember between the three requests. (A reader's
  * handshake is the exception: it binds its `state` to the starting browser with
- * a `__Host-oa_login` cookie on the API host, and ends in a session.)
+ * a `__Host-oa_login` cookie on the app host, and ends in a session.)
  *
  * Starting a second handshake overwrites the first while neither provider has
  * proved an identity, which is what a person pressing the other provider's

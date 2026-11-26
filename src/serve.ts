@@ -26,6 +26,7 @@ import { HOME_PATH, PAGE_SCRIPT_PATH, SHARE_PREFIX, docPath, parseDocPath, parse
 import { readerSignInConfigured } from "./reader-config.js";
 import { renderServedHtml, type TopBar } from "./render.js";
 import { STORED_CONTENT_TYPE, versionObjectKey } from "./storage.js";
+import { appOrigin } from "./urls.js";
 
 /**
  * The Content Security Policy. This is the security boundary of OpenArtifacts, so every
@@ -314,7 +315,7 @@ function notModifiedConditions(from: Headers, suffix: string): Headers {
  * The deploy time is that component because every change to the rendering
  * ships as a deploy, so nothing has to be remembered: a new version moves every
  * page's validator on its own. The injections are string constants in
- * render.ts, but the top bar also depends on configuration (the API host and
+ * render.ts, but the top bar also depends on configuration (the app host and
  * whether reader sign-in is set), and a config change is a deploy too. The time
  * and not the version's id because it keeps the validator's `.r{number}` shape,
  * and a rollback to an older version brings back that version's own time, which
@@ -407,11 +408,11 @@ function matchesConditions(conditions: Headers, object: R2Object): boolean {
  */
 function topBarFor(env: Env, route: DocRoute, version: number, comments: boolean | null): TopBar | null {
   if (!readerSignInConfigured(env)) return null;
-  const api = `https://${env.API_HOST!.trim()}`;
+  const app = appOrigin(env);
   return {
-    shareUrl: `${api}${SHARE_PREFIX}/${route.docId}`,
-    scriptUrl: `${api}${PAGE_SCRIPT_PATH}`,
-    homeUrl: `${api}${HOME_PATH}`,
+    shareUrl: `${app}${SHARE_PREFIX}/${route.docId}`,
+    scriptUrl: `${app}${PAGE_SCRIPT_PATH}`,
+    homeUrl: `${app}${HOME_PATH}`,
     ...(comments === null ? {} : { comments, version }),
   };
 }
@@ -494,7 +495,7 @@ async function serveObject(
   // variant has to enter this validator too, or a shared cache will hand one
   // publisher's branding to another's reader.
   //
-  // The top bar adds one more input: the API host and whether reader
+  // The top bar adds one more input: the app host and whether reader
   // sign-in is configured. That is deployment configuration, the same for every
   // document and viewer, so it cannot mix renderings between publishers, and a
   // change to it is a deploy, which moves the deploy time (see `renderingSuffix`).
@@ -567,12 +568,12 @@ export async function handleServing(
   // stays invited on a server whose secret was removed or never set: `/open`
   // answers `404` there, which takes the document offline. "Every document stays
   // public on an unconfigured server" is true of documents that were never made
-  // invited, never of one that was. With no API host to send anyone to, the
+  // invited, never of one that was. With no app host to send anyone to, the
   // plain `404`.
   if (found.link_access === "invited") {
-    const apiHost = env.API_HOST?.trim();
-    return apiHost
-      ? servingRedirect(`https://${apiHost}${docPath("/open", route)}`, 302)
+    const app = appOrigin(env);
+    return app
+      ? servingRedirect(`${app}${docPath("/open", route)}`, 302)
       : noDocAt(request.method);
   }
   if (found.version === null) return noDocAt(request.method);

@@ -505,6 +505,19 @@ describe("POST /approve/start/{provider}", () => {
     expect((await readCode())?.provider).toBe("github");
   });
 
+  it("keeps the API host's callback when the handshake starts on the app host", async () => {
+    const hosts = { API_HOST: "api.openartifacts.ai", APP_HOST: "app.openartifacts.ai" };
+    const response = await post(
+      "https://app.openartifacts.ai/approve/start/google",
+      { user_code: USER_CODE, terms: "yes" },
+      hosts,
+    );
+
+    expect(response.status).toBe(303);
+    const target = new URL(response.headers.get("location") ?? "");
+    expect(target.searchParams.get("redirect_uri")).toBe("https://api.openartifacts.ai/approve/callback/google");
+  });
+
   it("mints a different state and verifier for every handshake", async () => {
     await begin();
     const first = await readCode();

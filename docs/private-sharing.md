@@ -12,7 +12,7 @@ setup is in [deploying.md](deploying.md#private-sharing).
 
 Example: Logan shares a client report with Alice (`alice@acme.com`). Bob
 (`bob@other.com`) gets the link forwarded and was not invited. Every page here is
-on the API host except the document itself.
+on the app host except the document itself.
 
 | Who opens the link | What they see |
 | --- | --- |
@@ -77,13 +77,18 @@ to keep private documents off any origin where another publisher's scripts run.
 Isolation per publisher is enough: a publisher's own scripts can reach only
 documents that publisher already owns.
 
-## Three hosts, one rule
+## Four hosts, one rule
 
 | Host | Serves | Credential it holds |
 | --- | --- | --- |
 | `openartifacts.site` | Public documents, unchanged. A redirect for invited-only ones. | None, ever |
-| `api.openartifacts.ai` | The bearer API, reader sign-in, `/open/{docId}`, `/open/{docId}/request`, the share page, the top bar's script and the Share popover (`/embed/*`) | The reader session cookie |
+| `app.openartifacts.ai`, the app host | Reader sign-in, `/open/{docId}`, `/open/{docId}/request`, the share page, Home, approval, the top bar's script and the Share popover (`/embed/*`) | The reader session cookie |
+| `api.openartifacts.ai` | The bearer API, the device flow and the admin surface. A `GET` or `HEAD` of an old page address answers `307` to the same path and query on the app host, for good. It keeps the Google and GitHub callback address and passes each callback on the same way. | None |
 | `{code}.openartifacts.site` | One publisher's invited-only documents, every version of each. Later, the publisher's custom domain takes this seat. | That publisher's read-only grant cookie |
+
+The app host is `APP_HOST`. A deployment that sets none serves these pages on
+the API host, which then also holds the session, as before the split
+(`docs/deploying.md`).
 
 `code` is 6 random characters from `23456789bcdfghjkmnpqrstvwxz` (no vowels, so
 no words; no `0`, `1`, `o`, `l` or `i`), drawn once per `docs.owner` the first
@@ -131,8 +136,8 @@ redirect.
   every plan has.
 
 ```
-reader  → openartifacts.site/d/{docId}        302, no-store → api.openartifacts.ai/open/{docId}
-reader  → api.openartifacts.ai/open/{docId}   session? canRead?
+reader  → openartifacts.site/d/{docId}        302, no-store → app.openartifacts.ai/open/{docId}
+reader  → app.openartifacts.ai/open/{docId}   session? canRead?
                                               302 → {code}.openartifacts.site/d/{docId}?grant=…   (valid 60 s)
 reader  → {code}.openartifacts.site/d/…?grant=…   303 + Set-Cookie (1 h), to the clean url
 reader  → {code}.openartifacts.site/d/{docId}     200, private, no-store
@@ -143,11 +148,11 @@ reader  → {code}.openartifacts.site/d/{docId}     200, private, no-store
 **`openartifacts.site/d/{docId}[/v{n}]`.** The one D1 read the serving path
 always made also returns `link_access`. Unknown ids are `404` and deleted ones
 `410`, as ever. For `anyone` the existing path runs unchanged. For `invited` the
-answer is `302`, `Cache-Control: no-store`, to `https://{API_HOST}/open/{docId}[/v{n}]`
+answer is `302`, `Cache-Control: no-store`, to `https://{app host}/open/{docId}[/v{n}]`
 with the full serving header policy, no body, no cookie and no view event. A
 pinned `/v{n}` that does not exist reads the same as one that does.
 
-**`api.openartifacts.ai/open/{docId}[/v{n}]`** (`GET` only):
+**`app.openartifacts.ai/open/{docId}[/v{n}]`** (`GET` only):
 
 1. No valid session: the sign-in page, which names no address, and returns to
    this path afterwards.
@@ -168,7 +173,7 @@ is `404`):
 1. A `?grant=` that verifies for this code sets `__Host-oa_grant` and answers a
    bodiless `303` to the same path without the query. This step reads no
    database. A grant that is bad, expired or for another code answers `302` to
-   `https://{API_HOST}/open/{docId}[/v{n}]`.
+   `https://{app host}/open/{docId}[/v{n}]`.
 2. No cookie, or an invalid or expired one: the same `302` to `/open`, again with
    no database read.
 3. A valid cookie: one D1 read returns the document, its owner, and whether the
@@ -196,7 +201,7 @@ carries them too.
 
 | | Lifetime | Holds |
 | --- | --- | --- |
-| Reader session `__Host-oa_session`, on the API host | 30 days | An account id |
+| Reader session `__Host-oa_session`, on the app host | 30 days | An account id |
 | URL grant `?grant=` | 60 seconds | A publisher's origin code and a principal |
 | Origin cookie `__Host-oa_grant`, on that publisher's origin | 1 hour | The same grant, re-signed |
 
@@ -322,7 +327,7 @@ A reader is an `accounts` row, the same principal a publisher is. There is no
   accepting them creates the free account and signs it in. A request for a new
   code keeps the count of wrong guesses, and a code that has used them all cannot
   be replaced until it expires. There is no newsletter choice for a reader.
-- **The session** is `__Host-oa_session` on the API host (`HttpOnly`, `Secure`,
+- **The session** is `__Host-oa_session` on the app host (`HttpOnly`, `Secure`,
   `SameSite=Lax`, `Path=/`, 30 days): an HMAC over `{accountId, expiresAt}`.
   Stateless, and sign-out (**Use another account**) clears it. Only `/open`,
   `/open/{docId}/request`, `/share/{docId}`, `/signin` and the Share popover's
@@ -330,7 +335,7 @@ A reader is an `accounts` row, the same principal a publisher is. There is no
   adds no cross-site request surface to the API.
 - **Every cookie-authenticated `POST` is held to a same-origin check**
   (`sameOriginPost`). `SameSite=Lax` alone is not enough: every host under the brand
-  domain is same-site with the API host, and Lax cookies ride same-site `POST`s.
+  domain is same-site with the app host, and Lax cookies ride same-site `POST`s.
   The request route and every share-page write require `Sec-Fetch-Site:
   same-origin` (or, from a browser that sends none, an `Origin` equal to the API
   origin); the sign-in forms also accept `none`. A request carrying neither header
@@ -349,13 +354,13 @@ A reader is an `accounts` row, the same principal a publisher is. There is no
   comments frame. A document's script can use it; that is why it can do nothing
   but read what its own publisher already holds. The threads JSON it reads carries
   a five-minute **read ticket** naming the document and no reader; the comments
-  frame, given it by the page, reads that same JSON from the API host so it can
+  frame, given it by the page, reads that same JSON from the app host so it can
   trust the names. The ticket reads nothing the page does not already hold.
 - The **API-host session signs in and mints**: the origin grant, the owner route
   and the Share popover's token; the comments frame reuses that token, with
   no second provider sign-in.
 - The **popover token writes, for one document**. It lives in the Share frame's own
-  storage on the API host, never on a document's origin, and it is a bearer header
+  storage on the app host, never on a document's origin, and it is a bearer header
   on the frame's same-origin `fetch`. For that document it can change access, read
   the title, and post, resolve, reopen and delete comments and flip the comments
   switch, as each route's own checks allow. It can also set the account's display
@@ -365,7 +370,7 @@ A reader is an `accounts` row, the same principal a publisher is. There is no
   cookie.
 - **Writes never ride a cookie a document can use.** Approving, declining and
   changing access carry a credential that lives on an origin no publisher's
-  scripts run on: a bearer token, or the session on the API host.
+  scripts run on: a bearer token, or the session on the app host.
 
 ## Creating a private document
 
@@ -392,7 +397,7 @@ exists, and the invite email that add sends is the notice to the requester.
 - **Table:** `doc_access_requests (doc_id, email, created_at)`, one pending row
   per document and address, capped at 100 per document. Past the cap a new request
   is dropped silently.
-- **Route:** `POST /open/{docId}/request`, on the API host, session required (no
+- **Route:** `POST /open/{docId}/request`, on the app host, session required (no
   session shows the sign-in page), same-origin required. One statement inserts
   the row only when the document is live and invited-only, the account cannot
   already read it, no request is pending and the list is under the cap.
@@ -415,7 +420,7 @@ exists, and the invite email that add sends is the notice to the requester.
   owner sees the request in the published page's Share view and on the share page.
   The message is from `EMAIL_FROM`, with no reply-to: subject `{requester} asked to open "{title}"`,
   the requester's address, the title, "Nothing has been shared yet.", a **Review
-  request** link to `https://{API_HOST}/share/{docId}`, and a line for Copilot
+  request** link to `https://{app host}/share/{docId}`, and a line for Copilot
   users. **The link carries no token**, so a forwarded email approves nothing and
   a stale one is harmless, and it is the only link in the message: never a
   requester-chosen url. The requester never learns the owner's address.
@@ -429,7 +434,7 @@ in it opens a popover with the same controls as the share page.
 
 **The bar.** A spacer as the first child of `<body>` (so the author's content
 starts below the bar, not under it), one small `<style>` element, a strip fixed to
-the top of the viewport, and a `<script defer src="https://{API_HOST}/embed/page.js">`
+the top of the viewport, and a `<script defer src="https://{app host}/embed/page.js">`
 tag. On the left is the byline's text, "Shared from Copilot for Obsidian", only on
 Copilot-rendered HTML that has branding: that text exists only where the header
 byline would have, and printing it elsewhere would be false attribution or would
@@ -452,7 +457,7 @@ and Firefox and partitioned in Chrome. A bar that appeared only for owners would
 appear for nobody on public pages. So the bar is constant and the popover decides
 who is looking.
 
-**The page script.** `GET /embed/page.js` on the API host turns **Share** into a
+**The page script.** `GET /embed/page.js` on the app host turns **Share** into a
 popover anchored under the button. It is a constant that holds no credential,
 reads no cookie and no storage, defines no global and binds only our own link. It
 creates the frame on the first sign of intent (the pointer entering **Share**,
@@ -474,7 +479,7 @@ fix to the script reaches them through the cache lifetime and never through a ne
 path. The serving CSP already admits scripts and frames from `https:`, so it does
 not move.
 
-**The frame.** The popover is a frame on the API host, `GET /embed/share?doc={docId}&origin=…`,
+**The frame.** The popover is a frame on the app host, `GET /embed/share?doc={docId}&origin=…`,
 because its controls change who can read the document and the credential that does
 that must never be on a page whose scripts the author writes.
 
@@ -513,7 +518,7 @@ that must never be on a page whose scripts the author writes.
   knows; a size report, a focus move or an early message would tell that page, with
   no click, whether its visitor holds a token.
 - **Home is a plain link, the same for every viewer.** The top bar's **Home**
-  leads to `/home` on the API host, which lists the signed-in viewer's own pages
+  leads to `/home` on the app host, which lists the signed-in viewer's own pages
   or asks them to sign in. Showing it only to signed-in viewers would need a
   frame that reads a token and hides its link, and every way of hiding it (size,
   focus, Tab order, a click) would have to look the same to the page in both
@@ -689,7 +694,7 @@ round trip between that read and the write.
 
 ## The share page
 
-`https://{API_HOST}/share/{docId}` is the top-level form of the published page's
+`https://{app host}/share/{docId}` is the top-level form of the published page's
 Share controls, served by the Worker for publishers and self-hosters. Copilot's
 publish dialog only chooses public or private; people and access are managed here.
 It is behind the reader session, and it is where
@@ -729,7 +734,7 @@ the reason, including "Private sharing needs a paid plan." and the upgrade link
 (`402`), or the 24-hour invite cap (`429`, "Nothing was changed.");
 a successful one redirects (`303`) back to the page. The page is `no-store` with
 `frame-ancestors 'none'` and `Referrer-Policy: same-origin` (as on every page of
-the API host that holds a form: a form posted from a `no-referrer` page sends
+the app host that holds a form: a form posted from a `no-referrer` page sends
 `Origin: null`, which would defeat the `Origin` fallback for browsers without
 Fetch Metadata, and `same-origin` still sends no `Referer` anywhere else); its one script, the
 Copy button, is allowed by a hash in the page's own policy, and the page works

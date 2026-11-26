@@ -306,10 +306,13 @@ approval's OAuth handshake lives on the device code's own row: the browser is no
 the thing being authorized, so it has nothing to remember between the three
 requests. A reader's handshake is the exception, because it is the browser being
 signed in: it binds its `state` to the browser that started it with a short-lived
-`__Host-oa_login` cookie on the API host, cleared when the shared callback ends the
+`__Host-oa_login` cookie on the app host, cleared when the shared callback ends the
 handshake.
 
-**A reader has exactly one session, and it lives on the API host.** Opening an
+**A reader has exactly one session, and it lives on the app host**
+(`APP_HOST`, `app.openartifacts.ai`; the API host on a deployment that sets none).
+The provider callback still arrives on the API host, which sends it on with
+`307`, so the cookie is set and read on the app host only. Opening an
 invited-only document needs a reader to sign in once and not again for thirty
 days, which a row on a device code cannot give. `__Host-oa_session` is a signed
 cookie (`HttpOnly`, `Secure`, `SameSite=Lax`, `Path=/`), stateless, and it names an

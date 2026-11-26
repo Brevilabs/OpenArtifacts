@@ -196,6 +196,11 @@ describe("POST /device/code", () => {
     );
     expect(minted.expires_in).toBe(DEVICE_CODE_TTL_MS / 1000);
     expect(minted.interval).toBe(DEVICE_POLL_INTERVAL_SECONDS);
+
+    // With an app host, the address a person opens is there; the CLI prints it as given.
+    const hosts = configured({ API_HOST: "api.openartifacts.ai", APP_HOST: "app.openartifacts.ai" });
+    const onApp = await (await device("/device/code", undefined, NOW, {}, hosts)).json<Minted>();
+    expect(onApp.verification_uri_complete).toBe(`https://app.openartifacts.ai/approve?user_code=${onApp.user_code}`);
   });
 
   it("draws a user code the approval page accepts, from the alphabet with no vowels or digits", async () => {

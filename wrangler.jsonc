@@ -7,7 +7,7 @@
     "enabled": true
   },
 
-  // The canonical, legacy, and retired hostnames the Worker answers on, and the
+  // The canonical, app, legacy, and retired hostnames the Worker answers on, and the
   // only ones — `workers_dev` is false. Declared here rather than clicked in the
   // dashboard so the repo describes the post-cutover target: the new domains
   // must exist in Cloudflare before this config can deploy.
@@ -20,6 +20,8 @@
     { "pattern": "openartifacts.site", "custom_domain": true },
     { "pattern": "symposium.site", "custom_domain": true },
     { "pattern": "api.openartifacts.ai", "custom_domain": true },
+    // The pages for people. The deploy creates its DNS record and certificate.
+    { "pattern": "app.openartifacts.ai", "custom_domain": true },
     { "pattern": "api.symposium.md", "custom_domain": true },
     // One origin per publisher: `{label}.openartifacts.site`, the label being the
     // first 16 bytes of SHA-256("openartifacts-origin-v1:" + docs.owner) in
@@ -208,6 +210,11 @@
   "vars": {
     "SERVING_HOST": "openartifacts.site",
     "API_HOST": "api.openartifacts.ai",
+    // Home, sign-in, the share page, `/open`, approval and the frames. The API
+    // host sends a GET or HEAD of an old page address here with `307`, and keeps
+    // the provider callback. A self-hoster deletes this line, which keeps the
+    // pages on the API host, or sets their own app host and its route above.
+    "APP_HOST": "app.openartifacts.ai",
     "LEGACY_SERVING_HOST": "symposium.site",
     "RETIRED_API_HOST": "api.symposium.md",
     "DEFAULT_PLAN": "free",

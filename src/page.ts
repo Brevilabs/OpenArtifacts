@@ -3,7 +3,7 @@
  *
  * Two surfaces reach for it and neither can borrow the other's response
  * handling: the serving surface's 404, 410 and 500 status pages, and the
- * approval page on the API host. What they share is the look — a document that
+ * approval page on the app host. What they share is the look — a document that
  * says it is unavailable and a page that asks someone to approve a terminal
  * should not look like they came from different products — so the shell lives
  * here and each caller supplies its own copy, its own status and its own

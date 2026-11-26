@@ -23,12 +23,14 @@ const HOSTS = {
   apiHost: "api.openartifacts.ai",
   legacyServingHost: "symposium.site",
   retiredApiHost: "api.symposium.md",
+  appHost: "app.openartifacts.ai",
 };
 const PRODUCTION_ENV: Partial<Env> = {
   SERVING_HOST: HOSTS.servingHost,
   API_HOST: HOSTS.apiHost,
   LEGACY_SERVING_HOST: HOSTS.legacyServingHost,
   RETIRED_API_HOST: HOSTS.retiredApiHost,
+  APP_HOST: HOSTS.appHost,
 };
 
 describe("resolveSurface — local development, no hosts configured", () => {
@@ -67,6 +69,7 @@ describe("resolveSurface — canonical and legacy domains", () => {
   it("routes the canonical hosts by surface", () => {
     expect(resolveSurface("openartifacts.site", "/d/abc", HOSTS)).toBe("serving");
     expect(resolveSurface("api.openartifacts.ai", "/api/v1/docs", HOSTS)).toBe("api");
+    expect(resolveSurface("app.openartifacts.ai", "/api/v1/docs", HOSTS)).toBe("app");
   });
 
   it("supports a fresh two-host deployment without legacy or retired hosts", () => {
@@ -163,7 +166,7 @@ describe("resolveSurface — a publisher's own origin", () => {
     for (const method of ["GET", "HEAD"]) {
       const moved = await worker.fetch(new Request(`${host}/d/0123456789abcdef/v3?grant=x`, { method }), env(PRODUCTION_ENV), ctx);
       expect(moved.status).toBe(302);
-      expect(moved.headers.get("location")).toBe("https://api.openartifacts.ai/open/0123456789abcdef/v3");
+      expect(moved.headers.get("location")).toBe("https://app.openartifacts.ai/open/0123456789abcdef/v3");
     }
     const post = await worker.fetch(new Request(`${host}/d/0123456789abcdef`, { method: "POST" }), env(PRODUCTION_ENV), ctx);
     expect(post.status).toBe(404);
@@ -178,7 +181,7 @@ describe("resolveSurface — a publisher's own origin", () => {
 
 describe("worker dispatch", () => {
   it("serves health on the canonical hosts", async () => {
-    for (const host of ["openartifacts.site", "api.openartifacts.ai"]) {
+    for (const host of ["openartifacts.site", "api.openartifacts.ai", "app.openartifacts.ai"]) {
       const res = await get(`https://${host}/health`, PRODUCTION_ENV);
       expect(res.status).toBe(200);
       await expect(res.json()).resolves.toEqual({ ok: true });
@@ -224,6 +227,35 @@ describe("worker dispatch", () => {
       expect(res.status).toBe(404);
       expect(res.headers.get("location")).toBeNull();
       expect(res.headers.get("x-robots-tag")).toBe("noindex, nofollow");
+    }
+  });
+
+  it("sends a GET or HEAD of a page on the API host to the app host, and never a write", async () => {
+    const source = "https://api.openartifacts.ai/approve/callback/google?code=c%201&state=s";
+    for (const method of ["GET", "HEAD"]) {
+      const res = await worker.fetch(new Request(source, { method }), env(PRODUCTION_ENV), ctx);
+      expect(res.status).toBe(307);
+      expect(res.headers.get("location")).toBe("https://app.openartifacts.ai/approve/callback/google?code=c%201&state=s");
+      expect(res.headers.get("cache-control")).toBe("no-store");
+    }
+    const post = await worker.fetch(new Request("https://api.openartifacts.ai/share/abc", { method: "POST" }), env(PRODUCTION_ENV), ctx);
+    expect(post.status).toBe(404);
+    expect(post.headers.get("location")).toBeNull();
+
+    // An app host equal to the API host keeps the pages where they are.
+    const same = await get("https://api.openartifacts.ai/home", { ...PRODUCTION_ENV, APP_HOST: HOSTS.apiHost });
+    expect(same.status).toBe(404);
+    expect(same.headers.get("location")).toBeNull();
+  });
+
+  it("serves the pages on the app host, / as Home, and neither the API nor the device flow", async () => {
+    const root = await get("https://app.openartifacts.ai/", PRODUCTION_ENV);
+    expect(root.status).toBe(302);
+    expect(root.headers.get("location")).toBe("/home");
+    for (const path of ["/api/v1/docs", "/device/code", "/admin/v1/owners"]) {
+      const res = await get(`https://app.openartifacts.ai${path}`, PRODUCTION_ENV);
+      expect(res.status).toBe(404);
+      expect(res.headers.get("content-type")).toBe("text/html; charset=utf-8");
     }
   });
 

@@ -84,7 +84,7 @@ export function isTopLevelRequest(request: Request): boolean {
  * Whether a cookie-authenticated `POST` came from one of our own pages.
  *
  * `SameSite=Lax` is not enough on its own: every host under the brand domain is
- * same-site with the API host, and Lax cookies ride same-site `POST`s, so a form
+ * same-site with the app host, and Lax cookies ride same-site `POST`s, so a form
  * on any of them could act as a signed-in reader. Fetch Metadata and `Origin`
  * are set by the browser and cannot be written by the page, which is what makes
  * them worth trusting here.

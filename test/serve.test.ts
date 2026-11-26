@@ -908,6 +908,10 @@ describe("an invited-only document", () => {
       expect(response.headers.get("set-cookie")).toBeNull();
       expect(await response.text()).toBe("");
     }
+
+    // With an app host, sign-in is there.
+    const onApp = await getFrom(`https://openartifacts.site/d/${docId}`, {}, { ...PRIVATE, APP_HOST: "app.openartifacts.ai" });
+    expect(onApp.headers.get("location")).toBe(`https://app.openartifacts.ai/open/${docId}`);
   });
 
   it("swaps a grant for a cookie on its publisher's origin, then serves the page private and uncacheable", async () => {

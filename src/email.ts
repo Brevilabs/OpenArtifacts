@@ -148,7 +148,7 @@ export function inviteMessage(
  *
  * The link carries no token and no grant, so forwarding this email approves
  * nothing, and it is the only link in the message: never a requester-chosen url.
- * `shareUrl` is built by the caller from the API host and the document id. The
+ * `shareUrl` is built by the caller from the app host and the document id. The
  * requester's address is the signed-in account's own, never typed text, and it
  * is the only thing about the requester the owner learns.
  */
