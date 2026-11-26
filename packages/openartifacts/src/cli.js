@@ -339,12 +339,6 @@ function manageUrl(host, docId) {
 }
 
 /**
- * The roles a person on a document's list can hold, lowest first. A copy of
- * `ROLES` in the server's `src/roles.ts`: a later `edit` is one more word here.
- */
-const ROLES = ["view", "comment"];
-
-/**
  * The access changes `share` was asked for, in order, read before any
  * authentication. Each flag changes one thing: one address added (which also
  * approves its request), one removed, one request declined, or the link
@@ -352,12 +346,12 @@ const ROLES = ["view", "comment"];
  * remove everyone. `--role` is not a change of its own: it sets the role of the
  * address each `--add` in the same call adds, and means nothing without one.
  * @param {string[]} options
- * @returns {Array<["link" | "add" | "remove" | "decline", string, string?]>}
+ * @returns {Array<["link" | "add" | "remove" | "decline", string, import("./access.cjs").Role?]>}
  */
 export function prepareShare(options) {
-  /** @type {Array<["link" | "add" | "remove" | "decline", string, string?]>} */
+  /** @type {Array<["link" | "add" | "remove" | "decline", string, import("./access.cjs").Role?]>} */
   const changes = [];
-  /** @type {string | undefined} */
+  /** @type {import("./access.cjs").Role | undefined} */
   let role;
   for (let index = 0; index < options.length; index += 2) {
     const [flag, value] = [options[index], options[index + 1]];
@@ -366,7 +360,7 @@ export function prepareShare(options) {
     else if (flag === "--remove") changes.push(["remove", value]);
     else if (flag === "--decline") changes.push(["decline", value]);
     else if (flag === "--link" && (value === "anyone" || value === "invited")) changes.push(["link", value]);
-    else if (flag === "--role" && role === undefined && ROLES.includes(value)) role = value;
+    else if (flag === "--role" && role === undefined && (value === "view" || value === "comment")) role = value;
     else throw new Error(HELP);
   }
   if (role !== undefined) {

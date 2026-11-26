@@ -175,3 +175,9 @@ Hosts such as Obsidian Copilot ship their own execution wrapper for agents that 
 without Node. They can import the skill text and themes from this package as a
 pinned development dependency at build time. Skill and theme edits ship in a new npm
 version through the existing release PR workflow.
+
+`openartifacts/client/access` exports `documentAccess`, a set of request builders
+for checking link access, changing it, and managing invitations and access
+requests. The builders return a relative path, HTTP method and optional JSON
+body. A host can bundle them without Node and send the requests with its own
+transport and credentials. Hosts still decide which actions to expose.

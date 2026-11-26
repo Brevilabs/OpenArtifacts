@@ -11,5 +11,5 @@
     "target": "ES2022",
     "types": ["node"]
   },
-  "include": ["bin/**/*.js", "src/**/*.js"]
+  "include": ["bin/**/*.js", "src/**/*.js", "src/**/*.cjs"]
 }

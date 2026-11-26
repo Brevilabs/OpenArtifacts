@@ -1,3 +1,5 @@
+import { documentAccess } from "./access.cjs";
+
 /** An error returned by the OpenArtifacts JSON API. */
 export class APIError extends Error {
   /** @param {number} status @param {Record<string, any>} body */
@@ -55,6 +57,9 @@ export function createClient({ host, token, agent, fetcher = fetch }) {
     return docs;
   };
 
+  /** @param {import("./access.cjs").AccessRequest} access */
+  const requestAccess = ({ path, method, body }) => request(path, { method, body });
+
   return {
     account: () => request("/api/v1/account"),
     createHandoff: () => request("/api/v1/account/handoffs", { method: "POST" }),
@@ -105,29 +110,15 @@ export function createClient({ host, token, agent, fetcher = fetch }) {
       return request(doc.url, {}, [], false);
     },
     /** @param {string} docId */
-    getAccess: (docId) => request(`/api/v1/docs/${encodeURIComponent(docId)}/access`),
-    /** @param {string} docId @param {"anyone" | "invited"} linkAccess */
-    setLinkAccess: (docId, linkAccess) =>
-      request(`/api/v1/docs/${encodeURIComponent(docId)}/access`, {
-        method: "PUT",
-        body: JSON.stringify({ linkAccess }),
-      }),
-    /** The body is sent only for an explicit role, so a plain add stays the request older servers expect. @param {string} docId @param {string} email @param {string} [role] */
-    addPerson: (docId, email, role) =>
-      request(`/api/v1/docs/${encodeURIComponent(docId)}/access/people/${encodeURIComponent(email)}`, {
-        method: "PUT",
-        ...(role === undefined ? {} : { body: JSON.stringify({ role }) }),
-      }),
+    getAccess: (docId) => requestAccess(documentAccess.getAccess(docId)),
+    /** @param {string} docId @param {import("./access.cjs").LinkAccess} linkAccess */
+    setLinkAccess: (docId, linkAccess) => requestAccess(documentAccess.setLinkAccess(docId, linkAccess)),
+    /** Omitting a role keeps the bodyless request older servers expect. @param {string} docId @param {string} email @param {import("./access.cjs").Role} [role] */
+    addPerson: (docId, email, role) => requestAccess(documentAccess.addPerson(docId, email, role)),
     /** @param {string} docId @param {string} email */
-    removePerson: (docId, email) =>
-      request(`/api/v1/docs/${encodeURIComponent(docId)}/access/people/${encodeURIComponent(email)}`, {
-        method: "DELETE",
-      }),
-    /** Decline a pending request. It is idempotent and tells the requester nothing. @param {string} docId @param {string} email */
-    declineRequest: (docId, email) =>
-      request(`/api/v1/docs/${encodeURIComponent(docId)}/access/requests/${encodeURIComponent(email)}`, {
-        method: "DELETE",
-      }),
+    removePerson: (docId, email) => requestAccess(documentAccess.removePerson(docId, email)),
+    /** Decline a pending request without notifying the requester. @param {string} docId @param {string} email */
+    declineRequest: (docId, email) => requestAccess(documentAccess.declineRequest(docId, email)),
     /**
      * The document's comment threads. `since` is an ISO time; the server answers
      * 404 for a reader who cannot see the document and for a server without comments.

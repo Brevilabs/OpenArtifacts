@@ -25,6 +25,10 @@
   "publishConfig": {
     "access": "public"
   },
+  "exports": {
+    "./client/access": "./src/access.cjs",
+    "./*": "./*"
+  },
   "bin": {
     "openartifacts": "./bin/openartifacts.js"
   },
