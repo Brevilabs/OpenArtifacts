@@ -515,7 +515,7 @@ export const CAN_READ_SQL = `(d.link_access = 'anyone'
  * a linked license), while it is live. So a domain serves the account's whole
  * owner scope, and an unlinked license's pages leave it at once.
  */
-export const CUSTOM_HOST_SQL = `(SELECT ph.hostname FROM publisher_hosts ph
+const CUSTOM_HOST_SQL = `(SELECT ph.hostname FROM publisher_hosts ph
   WHERE ph.account_id = COALESCE((SELECT account_id FROM owner_links WHERE external_owner = d.owner), d.owner)
     AND ph.active_at IS NOT NULL)`;
 

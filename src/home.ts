@@ -280,17 +280,18 @@ export async function handleDomainPage(request: Request, url: URL, env: Env): Pr
   });
   const mayAdd = planLimits(env, owner.plan).customDomain === true;
 
-  let note: string | null = null;
+  let checked: CheckOutcome | null = null;
+  let refused = false;
   if (writing) {
     const form = await readSmallForm(request);
     const op = form?.get("op");
     if (op === "check") {
-      note = checkNote(env, (await domainRow(env.DB, accountId))?.hostname ?? "", await checkDomain(env, accountId, now));
+      checked = await checkDomain(env, accountId, now);
     } else if (op === "add" || op === "remove") {
       if (op === "remove") await removeDomain(env, accountId);
-      else if (!mayAdd || !(await addDomain(env, accountId, form!.get("domain") ?? "", now))) note = BAD_DOMAIN;
+      else refused = !mayAdd || !(await addDomain(env, accountId, form!.get("domain") ?? "", now));
       // Post, redirect, get, unless there is something to say.
-      if (note === null) {
+      if (!refused) {
         return new Response(null, { status: 303, headers: { location: HOME_DOMAIN_PATH, "cache-control": "no-store", "referrer-policy": "no-referrer" } });
       }
     } else {
@@ -299,7 +300,8 @@ export async function handleDomainPage(request: Request, url: URL, env: Env): Pr
   }
 
   const row = await domainRow(env.DB, accountId);
-  return await homeShell(env, email, "Custom domain", `<section class="domain"><h1>Custom domain</h1>${domainBody(env, row, mayAdd, row === null || note !== BAD_DOMAIN ? note : null)}<p><a href="${HOME_PATH}">Back to your pages</a></p></section>`, DOMAIN_SCRIPT);
+  const note = refused ? BAD_DOMAIN : row !== null && checked !== null ? checkNote(env, row.hostname, checked) : null;
+  return await homeShell(env, email, "Custom domain", `<section class="domain"><h1>Custom domain</h1>${domainBody(env, row, mayAdd, note)}<p><a href="${HOME_PATH}">Back to your pages</a></p></section>`, DOMAIN_SCRIPT);
 }
 
 /** The page in its states: no domain (or no plan for one), pending with its two records, and live. */

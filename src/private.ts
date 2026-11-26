@@ -312,15 +312,16 @@ async function customResponse(
   if (method !== "GET" && method !== "HEAD") return servingError(method, "not_found");
   const threadsDoc = parseThreadsPath(url.pathname);
   const route = threadsDoc === null ? parseDocPath(url.pathname) : null;
-  const secret = readerSecret(env);
-  const app = appOrigin(env);
-  if ((route === null && threadsDoc === null) || secret === null || !app) return servingError(method, "not_found");
+  if (route === null && threadsDoc === null) return servingError(method, "not_found");
+  // The router sends a request here only while custom domains are on, which needs both.
+  const secret = readerSecret(env)!;
+  const app = appOrigin(env)!;
 
   const readGrant = (held: Record<string, string> | null) =>
     held !== null && held.l === hostname && typeof held.p === "string" && held.p !== "" ? held.p : null;
 
   // A grant for this hostname swaps for the cookie, with no read; a bad one is ignored.
-  const urlGrant = route === null ? null : url.searchParams.get("grant");
+  const urlGrant = url.searchParams.get("grant");
   if (route !== null && urlGrant !== null) {
     const granted = readGrant(await verifyPayload(secret, "grant-url", urlGrant, atMs));
     if (granted !== null) {

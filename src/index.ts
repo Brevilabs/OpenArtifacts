@@ -441,7 +441,7 @@ export default {
   },
 
   // The daily custom domain sync (`triggers` in wrangler.jsonc). It only clears.
-  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-    ctx.waitUntil(syncAll(env));
+  async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
+    await syncAll(env);
   },
 } satisfies ExportedHandler<Env>;
