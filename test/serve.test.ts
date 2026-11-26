@@ -9,7 +9,7 @@ import { linkExternalOwner } from "../src/owners.js";
 import { ORIGIN_CODE, originCode } from "../src/origin-code.js";
 import { grantUrl } from "../src/private.js";
 import { readerSignInConfigured } from "../src/reader-config.js";
-import { signPayload, verifyPayload } from "../src/session.js";
+import { returnPath, signPayload, verifyPayload } from "../src/session.js";
 import { FAVICON_LINK, NOINDEX_META, OPENARTIFACTS_FOOTER, OPENARTIFACTS_HEADER, OPENARTIFACTS_MARK_SVG } from "../src/render.js";
 import { OPENARTIFACTS_BAR_SPACER, OPENARTIFACTS_BAR_STYLE } from "../src/render.js";
 import { SHARE_TOKEN_PREFIX } from "../src/ids.js";
@@ -804,7 +804,7 @@ async function sendTo(
 ): Promise<Response> {
   const ctx = createExecutionContext();
   const response = await worker.fetch(
-    new Request(target.startsWith("https://") ? target : `${ORIGIN}${target}`, { method, ...init }),
+    new Request(/^https?:\/\//.test(target) ? target : `${ORIGIN}${target}`, { method, ...init }),
     {
       ...env,
       SERVING_HOST: "",
@@ -1437,6 +1437,115 @@ describe("an invited-only document", () => {
     // The label host keeps its own policy.
     const swapped = await getFrom(await grantFor(doc, doc.owner), {}, PRIVATE);
     expect(swapped.headers.get("cross-origin-opener-policy")).toBe(ISOLATION["cross-origin-opener-policy"]);
+  });
+
+  describe("a publisher's custom domain", () => {
+    const CUSTOM = { ...PRIVATE, CF_SAAS_ZONE_ID: "zone", CF_SAAS_API_TOKEN: "token" } satisfies Partial<Env>;
+    const HOST = "https://docs.acme.com";
+
+    /** P's public page, P's private page and Q's public page, with `docs.acme.com` live on P's account. */
+    async function onDomain() {
+      const pub = await privateDoc("in public", KEY, "anyone");
+      const priv = await privateDoc();
+      const theirs = await privateDoc("theirs", KEY_Q, "anyone");
+      const account = await ownerAccount(pub);
+      await env.DB.prepare(
+        "INSERT INTO publisher_hosts (account_id, hostname, token, proved_at, active_at, created_at) VALUES (?, 'docs.acme.com', 't', 1, 1, 1)",
+      ).bind(account).run();
+      return { pub, priv, theirs, account };
+    }
+
+    it("serves its account's pages under the code host's rules, and another account's page as a missing one", async () => {
+      const { pub, priv, theirs, account } = await onDomain();
+
+      const served = await getFrom(`${HOST}/d/${pub.docId}`, {}, CUSTOM);
+      expect(served.status).toBe(200);
+      expect(served.headers.get("cache-control")).toBe((await getFrom(`https://openartifacts.site/d/${pub.docId}`, {}, CUSTOM)).headers.get("cache-control"));
+      expect(served.headers.get("set-cookie")).toBeNull();
+      expect(await served.text()).toContain("in public");
+
+      const other = await getFrom(`${HOST}/d/${theirs.docId}`, {}, CUSTOM);
+      const missing = await getFrom(`${HOST}/d/${UNKNOWN_DOC_ID}`, {}, CUSTOM);
+      expect(other.status).toBe(404);
+      expect(await other.text()).toBe(await missing.text());
+
+      // A private page sends a reader with no cookie to /open, marked so it comes back here.
+      const signIn = await getFrom(`${HOST}/d/${priv.docId}`, {}, CUSTOM);
+      expect(signIn.status).toBe(302);
+      expect(signIn.headers.get("location")).toBe(`${API}/open/${priv.docId}?custom`);
+      expect(returnPath(`/open/${priv.docId}?custom`)).toBe(`/open/${priv.docId}?custom`);
+
+      // Marked, /open hands off to the domain; unmarked, to the code host, as today.
+      const session = { headers: { cookie: await sessionFor(account) } };
+      const target = (await getFrom(`${API}/open/${priv.docId}?custom`, session, CUSTOM)).headers.get("location")!;
+      expect(new URL(target).origin).toBe(HOST);
+      expect(new URL((await getFrom(`${API}/open/${priv.docId}`, session, CUSTOM)).headers.get("location")!).origin).toBe(priv.host);
+
+      const swapped = await getFrom(target, {}, CUSTOM);
+      expect(swapped.status).toBe(303);
+      const cookie = { headers: { cookie: swapped.headers.get("set-cookie")!.split(";")[0]! } };
+      const opened = await getFrom(`${HOST}/d/${priv.docId}`, cookie, CUSTOM);
+      expect(opened.status).toBe(200);
+      expect(opened.headers.get("cache-control")).toBe("private, no-store");
+      expect(await opened.text()).toContain("for invited eyes");
+      expect((await getFrom(`${HOST}/d/${priv.docId}/v9`, cookie, CUSTOM)).status).toBe(404);
+
+      // Off, the host is not ours.
+      expect((await getFrom(`${HOST}/d/${pub.docId}`, {}, PRIVATE)).status).toBe(404);
+    });
+
+    it("passes the certificate checks through to fetch, and sends http: to https:", async () => {
+      const fetched: string[] = [];
+      vi.stubGlobal("fetch", async (request: Request) => (fetched.push(request.url), new Response("challenge")));
+      try {
+        const check = await getFrom("http://docs.acme.com/.well-known/acme-challenge/abc", {}, CUSTOM);
+        expect(await check.text()).toBe("challenge");
+        expect(fetched).toEqual(["http://docs.acme.com/.well-known/acme-challenge/abc"]);
+      } finally {
+        vi.unstubAllGlobals();
+      }
+      const plain = await getFrom("http://docs.acme.com/d/abc?x=1", {}, CUSTOM);
+      expect(plain.status).toBe(301);
+      expect(plain.headers.get("location")).toBe("https://docs.acme.com/d/abc?x=1");
+    });
+
+    it("lets the Share frame be embedded by the domain for its own pages, copying the custom link, and answers threads by its rules", async () => {
+      const { pub, priv, theirs } = await onDomain();
+      const frame = (docId: string) => getFrom(`${API}/embed/share?doc=${docId}&origin=${encodeURIComponent(HOST)}`, {}, CUSTOM);
+      for (const { docId } of [pub, priv]) {
+        const shell = await frame(docId);
+        expect(shell.headers.get("content-security-policy")).toContain(`frame-ancestors ${HOST}`);
+        const html = await shell.text();
+        expect(html).toContain(`data-link="https://openartifacts.site/d/${docId}"`);
+        expect(html).toContain(`data-copy="${HOST}/d/${docId}"`);
+      }
+      expect((await frame(theirs.docId)).headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+
+      expect((await getFrom(`${HOST}/d/${pub.docId}/threads`, {}, CUSTOM)).status).toBe(200);
+      expect((await getFrom(`${HOST}/d/${priv.docId}/threads`, {}, CUSTOM)).status).toBe(404);
+      const swapped = await getFrom((await grantUrl({ ...env, ...CUSTOM }, priv.owner, { docId: priv.docId, pinned: null }, priv.owner, Date.now(), null, "docs.acme.com"))!.url, {}, CUSTOM);
+      const cookie = swapped.headers.get("set-cookie")!.split(";")[0]!;
+      expect((await getFrom(`${HOST}/d/${priv.docId}/threads`, { headers: { cookie } }, CUSTOM)).status).toBe(200);
+    });
+
+    it("puts customUrl in the receipts and the Access while the domain is live, never changing url", async () => {
+      const { pub } = await onDomain();
+      const call = (method: string, path: string, body: unknown, over: Partial<Env>) =>
+        sendTo(method, `${API}${path}`, { headers: { authorization: `Bearer ${KEY}`, "content-type": "application/json" }, body: body === null ? null : JSON.stringify(body) }, over);
+
+      const created = (await (await call("POST", "/api/v1/docs", { html: page("<p>new</p>") }, CUSTOM)).json()) as { docId: string; url: string; customUrl?: string };
+      expect(created.url).toBe(`https://openartifacts.site/d/${created.docId}`);
+      expect(created.customUrl).toBe(`${HOST}/d/${created.docId}`);
+      const updated = (await (await call("PUT", `/api/v1/docs/${pub.docId}`, { html: page("<p>v2</p>") }, CUSTOM)).json()) as { customUrl?: string };
+      expect(updated.customUrl).toBe(`${HOST}/d/${pub.docId}`);
+      const access = (await (await call("GET", `/api/v1/docs/${pub.docId}/access`, null, CUSTOM)).json()) as { url: string; customUrl?: string };
+      expect(access).toMatchObject({ url: `https://openartifacts.site/d/${pub.docId}`, customUrl: `${HOST}/d/${pub.docId}` });
+
+      // Without the token, every answer is as it was.
+      const off = { ...CUSTOM, CF_SAAS_API_TOKEN: "" };
+      expect(await (await call("PUT", `/api/v1/docs/${pub.docId}`, { html: page("<p>v3</p>") }, off)).json()).not.toHaveProperty("customUrl");
+      expect(await (await call("GET", `/api/v1/docs/${pub.docId}/access`, null, off)).json()).not.toHaveProperty("customUrl");
+    });
   });
 
   describe("POST /open/{docId}/request", () => {

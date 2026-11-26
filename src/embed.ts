@@ -214,9 +214,11 @@ const LINK_ICON_SVG =
 async function shareFrame(request: Request, url: URL, env: Env): Promise<Response> {
   const context = request.method === "GET" ? await frameContext(url, env) : null;
   if (context === null) return READER_NOT_FOUND();
-  const { doc, origin } = context;
+  const { doc, origin, customUrl } = context;
 
-  // Built from the id alone, so putting it in the page leaks nothing.
+  // Built from the id alone, so putting it in the page leaks nothing. `data-link`
+  // stays canonical, because the script takes the shared origin from it;
+  // `data-copy` is what Copy link copies outside the owner view.
   const link = publicDocUrl(env, url, doc);
   // The one line every signed-out visitor and reader sees for a Copilot publisher: the same for every
   // document, built from the server's own account address.
@@ -236,7 +238,7 @@ async function shareFrame(request: Request, url: URL, env: Env): Promise<Respons
 </head>
 <body>
 <header><span class="title">Share</span><button type="button" class="x" aria-label="Close">×</button></header>
-<main data-doc="${escapeHtml(doc)}" data-link="${escapeHtml(link)}" data-origin="${origin === null ? "" : escapeHtml(origin)}" hidden>
+<main data-doc="${escapeHtml(doc)}" data-link="${escapeHtml(link)}" data-copy="${escapeHtml(customUrl ?? link)}" data-origin="${origin === null ? "" : escapeHtml(origin)}" hidden>
 <p class="muted">Only the owner can change who can open this.</p>
 <p id="oa-msg" class="err" role="alert"></p>
 <p class="muted hint">${hint}</p>

@@ -177,11 +177,14 @@ export async function readSession(request: Request, secret: string, now: number)
   return typeof session?.a === "string" ? session.a : null;
 }
 
-/** The one query a return path may carry: the share page's request for its sign-in page. */
+/** A query a return path may carry: the share page's request for its sign-in page. */
 const SHARE_SIGNIN_QUERY = "?signin";
 
+/** The mark on `/open/{docId}?custom`: the request came from the page's custom domain. */
+export const CUSTOM_QUERY = "custom";
+
 /**
- * A return path the sign-in pages may redirect to: `/open/{docId}[/v{n}]`,
+ * A return path the sign-in pages may redirect to: `/open/{docId}[/v{n}][?custom]`,
  * `/share/{docId}[?signin]`, Home (`/home`) or the Share popover's popup, `/embed/sign-in?doc=…&h=…`, and
  * nothing else. Rebuilt from the parsed parts rather than echoed, so what a
  * form field or a cookie carried can never become a different location: no
@@ -193,8 +196,11 @@ export function returnPath(candidate: string | null): string | null {
   if (candidate === null) return null;
   if (candidate.startsWith(`${EMBED_SIGNIN_PATH}?`)) return popupPath(candidate);
   if (candidate === HOME_PATH) return HOME_PATH;
-  const open = parseDocPath(candidate, OPEN_PREFIX);
-  if (open !== null) return docPath(OPEN_PREFIX, open);
+  // A bare `?custom` is kept on an `/open` path, as `?signin` is on a share path:
+  // it sends the reader back to the custom domain they came from.
+  const custom = candidate.endsWith(`?${CUSTOM_QUERY}`);
+  const open = parseDocPath(custom ? candidate.slice(0, -CUSTOM_QUERY.length - 1) : candidate, OPEN_PREFIX);
+  if (open !== null) return `${docPath(OPEN_PREFIX, open)}${custom ? `?${CUSTOM_QUERY}` : ""}`;
   // A bare `?signin` is kept on a share path, and only there: it picks the
   // sign-in page over the visitor view of a public document, which is what "Use
   // another account" must land on. It names no location, so it adds no redirect.

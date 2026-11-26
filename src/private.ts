@@ -45,7 +45,7 @@ import {
   THREADS_READ_TTL_MS,
   verifyPayload,
 } from "./session.js";
-import { appOrigin } from "./urls.js";
+import { appOrigin, customOrigin } from "./urls.js";
 
 /** The retired hash-label host's name: 16 bytes of hash as base32, so always 26 characters. */
 export const LEGACY_LABEL = /^[0-9abcdefghjkmnpqrstvwxyz]{26}$/;
@@ -76,6 +76,11 @@ export function codeOrigin(env: Env, code: string): string | null {
  * owner's code when the caller's read already has it. `principal` is either a reader's
  * account id or a publisher's owner id; the origin checks it with `canRead`
  * like any other.
+ *
+ * `customHost` is the document's live custom domain, passed only by `/open` for a
+ * request that came from that domain (`?custom`). The grant then names the
+ * hostname, and the url is on it. A code has no dot, so the two labels never
+ * collide.
  */
 export async function grantUrl(
   env: Env,
@@ -84,18 +89,25 @@ export async function grantUrl(
   principal: string,
   now: number,
   knownCode: string | null = null,
+  customHost: string | null = null,
 ): Promise<{ url: string; expiresAt: number } | null> {
   const secret = readerSecret(env);
   if (secret === null || !env.SERVING_HOST?.trim()) return null;
-  // The document was read with its owner's code, so only a first open lacks one.
-  // That is the moment the code comes to exist, and R2 learns it now: nothing
-  // else would snapshot a manifest before the next change to the doc.
-  let code = knownCode;
-  if (code === null) {
-    code = await originCode(env.DB, docOwner);
-    await writeManifestBestEffort(env, route.docId);
+  const custom = customOrigin(env, customHost);
+  let publisher: { code: string; origin: string };
+  if (custom !== null) {
+    publisher = { code: customHost!, origin: custom };
+  } else {
+    // The document was read with its owner's code, so only a first open lacks one.
+    // That is the moment the code comes to exist, and R2 learns it now: nothing
+    // else would snapshot a manifest before the next change to the doc.
+    let code = knownCode;
+    if (code === null) {
+      code = await originCode(env.DB, docOwner);
+      await writeManifestBestEffort(env, route.docId);
+    }
+    publisher = { code, origin: codeOrigin(env, code)! };
   }
-  const publisher = { code, origin: codeOrigin(env, code)! };
 
   const expiresAt = now + URL_GRANT_TTL_MS;
   const grant = await signPayload(secret, "grant-url", { l: publisher.code, p: principal }, expiresAt);
@@ -255,4 +267,95 @@ async function publisherResponse(
   if (found.version === null) return servingError(method, "not_found");
 
   return await serveAndCount(request, env, route, found.version, analytics, atMs, true, found.has_comments === 1);
+}
+
+/** The two paths the certificate authority asks for over `http:`, which Cloudflare answers. */
+const CERTIFICATE_CHECK = /^\/\.well-known\/(acme-challenge|pki-validation)\//;
+
+/**
+ * A request to a publisher's custom domain (`custom-serving`). `hostname` is the
+ * normalized request host; the account it belongs to is whichever is live on it,
+ * read with the page. The same seat as a code host, with the same grant, cookie
+ * and per-request `canRead`, and three differences: it serves public pages too,
+ * it reads D1 once for a request with no cookie, and a page that is not this
+ * domain's is never redirected, only `404`.
+ *
+ * The isolation headers are set on every response from here.
+ */
+export async function handleCustomServing(
+  request: Request,
+  url: URL,
+  env: Env,
+  analytics: AnalyticsSink,
+  hostname: string,
+): Promise<Response> {
+  // Cloudflare's certificate checks reach the Worker on the `*/*` route and must
+  // pass through to Cloudflare. They come over `http:`, so before the redirect.
+  if (request.method === "GET" && CERTIFICATE_CHECK.test(url.pathname)) return await fetch(request);
+  return isolate(await customResponse(request, url, env, analytics, hostname));
+}
+
+async function customResponse(
+  request: Request,
+  url: URL,
+  env: Env,
+  analytics: AnalyticsSink,
+  hostname: string,
+): Promise<Response> {
+  const atMs = Date.now();
+  const method = request.method;
+  if (url.protocol === "http:") {
+    const secure = new URL(url);
+    secure.protocol = "https:";
+    return servingRedirect(secure.toString(), 301);
+  }
+  if (method !== "GET" && method !== "HEAD") return servingError(method, "not_found");
+  const threadsDoc = parseThreadsPath(url.pathname);
+  const route = threadsDoc === null ? parseDocPath(url.pathname) : null;
+  const secret = readerSecret(env);
+  const app = appOrigin(env);
+  if ((route === null && threadsDoc === null) || secret === null || !app) return servingError(method, "not_found");
+
+  const readGrant = (held: Record<string, string> | null) =>
+    held !== null && held.l === hostname && typeof held.p === "string" && held.p !== "" ? held.p : null;
+
+  // A grant for this hostname swaps for the cookie, with no read; a bad one is ignored.
+  const urlGrant = route === null ? null : url.searchParams.get("grant");
+  if (route !== null && urlGrant !== null) {
+    const granted = readGrant(await verifyPayload(secret, "grant-url", urlGrant, atMs));
+    if (granted !== null) {
+      const held = await signPayload(secret, "grant-cookie", { l: hostname, p: granted }, atMs + COOKIE_GRANT_TTL_MS);
+      return servingRedirect(docPath(SERVING_PREFIX, route), 303, cookie(GRANT_COOKIE, held, COOKIE_GRANT_TTL_MS / 1000));
+    }
+  }
+  // Nobody is `""`, for whom `canRead` reduces to a public page.
+  const principal = readGrant(await verifyPayload(secret, "grant-cookie", readCookie(request, GRANT_COOKIE), atMs)) ?? "";
+
+  // The threads resource: a public page as the apex answers it, a private one only
+  // with a cookie that may read it, and never a redirect, which a script cannot
+  // follow. The read ticket, as a code host gives it, only with a cookie.
+  if (threadsDoc !== null) {
+    const readTicket = principal === "" ? null : await signPayload(secret, "threads-read", { d: threadsDoc }, atMs + THREADS_READ_TTL_MS);
+    return await threadsResource(env, method, threadsDoc, url.searchParams.get("v"), principal, (doc) =>
+      doc.custom_host !== hostname ? "missing" : doc.deleted_at !== null ? "deleted" : doc.allowed ? "ok" : "missing",
+    readTicket);
+  }
+  if (route === null) return servingError(method, "not_found");
+
+  // One read. Another domain's page is the same `404` as a missing one, before
+  // anything else about it is revealed.
+  const found = await findReadableDoc(env.DB, route.docId, route.pinned, principal);
+  if (found === null || found.custom_host !== hostname) return servingError(method, "not_found");
+  if (found.deleted_at !== null) return servingPageResponse(method, "deleted");
+  if (found.link_access === "anyone") {
+    if (found.version === null) return servingError(method, "not_found");
+    return await serveAndCount(request, env, route, found.version, analytics, atMs, false, found.has_comments === 1);
+  }
+  if (found.allowed) {
+    // Without this the redirect below would loop for a version that does not exist.
+    if (found.version === null) return servingError(method, "not_found");
+    return await serveAndCount(request, env, route, found.version, analytics, atMs, true, found.has_comments === 1);
+  }
+  // `?custom` sends the reader back here after sign-in, rather than to the code host.
+  return servingRedirect(`${app}${docPath("/open", route)}?custom`, 302);
 }

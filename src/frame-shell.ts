@@ -10,8 +10,8 @@
  * target of the frame's `postMessage`). The lookup here decides only that: the
  * document's serving origin is `https://{SERVING_HOST}` when it is live and
  * public, its publisher's `https://{code}.{SERVING_HOST}` when it is live and
- * invited-only, and none otherwise. The frame may be embedded only by that
- * origin, and the policy echoes the caller's own `origin` parameter only when it
+ * invited-only, and none otherwise; a live custom domain is a second one, in
+ * either mode. The frame may be embedded only by those origins, and the policy echoes the caller's own `origin` parameter only when it
  * equals it, so the header tells a caller nothing it did not already name. (The
  * parameter is why: the request is anonymous and serving pages send
  * `no-referrer`, so the server cannot see the embedder, and a header derived
@@ -26,20 +26,29 @@ import type { Env } from "./config.js";
 import { findReadableDoc } from "./db.js";
 import { isDocId } from "./ids.js";
 import { codeOrigin } from "./private.js";
+import { customOrigin } from "./urls.js";
 
 export interface FrameContext {
   doc: string;
-  /** The embedder's origin when it is the document's own serving origin, else null. */
+  /** The embedder's origin when it is one of the document's own serving origins, else null. */
   origin: string | null;
+  /** The custom link when that embedder is the document's custom domain, else null: what Copy link copies there. */
+  customUrl: string | null;
 }
 
-/** The document and the embedder the request names, or null for a malformed id. */
+/**
+ * The document and the embedder the request names, or null for a malformed id.
+ * A live document has up to two serving origins: the apex when it is public or
+ * its code host when it is invited-only, and its live custom domain for either.
+ * The caller's `origin` is echoed only when it equals one of them.
+ */
 export async function frameContext(url: URL, env: Env): Promise<FrameContext | null> {
   const doc = url.searchParams.get("doc");
   if (doc === null || !isDocId(doc)) return null;
 
   const row = await findReadableDoc(env.DB, doc, null, "");
   const live = row !== null && row.deleted_at === null;
+  const custom = live ? customOrigin(env, row.custom_host) : null;
   const serving = !live
     ? null
     : row.link_access === "anyone"
@@ -49,9 +58,9 @@ export async function frameContext(url: URL, env: Env): Promise<FrameContext | n
       : row.origin_code === null
         ? null
         : codeOrigin(env, row.origin_code);
-  const servingOrigin = serving?.toLowerCase() ?? null;
-  const matched = servingOrigin !== null && (url.searchParams.get("origin") ?? "").toLowerCase() === servingOrigin;
-  return { doc, origin: matched ? servingOrigin : null };
+  const asked = (url.searchParams.get("origin") ?? "").toLowerCase();
+  const origin = [serving, custom].find((embedder) => embedder !== null && embedder.toLowerCase() === asked)?.toLowerCase() ?? null;
+  return { doc, origin, customUrl: origin !== null && origin === custom ? `${custom}/d/${doc}` : null };
 }
 
 /** The headers every frame shell carries; `scriptSource` is its one inline script's hash source. */

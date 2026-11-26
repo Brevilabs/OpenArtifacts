@@ -55,7 +55,7 @@ import {
 import { writeManifestBestEffort } from "../manifest.js";
 import { STORED_CONTENT_TYPE, versionObjectKey } from "../storage.js";
 import { reserveStorage, releaseStorage } from "../storage-quota.js";
-import { publicDocUrl } from "../urls.js";
+import { customUrlField, publicDocUrl } from "../urls.js";
 
 /** Titles are display strings in a list, not documents; long ones are noise. */
 const MAX_TITLE_LENGTH = 512;
@@ -231,12 +231,15 @@ function pushed(
   docId: string,
   version: number,
   status: number,
+  customHost: string | null,
   linkAccess?: LinkAccess,
 ) {
   return Response.json(
     {
       docId,
       url: publicDocUrl(env, requestUrl, docId),
+      // The branded link while the account's custom domain is live; `url` never changes.
+      ...customUrlField(env, customHost, docId),
       version,
       // Only a create reports it: `anyone` from `POST /docs`, `invited` from
       // `POST /private-docs`. An update never changes who can read a document,
@@ -286,7 +289,7 @@ export async function createDoc(
   // let concurrent creates all read the same count and all proceed, so the
   // documented ceiling would hold only for callers who push one at a time.
   const docId = newDocId();
-  const owner = await insertDocWithinQuota(
+  const inserted = await insertDocWithinQuota(
     env.DB,
     {
       id: docId,
@@ -298,7 +301,7 @@ export async function createDoc(
     },
     maxDocs,
   );
-  if (owner === null) {
+  if (inserted === null) {
     if (limits) {
       return limitReached(
         env, publisher, "documents",
@@ -332,6 +335,7 @@ export async function createDoc(
     return docNotFound(docId);
   }
 
+  const owner = inserted.owner;
   analytics.record({ name: "document_published", docId, atMs: now, ownerId: owner });
   if (linkAccess === "invited") {
     analytics.record({
@@ -344,7 +348,7 @@ export async function createDoc(
     });
   }
   await writeManifestBestEffort(env, docId);
-  return pushed(env, requestUrl, docId, FIRST_VERSION, 201, linkAccess);
+  return pushed(env, requestUrl, docId, FIRST_VERSION, 201, inserted.custom_host, linkAccess);
 }
 
 export async function updateDoc(
@@ -409,5 +413,5 @@ export async function updateDoc(
 
   analytics.record({ name: "document_updated", docId, atMs: now, ownerId: reserved.owner });
   await writeManifestBestEffort(env, docId);
-  return pushed(env, requestUrl, docId, version, 200);
+  return pushed(env, requestUrl, docId, version, 200, reserved.custom_host);
 }

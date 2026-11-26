@@ -77,14 +77,15 @@ to keep private documents off any origin where another publisher's scripts run.
 Isolation per publisher is enough: a publisher's own scripts can reach only
 documents that publisher already owns.
 
-## Four hosts, one rule
+## Five hosts, one rule
 
 | Host | Serves | Credential it holds |
 | --- | --- | --- |
 | `openartifacts.site` | Public documents, unchanged. A redirect for invited-only ones. | None, ever |
 | `app.openartifacts.ai`, the app host | Reader sign-in, `/open/{docId}`, `/open/{docId}/request`, the share page, Home, approval, the top bar's script and the Share popover (`/embed/*`) | The reader session cookie |
 | `api.openartifacts.ai` | The bearer API, the device flow and the admin surface. A `GET` or `HEAD` of an old page address answers `307` to the same path and query on the app host, for good. It keeps the Google and GitHub callback address and passes each callback on the same way. | None |
-| `{code}.openartifacts.site` | One publisher's invited-only documents, every version of each. Later, the publisher's custom domain takes this seat. | That publisher's read-only grant cookie |
+| `{code}.openartifacts.site` | One publisher's invited-only documents, every version of each. | That publisher's read-only grant cookie |
+| A custom domain, such as `docs.acme.com` | One account's public and invited-only documents: the same seat under the publisher's own name ([Custom domains](#custom-domains)). | That account's read-only grant cookie, signed for the hostname |
 
 The app host is `APP_HOST`. A deployment that sets none serves these pages on
 the API host, which then also holds the session, as before the split
@@ -123,8 +124,8 @@ redirect.
 - **A code host answers `404` for any document whose owner's code is not its
   own** (one join in the read the host already makes), before it reveals anything else about the document, so a host never
   serves, or even confirms, another publisher's document. The same rule, "this
-  host serves this publisher's documents only", is what a custom hostname will
-  enforce through a verified host-to-owner mapping.
+  host serves this publisher's documents only", is what a custom domain
+  enforces through its live `publisher_hosts` row.
 - **Why per publisher and not per document.** The threat is another publisher's
   script, and a publisher origin runs only one publisher's scripts. Per-document
   origins would protect a publisher from their own documents, which they can
@@ -941,6 +942,43 @@ says where to record it and what to do instead of rolling back.
 - Moderation of other people's comments, and approval of agent comments; see
   [What is not built](comments.md#what-is-not-built) in comments.md.
 
+## Custom domains
+
+Built. A paid account connects one subdomain it owns, such as `docs.acme.com`, at
+`/home/domain`, and its pages, public and private, also open at
+`https://docs.acme.com/d/{docId}`. Cloudflare for SaaS on the `openartifacts.site`
+zone serves the hostname and its certificate; our own TXT record proves control. It
+is the code host's seat with the publisher's name: the same grant (its label is the
+hostname, and a code has no dot, so the two never collide), the same read-only
+cookie, the same `canRead` on every request, and `404` for any document that is not
+this account's, before anything else is revealed. It differs in three ways: it
+serves public pages too, it reads D1 once for a request with no cookie, and it never
+redirects a page that is not its own.
+
+- **The domain follows the account's owner scope.** Pages of a linked Copilot
+  license open there, and leave it at once when the license is unlinked.
+- **Only Check now makes a domain live**, after a fresh TXT proof and Cloudflare's
+  `active` for the hostname and its certificate. The daily sync only clears: on a
+  hostname `moved`, `deleted` or `blocked`, a hostname that is gone, or an `expired`
+  certificate. Cloudflare's status is one per hostname and does not say who controls
+  the DNS, so letting the sync set a domain live could put one owner's pages on a
+  domain that changed hands. The newest proof wins, and the older account's row is
+  deleted.
+- **A link opens where it points.** An `openartifacts.site` link, the invite email
+  and Copilot's **Open** stay on our hosts, as before. Only a link on the custom
+  domain (its redirect to `/open/{docId}?custom`) and Home send anyone to it. So no
+  link we gave out depends on the publisher's DNS, and our emails never send a pass
+  to a domain that changed hands.
+- **The canonical link never changes.** Receipts and `Access` add `customUrl` while
+  the domain is live; Home, the share page and the popover's **Copy link** use it.
+- **The accepted risk.** If a live domain comes under another person's control, that
+  person's server receives a pass each time a reader opens a private page there. A
+  pass reads one publisher's pages that its holder may open, for one hour. No check
+  can rule this out, because whoever controls a domain can answer every check about
+  it. It ends when the publisher presses **Remove domain**, when we delete the row,
+  or when the sync sees Cloudflare report the domain moved or its certificate
+  expired.
+
 ## What comes next
 
 Comments are built on this without moving anything here ([comments.md](comments.md)).
@@ -950,17 +988,6 @@ publisher origin behind the grant cookie, the comments frame derives its
 `frame-ancestors` per document from the serving origin as the Share frame does, and
 the comment routes accept the Share popover's per-document token, so a reader signs
 in once per document for both.
-
-**Custom domains** are the same seat with a different name. `docs.acme.com`
-resolves to a publisher through a verified host-to-owner mapping (a future
-`publisher_hosts` table: hostname, owner id, verified at), and every rule on the
-label host applies unchanged: the host serves that publisher's documents only,
-each document is authorised live, and a grant cookie reads and nothing else. The
-canonical link stays `https://openartifacts.site/d/{docId}`, because Copilot pins
-it and every invite and receipt carries it; `/open` redirects to whatever the
-document's serving origin is at that moment, so moving a publisher onto a custom
-domain changes no link anyone holds. Nothing is keyed by host: documents,
-invites, requests and comments are keyed by `docId`.
 
 Agents as first-class participants (a token scoped to one document, issued by the
 human it acts for) is the step after that.

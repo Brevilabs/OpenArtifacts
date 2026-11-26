@@ -23,6 +23,9 @@ export const SHARE_PREFIX = "/share";
 /** Home, the signed-in owner's list of their pages: `GET /home` on the app host. */
 export const HOME_PATH = "/home";
 
+/** The signed-in owner's custom domain settings: `GET` and `POST /home/domain` on the app host. */
+export const HOME_DOMAIN_PATH = "/home/domain";
+
 /**
  * Everything the top bar's Share button needs from the app host: the page
  * script, the popover frame, its sign-in popup and the routes the frame calls.

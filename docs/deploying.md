@@ -677,6 +677,49 @@ needs a browser and is verified by hand: publish with `--private`, open the link
 signed out, sign in, read, request access as another account, approve, remove, and
 switch to `anyone`.
 
+## Custom domains
+
+Custom domains (docs/private-sharing.md) ship off. They are on only when reader
+sign-in is configured and both the var `CF_SAAS_ZONE_ID` and the secret
+`CF_SAAS_API_TOKEN` are set. Off, nothing answers differently except the
+`customDomain` flag in an account's `limits`, and the daily cron does nothing.
+
+**Setup, once.** Apply `0021_publisher_hosts.sql` before the Worker that reads it,
+as for every migration. Then, in the Cloudflare dashboard for the
+`openartifacts.site` zone:
+
+1. **SSL/TLS → Custom Hostnames → Enable** (it asks for payment details; the first
+   100 hostnames cost nothing, then $0.10 each a month).
+2. **DNS → Records**: `AAAA domains 100::`, Proxied. Publishers point their CNAME at
+   `domains.{SERVING_HOST}`.
+3. **Custom Hostnames → Fallback Origin**: `domains.openartifacts.site`, and wait for
+   **Active**.
+4. An API token with **Zone → SSL and Certificates → Edit** on that zone only.
+5. Add the route `{ "pattern": "*/*", "zone_name": "openartifacts.site" }` beside the
+   wildcard route, and the var `CF_SAAS_ZONE_ID`, in `wrangler.jsonc`, through a PR.
+   Never add the route by hand: a deploy with a full login deletes a route the
+   config does not list, and the CI token cannot delete one, so a route added by
+   hand must also be removed by hand.
+6. After that deploy is green: `npx wrangler secret put CF_SAAS_API_TOKEN`.
+
+**Off switch.** `npx wrangler secret delete CF_SAAS_API_TOKEN`. At once no link,
+receipt, pass or redirect uses a custom domain, and custom hosts answer `404`. Their
+certificates do not renew while it is off; after a long stop the sync clears the
+expired ones and their owners press **Check now** again.
+
+**Takedown.** Delete the account's `publisher_hosts` row (the Worker stops serving
+the domain on the next request), delete the hostname under **SSL/TLS → Custom
+Hostnames**, and end the publisher's plan where it is sold.
+
+**Left-over hostnames.** **Remove domain** deletes the Cloudflare hostname, and a
+failed delete is logged (`custom hostname delete failed`). A cleared domain whose
+owner never returns keeps its hostname. Each counts toward the 100 until it is
+deleted in the dashboard; compare that list with
+`SELECT hostname FROM publisher_hosts`.
+
+**Self-hosting.** Leave both unset and the feature does not exist. To offer it,
+repeat the setup on your own serving zone; the CNAME target follows `SERVING_HOST`.
+
 ## Inline comments
 
 Comments add a SQLite Durable Object, one D1 migration and two rate limiters. None

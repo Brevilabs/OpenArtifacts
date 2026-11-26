@@ -16,16 +16,18 @@ import type { Env } from "./config.js";
 import { DEVICE_PREFIX, handleDevice } from "./device.js";
 import { errorResponse } from "./errors.js";
 import { listTokens, revokeToken } from "./api/tokens.js";
-import { EMBED_PREFIX, HOME_PATH, OPEN_PREFIX, SERVING_PREFIX, SHARE_PREFIX, SIGNIN_PREFIX } from "./paths.js";
-import { handlePublisherServing, isolate, legacyLabelResponse, LEGACY_LABEL } from "./private.js";
+import { EMBED_PREFIX, HOME_DOMAIN_PATH, HOME_PATH, OPEN_PREFIX, SERVING_PREFIX, SHARE_PREFIX, SIGNIN_PREFIX } from "./paths.js";
+import { handleCustomServing, handlePublisherServing, isolate, legacyLabelResponse, LEGACY_LABEL } from "./private.js";
 import { ORIGIN_CODE } from "./origin-code.js";
 import { handleEmbed } from "./embed.js";
-import { handleHome } from "./home.js";
+import { syncAll } from "./custom-domains.js";
+import { handleDomainPage, handleHome } from "./home.js";
 import { handleReader } from "./reader.js";
-import { readerSignInConfigured } from "./reader-config.js";
+import { customDomainsConfigured, readerSignInConfigured } from "./reader-config.js";
 import { READER_NOT_FOUND, readerIsolate } from "./reader-pages.js";
 import { handleShare } from "./share.js";
 import { handleServing, servingError, servingRedirect } from "./serve.js";
+import { isOurHost, normalizeHostname, surfaceHosts } from "./urls.js";
 
 // The comments Durable Object class must be exported from the Worker's entry
 // module for the `durable_objects` binding in wrangler.jsonc to resolve.
@@ -37,7 +39,8 @@ export { DocComments } from "./comments/object.js";
  * turns out to be phishing should cost us the serving domain, not the brand
  * domain. A third, `publisher-serving`, is one publisher's own origin
  * (`{code}.{SERVING_HOST}`), where that publisher's invited-only documents are
- * served and only that publisher's scripts run. `app`, when configured, carries
+ * served and only that publisher's scripts run. `custom-serving` is the same
+ * seat under a publisher's own verified domain. `app`, when configured, carries
  * the pages for people, so the API host is for programs only.
  */
 export type Surface =
@@ -45,6 +48,7 @@ export type Surface =
   | "app"
   | "serving"
   | "publisher-serving"
+  | "custom-serving"
   | "legacy-serving"
   | "retired-api"
   | "unknown";
@@ -60,21 +64,19 @@ export interface SurfaceConfig {
   retiredApiHost?: string;
   /** Host serving the pages for people. Unset or equal to apiHost keeps them on the API host. */
   appHost?: string;
+  /** Custom domains are on (`customDomainsConfigured`): a host that is not ours may be one. */
+  customDomains?: boolean;
 }
 
 const API_PREFIX = "/api/v1";
 
 /**
- * Lowercase and drop the trailing root dot, so `A.Com` and `a.com.` both match
+ * Hosts compare through `normalizeHostname`, so `A.Com` and `a.com.` both match
  * `a.com`. The root dot matters: `new URL("https://openartifacts.site./x").hostname` is
- * `"openartifacts.site."`, so without this a request with a dotted Host header would
+ * `"openartifacts.site."`, so without it a request with a dotted Host header would
  * miss the serving-host match and fall through to the path prefix — which is
  * exactly how `/api/v1` would become reachable on the serving domain.
  */
-function normalizeHostname(hostname: string): string {
-  return hostname.trim().toLowerCase().replace(/\.$/, "");
-}
-
 function hostMatches(hostname: string, configured: string | undefined): boolean {
   if (!configured) return false;
   return normalizeHostname(hostname) === normalizeHostname(configured);
@@ -86,7 +88,8 @@ function hostMatches(hostname: string, configured: string | undefined): boolean 
  * `a.b.openartifacts.site` and a short or mixed-case code are the unknown hosts
  * they were before. The retired `{26-character label}` hosts are recognised too,
  * as `legacy`, so their old links can be sent on to `/open`. A publisher's
- * verified custom hostname resolves here later, by lookup.
+ * verified custom domain is the `custom-serving` surface instead, resolved by
+ * lookup in its handler.
  */
 export function resolvePublisherHost(
   hostname: string,
@@ -135,6 +138,7 @@ function isPagePath(pathname: string): boolean {
     pathIsUnder(pathname, SIGNIN_PREFIX) ||
     pathIsUnder(pathname, SHARE_PREFIX) ||
     pathname === HOME_PATH ||
+    pathname === HOME_DOMAIN_PATH ||
     pathIsUnder(pathname, EMBED_PREFIX)
   );
 }
@@ -156,6 +160,9 @@ export function resolveSurface(hostname: string, pathname: string, config: Surfa
   if (hostMatches(hostname, config.appHost)) return "app";
   if (hostMatches(hostname, config.retiredApiHost)) return "retired-api";
   if (resolvePublisherHost(hostname, config.servingHost) !== null) return "publisher-serving";
+  // Any other host may be a publisher's custom domain, which its handler looks
+  // up. One equal to or under our own domains never is, and costs no read.
+  if (config.customDomains === true && !isOurHost(hostname, config)) return "custom-serving";
 
   if (hostsAreConfigured(config)) return "unknown";
 
@@ -301,7 +308,9 @@ async function handlePage(
       ? READER_NOT_FOUND()
       : url.pathname === HOME_PATH
         ? await handleHome(request, url, env)
-        : pathIsUnder(url.pathname, SHARE_PREFIX)
+        : url.pathname === HOME_DOMAIN_PATH
+          ? await handleDomainPage(request, url, env)
+          : pathIsUnder(url.pathname, SHARE_PREFIX)
           ? await handleShare(request, url, env, analytics, ctx)
           : await handleReader(request, url, env, ctx, analytics),
   );
@@ -311,13 +320,7 @@ export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
-    const surfaceConfig = {
-      servingHost: env.SERVING_HOST,
-      apiHost: env.API_HOST,
-      legacyServingHost: env.LEGACY_SERVING_HOST,
-      retiredApiHost: env.RETIRED_API_HOST,
-      appHost: env.APP_HOST,
-    };
+    const surfaceConfig = { ...surfaceHosts(env), customDomains: customDomainsConfigured(env) };
     const surface = resolveSurface(url.hostname, url.pathname, surfaceConfig);
 
     // The old API hostname stays attached because a limited-zone Cloudflare
@@ -347,6 +350,7 @@ export default {
     if (
       url.pathname === "/health" &&
       surface !== "publisher-serving" &&
+      surface !== "custom-serving" &&
       (surface !== "unknown" || !hostsAreConfigured(surfaceConfig))
     ) {
       return Response.json({ ok: true });
@@ -411,6 +415,8 @@ export default {
           }
           return await handlePublisherServing(request, url, env, analytics, publisher);
         }
+        case "custom-serving":
+          return await handleCustomServing(request, url, env, analytics, normalizeHostname(url.hostname));
         default:
           return errorResponse("not_found", `No route for ${url.pathname}`);
       }
@@ -425,10 +431,17 @@ export default {
       // response like any other, and has to carry the robots tag that proves it.
       // A publisher's origin keeps its isolation headers on a 500 too: the
       // handler that threw is the one that would have added them.
-      if (surface === "publisher-serving") return isolate(servingError(request.method, "internal"));
+      if (surface === "publisher-serving" || surface === "custom-serving") {
+        return isolate(servingError(request.method, "internal"));
+      }
       return surface === "serving"
         ? servingError(request.method, "internal")
         : errorResponse("internal", message);
     }
+  },
+
+  // The daily custom domain sync (`triggers` in wrangler.jsonc). It only clears.
+  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    ctx.waitUntil(syncAll(env));
   },
 } satisfies ExportedHandler<Env>;

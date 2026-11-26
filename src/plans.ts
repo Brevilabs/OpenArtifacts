@@ -11,6 +11,8 @@ export interface PlanLimits {
   privateSharing?: boolean;
   /** The plan may grant the Can comment role, and its documents accept comments. */
   comments?: boolean;
+  /** The plan may add a custom domain. Only adding one checks it: a domain outlives a lapse. */
+  customDomain?: boolean;
 }
 
 const DEFAULT_PLANS: Record<string, PlanLimits> = {
@@ -30,9 +32,9 @@ export function configuredPlans(env: Env): Record<string, PlanLimits> {
       throw new Error("Invalid PLAN_LIMITS entry.");
     }
     const limits = value as Record<string, unknown>;
-    if (Object.keys(limits).some((key) => !["documents", "pushesPerDay", "htmlBytes", "storageBytes", "privateSharing", "comments"].includes(key)) || ["documents", "pushesPerDay", "htmlBytes"].some(
+    if (Object.keys(limits).some((key) => !["documents", "pushesPerDay", "htmlBytes", "storageBytes", "privateSharing", "comments", "customDomain"].includes(key)) || ["documents", "pushesPerDay", "htmlBytes"].some(
       (field) => typeof limits[field] !== "number" || !Number.isSafeInteger(limits[field]) || (limits[field] as number) <= 0,
-    ) || (limits.storageBytes !== undefined && (!Number.isSafeInteger(limits.storageBytes) || (limits.storageBytes as number) <= 0)) || (limits.privateSharing !== undefined && typeof limits.privateSharing !== "boolean") || (limits.comments !== undefined && typeof limits.comments !== "boolean") || (limits.htmlBytes as number) > MAX_DOC_BYTES) throw new Error("Invalid plan ceilings.");
+    ) || (limits.storageBytes !== undefined && (!Number.isSafeInteger(limits.storageBytes) || (limits.storageBytes as number) <= 0)) || (limits.privateSharing !== undefined && typeof limits.privateSharing !== "boolean") || (limits.comments !== undefined && typeof limits.comments !== "boolean") || (limits.customDomain !== undefined && typeof limits.customDomain !== "boolean") || (limits.htmlBytes as number) > MAX_DOC_BYTES) throw new Error("Invalid plan ceilings.");
   }
   return raw as Record<string, PlanLimits>;
 }

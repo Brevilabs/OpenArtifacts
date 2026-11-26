@@ -577,7 +577,9 @@ export const FRAME_SCRIPT = String.raw`(() => {
     linkIcon = paths;
     if (copied === 0) idleCopy();
   };
+  // The owner's view copies the custom link wherever it is open; every other view what the shell says.
   const copyLink = () => {
+    const text = (latest && latest.customUrl) || main.dataset.copy;
     const done = () => {
       copyLabel(copyButton, CHECK_ICON, "Copied");
       window.clearTimeout(copied);
@@ -585,13 +587,13 @@ export const FRAME_SCRIPT = String.raw`(() => {
     };
     const fallback = () => {
       const area = node("textarea", { readonly: "", style: "position:fixed;opacity:0" });
-      area.value = link;
+      area.value = text;
       document.body.append(area);
       area.select();
       try { if (document.execCommand("copy")) done(); } catch (error) {}
       area.remove();
     };
-    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(link).then(done, fallback);
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, fallback);
     else fallback();
   };
   copyButton.addEventListener("click", copyLink);

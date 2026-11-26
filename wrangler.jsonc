@@ -142,8 +142,21 @@
       "name": "COMMENT_EMAIL_LIMITER",
       "namespace_id": "1012",
       "simple": { "limit": 20, "period": 60 }
+    },
+    // **Check now** on the custom domain page, counted per account. Each press
+    // can make a DNS lookup and Cloudflare API calls, so six a minute bounds an
+    // account that loops add, check and remove. Absent means no limit.
+    {
+      "name": "DOMAIN_CHECK_LIMITER",
+      "namespace_id": "1013",
+      "simple": { "limit": 6, "period": 60 }
     }
   ],
+
+  // The daily custom domain sync (`syncAll` in src/custom-domains.ts). It only
+  // clears a domain Cloudflare reports gone, moved, blocked or with an expired
+  // certificate, and does nothing while custom domains are off.
+  "triggers": { "crons": ["17 4 * * *"] },
 
   // Invite emails, request emails to owners, and sign-in codes, sent through
   // Cloudflare Email Service from a dedicated subdomain (`EMAIL_FROM` below) so
@@ -219,11 +232,12 @@
     "ACCOUNT_ACTION_URL": "https://openartifacts.ai/account",
     "UPGRADE_URL": "https://openartifacts.ai/account",
     "EMAIL_FROM": "share@mail.openartifacts.ai",
-    // Every paid plan includes private sharing, so `privateSharing` is on both
-    // `pro` and `pro_lifetime` and absent from `free`. The license-key side has
+    // Every paid plan includes private sharing and custom domains, so
+    // `privateSharing` and `customDomain` are on both `pro` and `pro_lifetime`
+    // and absent from `free`. The license-key side has
     // no flag: any plan that may publish with a key (PUBLISHING_PLANS in
     // src/auth.ts) may share privately.
-    "PLAN_LIMITS": "{\"free\":{\"documents\":3,\"pushesPerDay\":30,\"htmlBytes\":1048576,\"storageBytes\":262144000},\"pro\":{\"documents\":500,\"pushesPerDay\":500,\"htmlBytes\":10485760,\"storageBytes\":5368709120,\"privateSharing\":true,\"comments\":true},\"pro_lifetime\":{\"documents\":500,\"pushesPerDay\":500,\"htmlBytes\":10485760,\"storageBytes\":5368709120,\"privateSharing\":true,\"comments\":true}}",
+    "PLAN_LIMITS": "{\"free\":{\"documents\":3,\"pushesPerDay\":30,\"htmlBytes\":1048576,\"storageBytes\":262144000},\"pro\":{\"documents\":500,\"pushesPerDay\":500,\"htmlBytes\":10485760,\"storageBytes\":5368709120,\"privateSharing\":true,\"comments\":true,\"customDomain\":true},\"pro_lifetime\":{\"documents\":500,\"pushesPerDay\":500,\"htmlBytes\":10485760,\"storageBytes\":5368709120,\"privateSharing\":true,\"comments\":true,\"customDomain\":true}}",
 
     // Product analytics labels every event with this; business queries filter
     // on it. A local run that turns delivery on must override it with

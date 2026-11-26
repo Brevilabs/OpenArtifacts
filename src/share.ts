@@ -81,7 +81,7 @@ import {
 } from "./reader-pages.js";
 import { signIn } from "./reader.js";
 import { readSession } from "./session.js";
-import { publicDocUrl } from "./urls.js";
+import { customDocUrl, publicDocUrl } from "./urls.js";
 
 /**
  * Room for the longest list the page can be asked to add. At worst that is
@@ -412,7 +412,8 @@ async function dialog(
     : "";
 
   const message = shown.report ?? (await errorMessage(env, principal, shown.error));
-  const url = publicDocUrl(env, requestUrl, docId);
+  // The owner copies the custom link while the domain is live, as in the popover.
+  const url = customDocUrl(env, state.custom_host, docId) ?? publicDocUrl(env, requestUrl, docId);
   const detail = `${SHARE_STYLE}
 ${message === null ? "" : `<p${shown.quiet === true ? "" : ' class="err"'} role="alert">${message}</p>`}
 <section><h2>Link access</h2>${form(
