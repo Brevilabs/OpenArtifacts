@@ -1,5 +1,3 @@
-// These operation names are the contract checked against Copilot's coverage file.
-
 /** @typedef {import("./access.d.cts").LinkAccess} LinkAccess */
 /** @typedef {import("./access.d.cts").Role} Role */
 /** @typedef {import("./access.d.cts").AccessRequest} AccessRequest */
